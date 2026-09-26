@@ -21,7 +21,7 @@ def verify() -> None:
     assert "verify_staging_load_test_teardown_request" in route
     assert "verify_for_teardown" in admission and "teardown_context_from_verified" in admission
     assert "StagingLoadTestTeardownIdentity::from_admission" in route
-    assert "POST /_internal/staging/load-tests/:scenario/teardown" in route
+    assert "POST /_internal/staging/load-tests/{scenario}/teardown" in route
     assert "build_router_from_env" in route and "StagingLoadTestAdmissionGate::from_env" in route
     assert "StagingLoadTestPhysicalTeardown" in ownership
     assert "prior_reconciled_receipt" in ownership and "persist_reconciled" in ownership
