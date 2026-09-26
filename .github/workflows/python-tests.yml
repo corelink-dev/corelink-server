@@ -146,6 +146,19 @@ on:
       - 'examples/**'
       - 'tools/sbom-publish/**'
   workflow_dispatch:
+    inputs:
+      focus:
+        description: "Select full verification or the focused WP-150 population proof"
+        required: true
+        type: choice
+        options:
+          - full
+          - wp150
+        default: full
+      expected_sha:
+        description: "Exact 40-character commit SHA (required when focus is wp150)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -157,6 +170,7 @@ concurrency:
 jobs:
   pytest:
     name: Top-level python test suite
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.focus != 'wp150' }}
     # Hosted Ubuntu and setup-python keep this gate independent of runner images.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -283,3 +297,45 @@ jobs:
           # name and traceback within the bounded Actions job.
           # A green result still requires the complete collected suite.
           python3 -m pytest "${FILES[@]}" "${REQUIRED_SUITES[@]}" -q -x
+
+  wp150-focused:
+    name: WP-150 focused population proof
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.focus == 'wp150' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the requested candidate commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Bind this run to the exact requested head
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_SHA" == "$EXPECTED_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install focused test dependencies
+        shell: bash
+        run: python3 -m pip install --quiet --disable-pip-version-check --no-input -r requirements-ci.txt
+
+      - name: Verify WP-150 population and negative controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f tests/test_verify_backlog_wp_ledger.py
+          python3 -m pytest -q tests/test_verify_backlog_wp_ledger.py \
+            -k 'workflow_population or workflow_ownership'
