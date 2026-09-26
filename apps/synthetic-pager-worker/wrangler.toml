@@ -26,15 +26,9 @@ database_name = "corelink-config-dev"
 database_id = "PLACEHOLDER_CONFIG_DB_DEV_ID"
 migrations_dir = "../../migrations/d1"
 
-# The routing key is a secret and is intentionally absent from committed vars.
-# Set it only in the non-production drill receiver after the explicit activation
-# review: `wrangler secret put PAGERDUTY_SYNTHETIC_ROUTING_KEY` and
-# `wrangler secret put PAGERDUTY_WEBHOOK_SECRET`.
-
 [env.staging]
 name = "corelink-synthetic-pager-staging"
-vars = { ENVIRONMENT = "staging", SYNTHETIC_DRILL_ENABLED = "false", PAGERDUTY_EVENTS_URL = "https://events.pagerduty.com/v2/enqueue", PAGERDUTY_SERVICE = "synthetic-drill" }
-routes = [{ pattern = "staging.corelink.humangr.com/v1/webhooks/pagerduty", zone_name = "humangr.com" }]
+vars = { ENVIRONMENT = "staging", SYNTHETIC_DRILL_ENABLED = "false", SYNTHETIC_DRILL_PROVIDER_MODE = "provider_deferred" }
 
 [[env.staging.d1_databases]]
 binding = "CONFIG_DB"

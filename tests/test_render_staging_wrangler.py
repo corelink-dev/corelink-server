@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import tempfile
 import tomllib
 import unittest
@@ -63,10 +64,18 @@ class StagingWranglerRendererTests(unittest.TestCase):
         configs = {}
         with tempfile.TemporaryDirectory() as directory:
             output_path = Path(directory) / "root.wrangler.toml"
-            for worker in self.topology.workers:
-                configs[worker] = tomllib.loads(
-                    renderer.render_worker(self.topology, worker, ENDPOINT, "final", output_path)
-                )
+            prior = os.environ.get("GITHUB_SHA")
+            os.environ["GITHUB_SHA"] = "0123456789abcdef0123456789abcdef01234567"
+            try:
+                for worker in self.topology.workers:
+                    configs[worker] = tomllib.loads(
+                        renderer.render_worker(self.topology, worker, ENDPOINT, "final", output_path)
+                    )
+            finally:
+                if prior is None:
+                    del os.environ["GITHUB_SHA"]
+                else:
+                    os.environ["GITHUB_SHA"] = prior
 
         self.assertEqual(set(configs), set(self.topology.workers))
         for worker, config in configs.items():
@@ -79,8 +88,10 @@ class StagingWranglerRendererTests(unittest.TestCase):
 
         root = configs[self.topology.workers[0]]
         self.assertEqual(root["vars"]["R2_S3_ENDPOINT"], ENDPOINT)
+        self.assertEqual(root["vars"]["SENTRY_RELEASE"], "0123456789abcdef0123456789abcdef01234567")
         self.assertEqual(len(root["routes"]), 1)
-        self.assertEqual(len(configs[self.topology.workers[2]]["routes"]), 1)
+        self.assertNotIn("routes", configs[self.topology.workers[2]])
+        self.assertEqual(configs[self.topology.workers[2]]["version_metadata"], {"binding": "CF_VERSION_METADATA"})
         self.assertNotIn("routes", configs[self.topology.workers[1]])
         self.assertEqual(
             {
@@ -90,10 +101,6 @@ class StagingWranglerRendererTests(unittest.TestCase):
             },
             {
                 ("staging.corelink.humangr.com/*", "humangr.com"),
-                (
-                    "staging.corelink.humangr.com/v1/webhooks/pagerduty",
-                    "humangr.com",
-                ),
             },
         )
         self.assertEqual(
@@ -104,17 +111,38 @@ class StagingWranglerRendererTests(unittest.TestCase):
     def test_bootstrap_render_has_no_routes_or_secret_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output_path = Path(directory) / "bootstrap.wrangler.toml"
-            for worker in self.topology.workers:
-                rendered = renderer.render_worker(
-                    self.topology, worker, ENDPOINT, "bootstrap", output_path
-                )
-                config = tomllib.loads(rendered)
-                self.assertNotIn("routes", config)
-                self.assertNotIn("[env.staging]", rendered)
-                self.assertNotIn("secret", rendered.lower())
-                for names in self.topology.required_secret_names.values():
-                    for name in names:
-                        self.assertNotIn(name, rendered)
+            prior = os.environ.get("GITHUB_SHA")
+            os.environ["GITHUB_SHA"] = "0123456789abcdef0123456789abcdef01234567"
+            try:
+                for worker in self.topology.workers:
+                    rendered = renderer.render_worker(
+                        self.topology, worker, ENDPOINT, "bootstrap", output_path
+                    )
+                    config = tomllib.loads(rendered)
+                    self.assertNotIn("routes", config)
+                    self.assertNotIn("[env.staging]", rendered)
+                    self.assertNotIn("secret", rendered.lower())
+                    for names in self.topology.required_secret_names.values():
+                        for name in names:
+                            self.assertNotIn(name, rendered)
+            finally:
+                if prior is None:
+                    del os.environ["GITHUB_SHA"]
+                else:
+                    os.environ["GITHUB_SHA"] = prior
+
+    def test_root_release_requires_exact_dispatch_sha(self) -> None:
+        prior = os.environ.get("GITHUB_SHA")
+        try:
+            for value in ("", "unknown", "0123456789abcdef"):
+                os.environ["GITHUB_SHA"] = value
+                with self.subTest(value=value), self.assertRaises(renderer.ContractError):
+                    renderer.render_worker(self.topology, self.topology.workers[0], ENDPOINT, "bootstrap", Path("/tmp/corelink-rendered.toml"))
+        finally:
+            if prior is None:
+                os.environ.pop("GITHUB_SHA", None)
+            else:
+                os.environ["GITHUB_SHA"] = prior
 
     def test_rejects_missing_or_production_provider_endpoint(self) -> None:
         for endpoint in (
