@@ -737,16 +737,24 @@ impl StagingLoadTestPhysicalTeardown {
             .and_then(serde_json::Value::as_str)
             .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
             .ok_or(StagingLoadTestTeardownError::PartialDelete)?;
-        let key = match (resource.class, kind) {
-            (StagingLoadTestResourceClass::WebhookInbox, "webhook_inbox_v1") => {
-                payload.get("event_id").and_then(serde_json::Value::as_str)
-            }
-            (StagingLoadTestResourceClass::WebhookEffect, "webhook_effect_v1") => {
-                payload.get("event_id").and_then(serde_json::Value::as_str)
-            }
-            (StagingLoadTestResourceClass::SignupArtifact, "signup_pilot_v1") => {
-                payload.get("signup_id").and_then(serde_json::Value::as_str)
-            }
+        let params = match (resource.class, kind) {
+            (StagingLoadTestResourceClass::WebhookInbox, "webhook_inbox_v1") => payload
+                .get("event_id")
+                .and_then(serde_json::Value::as_str)
+                .map(|event_id| vec![json!(event_id)]),
+            (StagingLoadTestResourceClass::WebhookEffect, "webhook_effect_v1") => payload
+                .get("event_id")
+                .and_then(serde_json::Value::as_str)
+                .zip(
+                    payload
+                        .get("effect_key")
+                        .and_then(serde_json::Value::as_str),
+                )
+                .map(|(event_id, effect_key)| vec![json!(event_id), json!(effect_key)]),
+            (StagingLoadTestResourceClass::SignupArtifact, "signup_pilot_v1") => payload
+                .get("signup_id")
+                .and_then(serde_json::Value::as_str)
+                .map(|signup_id| vec![json!(signup_id)]),
             _ => None,
         }
         .ok_or(StagingLoadTestTeardownError::PartialDelete)?;
@@ -756,8 +764,8 @@ impl StagingLoadTestPhysicalTeardown {
                 "SELECT event_id FROM stripe_webhook_event_inbox WHERE event_id=?1",
             ),
             StagingLoadTestResourceClass::WebhookEffect => (
-                "DELETE FROM stripe_webhook_event_effects WHERE event_id=?1 RETURNING event_id",
-                "SELECT event_id FROM stripe_webhook_event_effects WHERE event_id=?1",
+                "DELETE FROM stripe_webhook_event_effects WHERE event_id=?1 AND effect_key=?2 RETURNING event_id",
+                "SELECT event_id FROM stripe_webhook_event_effects WHERE event_id=?1 AND effect_key=?2",
             ),
             StagingLoadTestResourceClass::SignupArtifact => (
                 "DELETE FROM pilot_signups WHERE id=?1 RETURNING id",
@@ -772,12 +780,12 @@ impl StagingLoadTestPhysicalTeardown {
         if started.len() != 1 {
             return Ok(StagingLoadTestTeardownAction::Quarantined);
         }
-        if self.d1.query(delete, &[json!(key)]).await.is_err() {
+        if self.d1.query(delete, &params).await.is_err() {
             return Ok(StagingLoadTestTeardownAction::Quarantined);
         }
         if !self
             .d1
-            .query(readback, &[json!(key)])
+            .query(readback, &params)
             .await
             .map_err(|_| StagingLoadTestTeardownError::PartialDelete)?
             .is_empty()

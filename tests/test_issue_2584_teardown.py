@@ -36,5 +36,11 @@ class TeardownContractTests(unittest.TestCase):
             with self.assertRaises(TeardownReceiptError):
                 validate(value, run_id="123", scenario="cas", deployment_sha="a" * 40)
 
+    def test_webhook_effect_teardown_binds_the_complete_locator(self) -> None:
+        source = (ROOT / "crates/corelink-container/src/storage/staging_load_test_ownership.rs").read_text()
+        self.assertIn('payload.get("effect_key")', source)
+        self.assertIn("WHERE event_id=?1 AND effect_key=?2 RETURNING event_id", source)
+        self.assertIn("WHERE event_id=?1 AND effect_key=?2\"", source)
+
 if __name__ == "__main__":
     unittest.main()
