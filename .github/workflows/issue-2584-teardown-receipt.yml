@@ -6,6 +6,7 @@ on:
       - crates/corelink-container/src/webhook_inbox_d1.rs
       - crates/corelink-container/src/signup_d1_http.rs
       - crates/corelink-container/src/storage/staging_load_test_ownership.rs
+      - crates/corelink-container/src/storage/staging_load_test_admission.rs
       - crates/corelink-container/src/routes.rs
       - crates/corelink-container/src/main.rs
       - crates/corelink-container/src/routes/staging_load_test_teardown.rs
@@ -42,3 +43,14 @@ jobs:
         run: |
           python3 scripts/verify_issue_2584_teardown.py
           python3 -m unittest tests/test_issue_2584_teardown.py
+      - name: Install repository Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable toolchain action
+        with:
+          toolchain: 1.91.1
+      - name: Install pinned Protobuf compiler required by corelink-reapi
+        uses: arduino/setup-protoc@f4d5893b897028ff5739576ea0409746887fa536 # v3.0.0
+      - name: Exercise exact-head teardown route and service contracts
+        timeout-minutes: 10
+        run: |
+          cargo test --locked -p corelink-server --lib storage::staging_load_test_ownership::tests:: -- --nocapture
+          cargo test --locked -p corelink-server --lib routes::staging_load_test_teardown::tests:: -- --nocapture

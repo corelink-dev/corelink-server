@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def verify() -> None:
     ownership = (ROOT / "crates/corelink-container/src/storage/staging_load_test_ownership.rs").read_text()
+    admission = (ROOT / "crates/corelink-container/src/storage/staging_load_test_admission.rs").read_text()
     route = (ROOT / "crates/corelink-container/src/routes/staging_load_test_teardown.rs").read_text()
     routes = (ROOT / "crates/corelink-container/src/routes.rs").read_text()
     main = (ROOT / "crates/corelink-container/src/main.rs").read_text()
@@ -17,7 +18,8 @@ def verify() -> None:
     assert "StagingLoadTestDisposition::Retained" in ownership
     assert "cross_run_deletions: 0" in ownership
     assert '"[REDACTED]"' in ownership
-    assert "admit_staging_load_test_request" in route
+    assert "verify_staging_load_test_teardown_request" in route
+    assert "verify_for_teardown" in admission and "teardown_context_from_verified" in admission
     assert "StagingLoadTestTeardownIdentity::from_admission" in route
     assert "POST /_internal/staging/load-tests/:scenario/teardown" in route
     assert "build_router_from_env" in route and "StagingLoadTestAdmissionGate::from_env" in route

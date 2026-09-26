@@ -16,7 +16,9 @@ use axum::{
 };
 
 use crate::storage::{
-    staging_load_test_admission::{admit_staging_load_test_request, StagingLoadTestAdmissionGate},
+    staging_load_test_admission::{
+        verify_staging_load_test_teardown_request, StagingLoadTestAdmissionGate,
+    },
     staging_load_test_ownership::{
         StagingLoadTestScenario, StagingLoadTestTeardownIdentity, StagingLoadTestTeardownReceipt,
     },
@@ -84,13 +86,11 @@ async fn handle_teardown(
     let Some(expected_scenario) = parse_scenario(&scenario) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let context = match admit_staging_load_test_request(
+    let context = match verify_staging_load_test_teardown_request(
         state.admission.as_ref(),
         &headers,
         expected_scenario,
-    )
-    .await
-    {
+    ) {
         Ok(Some(context)) => context,
         // Unlike write routes, a teardown request is never ordinary traffic:
         // missing, malformed, replayed, or unconfigured admission all deny.
