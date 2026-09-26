@@ -51,13 +51,13 @@ impl core::fmt::Debug for StagingLoadTestTeardownRouteState {
     }
 }
 
-/// Build the route at `POST /_internal/staging/load-tests/:scenario/teardown`.
+/// Build the route at `POST /_internal/staging/load-tests/{scenario}/teardown`.
 /// It has no route for a free-form run ID or deployment SHA: both coordinates
 /// are taken only from the durable, authenticated admission context.
 pub(crate) fn router(state: StagingLoadTestTeardownRouteState) -> Router {
     Router::new()
         .route(
-            "/_internal/staging/load-tests/:scenario/teardown",
+            "/_internal/staging/load-tests/{scenario}/teardown",
             post(handle_teardown),
         )
         .with_state(state)
