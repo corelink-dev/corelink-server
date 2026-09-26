@@ -627,7 +627,42 @@ def test_v0008_historical_admission_is_byte_and_merge_pinned(monkeypatch):
         root, relative, raw, receipt,
         [pinned["introduction_commit"]], "0" * 40,
     )
-    monkeypatch.setitem(pinned, "declared_base_commit", "0" * 40)
+    assert not policy._v0008_historical_admission_authorized(
+        root, Path("BACKLOG.md"), raw, receipt,
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, {**receipt, "sequence": 9},
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, {**receipt, "base_commit": "0" * 40},
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, receipt,
+        ["0" * 40], pinned["introduction_parent"],
+    )
+    original_run = successor.subprocess.run
+
+    def deny_ancestry(args, **kwargs):
+        if args[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return subprocess.CompletedProcess(args, 1, b"", b"")
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(successor.subprocess, "run", deny_ancestry)
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, receipt,
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    monkeypatch.undo()
+
+    def rewrite_intro_bytes(args, **kwargs):
+        if args == ["git", "show", f"{pinned['introduction_commit']}:{relative.as_posix()}"]:
+            return subprocess.CompletedProcess(args, 0, b"rewritten", b"")
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(successor.subprocess, "run", rewrite_intro_bytes)
     assert not policy._v0008_historical_admission_authorized(
         root, relative, raw, receipt,
         [pinned["introduction_commit"]], pinned["introduction_parent"],

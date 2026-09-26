@@ -483,6 +483,11 @@ def install(api):
             or _git_bytes(root, pinned["introduction_commit"], path) != raw
         ):
             return False
+        return _v0008_historical_admission_ancestry(root)
+
+    def _v0008_historical_admission_ancestry(root: Path) -> bool:
+        """Require the declared v0008 derivation base before its reviewed merge parent."""
+        pinned = V0008_HISTORICAL_ADMISSION
         return (
             subprocess.run(
                 [
@@ -1814,6 +1819,9 @@ def install(api):
         _v0006_reconciliation_authorized=_v0006_reconciliation_authorized,
         _v0007_reconciliation_authorized=_v0007_reconciliation_authorized,
         _v0008_reconciliation_authorized=_v0008_reconciliation_authorized,
+        _v0008_historical_admission_authorized=_v0008_historical_admission_authorized,
+        _v0008_historical_admission_ancestry=_v0008_historical_admission_ancestry,
+        _git_bytes=_git_bytes,
         _v0009_reconciliation_authorized=_v0009_reconciliation_authorized,
         _v0009_ledger=_v0009_ledger,
     )
