@@ -66,6 +66,7 @@
 use std::sync::Arc;
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::routes::signup::{PilotSignupRecord, SignupStore};
@@ -378,6 +379,7 @@ impl SignupStore for D1HttpSignupStore {
         let ownership = registration
             .d1_statement(registered_at_ms)
             .map_err(|_| "signup store: staging ownership registration rejected")?;
+        let locator = signup_teardown_locator_statement(&context, &opaque_handle, registered_at_ms);
 
         let insert_binds = vec![
             json!(record.id.to_string()),
@@ -394,10 +396,28 @@ impl SignupStore for D1HttpSignupStore {
             .batch(vec![
                 D1BatchStatement::new(SQL_INSERT, insert_binds),
                 ownership,
+                locator,
             ])
             .map_err(|_| "signup store: staging signup batch failed")?;
         Ok(record)
     }
+}
+
+fn signup_teardown_locator_statement(
+    context: &crate::storage::staging_load_test_admission::StagingLoadTestAdmissionContext,
+    signup_id: &str,
+    now_ms: i64,
+) -> D1BatchStatement {
+    let mut digest = Sha256::new();
+    digest.update(b"corelink-staging-load-test-resource-receipt-v1\0");
+    for part in [context.run_id().as_bytes(), context.scenario().as_str().as_bytes(), context.target_deployment_sha().as_bytes(), b"signup_artifact".as_slice(), signup_id.as_bytes(), b"disposable".as_slice()] {
+        digest.update((part.len() as u64).to_be_bytes());
+        digest.update(part);
+    }
+    D1BatchStatement::new(
+        "INSERT INTO staging_load_test_teardown_locators (run_id, scenario, resource_class, receipt_ref, locator_kind, locator_json, registered_at_ms) VALUES (?1, ?2, 'signup_artifact', ?3, 'signup_pilot_v1', ?4, ?5)",
+        vec![json!(context.run_id()), json!(context.scenario().as_str()), json!(hex::encode(digest.finalize())), json!(json!({ "signup_id": signup_id }).to_string()), json!(now_ms)],
+    )
 }
 
 #[cfg(test)]

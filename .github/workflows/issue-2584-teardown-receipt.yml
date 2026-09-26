@@ -1,0 +1,30 @@
+name: Issue 2584 teardown receipt
+
+on:
+  pull_request:
+    paths:
+      - crates/corelink-container/src/webhook_inbox_d1.rs
+      - crates/corelink-container/src/signup_d1_http.rs
+      - scripts/validate_load_teardown_receipt.py
+      - .github/workflows/issue-2584-teardown-receipt.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  locator-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bind proof to exact head
+        run: test "${GITHUB_SHA}" = "$(git rev-parse HEAD)"
+      - name: Validate immutable locator contract
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          w = Path("crates/corelink-container/src/webhook_inbox_d1.rs").read_text()
+          s = Path("crates/corelink-container/src/signup_d1_http.rs").read_text()
+          required = ("webhook_inbox_v1", "webhook_effect_v1", "signup_pilot_v1", "teardown_locator_statement", "signup_teardown_locator_statement")
+          assert all(token in (w + s) for token in required)
+          PY
