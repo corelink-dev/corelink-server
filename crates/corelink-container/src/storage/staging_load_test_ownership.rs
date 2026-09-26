@@ -604,6 +604,42 @@ impl StagingLoadTestPhysicalTeardown {
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
         Ok(if done.len() == 1 { StagingLoadTestTeardownAction::Deleted } else { StagingLoadTestTeardownAction::Quarantined })
     }
+
+    /// Cancel, never shred, one immutable generation-zero synthetic BYOK
+    /// activation.  The owner adapter rechecks marker, empty baseline, exact
+    /// pending intent and terminal readback before it can return success.
+    pub(crate) async fn cancel_byok_pending_and_readback(
+        &self,
+        identity: &StagingLoadTestTeardownIdentity,
+        resource: &StagingLoadTestTeardownResource,
+        control: &crate::byok_control_transition::D1ByokControl,
+    ) -> Result<StagingLoadTestTeardownAction, StagingLoadTestTeardownError> {
+        if resource.class != StagingLoadTestResourceClass::ByokArtifact || resource.disposition != StagingLoadTestDisposition::Disposable {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        }
+        let rows = self.d1.query(
+            "SELECT locator_kind,locator_json FROM staging_load_test_teardown_locators WHERE run_id=?1 AND scenario=?2 AND resource_class='byok_artifact' AND receipt_ref=?3",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        let Some(row) = rows.first() else { return Ok(StagingLoadTestTeardownAction::Quarantined) };
+        let value = (row.get("locator_kind").and_then(serde_json::Value::as_str) == Some("byok_pending_synthetic_v1"))
+            .then(|| row.get("locator_json").and_then(serde_json::Value::as_str).and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())).flatten()
+            .ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        let tenant_id = value.get("tenant_id").and_then(serde_json::Value::as_str).filter(|v| !v.is_empty()).map(str::to_owned).ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        let intent_id = value.get("intent_id").and_then(serde_json::Value::as_str).filter(|v| !v.is_empty()).map(str::to_owned).ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        let started = self.d1.query(
+            "UPDATE staging_load_test_resources SET state='delete_started' WHERE run_id=?1 AND scenario=?2 AND resource_class='byok_artifact' AND receipt_ref=?3 AND state='registered' RETURNING receipt_ref",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        if started.len() != 1 { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        let locator = crate::byok_control_transition::StagingByokPendingTeardownLocator { tenant_id, intent_id };
+        if control.cancel_staging_pending_activation_and_readback(&locator).await.is_err() { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        let done = self.d1.query(
+            "UPDATE staging_load_test_resources SET state='deleted' WHERE run_id=?1 AND scenario=?2 AND resource_class='byok_artifact' AND receipt_ref=?3 AND state='delete_started' RETURNING receipt_ref",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        Ok(if done.len() == 1 { StagingLoadTestTeardownAction::Deleted } else { StagingLoadTestTeardownAction::Quarantined })
+    }
 }
 
 fn resource_class(value: Option<&str>) -> Option<StagingLoadTestResourceClass> {
