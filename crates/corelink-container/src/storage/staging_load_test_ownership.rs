@@ -564,6 +564,46 @@ impl StagingLoadTestPhysicalTeardown {
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
         if done.len() == 1 { Ok(StagingLoadTestTeardownAction::Deleted) } else { Ok(StagingLoadTestTeardownAction::Quarantined) }
     }
+
+    /// Delete one DSR export only through the owner adapter, which performs
+    /// DELETE followed by HEAD and rejects every retained/non-export locator.
+    pub(crate) async fn delete_dsr_export_and_readback(
+        &self,
+        identity: &StagingLoadTestTeardownIdentity,
+        resource: &StagingLoadTestTeardownResource,
+        r2: &crate::storage::r2_s3::R2S3Client,
+    ) -> Result<StagingLoadTestTeardownAction, StagingLoadTestTeardownError> {
+        if resource.class != StagingLoadTestResourceClass::DsrArtifact || resource.disposition != StagingLoadTestDisposition::Disposable {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        }
+        let rows = self.d1.query(
+            "SELECT locator_kind,locator_json FROM staging_load_test_teardown_locators WHERE run_id=?1 AND scenario=?2 AND resource_class='dsr_artifact' AND receipt_ref=?3",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        let Some(row) = rows.first() else { return Ok(StagingLoadTestTeardownAction::Quarantined) };
+        let key = (row.get("locator_kind").and_then(serde_json::Value::as_str) == Some("dsr_r2_export_v1"))
+            .then(|| row.get("locator_json").and_then(serde_json::Value::as_str)
+                .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
+                .and_then(|v| v.get("object_key").and_then(serde_json::Value::as_str).map(str::to_owned)))
+            .flatten().ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        let pending = self.d1.query(
+            "SELECT operation_id FROM staging_load_test_r2_intents WHERE run_id=?1 AND scenario=?2 AND resource_class='dsr_artifact' AND state<>'committed'",
+            &[json!(identity.run_id), json!(identity.scenario.as_str())],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        if !pending.is_empty() { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        let started = self.d1.query(
+            "UPDATE staging_load_test_resources SET state='delete_started' WHERE run_id=?1 AND scenario=?2 AND resource_class='dsr_artifact' AND receipt_ref=?3 AND state='registered' RETURNING receipt_ref",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        if started.len() != 1 { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        let locator = crate::routes::dsr::access::StagingDsrR2ExportLocator { object_key: key };
+        if crate::routes::dsr::access::delete_staging_dsr_export_and_readback(r2, &locator).await.is_err() { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        let done = self.d1.query(
+            "UPDATE staging_load_test_resources SET state='deleted' WHERE run_id=?1 AND scenario=?2 AND resource_class='dsr_artifact' AND receipt_ref=?3 AND state='delete_started' RETURNING receipt_ref",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        Ok(if done.len() == 1 { StagingLoadTestTeardownAction::Deleted } else { StagingLoadTestTeardownAction::Quarantined })
+    }
 }
 
 fn resource_class(value: Option<&str>) -> Option<StagingLoadTestResourceClass> {
