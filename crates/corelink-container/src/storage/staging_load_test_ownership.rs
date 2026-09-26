@@ -5,6 +5,7 @@
 //! delete resources. Callers must obtain the run identity from a trusted
 //! admission path before invoking it.
 
+use async_trait::async_trait;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -455,14 +456,167 @@ pub(crate) fn reconcile_staging_load_test_teardown(
 /// locator is deliberately kept private: callers receive only the receipt.
 pub(crate) struct StagingLoadTestPhysicalTeardown {
     d1: Arc<D1HttpClient>,
+    r2: Arc<crate::storage::r2_s3::R2S3Client>,
+    byok: Arc<crate::byok_control_transition::D1ByokControl>,
 }
 
 impl StagingLoadTestPhysicalTeardown {
     /// Builds only when the D1 mutation capability is configured.  The route
     /// remains absent otherwise, so an unconfigured process cannot accept a
     /// teardown request and accidentally claim success.
-    pub(crate) fn from_env() -> Result<Self, String> {
-        Ok(Self { d1: Arc::new(D1HttpClient::for_staging_load_test_ownership_writes()?) })
+    pub(crate) async fn from_env() -> Result<Self, String> {
+        let d1 = Arc::new(D1HttpClient::for_staging_load_test_ownership_writes()?);
+        let storage = crate::storage::StorageEnv::from_env()
+            .ok_or_else(|| "staging teardown requires configured R2 storage".to_owned())?;
+        // DSR's admitted export writer uses the audit bucket.  Keeping the
+        // bucket selection here identical makes an absent/incorrect R2
+        // capability leave the teardown route unmounted instead of guessing a
+        // provider location from an opaque handle.
+        let bucket = crate::storage::env_or("R2_AUDIT_BUCKET", "corelink-audit-weur");
+        let r2 = Arc::new(crate::storage::r2_s3::R2S3Client::new(&storage, bucket).await?);
+        Ok(Self {
+            byok: Arc::new(crate::byok_control_transition::D1ByokControl::new(
+                Arc::clone(&d1),
+            )),
+            d1,
+            r2,
+        })
+    }
+
+    async fn prior_reconciled_receipt(
+        &self,
+        identity: &StagingLoadTestTeardownIdentity,
+    ) -> Result<Option<StagingLoadTestTeardownReceipt>, StagingLoadTestTeardownError> {
+        let terminal = self.d1.query(
+            "SELECT terminal_state FROM staging_load_test_teardown_receipts WHERE run_id=?1 AND scenario=?2 AND target_deployment_sha=?3",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(identity.target_deployment_sha)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::CountMismatch)?;
+        let Some(row) = terminal.first() else {
+            return Ok(None);
+        };
+        if row
+            .get("terminal_state")
+            .and_then(serde_json::Value::as_str)
+            != Some("reconciled")
+        {
+            return Err(StagingLoadTestTeardownError::PartialDelete);
+        }
+        let rows = self.d1.query(
+            "SELECT resource_class,inventory_count,attempted_count,deleted_count,preserved_count,quarantined_count,remaining_count FROM staging_load_test_teardown_receipt_counts WHERE run_id=?1 AND scenario=?2 ORDER BY resource_class",
+            &[json!(identity.run_id), json!(identity.scenario.as_str())],
+        ).await.map_err(|_| StagingLoadTestTeardownError::CountMismatch)?;
+        let mut resources = std::collections::BTreeMap::new();
+        for row in rows {
+            let class = resource_class(
+                row.get("resource_class")
+                    .and_then(serde_json::Value::as_str),
+            )
+            .ok_or(StagingLoadTestTeardownError::CountMismatch)?;
+            let count = |name| {
+                row.get(name)
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .ok_or(StagingLoadTestTeardownError::CountMismatch)
+            };
+            resources.insert(
+                class.as_str(),
+                StagingLoadTestTeardownCounts {
+                    inventory: count("inventory_count")?,
+                    attempted: count("attempted_count")?,
+                    deleted: count("deleted_count")?,
+                    preserved: count("preserved_count")?,
+                    quarantined: count("quarantined_count")?,
+                    remaining: count("remaining_count")?,
+                },
+            );
+        }
+        if resources.len() != STAGING_LOAD_TEST_RESOURCE_CLASSES.len() {
+            return Err(StagingLoadTestTeardownError::CountMismatch);
+        }
+        Ok(Some(StagingLoadTestTeardownReceipt {
+            schema: "corelink.staging-load-test-teardown-receipt.v2",
+            run_id: identity.run_id.clone(),
+            scenario: identity.scenario.as_str(),
+            target_deployment_sha: identity.target_deployment_sha.clone(),
+            terminal_state: "reconciled",
+            cross_run_deletions: 0,
+            resources,
+        }))
+    }
+
+    async fn preserve_and_readback(
+        &self,
+        identity: &StagingLoadTestTeardownIdentity,
+        resource: &StagingLoadTestTeardownResource,
+    ) -> Result<StagingLoadTestTeardownAction, StagingLoadTestTeardownError> {
+        let changed = self.d1.query(
+            "UPDATE staging_load_test_resources SET state='preserved' WHERE run_id=?1 AND scenario=?2 AND resource_class=?3 AND receipt_ref=?4 AND disposition='retained' AND state='registered' RETURNING receipt_ref",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.class.as_str()), json!(resource.receipt_ref)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        if changed.len() != 1 {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        }
+        let readback = self.d1.query(
+            "SELECT receipt_ref FROM staging_load_test_resources WHERE run_id=?1 AND scenario=?2 AND resource_class=?3 AND receipt_ref=?4 AND disposition='retained' AND state='preserved'",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.class.as_str()), json!(resource.receipt_ref)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        Ok(if readback.len() == 1 {
+            StagingLoadTestTeardownAction::Preserved
+        } else {
+            StagingLoadTestTeardownAction::Quarantined
+        })
+    }
+
+    async fn persist_reconciled(
+        &self,
+        identity: &StagingLoadTestTeardownIdentity,
+        receipt: &StagingLoadTestTeardownReceipt,
+    ) -> Result<(), StagingLoadTestTeardownError> {
+        let completed_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| StagingLoadTestTeardownError::PartialDelete)?
+            .as_millis();
+        let completed_at_ms = i64::try_from(completed_at_ms)
+            .map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        let encoded =
+            serde_json::to_vec(receipt).map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        let receipt_sha256 = hex::encode(sha2::Sha256::digest(encoded));
+        let mut statements = Vec::new();
+        for class in STAGING_LOAD_TEST_RESOURCE_CLASSES {
+            let count = receipt
+                .resources
+                .get(class.as_str())
+                .ok_or(StagingLoadTestTeardownError::CountMismatch)?;
+            let readback = if class.requires_retention() {
+                "preserved"
+            } else {
+                "absent"
+            };
+            statements.push(super::d1_http::D1BatchStatement::new(
+                "INSERT INTO staging_load_test_teardown_receipt_counts (run_id,scenario,resource_class,inventory_count,attempted_count,deleted_count,preserved_count,remaining_count,quarantined_count,cross_run_deletion_count,readback_state) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0,?10)",
+                vec![json!(identity.run_id), json!(identity.scenario.as_str()), json!(class.as_str()), json!(count.inventory), json!(count.attempted), json!(count.deleted), json!(count.preserved), json!(count.remaining), json!(count.quarantined), json!(readback)],
+            ));
+        }
+        statements.push(super::d1_http::D1BatchStatement::new(
+            "INSERT INTO staging_load_test_teardown_receipts (run_id,scenario,target_deployment_sha,schema_version,terminal_state,completed_at_ms,receipt_sha256) VALUES (?1,?2,?3,'corelink.staging-load-test-teardown-receipt.v2','reconciled',?4,?5)",
+            vec![json!(identity.run_id), json!(identity.scenario.as_str()), json!(identity.target_deployment_sha), json!(completed_at_ms), json!(receipt_sha256)],
+        ));
+        statements.push(super::d1_http::D1BatchStatement::new(
+            "UPDATE staging_load_test_runs SET state='reconciled' WHERE run_id=?1 AND scenario=?2 AND target_environment='staging' AND target_deployment_sha=?3 AND state='teardown_started'",
+            vec![json!(identity.run_id), json!(identity.scenario.as_str()), json!(identity.target_deployment_sha)],
+        ));
+        self.d1
+            .batch(statements)
+            .await
+            .map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        Ok(())
+    }
+
+    async fn mark_failed(&self, identity: &StagingLoadTestTeardownIdentity) {
+        let _ = self.d1.query(
+            "UPDATE staging_load_test_runs SET state='failed' WHERE run_id=?1 AND scenario=?2 AND target_environment='staging' AND target_deployment_sha=?3 AND state='teardown_started'",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(identity.target_deployment_sha)],
+        ).await;
     }
 
     /// Start only an exact, already sealed staging run.  The predicate binds
@@ -475,7 +629,11 @@ impl StagingLoadTestPhysicalTeardown {
             "UPDATE staging_load_test_runs SET state='teardown_started' WHERE run_id=?1 AND scenario=?2 AND target_environment='staging' AND target_deployment_sha=?3 AND state='sealed' RETURNING run_id",
             &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(identity.target_deployment_sha)],
         ).await.map_err(|_| StagingLoadTestTeardownError::CountMismatch)?;
-        if rows.len() == 1 { Ok(()) } else { Err(StagingLoadTestTeardownError::CountMismatch) }
+        if rows.len() == 1 {
+            Ok(())
+        } else {
+            Err(StagingLoadTestTeardownError::CountMismatch)
+        }
     }
 
     /// Read the immutable nine-class scan census and exact resource rows.  An
@@ -485,7 +643,13 @@ impl StagingLoadTestPhysicalTeardown {
         &self,
         identity: &StagingLoadTestTeardownIdentity,
         max_resources: usize,
-    ) -> Result<(Vec<StagingLoadTestTeardownScan>, Vec<StagingLoadTestTeardownResource>), StagingLoadTestTeardownError> {
+    ) -> Result<
+        (
+            Vec<StagingLoadTestTeardownScan>,
+            Vec<StagingLoadTestTeardownResource>,
+        ),
+        StagingLoadTestTeardownError,
+    > {
         let scans = self.d1.query(
             "SELECT resource_class,state,observed_count FROM staging_load_test_resource_scans WHERE run_id=?1 AND scenario=?2 ORDER BY resource_class",
             &[json!(identity.run_id), json!(identity.scenario.as_str())],
@@ -494,20 +658,54 @@ impl StagingLoadTestPhysicalTeardown {
             "SELECT resource_class,receipt_ref,opaque_handle,disposition FROM staging_load_test_resources WHERE run_id=?1 AND scenario=?2 ORDER BY resource_class,receipt_ref LIMIT ?3",
             &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(i64::try_from(max_resources.saturating_add(1)).unwrap_or(i64::MAX))],
         ).await.map_err(|_| StagingLoadTestTeardownError::IncompleteScan)?;
-        if resources.len() > max_resources { return Err(StagingLoadTestTeardownError::OverBudget); }
+        if resources.len() > max_resources {
+            return Err(StagingLoadTestTeardownError::OverBudget);
+        }
         let mut parsed_scans = Vec::new();
         for row in scans {
-            let class = resource_class(row.get("resource_class").and_then(serde_json::Value::as_str)).ok_or(StagingLoadTestTeardownError::MissingClass)?;
-            let count = row.get("observed_count").and_then(serde_json::Value::as_u64).and_then(|v| usize::try_from(v).ok()).ok_or(StagingLoadTestTeardownError::CountMismatch)?;
-            parsed_scans.push(StagingLoadTestTeardownScan { class, observed_count: count, complete: row.get("state").and_then(serde_json::Value::as_str) == Some("complete"), truncated: false });
+            let class = resource_class(
+                row.get("resource_class")
+                    .and_then(serde_json::Value::as_str),
+            )
+            .ok_or(StagingLoadTestTeardownError::MissingClass)?;
+            let count = row
+                .get("observed_count")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|v| usize::try_from(v).ok())
+                .ok_or(StagingLoadTestTeardownError::CountMismatch)?;
+            parsed_scans.push(StagingLoadTestTeardownScan {
+                class,
+                observed_count: count,
+                complete: row.get("state").and_then(serde_json::Value::as_str) == Some("complete"),
+                truncated: false,
+            });
         }
         let mut parsed_resources = Vec::new();
         for row in resources {
-            let class = resource_class(row.get("resource_class").and_then(serde_json::Value::as_str)).ok_or(StagingLoadTestTeardownError::CountMismatch)?;
-            let disposition = match row.get("disposition").and_then(serde_json::Value::as_str) { Some("disposable") => StagingLoadTestDisposition::Disposable, Some("retained") => StagingLoadTestDisposition::Retained, _ => return Err(StagingLoadTestTeardownError::InvalidDisposition) };
-            let receipt_ref = row.get("receipt_ref").and_then(serde_json::Value::as_str).ok_or(StagingLoadTestTeardownError::CountMismatch)?;
-            let handle = row.get("opaque_handle").and_then(serde_json::Value::as_str).ok_or(StagingLoadTestTeardownError::CountMismatch)?;
-            parsed_resources.push(StagingLoadTestTeardownResource { class, receipt_ref: receipt_ref.to_owned(), opaque_handle: handle.to_owned(), disposition });
+            let class = resource_class(
+                row.get("resource_class")
+                    .and_then(serde_json::Value::as_str),
+            )
+            .ok_or(StagingLoadTestTeardownError::CountMismatch)?;
+            let disposition = match row.get("disposition").and_then(serde_json::Value::as_str) {
+                Some("disposable") => StagingLoadTestDisposition::Disposable,
+                Some("retained") => StagingLoadTestDisposition::Retained,
+                _ => return Err(StagingLoadTestTeardownError::InvalidDisposition),
+            };
+            let receipt_ref = row
+                .get("receipt_ref")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(StagingLoadTestTeardownError::CountMismatch)?;
+            let handle = row
+                .get("opaque_handle")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(StagingLoadTestTeardownError::CountMismatch)?;
+            parsed_resources.push(StagingLoadTestTeardownResource {
+                class,
+                receipt_ref: receipt_ref.to_owned(),
+                opaque_handle: handle.to_owned(),
+                disposition,
+            });
         }
         Ok((parsed_scans, parsed_resources))
     }
@@ -527,15 +725,31 @@ impl StagingLoadTestPhysicalTeardown {
             "SELECT locator_kind,locator_json FROM staging_load_test_teardown_locators WHERE run_id=?1 AND scenario=?2 AND resource_class=?3 AND receipt_ref=?4",
             &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.class.as_str()), json!(resource.receipt_ref)],
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
-        let Some(locator) = locator.first() else { return Ok(StagingLoadTestTeardownAction::Quarantined) };
-        let kind = locator.get("locator_kind").and_then(serde_json::Value::as_str).ok_or(StagingLoadTestTeardownError::PartialDelete)?;
-        let payload = locator.get("locator_json").and_then(serde_json::Value::as_str).and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok()).ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        let Some(locator) = locator.first() else {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        };
+        let kind = locator
+            .get("locator_kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        let payload = locator
+            .get("locator_json")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
+            .ok_or(StagingLoadTestTeardownError::PartialDelete)?;
         let key = match (resource.class, kind) {
-            (StagingLoadTestResourceClass::WebhookInbox, "webhook_inbox_v1") => payload.get("event_id").and_then(serde_json::Value::as_str),
-            (StagingLoadTestResourceClass::WebhookEffect, "webhook_effect_v1") => payload.get("event_id").and_then(serde_json::Value::as_str),
-            (StagingLoadTestResourceClass::SignupArtifact, "signup_pilot_v1") => payload.get("signup_id").and_then(serde_json::Value::as_str),
+            (StagingLoadTestResourceClass::WebhookInbox, "webhook_inbox_v1") => {
+                payload.get("event_id").and_then(serde_json::Value::as_str)
+            }
+            (StagingLoadTestResourceClass::WebhookEffect, "webhook_effect_v1") => {
+                payload.get("event_id").and_then(serde_json::Value::as_str)
+            }
+            (StagingLoadTestResourceClass::SignupArtifact, "signup_pilot_v1") => {
+                payload.get("signup_id").and_then(serde_json::Value::as_str)
+            }
             _ => None,
-        }.ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        }
+        .ok_or(StagingLoadTestTeardownError::PartialDelete)?;
         let (delete, readback) = match resource.class {
             StagingLoadTestResourceClass::WebhookInbox => (
                 "DELETE FROM stripe_webhook_event_inbox WHERE event_id=?1 RETURNING event_id",
@@ -555,14 +769,30 @@ impl StagingLoadTestPhysicalTeardown {
             "UPDATE staging_load_test_resources SET state='delete_started' WHERE run_id=?1 AND scenario=?2 AND resource_class=?3 AND receipt_ref=?4 AND disposition='disposable' AND state='registered' RETURNING receipt_ref",
             &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.class.as_str()), json!(resource.receipt_ref)],
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
-        if started.len() != 1 { return Ok(StagingLoadTestTeardownAction::Quarantined); }
-        if self.d1.query(delete, &[json!(key)]).await.is_err() { return Ok(StagingLoadTestTeardownAction::Quarantined); }
-        if !self.d1.query(readback, &[json!(key)]).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?.is_empty() { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        if started.len() != 1 {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        }
+        if self.d1.query(delete, &[json!(key)]).await.is_err() {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        }
+        if !self
+            .d1
+            .query(readback, &[json!(key)])
+            .await
+            .map_err(|_| StagingLoadTestTeardownError::PartialDelete)?
+            .is_empty()
+        {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        }
         let done = self.d1.query(
             "UPDATE staging_load_test_resources SET state='deleted' WHERE run_id=?1 AND scenario=?2 AND resource_class=?3 AND receipt_ref=?4 AND state='delete_started' RETURNING receipt_ref",
             &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.class.as_str()), json!(resource.receipt_ref)],
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
-        if done.len() == 1 { Ok(StagingLoadTestTeardownAction::Deleted) } else { Ok(StagingLoadTestTeardownAction::Quarantined) }
+        if done.len() == 1 {
+            Ok(StagingLoadTestTeardownAction::Deleted)
+        } else {
+            Ok(StagingLoadTestTeardownAction::Quarantined)
+        }
     }
 
     /// Delete one DSR export only through the owner adapter, which performs
@@ -573,36 +803,62 @@ impl StagingLoadTestPhysicalTeardown {
         resource: &StagingLoadTestTeardownResource,
         r2: &crate::storage::r2_s3::R2S3Client,
     ) -> Result<StagingLoadTestTeardownAction, StagingLoadTestTeardownError> {
-        if resource.class != StagingLoadTestResourceClass::DsrArtifact || resource.disposition != StagingLoadTestDisposition::Disposable {
+        if resource.class != StagingLoadTestResourceClass::DsrArtifact
+            || resource.disposition != StagingLoadTestDisposition::Disposable
+        {
             return Ok(StagingLoadTestTeardownAction::Quarantined);
         }
         let rows = self.d1.query(
             "SELECT locator_kind,locator_json FROM staging_load_test_teardown_locators WHERE run_id=?1 AND scenario=?2 AND resource_class='dsr_artifact' AND receipt_ref=?3",
             &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
-        let Some(row) = rows.first() else { return Ok(StagingLoadTestTeardownAction::Quarantined) };
-        let key = (row.get("locator_kind").and_then(serde_json::Value::as_str) == Some("dsr_r2_export_v1"))
-            .then(|| row.get("locator_json").and_then(serde_json::Value::as_str)
+        let Some(row) = rows.first() else {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        };
+        let key = (row.get("locator_kind").and_then(serde_json::Value::as_str)
+            == Some("dsr_r2_export_v1"))
+        .then(|| {
+            row.get("locator_json")
+                .and_then(serde_json::Value::as_str)
                 .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
-                .and_then(|v| v.get("object_key").and_then(serde_json::Value::as_str).map(str::to_owned)))
-            .flatten().ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+                .and_then(|v| {
+                    v.get("object_key")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+        })
+        .flatten()
+        .ok_or(StagingLoadTestTeardownError::PartialDelete)?;
         let pending = self.d1.query(
             "SELECT operation_id FROM staging_load_test_r2_intents WHERE run_id=?1 AND scenario=?2 AND resource_class='dsr_artifact' AND state<>'committed'",
             &[json!(identity.run_id), json!(identity.scenario.as_str())],
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
-        if !pending.is_empty() { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        if !pending.is_empty() {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        }
         let started = self.d1.query(
             "UPDATE staging_load_test_resources SET state='delete_started' WHERE run_id=?1 AND scenario=?2 AND resource_class='dsr_artifact' AND receipt_ref=?3 AND state='registered' RETURNING receipt_ref",
             &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
-        if started.len() != 1 { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        if started.len() != 1 {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        }
         let locator = crate::routes::dsr::access::StagingDsrR2ExportLocator { object_key: key };
-        if crate::routes::dsr::access::delete_staging_dsr_export_and_readback(r2, &locator).await.is_err() { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        if crate::routes::dsr::access::delete_staging_dsr_export_and_readback(r2, &locator)
+            .await
+            .is_err()
+        {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        }
         let done = self.d1.query(
             "UPDATE staging_load_test_resources SET state='deleted' WHERE run_id=?1 AND scenario=?2 AND resource_class='dsr_artifact' AND receipt_ref=?3 AND state='delete_started' RETURNING receipt_ref",
             &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
-        Ok(if done.len() == 1 { StagingLoadTestTeardownAction::Deleted } else { StagingLoadTestTeardownAction::Quarantined })
+        Ok(if done.len() == 1 {
+            StagingLoadTestTeardownAction::Deleted
+        } else {
+            StagingLoadTestTeardownAction::Quarantined
+        })
     }
 
     /// Cancel, never shred, one immutable generation-zero synthetic BYOK
@@ -614,41 +870,178 @@ impl StagingLoadTestPhysicalTeardown {
         resource: &StagingLoadTestTeardownResource,
         control: &crate::byok_control_transition::D1ByokControl,
     ) -> Result<StagingLoadTestTeardownAction, StagingLoadTestTeardownError> {
-        if resource.class != StagingLoadTestResourceClass::ByokArtifact || resource.disposition != StagingLoadTestDisposition::Disposable {
+        if resource.class != StagingLoadTestResourceClass::ByokArtifact
+            || resource.disposition != StagingLoadTestDisposition::Disposable
+        {
             return Ok(StagingLoadTestTeardownAction::Quarantined);
         }
         let rows = self.d1.query(
             "SELECT locator_kind,locator_json FROM staging_load_test_teardown_locators WHERE run_id=?1 AND scenario=?2 AND resource_class='byok_artifact' AND receipt_ref=?3",
             &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
-        let Some(row) = rows.first() else { return Ok(StagingLoadTestTeardownAction::Quarantined) };
-        let value = (row.get("locator_kind").and_then(serde_json::Value::as_str) == Some("byok_pending_synthetic_v1"))
-            .then(|| row.get("locator_json").and_then(serde_json::Value::as_str).and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())).flatten()
+        let Some(row) = rows.first() else {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        };
+        let value = (row.get("locator_kind").and_then(serde_json::Value::as_str)
+            == Some("byok_pending_synthetic_v1"))
+        .then(|| {
+            row.get("locator_json")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
+        })
+        .flatten()
+        .ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        let tenant_id = value
+            .get("tenant_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
             .ok_or(StagingLoadTestTeardownError::PartialDelete)?;
-        let tenant_id = value.get("tenant_id").and_then(serde_json::Value::as_str).filter(|v| !v.is_empty()).map(str::to_owned).ok_or(StagingLoadTestTeardownError::PartialDelete)?;
-        let intent_id = value.get("intent_id").and_then(serde_json::Value::as_str).filter(|v| !v.is_empty()).map(str::to_owned).ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        let intent_id = value
+            .get("intent_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+            .ok_or(StagingLoadTestTeardownError::PartialDelete)?;
         let started = self.d1.query(
             "UPDATE staging_load_test_resources SET state='delete_started' WHERE run_id=?1 AND scenario=?2 AND resource_class='byok_artifact' AND receipt_ref=?3 AND state='registered' RETURNING receipt_ref",
             &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
-        if started.len() != 1 { return Ok(StagingLoadTestTeardownAction::Quarantined); }
-        let locator = crate::byok_control_transition::StagingByokPendingTeardownLocator { tenant_id, intent_id };
-        if control.cancel_staging_pending_activation_and_readback(&locator).await.is_err() { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        if started.len() != 1 {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        }
+        let locator = crate::byok_control_transition::StagingByokPendingTeardownLocator {
+            tenant_id,
+            intent_id,
+        };
+        if control
+            .cancel_staging_pending_activation_and_readback(&locator)
+            .await
+            .is_err()
+        {
+            return Ok(StagingLoadTestTeardownAction::Quarantined);
+        }
         let done = self.d1.query(
             "UPDATE staging_load_test_resources SET state='deleted' WHERE run_id=?1 AND scenario=?2 AND resource_class='byok_artifact' AND receipt_ref=?3 AND state='delete_started' RETURNING receipt_ref",
             &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.receipt_ref)],
         ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
-        Ok(if done.len() == 1 { StagingLoadTestTeardownAction::Deleted } else { StagingLoadTestTeardownAction::Quarantined })
+        Ok(if done.len() == 1 {
+            StagingLoadTestTeardownAction::Deleted
+        } else {
+            StagingLoadTestTeardownAction::Quarantined
+        })
+    }
+}
+
+const MAX_STAGING_LOAD_TEST_TEARDOWN_RESOURCES: usize = 256;
+
+#[async_trait]
+impl crate::routes::staging_load_test_teardown::StagingLoadTestTeardownService
+    for StagingLoadTestPhysicalTeardown
+{
+    async fn teardown(
+        &self,
+        identity: StagingLoadTestTeardownIdentity,
+    ) -> Result<StagingLoadTestTeardownReceipt, ()> {
+        let result = async {
+            if let Some(receipt) = self.prior_reconciled_receipt(&identity).await? {
+                return Ok(receipt);
+            }
+            self.begin(&identity).await?;
+            let (scans, resources) = self
+                .inventory(&identity, MAX_STAGING_LOAD_TEST_TEARDOWN_RESOURCES)
+                .await?;
+            // This pure pass proves the whole immutable census before any
+            // provider operation. The real pass below repeats no discovery.
+            reconcile_staging_load_test_teardown(
+                &identity,
+                None,
+                &scans,
+                &resources,
+                MAX_STAGING_LOAD_TEST_TEARDOWN_RESOURCES,
+                |_| StagingLoadTestTeardownAction::Deleted,
+            )?;
+
+            let mut counts = std::collections::BTreeMap::new();
+            for scan in &scans {
+                counts.insert(
+                    scan.class.as_str(),
+                    StagingLoadTestTeardownCounts {
+                        inventory: scan.observed_count,
+                        attempted: 0,
+                        deleted: 0,
+                        preserved: 0,
+                        quarantined: 0,
+                        remaining: 0,
+                    },
+                );
+            }
+            for resource in &resources {
+                let action = if resource.disposition == StagingLoadTestDisposition::Retained {
+                    self.preserve_and_readback(&identity, resource).await?
+                } else {
+                    match resource.class {
+                        StagingLoadTestResourceClass::DsrArtifact => {
+                            self.delete_dsr_export_and_readback(&identity, resource, &self.r2)
+                                .await?
+                        }
+                        StagingLoadTestResourceClass::ByokArtifact => {
+                            self.cancel_byok_pending_and_readback(&identity, resource, &self.byok)
+                                .await?
+                        }
+                        _ => {
+                            self.delete_d1_owned_and_readback(&identity, resource)
+                                .await?
+                        }
+                    }
+                };
+                let count = counts
+                    .get_mut(resource.class.as_str())
+                    .ok_or(StagingLoadTestTeardownError::CountMismatch)?;
+                match action {
+                    StagingLoadTestTeardownAction::Deleted => {
+                        count.attempted += 1;
+                        count.deleted += 1;
+                    }
+                    StagingLoadTestTeardownAction::Preserved => count.preserved += 1,
+                    StagingLoadTestTeardownAction::Quarantined => {
+                        count.quarantined += 1;
+                        return Err(StagingLoadTestTeardownError::PartialDelete);
+                    }
+                }
+            }
+            let receipt = StagingLoadTestTeardownReceipt {
+                schema: "corelink.staging-load-test-teardown-receipt.v2",
+                run_id: identity.run_id.clone(),
+                scenario: identity.scenario.as_str(),
+                target_deployment_sha: identity.target_deployment_sha.clone(),
+                terminal_state: "reconciled",
+                cross_run_deletions: 0,
+                resources: counts,
+            };
+            self.persist_reconciled(&identity, &receipt).await?;
+            Ok(receipt)
+        }
+        .await;
+        if result.is_err() {
+            self.mark_failed(&identity).await;
+        }
+        result.map_err(|_| ())
     }
 }
 
 fn resource_class(value: Option<&str>) -> Option<StagingLoadTestResourceClass> {
     Some(match value? {
-        "cas_reference" => StagingLoadTestResourceClass::CasReference, "webhook_inbox" => StagingLoadTestResourceClass::WebhookInbox,
-        "webhook_effect" => StagingLoadTestResourceClass::WebhookEffect, "dsr_artifact" => StagingLoadTestResourceClass::DsrArtifact,
-        "dsr_obligation" => StagingLoadTestResourceClass::DsrObligation, "audit_evidence" => StagingLoadTestResourceClass::AuditEvidence,
-        "billing_audit" => StagingLoadTestResourceClass::BillingAudit, "signup_artifact" => StagingLoadTestResourceClass::SignupArtifact,
-        "byok_artifact" => StagingLoadTestResourceClass::ByokArtifact, _ => return None,
+        "cas_reference" => StagingLoadTestResourceClass::CasReference,
+        "webhook_inbox" => StagingLoadTestResourceClass::WebhookInbox,
+        "webhook_effect" => StagingLoadTestResourceClass::WebhookEffect,
+        "dsr_artifact" => StagingLoadTestResourceClass::DsrArtifact,
+        "dsr_obligation" => StagingLoadTestResourceClass::DsrObligation,
+        "audit_evidence" => StagingLoadTestResourceClass::AuditEvidence,
+        "billing_audit" => StagingLoadTestResourceClass::BillingAudit,
+        "signup_artifact" => StagingLoadTestResourceClass::SignupArtifact,
+        "byok_artifact" => StagingLoadTestResourceClass::ByokArtifact,
+        _ => return None,
     })
 }
 

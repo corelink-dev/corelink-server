@@ -7,6 +7,7 @@ on:
       - crates/corelink-container/src/signup_d1_http.rs
       - crates/corelink-container/src/storage/staging_load_test_ownership.rs
       - crates/corelink-container/src/routes.rs
+      - crates/corelink-container/src/main.rs
       - crates/corelink-container/src/routes/staging_load_test_teardown.rs
       - scripts/validate_load_teardown_receipt.py
       - scripts/verify_issue_2584_teardown.py

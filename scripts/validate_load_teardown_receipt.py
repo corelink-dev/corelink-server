@@ -79,12 +79,10 @@ def validate(receipt: object, *, run_id: str, scenario: str, deployment_sha: str
         if not isinstance(counts, dict) or set(counts) != expected:
             raise TeardownReceiptError(f"{resource} counts have an invalid shape")
         parsed = {field: _count(counts[field], f"{resource}.{field}") for field in expected}
-        if parsed["attempted"] != parsed["inventory"] or parsed["remaining"] != 0 or parsed["quarantined"] != 0:
-            raise TeardownReceiptError(f"{resource} inventory is not terminally reconciled")
         if resource in RETAINED_RESOURCE_CLASSES:
-            if parsed["deleted"] != 0 or parsed["preserved"] != parsed["inventory"]:
+            if parsed["attempted"] != 0 or parsed["deleted"] != 0 or parsed["preserved"] != parsed["inventory"] or parsed["remaining"] != 0 or parsed["quarantined"] != 0:
                 raise TeardownReceiptError(f"{resource} retained/shared state was not preserved")
-        elif parsed["deleted"] != parsed["inventory"] or parsed["preserved"] != 0:
+        elif parsed["attempted"] != parsed["inventory"] or parsed["deleted"] != parsed["inventory"] or parsed["preserved"] != 0 or parsed["remaining"] != 0 or parsed["quarantined"] != 0:
             raise TeardownReceiptError(f"{resource} disposable state was not completely deleted")
         normalized[resource] = parsed
     return {"schema": STAGING_SCHEMA, "run_id": run_id, "scenario": scenario, "target_deployment_sha": deployment_sha, "terminal_state": "reconciled", "resources": normalized, "cross_run_deletions": 0}

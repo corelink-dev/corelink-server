@@ -61,6 +61,21 @@ pub(crate) fn router(state: StagingLoadTestTeardownRouteState) -> Router {
         .with_state(state)
 }
 
+/// Build the destructive route only for an explicitly staging process with a
+/// valid admission gate, D1 mutation capability, and the exact DSR export R2
+/// bucket.  Any missing capability leaves the endpoint unmounted.
+pub async fn build_router_from_env() -> Option<Router> {
+    let admission = StagingLoadTestAdmissionGate::from_env().ok()?;
+    let service =
+        crate::storage::staging_load_test_ownership::StagingLoadTestPhysicalTeardown::from_env()
+            .await
+            .ok()?;
+    Some(router(StagingLoadTestTeardownRouteState {
+        admission: Some(admission),
+        service: Arc::new(service),
+    }))
+}
+
 async fn handle_teardown(
     State(state): State<StagingLoadTestTeardownRouteState>,
     Path(scenario): Path<String>,
