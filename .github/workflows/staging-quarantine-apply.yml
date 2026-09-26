@@ -34,7 +34,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 concurrency:
   group: staging-quarantine-apply
