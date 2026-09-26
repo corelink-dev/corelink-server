@@ -34,7 +34,7 @@ class B035TlsSurfaceTests(unittest.TestCase):
     def test_surface_inventory_is_source_bound_and_covers_route_families(self) -> None:
         report = verify.inventory()
         surfaces = report["external_surface"]["named_surfaces"]
-        self.assertGreaterEqual(len(surfaces), 22)
+        self.assertGreaterEqual(len(surfaces), 21)
         self.assertEqual(
             report["external_surface"]["source_validation"]["status"],
             "all_markers_match",
@@ -52,9 +52,6 @@ class B035TlsSurfaceTests(unittest.TestCase):
         self.assertIn("humangr.com/corelink/docs/*", hostnames)
         self.assertIn("api.humangr.com/*", hostnames)
         self.assertIn("<region>.api.humangr.com/*", hostnames)
-        self.assertIn(
-            "staging.corelink.humangr.com/v1/webhooks/pagerduty", hostnames
-        )
         self.assertIn("events.pagerduty.com/v2/enqueue", hostnames)
         self.assertIn(
             "github.com/HuGR-Labs/corelink-cli/releases/latest/download", hostnames

@@ -121,12 +121,6 @@ def main() -> None:
             "",
         ),
         (
-            "broaden-staging-webhook-route",
-            "apps/synthetic-pager-worker/wrangler.toml",
-            'staging.corelink.humangr.com/v1/webhooks/pagerduty',
-            'staging.corelink.humangr.com/*',
-        ),
-        (
             "drop-receiver-cron-gate",
             "apps/synthetic-pager-worker/src/index.ts",
             'if (controller.cron !== "59 23 * * 0") {',

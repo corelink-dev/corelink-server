@@ -136,7 +136,6 @@ def main(argv: list[str] | None = None) -> int:
         workers = topology.workers
         expected = {
             (f"{renderer.CANONICAL_HOST}/*", workers[0]),
-            (f"{renderer.CANONICAL_HOST}/v1/webhooks/pagerduty", workers[2]),
         }
         if args.phase in {"preflight", "quarantine"} and actual:
             raise RuntimeError("canonical staging route set must remain empty during quarantine")
@@ -169,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
             "scope": "staging-only",
             "worker_count": len(deployed_staging),
             "route_count": len(actual),
-            "route_set": "empty" if not actual else "exact-canonical-staging-pair",
+            "route_set": "empty" if not actual else "exact-canonical-staging-root",
             "provider_mutation_performed": False,
         }, sort_keys=True))
     except (OSError, TypeError, ValueError, RuntimeError, renderer.ContractError) as error:
