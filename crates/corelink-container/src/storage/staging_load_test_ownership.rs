@@ -511,6 +511,59 @@ impl StagingLoadTestPhysicalTeardown {
         }
         Ok((parsed_scans, parsed_resources))
     }
+
+    /// Delete only a locator-backed D1 row, then read it back.  Handles are
+    /// never interpreted as primary keys: the immutable 0151 JSON locator is
+    /// the sole authority for these three classes.
+    pub(crate) async fn delete_d1_owned_and_readback(
+        &self,
+        identity: &StagingLoadTestTeardownIdentity,
+        resource: &StagingLoadTestTeardownResource,
+    ) -> Result<StagingLoadTestTeardownAction, StagingLoadTestTeardownError> {
+        if resource.disposition == StagingLoadTestDisposition::Retained {
+            return Ok(StagingLoadTestTeardownAction::Preserved);
+        }
+        let locator = self.d1.query(
+            "SELECT locator_kind,locator_json FROM staging_load_test_teardown_locators WHERE run_id=?1 AND scenario=?2 AND resource_class=?3 AND receipt_ref=?4",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.class.as_str()), json!(resource.receipt_ref)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        let Some(locator) = locator.first() else { return Ok(StagingLoadTestTeardownAction::Quarantined) };
+        let kind = locator.get("locator_kind").and_then(serde_json::Value::as_str).ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        let payload = locator.get("locator_json").and_then(serde_json::Value::as_str).and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok()).ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        let key = match (resource.class, kind) {
+            (StagingLoadTestResourceClass::WebhookInbox, "webhook_inbox_v1") => payload.get("event_id").and_then(serde_json::Value::as_str),
+            (StagingLoadTestResourceClass::WebhookEffect, "webhook_effect_v1") => payload.get("event_id").and_then(serde_json::Value::as_str),
+            (StagingLoadTestResourceClass::SignupArtifact, "signup_pilot_v1") => payload.get("signup_id").and_then(serde_json::Value::as_str),
+            _ => None,
+        }.ok_or(StagingLoadTestTeardownError::PartialDelete)?;
+        let (delete, readback) = match resource.class {
+            StagingLoadTestResourceClass::WebhookInbox => (
+                "DELETE FROM stripe_webhook_event_inbox WHERE event_id=?1 RETURNING event_id",
+                "SELECT event_id FROM stripe_webhook_event_inbox WHERE event_id=?1",
+            ),
+            StagingLoadTestResourceClass::WebhookEffect => (
+                "DELETE FROM stripe_webhook_event_effects WHERE event_id=?1 RETURNING event_id",
+                "SELECT event_id FROM stripe_webhook_event_effects WHERE event_id=?1",
+            ),
+            StagingLoadTestResourceClass::SignupArtifact => (
+                "DELETE FROM pilot_signups WHERE id=?1 RETURNING id",
+                "SELECT id FROM pilot_signups WHERE id=?1",
+            ),
+            _ => return Ok(StagingLoadTestTeardownAction::Quarantined),
+        };
+        let started = self.d1.query(
+            "UPDATE staging_load_test_resources SET state='delete_started' WHERE run_id=?1 AND scenario=?2 AND resource_class=?3 AND receipt_ref=?4 AND disposition='disposable' AND state='registered' RETURNING receipt_ref",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.class.as_str()), json!(resource.receipt_ref)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        if started.len() != 1 { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        if self.d1.query(delete, &[json!(key)]).await.is_err() { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        if !self.d1.query(readback, &[json!(key)]).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?.is_empty() { return Ok(StagingLoadTestTeardownAction::Quarantined); }
+        let done = self.d1.query(
+            "UPDATE staging_load_test_resources SET state='deleted' WHERE run_id=?1 AND scenario=?2 AND resource_class=?3 AND receipt_ref=?4 AND state='delete_started' RETURNING receipt_ref",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(resource.class.as_str()), json!(resource.receipt_ref)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::PartialDelete)?;
+        if done.len() == 1 { Ok(StagingLoadTestTeardownAction::Deleted) } else { Ok(StagingLoadTestTeardownAction::Quarantined) }
+    }
 }
 
 fn resource_class(value: Option<&str>) -> Option<StagingLoadTestResourceClass> {
