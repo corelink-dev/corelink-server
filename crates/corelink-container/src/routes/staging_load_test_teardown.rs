@@ -8,16 +8,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::post,
-    Json, Router,
 };
 
 use crate::storage::{
     staging_load_test_admission::{
-        verify_staging_load_test_teardown_request, StagingLoadTestAdmissionGate,
+        StagingLoadTestAdmissionGate, verify_staging_load_test_teardown_request,
     },
     staging_load_test_ownership::{
         StagingLoadTestScenario, StagingLoadTestTeardownIdentity, StagingLoadTestTeardownReceipt,
@@ -91,10 +91,10 @@ async fn handle_teardown(
         &headers,
         expected_scenario,
     ) {
-        Ok(Some(context)) => context,
+        Ok(context) => context,
         // Unlike write routes, a teardown request is never ordinary traffic:
         // missing, malformed, replayed, or unconfigured admission all deny.
-        Ok(None) | Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
     match state
         .service
