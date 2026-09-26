@@ -173,8 +173,12 @@ impl D1WebhookInbox {
                 i64::try_from(now_ms).unwrap_or(i64::MAX),
             )?;
             let locator = teardown_locator_statement(
-                context, "webhook_inbox", "webhook_inbox_v1", &handle,
-                json!({ "event_id": event.event_id }), i64::try_from(now_ms).unwrap_or(i64::MAX),
+                context,
+                "webhook_inbox",
+                "webhook_inbox_v1",
+                &handle,
+                json!({ "event_id": event.event_id }),
+                i64::try_from(now_ms).unwrap_or(i64::MAX),
             );
             let result = self.run_batch(vec![
                 receive,
@@ -463,8 +467,12 @@ impl D1WebhookInbox {
                 now,
             )?;
             let locator = teardown_locator_statement(
-                context, "webhook_effect", "webhook_effect_v1", &handle,
-                json!({ "event_id": event.event_id, "effect_key": effect_key }), now,
+                context,
+                "webhook_effect",
+                "webhook_effect_v1",
+                &handle,
+                json!({ "event_id": event.event_id, "effect_key": effect_key }),
+                now,
             );
             let result = self.run_batch(vec![
                 effect_insert,
@@ -823,7 +831,14 @@ fn teardown_locator_statement(
 ) -> D1BatchStatement {
     let mut digest = Sha256::new();
     digest.update(b"corelink-staging-load-test-resource-receipt-v1\0");
-    for part in [context.run_id().as_bytes(), context.scenario().as_str().as_bytes(), context.target_deployment_sha().as_bytes(), class_name.as_bytes(), opaque_handle.as_bytes(), b"disposable".as_slice()] {
+    for part in [
+        context.run_id().as_bytes(),
+        context.scenario().as_str().as_bytes(),
+        context.target_deployment_sha().as_bytes(),
+        class_name.as_bytes(),
+        opaque_handle.as_bytes(),
+        b"disposable".as_slice(),
+    ] {
         digest.update((part.len() as u64).to_be_bytes());
         digest.update(part);
     }

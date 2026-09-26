@@ -410,7 +410,14 @@ fn signup_teardown_locator_statement(
 ) -> D1BatchStatement {
     let mut digest = Sha256::new();
     digest.update(b"corelink-staging-load-test-resource-receipt-v1\0");
-    for part in [context.run_id().as_bytes(), context.scenario().as_str().as_bytes(), context.target_deployment_sha().as_bytes(), b"signup_artifact".as_slice(), signup_id.as_bytes(), b"disposable".as_slice()] {
+    for part in [
+        context.run_id().as_bytes(),
+        context.scenario().as_str().as_bytes(),
+        context.target_deployment_sha().as_bytes(),
+        b"signup_artifact".as_slice(),
+        signup_id.as_bytes(),
+        b"disposable".as_slice(),
+    ] {
         digest.update((part.len() as u64).to_be_bytes());
         digest.update(part);
     }
