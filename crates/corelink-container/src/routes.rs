@@ -265,6 +265,9 @@ pub mod residency;
 /// signed token + per-IP rate-limit + fail-CLOSED audit emit. See
 /// `specs/_audits/sealed/2026-05-16-signup-corelink-dev-backend.md`.
 pub mod signup;
+/// Dedicated authenticated exact-run teardown route.  Router composition stays
+/// with the boot owner; this module supplies the bounded route and service seam.
+pub mod staging_load_test_teardown;
 /// Read-only internal tenant-quota lookup:
 /// `GET /_internal/tenant/{tenant_id}/quota`. Returns the persisted
 /// `tenant_quota` row (monthly `$`-ceiling / accrued / cycle anchor) plus a

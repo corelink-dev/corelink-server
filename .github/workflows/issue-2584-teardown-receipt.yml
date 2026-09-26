@@ -5,7 +5,12 @@ on:
     paths:
       - crates/corelink-container/src/webhook_inbox_d1.rs
       - crates/corelink-container/src/signup_d1_http.rs
+      - crates/corelink-container/src/storage/staging_load_test_ownership.rs
+      - crates/corelink-container/src/routes.rs
+      - crates/corelink-container/src/routes/staging_load_test_teardown.rs
       - scripts/validate_load_teardown_receipt.py
+      - scripts/verify_issue_2584_teardown.py
+      - tests/test_issue_2584_teardown.py
       - .github/workflows/issue-2584-teardown-receipt.yml
   workflow_dispatch:
 
@@ -28,3 +33,7 @@ jobs:
           required = ("webhook_inbox_v1", "webhook_effect_v1", "signup_pilot_v1", "teardown_locator_statement", "signup_teardown_locator_statement")
           assert all(token in (w + s) for token in required)
           PY
+      - name: Run bounded receipt verifier and adversarial negatives
+        run: |
+          python3 scripts/verify_issue_2584_teardown.py
+          python3 -m unittest tests/test_issue_2584_teardown.py

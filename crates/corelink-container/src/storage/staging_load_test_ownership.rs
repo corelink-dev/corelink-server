@@ -126,7 +126,7 @@ pub enum StagingLoadTestResourceClass {
 }
 
 impl StagingLoadTestResourceClass {
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::CasReference => "cas_reference",
             Self::WebhookInbox => "webhook_inbox",
@@ -148,6 +148,20 @@ impl StagingLoadTestResourceClass {
     }
 }
 
+/// The closed migration-0147 resource census.  Teardown must account for every
+/// class, including classes with no rows, before it can report success.
+pub(crate) const STAGING_LOAD_TEST_RESOURCE_CLASSES: [StagingLoadTestResourceClass; 9] = [
+    StagingLoadTestResourceClass::CasReference,
+    StagingLoadTestResourceClass::WebhookInbox,
+    StagingLoadTestResourceClass::WebhookEffect,
+    StagingLoadTestResourceClass::DsrArtifact,
+    StagingLoadTestResourceClass::DsrObligation,
+    StagingLoadTestResourceClass::AuditEvidence,
+    StagingLoadTestResourceClass::BillingAudit,
+    StagingLoadTestResourceClass::SignupArtifact,
+    StagingLoadTestResourceClass::ByokArtifact,
+];
+
 /// Explicit retention decision made by the resource-owning adapter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StagingLoadTestDisposition {
@@ -159,12 +173,281 @@ pub enum StagingLoadTestDisposition {
 }
 
 impl StagingLoadTestDisposition {
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Disposable => "disposable",
             Self::Retained => "retained",
         }
     }
+}
+
+/// Terminal-safe result supplied by a resource-specific disposable deleter.
+/// The ledger never treats an unclassified external result as deletion success.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StagingLoadTestTeardownAction {
+    /// The disposable, exact-run resource was deleted.
+    Deleted,
+    /// A retained resource or shared CAS reference was intentionally preserved.
+    Preserved,
+    /// The external operation could not prove a safe result.
+    Quarantined,
+}
+
+/// One ledger row after an exact bounded inventory query.  Handles remain
+/// private so receipts and diagnostic output cannot expose them.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct StagingLoadTestTeardownResource {
+    class: StagingLoadTestResourceClass,
+    receipt_ref: String,
+    opaque_handle: String,
+    disposition: StagingLoadTestDisposition,
+}
+
+impl core::fmt::Debug for StagingLoadTestTeardownResource {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("StagingLoadTestTeardownResource")
+            .field("class", &self.class)
+            .field("receipt_ref", &self.receipt_ref)
+            .field("opaque_handle", &"[REDACTED]")
+            .field("disposition", &self.disposition)
+            .finish()
+    }
+}
+
+impl StagingLoadTestTeardownResource {
+    #[cfg(test)]
+    fn for_test(
+        class: StagingLoadTestResourceClass,
+        receipt_ref: &str,
+        disposition: StagingLoadTestDisposition,
+    ) -> Self {
+        Self {
+            class,
+            receipt_ref: receipt_ref.to_owned(),
+            opaque_handle: "test-handle".to_owned(),
+            disposition,
+        }
+    }
+}
+
+/// Bounded scan evidence for exactly one migration-0147 class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StagingLoadTestTeardownScan {
+    class: StagingLoadTestResourceClass,
+    observed_count: usize,
+    complete: bool,
+    truncated: bool,
+}
+
+/// Exact immutable identity copied from an already admitted request.  This
+/// avoids accepting caller-provided run coordinates at the teardown seam.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StagingLoadTestTeardownIdentity {
+    run_id: String,
+    scenario: StagingLoadTestScenario,
+    target_deployment_sha: String,
+}
+
+impl StagingLoadTestTeardownIdentity {
+    pub(crate) fn from_admission(context: &StagingLoadTestAdmissionContext) -> Self {
+        Self {
+            run_id: context.run_id().to_owned(),
+            scenario: context.scenario(),
+            target_deployment_sha: context.target_deployment_sha().to_owned(),
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test() -> Self {
+        Self {
+            run_id: "123".to_owned(),
+            scenario: StagingLoadTestScenario::Cas,
+            target_deployment_sha: "a".repeat(40),
+        }
+    }
+}
+
+/// Redacted per-class terminal accounting in the canonical teardown receipt.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct StagingLoadTestTeardownCounts {
+    inventory: usize,
+    attempted: usize,
+    deleted: usize,
+    preserved: usize,
+    quarantined: usize,
+    remaining: usize,
+}
+
+/// Canonical success receipt.  It deliberately contains no handles, tokens,
+/// raw admission material, or tenant/provider identifiers.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct StagingLoadTestTeardownReceipt {
+    schema: &'static str,
+    run_id: String,
+    scenario: &'static str,
+    target_deployment_sha: String,
+    terminal_state: &'static str,
+    cross_run_deletions: usize,
+    resources: std::collections::BTreeMap<&'static str, StagingLoadTestTeardownCounts>,
+}
+
+/// Fixed, redacted failures for any unsafe or incomplete teardown attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StagingLoadTestTeardownError {
+    MissingClass,
+    DuplicateClass,
+    IncompleteScan,
+    TruncatedScan,
+    OverBudget,
+    CountMismatch,
+    DuplicateResource,
+    InvalidDisposition,
+    PartialDelete,
+}
+
+impl core::fmt::Display for StagingLoadTestTeardownError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let message = match self {
+            Self::MissingClass => "staging teardown inventory is missing a resource class",
+            Self::DuplicateClass => "staging teardown inventory has duplicate resource classes",
+            Self::IncompleteScan => "staging teardown inventory scan is incomplete",
+            Self::TruncatedScan => "staging teardown inventory scan is truncated",
+            Self::OverBudget => "staging teardown inventory exceeds its bound",
+            Self::CountMismatch => "staging teardown inventory count does not reconcile",
+            Self::DuplicateResource => "staging teardown inventory has duplicate resource evidence",
+            Self::InvalidDisposition => "staging teardown disposition is unsafe",
+            Self::PartialDelete => "staging teardown did not reach a terminal state",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for StagingLoadTestTeardownError {}
+
+/// Reconcile bounded scans to the exact ledger inventory, then invoke the
+/// resource-owned deleter only for disposable rows.  Any ambiguity produces no
+/// receipt; callers can persist a failed/quarantined terminal state and retry
+/// only after recovery has established a new complete inventory.
+pub(crate) fn reconcile_staging_load_test_teardown(
+    identity: &StagingLoadTestTeardownIdentity,
+    prior_terminal_receipt: Option<&StagingLoadTestTeardownReceipt>,
+    scans: &[StagingLoadTestTeardownScan],
+    resources: &[StagingLoadTestTeardownResource],
+    max_resources: usize,
+    mut delete_disposable: impl FnMut(&StagingLoadTestTeardownResource) -> StagingLoadTestTeardownAction,
+) -> Result<StagingLoadTestTeardownReceipt, StagingLoadTestTeardownError> {
+    if let Some(receipt) = prior_terminal_receipt {
+        if receipt.schema == "corelink.staging-load-test-teardown-receipt.v2"
+            && receipt.terminal_state == "reconciled"
+            && receipt.run_id == identity.run_id
+            && receipt.scenario == identity.scenario.as_str()
+            && receipt.target_deployment_sha == identity.target_deployment_sha
+            && receipt.cross_run_deletions == 0
+        {
+            // A durable terminal receipt makes a replay a read only operation:
+            // no inventory mutation and no disposable deleter invocation.
+            return Ok(receipt.clone());
+        }
+        return Err(StagingLoadTestTeardownError::CountMismatch);
+    }
+    if resources.len() > max_resources {
+        return Err(StagingLoadTestTeardownError::OverBudget);
+    }
+    let mut scan_counts = std::collections::BTreeMap::new();
+    for scan in scans {
+        if scan.truncated {
+            return Err(StagingLoadTestTeardownError::TruncatedScan);
+        }
+        if !scan.complete {
+            return Err(StagingLoadTestTeardownError::IncompleteScan);
+        }
+        if scan_counts
+            .insert(scan.class.as_str(), scan.observed_count)
+            .is_some()
+        {
+            return Err(StagingLoadTestTeardownError::DuplicateClass);
+        }
+    }
+    if scan_counts.len() != STAGING_LOAD_TEST_RESOURCE_CLASSES.len() {
+        return Err(StagingLoadTestTeardownError::MissingClass);
+    }
+    let mut by_class: std::collections::BTreeMap<
+        &'static str,
+        Vec<&StagingLoadTestTeardownResource>,
+    > = std::collections::BTreeMap::new();
+    let mut receipts = std::collections::BTreeSet::new();
+    for resource in resources {
+        if !receipts.insert((resource.class.as_str(), resource.receipt_ref.as_str())) {
+            return Err(StagingLoadTestTeardownError::DuplicateResource);
+        }
+        if resource.class.requires_retention()
+            && resource.disposition != StagingLoadTestDisposition::Retained
+        {
+            return Err(StagingLoadTestTeardownError::InvalidDisposition);
+        }
+        by_class
+            .entry(resource.class.as_str())
+            .or_default()
+            .push(resource);
+    }
+    let mut counts = std::collections::BTreeMap::new();
+    for class in STAGING_LOAD_TEST_RESOURCE_CLASSES {
+        let class_name = class.as_str();
+        let rows = by_class.remove(class_name).unwrap_or_default();
+        if scan_counts.get(class_name) != Some(&rows.len()) {
+            return Err(StagingLoadTestTeardownError::CountMismatch);
+        }
+        let mut attempted = 0;
+        let mut deleted = 0;
+        let mut preserved = 0;
+        let mut quarantined = 0;
+        for resource in rows {
+            attempted += 1;
+            let action = if resource.disposition == StagingLoadTestDisposition::Retained {
+                StagingLoadTestTeardownAction::Preserved
+            } else {
+                delete_disposable(resource)
+            };
+            match action {
+                StagingLoadTestTeardownAction::Deleted
+                    if resource.disposition == StagingLoadTestDisposition::Disposable =>
+                {
+                    deleted += 1
+                }
+                StagingLoadTestTeardownAction::Preserved
+                    if resource.disposition == StagingLoadTestDisposition::Retained =>
+                {
+                    preserved += 1
+                }
+                StagingLoadTestTeardownAction::Quarantined => quarantined += 1,
+                _ => return Err(StagingLoadTestTeardownError::InvalidDisposition),
+            }
+        }
+        if quarantined != 0 || deleted + preserved != attempted {
+            return Err(StagingLoadTestTeardownError::PartialDelete);
+        }
+        counts.insert(
+            class_name,
+            StagingLoadTestTeardownCounts {
+                inventory: attempted,
+                attempted,
+                deleted,
+                preserved,
+                quarantined,
+                remaining: 0,
+            },
+        );
+    }
+    Ok(StagingLoadTestTeardownReceipt {
+        schema: "corelink.staging-load-test-teardown-receipt.v2",
+        run_id: identity.run_id.clone(),
+        scenario: identity.scenario.as_str(),
+        target_deployment_sha: identity.target_deployment_sha.clone(),
+        terminal_state: "reconciled",
+        cross_run_deletions: 0,
+        resources: counts,
+    })
 }
 
 /// Exact staging run identity and opaque resource handle to register.
@@ -720,6 +1003,152 @@ mod tests {
         let rendered = format!("{intent:?}");
         assert!(!rendered.contains("must-not-appear"));
         assert!(rendered.contains("[REDACTED]"));
+    }
+
+    fn complete_scans() -> Vec<StagingLoadTestTeardownScan> {
+        STAGING_LOAD_TEST_RESOURCE_CLASSES
+            .into_iter()
+            .map(|class| StagingLoadTestTeardownScan {
+                class,
+                observed_count: 0,
+                complete: true,
+                truncated: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn teardown_requires_the_closed_nine_class_census_even_when_zero() {
+        let identity = StagingLoadTestTeardownIdentity::for_test();
+        let receipt = reconcile_staging_load_test_teardown(
+            &identity,
+            None,
+            &complete_scans(),
+            &[],
+            10,
+            |_| panic!("zero inventory cannot delete"),
+        )
+        .expect("all zero-count classes reconcile");
+        assert_eq!(receipt.resources.len(), 9);
+        assert_eq!(receipt.cross_run_deletions, 0);
+        assert_eq!(receipt.terminal_state, "reconciled");
+    }
+
+    #[test]
+    fn teardown_fails_closed_for_truncation_duplicates_bounds_and_count_mismatch() {
+        let identity = StagingLoadTestTeardownIdentity::for_test();
+        let mut scans = complete_scans();
+        scans[0].truncated = true;
+        assert_eq!(
+            reconcile_staging_load_test_teardown(&identity, None, &scans, &[], 10, |_| {
+                StagingLoadTestTeardownAction::Deleted
+            }),
+            Err(StagingLoadTestTeardownError::TruncatedScan)
+        );
+        let mut scans = complete_scans();
+        scans.push(scans[0]);
+        assert_eq!(
+            reconcile_staging_load_test_teardown(&identity, None, &scans, &[], 10, |_| {
+                StagingLoadTestTeardownAction::Deleted
+            }),
+            Err(StagingLoadTestTeardownError::DuplicateClass)
+        );
+        let resource = StagingLoadTestTeardownResource::for_test(
+            StagingLoadTestResourceClass::WebhookInbox,
+            &"b".repeat(64),
+            StagingLoadTestDisposition::Disposable,
+        );
+        assert_eq!(
+            reconcile_staging_load_test_teardown(
+                &identity,
+                None,
+                &complete_scans(),
+                &[resource],
+                0,
+                |_| { StagingLoadTestTeardownAction::Deleted }
+            ),
+            Err(StagingLoadTestTeardownError::OverBudget)
+        );
+        let mut scans = complete_scans();
+        scans[1].observed_count = 1;
+        assert_eq!(
+            reconcile_staging_load_test_teardown(&identity, None, &scans, &[], 10, |_| {
+                StagingLoadTestTeardownAction::Deleted
+            }),
+            Err(StagingLoadTestTeardownError::CountMismatch)
+        );
+    }
+
+    #[test]
+    fn teardown_deletes_disposable_only_and_redacts_handles() {
+        let identity = StagingLoadTestTeardownIdentity::for_test();
+        let mut scans = complete_scans();
+        scans[0].observed_count = 1;
+        scans[1].observed_count = 1;
+        let shared_cas = StagingLoadTestTeardownResource::for_test(
+            StagingLoadTestResourceClass::CasReference,
+            &"c".repeat(64),
+            StagingLoadTestDisposition::Retained,
+        );
+        let disposable = StagingLoadTestTeardownResource::for_test(
+            StagingLoadTestResourceClass::WebhookInbox,
+            &"d".repeat(64),
+            StagingLoadTestDisposition::Disposable,
+        );
+        let receipt = reconcile_staging_load_test_teardown(
+            &identity,
+            None,
+            &scans,
+            &[shared_cas, disposable],
+            10,
+            |resource| {
+                assert_eq!(resource.class, StagingLoadTestResourceClass::WebhookInbox);
+                StagingLoadTestTeardownAction::Deleted
+            },
+        )
+        .expect("only disposable state reaches the deleter");
+        let encoded = serde_json::to_string(&receipt).expect("receipt serializes");
+        assert!(!encoded.contains("test-handle"));
+        assert_eq!(receipt.resources["cas_reference"].preserved, 1);
+        assert_eq!(receipt.resources["webhook_inbox"].deleted, 1);
+    }
+
+    #[test]
+    fn teardown_never_emits_success_after_partial_delete() {
+        let identity = StagingLoadTestTeardownIdentity::for_test();
+        let mut scans = complete_scans();
+        scans[1].observed_count = 1;
+        let resource = StagingLoadTestTeardownResource::for_test(
+            StagingLoadTestResourceClass::WebhookInbox,
+            &"e".repeat(64),
+            StagingLoadTestDisposition::Disposable,
+        );
+        assert_eq!(
+            reconcile_staging_load_test_teardown(&identity, None, &scans, &[resource], 10, |_| {
+                StagingLoadTestTeardownAction::Quarantined
+            }),
+            Err(StagingLoadTestTeardownError::PartialDelete)
+        );
+    }
+
+    #[test]
+    fn terminal_receipt_replay_is_read_only_and_cannot_delete_again() {
+        let identity = StagingLoadTestTeardownIdentity::for_test();
+        let terminal = reconcile_staging_load_test_teardown(
+            &identity,
+            None,
+            &complete_scans(),
+            &[],
+            10,
+            |_| panic!("zero inventory cannot delete"),
+        )
+        .expect("initial terminal receipt");
+        let replay =
+            reconcile_staging_load_test_teardown(&identity, Some(&terminal), &[], &[], 0, |_| {
+                panic!("terminal replay must not invoke a deleter")
+            })
+            .expect("terminal receipt replay");
+        assert_eq!(replay, terminal);
     }
 
     #[test]
