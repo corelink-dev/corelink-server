@@ -601,9 +601,10 @@ def test_v0005_bridge_rejects_an_unreceipted_or_wrong_transition():
     )
 
 
-def test_successor_chain_replays_through_v0008():
-    """The immutable receipts include at least the unchanged v0008 chain."""
-    assert ledger.load_successor_chain()["sequence"] >= 8
+def test_successor_chain_rejects_unreceipted_post_v0008_drift():
+    """v0008 cannot silently admit the later state before the separate v0009 receipt."""
+    with pytest.raises(LedgerError, match="delivered state drifted after last successor"):
+        ledger.load_successor_chain()
 
 
 def test_v0008_historical_admission_is_byte_and_merge_pinned(monkeypatch):

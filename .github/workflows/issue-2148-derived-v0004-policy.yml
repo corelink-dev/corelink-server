@@ -90,7 +90,7 @@ jobs:
           tests/test_backlog_ledger_successor.py::test_v0006_authorizer_rejects_wrong_immutable_main_parent
           tests/test_backlog_ledger_successor.py::test_v0007_replays_exact_b083_lifecycle_clarification
           tests/test_backlog_ledger_successor.py::test_v0008_replays_only_the_pinned_delivered_b113_and_b098_prose
-          tests/test_backlog_ledger_successor.py::test_successor_chain_replays_through_v0008
+          tests/test_backlog_ledger_successor.py::test_successor_chain_rejects_unreceipted_post_v0008_drift
           tests/test_backlog_ledger_successor.py::test_v0008_historical_admission_is_byte_and_merge_pinned
           tests/test_backlog_ledger_successor.py::test_v0009_authorizes_only_the_pinned_b057_delta_and_keeps_v0008
           tests/test_backlog_ledger_successor.py::test_v0009_rejects_nearby_unauthorized_b057_transitions
