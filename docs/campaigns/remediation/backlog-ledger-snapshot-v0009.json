@@ -1,5 +1,5 @@
 {
-  "base_commit": "e0c99a1c2bf5ca84fefa52533da025d40f1107da",
+  "base_commit": "ac2424bd26f18041ccb074e1bf716288358b5504",
   "catalog_sha256": {
     "docs/campaigns/remediation/work-packages/B001-B045.md": "081c9885db8d79c18f2f31edb7864bb1ca1a18d53f408720f3f9e4f00524f9c6",
     "docs/campaigns/remediation/work-packages/B046-B090.md": "1a164260a84f3adb406676e1505fd8379aad07b15a5c45365369dcef7b0586da",
@@ -10,7 +10,7 @@
     "B-057"
   ],
   "item_count": 374,
-  "ledger_sha256": "0622572b986d06839c9812ddb3c127c6a633d2bddab8a71be59bb6368326315d",
+  "ledger_sha256": "4785f1f9e62ae5e78a2dfe709f39383b542e34b80078faf20d4a7a2d0808cb9e",
   "open_ids": [
     "B-008",
     "B-032",

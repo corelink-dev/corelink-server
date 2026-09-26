@@ -24,8 +24,8 @@ and ledger rewrite therefore remains indeterminate rather than becoming a false
 closure. Every new BACKLOG/status observation must version a snapshot manifest and transition the ledger base in the same reviewed change. WP-150 workflow population and ownership updates are maintained in the dedicated tracked manifest; they do not require ledger successors.
 
 ```ledger-state
-base-ref: e0c99a1c2bf5ca84fefa52533da025d40f1107da
-base-sha: e0c99a1c2bf5ca84fefa52533da025d40f1107da
+base-ref: ac2424bd26f18041ccb074e1bf716288358b5504
+base-sha: ac2424bd26f18041ccb074e1bf716288358b5504
 observed-at: 2026-09-24
 item-count: 374
 open-count: 12
