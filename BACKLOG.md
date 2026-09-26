@@ -11207,36 +11207,33 @@ verify-means: |
 last-verified: 2026-08-31
 ```
 
-### B-086 — um único D1 global atende as cinco regiões, enquanto o instrumento assinado nomeia o D1 entre os serviços fixados por tenant
+### B-086 — postura prelaunch do D1 global compartilhado aguarda sign-off jurídico
 
 Os cinco blocos de produção do `wrangler.toml` — linhas 540, 870, 1036, 1196 e 1352 —
 ligam o **mesmo** `database_id = "d64742ea-e102-40b2-a844-ff02e3f94562"`. O que vive nesse
 banco inclui `tenant`, `team_member` (identificador Clerk em claro e hash de e-mail),
 `pat`, quotas, estado de cobrança e o outbox de auditoria.
 
-O que **S** declara, na tabela de sub-processadores de `legal/dpa-residency-amendment.md`:
-*"Cloudflare, Inc. | Infrastructure: Workers, R2, **D1**, KV, Durable Objects, Custom
-Domains | … | **Tenant-pinned (Section 7)**"*. E a linha 144: *"WEUR data NEVER replicates
-outside the EU jurisdiction. This restriction is enforced at the infrastructure level
-(Cloudflare DO `jurisdictional_restriction`)."*
+O texto prelaunch selecionado separa as superfícies: R2 e estado de Durable
+Objects permanecem fixados por tenant; o plano de controle D1 é um banco global
+compartilhado. A leitura autenticada da Cloudflare registra o primário em ENAM,
+`jurisdiction = null` e replicação de leitura automática. Essa leitura não é uma
+inferência a partir de Workers ou R2 e não aprova uma base de transferência.
 
 As únicas chaves `jurisdiction = "eu"` em toda a configuração estão nas linhas 958 e 971
 do `wrangler.toml`, e ambas são bindings de **bucket R2**. O binding do D1 não tem chave
 de jurisdição alguma.
 
-A engenharia de residência é real e cobre bytes. O contrato afirma que cobre o D1. Dois
-caminhos: provisionar D1 por jurisdição, ou emendar as cláusulas contratuais e a avaliação
-de impacto de transferência para divulgar dados pessoais de plano de controle residentes
-nos EUA. É base de transferência do Art. 46 — não é questão que se resolva depois do
-lançamento.
+O caminho de arquitetura escolhido é manter o D1 compartilhado e alinhar o texto
+prelaunch. As cópias de DPA, TIA, compromissos, data handling e vendas declaram
+agora esse limite. Elas não criam um instrumento executado nem aprovam a base de
+transferência do Art. 46.
 
 
-**Só ele (reconfirmado 2026-08-31) — o ato: revisão jurídica e eventual execução da
-emenda de residência (`legal/dpa-residency-amendment.md`).** É um **rascunho não
-executado**, explicitamente marcado `PENDING_LEGAL_REVIEW`; nenhuma frase deste item
-transforma o rascunho em obrigação contratual efetiva. Eu entrego o texto e a medição
-da divergência; o Owner decide, com counsel, entre provisionar D1 por jurisdição ou
-emendar e executar o instrumento.
+**Ato remanescente: counsel aprova a base de transferência aplicável e a versão
+efetiva dos termos voltados ao cliente.** Os documentos são rascunhos prelaunch,
+explicitamente `PENDING_LEGAL_REVIEW`; nenhuma frase deste item transforma o texto
+em obrigação contratual efetiva.
 
 ```backlog
 id: B-086
@@ -11248,21 +11245,14 @@ verify: |
   python3 -S scripts/verify_owner_action_packets.py --id B-086
   python3 -S scripts/verify_b086_d1_residency.py --self-test
 verify-means: |
-  open — existe UM único `database_id` distinto em todos os blocos de produção E o
-  aditivo de residência continua declarando D1 como tenant-pinned. As duas metades são a
-  divergência entre `S` e `I`.
+  externo — os cinco bindings de produção usam UM único `database_id`; a linha
+  ativa da Cloudflare no DPA declara D1 global compartilhado e o verificador
+  rejeita uma reivindicação D1 tenant-pinned. Isto confirma alinhamento de
+  fonte, não aprovação jurídica ou termo executado.
 
-  Vira DRIFTED por qualquer um dos dois reparos: provisionar D1 por jurisdição (o número
-  de ids distintos sobe), ou emendar o instrumento para não afirmar que o D1 é
-  tenant-pinned. Os dois encerram a divergência, e a escolha entre eles é jurídica e de
-  custo, não técnica.
-
-  O que NÃO decide, e admito: ONDE fisicamente reside o primário desse D1. A alegação
-  verificável é a divergência entre um banco único e um contrato que promete fixação por
-  tenant; a localização do primário exigiria a API da Cloudflare e não muda a conclusão.
-
-  Owner: base de transferência internacional é decisão jurídica.
-last-verified: 2026-09-09
+  Counsel: aprovar a base de transferência aplicável, as salvaguardas e a data
+  efetiva dos termos voltados ao cliente antes da publicação.
+last-verified: 2026-09-26
 ```
 
 ### B-087 — o CAIQ v4 entregue a compradores atesta "Y" para três controles que nunca executaram com sucesso

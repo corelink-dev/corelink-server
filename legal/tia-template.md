@@ -54,11 +54,11 @@ superseded_by: null
 Customer (Controller, EEA or Brazil)
   → CoreLink (Processor, multi-region)
     → Cloudflare R2/D1/DO/KV/Workers (Sub-processor, infrastructure)
-      [Data stored in tenant-pinned region per Section 7 of DPA]
+      [R2/DO tenant-pinned; D1 control-plane data is shared global]
 ```
 
 - **Transfer 1**: Customer → CoreLink (via HTTPS; TLS 1.2 floor, 1.3 negotiated). Personal Data enters CoreLink's processing environment.
-- **Transfer 2**: CoreLink → Cloudflare infrastructure (Workers runtime + R2/D1/DO storage). Data stored encrypted (BYOK, AES-256-GCM).
+- **Transfer 2**: CoreLink → Cloudflare infrastructure (Workers runtime + R2/D1/DO storage). R2/DO state follows the tenant residency posture; the shared D1 control plane is currently reported with a primary in ENAM, no D1 jurisdiction, and automatic read replication.
 - **Transfer direction**: EEA-originating data may be processed by Cloudflare infrastructure with US parent company jurisdiction (FISA 702 / EO 12333 / CLOUD Act risk scope).
 
 ### 1.3 Categories of Personal Data Transferred
@@ -113,7 +113,9 @@ Legal basis for processing (Controller side): `[CUSTOMER TO SPECIFY: e.g., GDPR 
 
 **Without supplementary measures**: The transfer to Cloudflare (US-headquartered) cannot be guaranteed to meet the EU level of protection solely on the basis of SCCs, given FISA 702 / CLOUD Act compelled-disclosure risk. This conclusion is consistent with the CJEU ruling in Schrems II (C-311/18).
 
-**With supplementary measures (Section 4)**: The BYOK architecture (customer-controlled CMK, CoreLink and Cloudflare cannot access plaintext) renders the data substantively inaccessible to Cloudflare and any government authority compelling disclosure through Cloudflare. The supplementary measures documented in Section 4 are assessed as **effective** per EDPB Recommendations 01/2020 §83 test.
+**Current assessment**: not completed. BYOK has no verified customer rollout and
+does not cover the shared D1 control plane; this template cannot assess the
+transfer as effective until counsel reviews the applicable safeguards.
 
 #### 3.1.3 EU-US Data Privacy Framework (DPF)
 
@@ -135,18 +137,30 @@ Cloudflare participates in the EU-US Data Privacy Framework (as of 2023). Howeve
 
 > Per EDPB Recommendations 01/2020, supplementary measures are categorised as: **Technical** (§80-83), **Organisational** (§84-87), and **Contractual** (§88-91).
 
+> **Current scope boundary:** Customer-managed BYOK, CMK revocation, and
+> crypto-erase have no verified customer rollout and are not active
+> supplementary measures. They cannot mitigate transfer risk for the shared D1
+> control plane, which contains tenant, membership, PAT, quota, billing, and
+> audit-outbox records. Counsel must assess that control plane separately before
+> approving any transfer posture.
+
 ### 4.1 Technical Measures (EDPB Recommendations 01/2020 §80-83)
 
-#### 4.1.1 Encryption at Rest — BYOK with Customer-Controlled CMK
+#### 4.1.1 Encryption at Rest — BYOK future design
 
-**Measure**: All blob data encrypted using AES-256-GCM with a DEK wrapped by Customer's CMK. CoreLink and Cloudflare never hold the CMK.
+**Design, not active measure**: the planned architecture wraps blob DEKs with
+a Customer CMK. No verified customer rollout proves this design is active, and
+it does not apply to the shared D1 control-plane records.
 
 **Implementation evidence**:
 - WI-S14-004 (BYOK trait, envelope encryption architecture)
 - WI-S14-005 (4 providers: AWS KMS, GCP KMS, Azure Key Vault, HashiCorp Vault — all FIPS 140-2/140-3 validated)
 - `docs/compliance/byok-fips-evidence.md`
 
-**EDPB §83 effectiveness test**: Data in Cloudflare's possession is ciphertext only. Without the Customer CMK (which Cloudflare does not hold), a government authority compelling disclosure from Cloudflare would obtain only encrypted blobs — effectively unreadable without the CMK held exclusively by Customer. **Assessment: EFFECTIVE.**
+**EDPB §83 effectiveness test**: not established. A future blob-only BYOK
+implementation would require separate evidence; it cannot be used to claim
+that Cloudflare holds only ciphertext or that the shared D1 control plane is
+unreadable to a compelled disclosure request.
 
 **Reference**: GDPR Art. 46 · EDPB Recommendations 01/2020 §83 Use Case 1 (encryption of data in transit) and Use Case 6 (pseudonymisation). This measure most closely aligns with EDPB Use Case 6 (data encrypted at rest with keys held by data exporter or trusted party, not by data importer).
 
@@ -162,23 +176,28 @@ Cloudflare participates in the EU-US Data Privacy Framework (as of 2023). Howeve
 
 **Effectiveness**: Limits identifiability of Data Subjects in audit log transfers. **Assessment: PARTIAL (supplementary).**
 
-#### 4.1.4 Erasure via Crypto-Erase + Ed25519 Attestation
+#### 4.1.4 Erasure via Crypto-Erase + Ed25519 Attestation — future design
 
-**Measure**: Customer CMK revocation triggers immediate DEK inaccessibility (≤ 5 min globally; INV-BYOK-CRYPTO-SOVEREIGNTY). Ed25519-signed erasure attestation issued (INV-ERASURE-ATTESTATION-SIGNED, WI-S14-007). Satisfies NIST SP 800-88 Rev.1 §2.4 crypto-erase.
+**Design, not active measure**: Customer CMK revocation and the described
+crypto-erase attestation have no verified customer rollout. They do not cover
+shared D1 control-plane records.
 
-**Effectiveness**: Customer can unilaterally revoke data access before any compelled-disclosure order is acted upon, if given sufficient notice. CMK revocation is irreversible. **Assessment: EFFECTIVE (key data-sovereignty control).**
+**Effectiveness**: not established for the current launch posture.
 
-#### 4.1.5 Envelope Encryption — Per-blob DEK Isolation
+#### 4.1.5 Envelope Encryption — Per-blob DEK Isolation future design
 
-**Measure**: Each blob has a unique DEK (AES-256-GCM), wrapped by CMK. Compromise of one DEK does not affect other blobs. Per-region key isolation: audit chain signing keys and CMK operations are per-region.
+**Design, not active measure**: Each blob would receive a unique DEK wrapped
+by a CMK. This proposed blob control does not apply to shared D1 control-plane
+records.
 
-**Effectiveness**: Limits blast radius; per-region isolation contains any regional compelled disclosure. **Assessment: EFFECTIVE (defence-in-depth).**
+**Effectiveness**: not established for the current launch posture.
 
-#### 4.1.6 Per-Region Key Isolation
+#### 4.1.6 Per-Region Key Isolation — future design
 
-**Measure**: Audit chain Ed25519 signing keys and key operations are per-region. WEUR keys never exposed to non-EU infrastructure. Enforced by WI-S14-001 (4 regions infra) and WI-S14-002 (region pinning).
+**Design, not active measure**: per-region key isolation is not evidence of
+shared D1 control-plane placement or a current transfer safeguard.
 
-**Effectiveness**: WEUR key operations isolated to EU infrastructure. Limits FISA 702 / CLOUD Act reach for EU data to EU-located infrastructure. **Assessment: EFFECTIVE (for WEUR; partially for other regions).**
+**Effectiveness**: not established for the current launch posture.
 
 ---
 
@@ -186,7 +205,11 @@ Cloudflare participates in the EU-US Data Privacy Framework (as of 2023). Howeve
 
 #### 4.2.1 DPA Amendment — 4 Regions Enumerated
 
-**Measure**: DPA (`legal/dpa-residency-amendment.md`) explicitly commits to data localization in the 4 provisioned regions (WNAM/ENAM/WEUR/APAC) with failover restrictions; APAC tenants are pinned to Tokyo (`nrt`). `SAM` is not provisioned and is not promised. Customer informed of all data locations.
+**Prelaunch disclosure**: the DPA template distinguishes tenant-pinned R2/DO
+state from the shared global D1 control plane. The D1 primary is currently
+reported in ENAM with no D1 jurisdiction and automatic read replication. This
+template is pending legal review and does not itself approve a transfer basis
+or establish a customer commitment.
 
 **EDPB §84 alignment**: Transparency obligation; data exporter knows where data is processed.
 
@@ -220,9 +243,13 @@ Cloudflare participates in the EU-US Data Privacy Framework (as of 2023). Howeve
 
 #### 4.3.1 DPA + SCCs
 
-**Measure**: DPA Amendment (`legal/dpa-residency-amendment.md`) incorporating EU SCCs (GDPR Art. 46(2)(c)). Module 2 (Controller ↔ CoreLink Processor). Module 3 (CoreLink ↔ Cloudflare Sub-processor via Cloudflare DPA).
+**Prelaunch disclosure**: the repository describes the shared D1 control plane
+under SCC/TIA safeguards. The DPA amendment and this TIA remain pending legal
+review; neither document establishes an executed SCC arrangement or counsel
+approval for the D1 transfer posture.
 
-**EDPB §88 alignment**: Contractual transfer mechanism in place.
+**EDPB §88 alignment**: Counsel review is required before relying on a
+contractual transfer mechanism for this prelaunch D1 posture.
 
 #### 4.3.2 Sub-processor Agreement — Cloudflare
 
@@ -238,9 +265,12 @@ Cloudflare participates in the EU-US Data Privacy Framework (as of 2023). Howeve
 
 #### 4.3.4 Termination + Data Deletion 30 Days + Erasure Attestation
 
-**Measure**: Upon termination, CoreLink deletes all Customer Personal Data within 30 days via BYOK crypto-erase, and provides Ed25519-signed erasure attestation (DPA Section 14). Customer retains attestation as forensic evidence.
+**Current measure**: the launched DSR/erasure pipeline applies. BYOK
+crypto-erase and an Ed25519-signed erasure attestation have no verified
+customer rollout and do not establish deletion handling for shared D1 records.
 
-**EDPB §91 alignment**: End-of-processing obligations ensuring data not retained post-termination.
+**EDPB §91 alignment**: pending counsel review of the current DSR pipeline and
+shared-D1 control-plane posture.
 
 ---
 
@@ -250,30 +280,25 @@ Cloudflare participates in the EU-US Data Privacy Framework (as of 2023). Howeve
 
 > Per EDPB Recommendations 01/2020 Step 6: "You must assess whether the supplementary measures you identified are effective in the light of the specific circumstances of the transfer."
 
-**Key effectiveness argument**:
-
-The CoreLink BYOK architecture places the CMK exclusively under Customer control. Cloudflare (the US-based Sub-processor) holds only ciphertext (AES-256-GCM encrypted blobs with DEKs wrapped by Customer CMK). A FISA 702 or CLOUD Act order directed at Cloudflare would yield only encrypted blobs — **substantively inaccessible without the Customer CMK, which Cloudflare does not hold and cannot compel from Customer (who is located outside the US).**
-
-This satisfies the EDPB §83 effectiveness test for Use Case 6 (encryption at rest with keys held by data exporter):
-- The encryption is implemented using robust, industry-standard algorithms (AES-256-GCM).
-- The key management is FIPS 140-2 / FIPS 140-3 validated.
-- CoreLink (as Processor) cannot access Customer CMK; it only performs key operations via customer-authorised KMS API calls.
-- Customer can revoke CMK access ≤ 5 minutes globally, unilaterally and irreversibly (INV-BYOK-CRYPTO-SOVEREIGNTY).
+**Assessment pending**: the shared D1 control plane contains tenant,
+membership, PAT, quota, billing, and audit-outbox records. Its primary is
+currently reported in ENAM with no D1 jurisdiction and automatic read
+replication. BYOK and crypto-erase have no verified customer rollout and are
+not available to assess or mitigate that control-plane transfer.
 
 ### 5.2 Residual Risk
 
 | Risk | Assessment | Residual Risk |
 |---|---|---|
-| US authority compelling Customer (not Cloudflare) to disclose CMK | Low (Customer is not US-based in typical use case; FISA 702 targets non-US persons) | LOW |
-| Cloudflare metadata disclosure (non-content: IP logs, request metadata) | Some metadata (pseudonymised) accessible to Cloudflare | LOW-MEDIUM (pseudonymisation partially mitigates) |
-| Quantum-computing attack on AES-256-GCM | Theoretical future risk; AES-256 considered quantum-resistant for ≥ 10 years | LOW (future-monitor) |
-| EDPB guidance change invalidating current approach | Possible; mitigated by quarterly review | LOW (quarterly review governance) |
+| Shared D1 control-plane disclosure | Tenant, membership, PAT, quota, billing, and audit-outbox records are globally placed | Pending counsel assessment |
+| R2/DO residency boundary | R2/DO source posture is tenant-pinned; it does not establish D1 placement | Pending counsel assessment |
+| Future BYOK/crypto-erase design | No verified customer rollout | Not a current safeguard |
 
 ### 5.3 Conclusion
 
-The combination of technical measures (BYOK AES-256-GCM with customer-held CMK + Ed25519 erasure attestation + per-region key isolation), organisational measures (DPA + 4-region enumeration + DPO + breach SLA + quarterly review), and contractual measures (SCCs + DPA + Cloudflare sub-processor agreement + audit rights) provides a **comprehensive supplementary measures package** that renders the transfer substantively compliant with the EU level of protection, notwithstanding the US surveillance law risk identified in Section 3.
-
-**Assessment: TRANSFER CAN PROCEED under current legal and technical framework, subject to ongoing quarterly review.**
+**Conclusion: pending counsel approval.** This prelaunch template records the
+current shared-D1 facts and does not conclude that a transfer can proceed or
+that an effective customer-facing transfer mechanism exists.
 
 ---
 
@@ -303,7 +328,7 @@ The combination of technical measures (BYOK AES-256-GCM with customer-held CMK +
 | Step 2 | Identify transfer tools | SCCs + DPA identified (Section 2) | Section 2 |
 | Step 3 | Assess third-country law | US FISA 702 / CLOUD Act assessed (Section 3) | Section 3 |
 | Step 4 | Identify supplementary measures | Technical + Organisational + Contractual (Section 4) | Section 4 |
-| Step 5 | Adopt supplementary measures | BYOK + erasure + 4-region + DPA + SCCs implemented | Section 4 |
+| Step 5 | Adopt supplementary measures | Pending counsel review; BYOK and crypto-erase are not current measures | Section 4 |
 | Step 6 | Re-evaluate at intervals | Quarterly Legal review cycle | Section 4.2.5 |
 
 ---

@@ -28,6 +28,8 @@ class StagingQuarantineApplyContractTests(unittest.TestCase):
         self.assertIn("STAGING_CF_API_TOKEN", workflow)
         self.assertIn("STAGING_CF_WORKER_API_TOKEN", workflow)
         self.assertNotIn("K6_STAGING_", workflow)
+        self.assertNotIn("DSR_DLQ_ALERT_ENDPOINT", workflow)
+        self.assertNotIn("DSR_DLQ_ALERT_AUTH_TOKEN", workflow)
 
 
 if __name__ == "__main__":

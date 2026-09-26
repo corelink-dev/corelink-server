@@ -35,14 +35,14 @@ provided at least **30 calendar days** in advance per DPA §3.1.
 |---|---|
 | Role | Infrastructure provider — Workers, R2, D1, KV, Durable Objects, Pages, Email Routing. |
 | Data categories | Account metadata; blob content (encrypted); audit logs; telemetry. |
-| Region | Multi-region; tenant-pinned per `INV-DATA-RESIDENCY` (WNAM / ENAM / WEUR / APAC); APAC tenants are pinned to Tokyo (`nrt`). `SAM` is not provisioned and is not promised. |
+| Region | R2 objects and jurisdictional Durable Object state are tenant-pinned per `INV-DATA-RESIDENCY` (WNAM / ENAM / WEUR / APAC). The D1 control plane is one shared global database; its primary is currently reported in ENAM with no D1 jurisdiction and automatic read replication. `SAM` is not provisioned and is not promised. |
 | DPA reference | <https://www.cloudflare.com/cloudflare-customer-dpa/> |
 | Sub-processor list | <https://www.cloudflare.com/sub-processors/> |
-| SCCs / transfer mechanism | EU SCCs (2021/914) Module 3 (processor → processor); UK IDTA addendum. |
+| SCCs / transfer mechanism | The repository disclosure describes the shared D1 control plane under SCC/TIA safeguards. This prelaunch record does not establish an executed transfer mechanism or counsel approval. |
 | Certifications | SOC 2 Type II; ISO 27001; ISO 27018; PCI-DSS Level 1; HIPAA-compliant infra. |
 | Vendor review evidence | `docs/compliance/vendor-reviews/cloudflare-dpa-review-2026-04.md` |
 | Contract signed | 2026-04-23 |
-| Schrems II TIA | Completed; supplementary measures in §3. |
+| Schrems II TIA | Pending legal review; this record does not represent it as completed or approved. |
 
 ### 1.2 Clerk, Inc.
 
