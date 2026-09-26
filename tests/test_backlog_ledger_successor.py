@@ -606,6 +606,34 @@ def test_successor_chain_replays_through_v0008():
     assert ledger.load_successor_chain()["sequence"] >= 8
 
 
+def test_v0008_historical_admission_is_byte_and_merge_pinned(monkeypatch):
+    """The exceptional v0008 admission cannot authorize another receipt or merge."""
+    policy = ledger._successor_policy()
+    root = ledger.REPO_ROOT
+    relative = ledger.SNAPSHOT_DIRECTORY / "backlog-ledger-snapshot-v0008.json"
+    raw = (root / relative).read_bytes()
+    receipt = json.loads(raw)
+    pinned = successor.V0008_HISTORICAL_ADMISSION
+
+    assert policy._v0008_historical_admission_authorized(
+        root, relative, raw, receipt,
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw + b"\n", receipt,
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, receipt,
+        [pinned["introduction_commit"]], "0" * 40,
+    )
+    monkeypatch.setitem(pinned, "declared_base_commit", "0" * 40)
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, receipt,
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+
+
 def test_v0006_pins_source_hash_and_exact_changed_ids():
     """Changing the source digest or issue set invalidates the authorization."""
     policy = successor.install(ledger)
