@@ -7,6 +7,7 @@
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 use super::{
     d1_http::{D1BatchStatement, D1HttpClient},
@@ -447,6 +448,78 @@ pub(crate) fn reconcile_staging_load_test_teardown(
         terminal_state: "reconciled",
         cross_run_deletions: 0,
         resources: counts,
+    })
+}
+
+/// Narrow durable inventory used by the exact-run teardown service.  The
+/// locator is deliberately kept private: callers receive only the receipt.
+pub(crate) struct StagingLoadTestPhysicalTeardown {
+    d1: Arc<D1HttpClient>,
+}
+
+impl StagingLoadTestPhysicalTeardown {
+    /// Builds only when the D1 mutation capability is configured.  The route
+    /// remains absent otherwise, so an unconfigured process cannot accept a
+    /// teardown request and accidentally claim success.
+    pub(crate) fn from_env() -> Result<Self, String> {
+        Ok(Self { d1: Arc::new(D1HttpClient::for_staging_load_test_ownership_writes()?) })
+    }
+
+    /// Start only an exact, already sealed staging run.  The predicate binds
+    /// all immutable admission coordinates before a resource can transition.
+    pub(crate) async fn begin(
+        &self,
+        identity: &StagingLoadTestTeardownIdentity,
+    ) -> Result<(), StagingLoadTestTeardownError> {
+        let rows = self.d1.query(
+            "UPDATE staging_load_test_runs SET state='teardown_started' WHERE run_id=?1 AND scenario=?2 AND target_environment='staging' AND target_deployment_sha=?3 AND state='sealed' RETURNING run_id",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(identity.target_deployment_sha)],
+        ).await.map_err(|_| StagingLoadTestTeardownError::CountMismatch)?;
+        if rows.len() == 1 { Ok(()) } else { Err(StagingLoadTestTeardownError::CountMismatch) }
+    }
+
+    /// Read the immutable nine-class scan census and exact resource rows.  An
+    /// absent locator for a disposable resource is deliberately an error: old
+    /// rows may never be guessed from a one-way receipt reference.
+    pub(crate) async fn inventory(
+        &self,
+        identity: &StagingLoadTestTeardownIdentity,
+        max_resources: usize,
+    ) -> Result<(Vec<StagingLoadTestTeardownScan>, Vec<StagingLoadTestTeardownResource>), StagingLoadTestTeardownError> {
+        let scans = self.d1.query(
+            "SELECT resource_class,state,observed_count FROM staging_load_test_resource_scans WHERE run_id=?1 AND scenario=?2 ORDER BY resource_class",
+            &[json!(identity.run_id), json!(identity.scenario.as_str())],
+        ).await.map_err(|_| StagingLoadTestTeardownError::IncompleteScan)?;
+        let resources = self.d1.query(
+            "SELECT resource_class,receipt_ref,opaque_handle,disposition FROM staging_load_test_resources WHERE run_id=?1 AND scenario=?2 ORDER BY resource_class,receipt_ref LIMIT ?3",
+            &[json!(identity.run_id), json!(identity.scenario.as_str()), json!(i64::try_from(max_resources.saturating_add(1)).unwrap_or(i64::MAX))],
+        ).await.map_err(|_| StagingLoadTestTeardownError::IncompleteScan)?;
+        if resources.len() > max_resources { return Err(StagingLoadTestTeardownError::OverBudget); }
+        let mut parsed_scans = Vec::new();
+        for row in scans {
+            let class = resource_class(row.get("resource_class").and_then(serde_json::Value::as_str)).ok_or(StagingLoadTestTeardownError::MissingClass)?;
+            let count = row.get("observed_count").and_then(serde_json::Value::as_u64).and_then(|v| usize::try_from(v).ok()).ok_or(StagingLoadTestTeardownError::CountMismatch)?;
+            parsed_scans.push(StagingLoadTestTeardownScan { class, observed_count: count, complete: row.get("state").and_then(serde_json::Value::as_str) == Some("complete"), truncated: false });
+        }
+        let mut parsed_resources = Vec::new();
+        for row in resources {
+            let class = resource_class(row.get("resource_class").and_then(serde_json::Value::as_str)).ok_or(StagingLoadTestTeardownError::CountMismatch)?;
+            let disposition = match row.get("disposition").and_then(serde_json::Value::as_str) { Some("disposable") => StagingLoadTestDisposition::Disposable, Some("retained") => StagingLoadTestDisposition::Retained, _ => return Err(StagingLoadTestTeardownError::InvalidDisposition) };
+            let receipt_ref = row.get("receipt_ref").and_then(serde_json::Value::as_str).ok_or(StagingLoadTestTeardownError::CountMismatch)?;
+            let handle = row.get("opaque_handle").and_then(serde_json::Value::as_str).ok_or(StagingLoadTestTeardownError::CountMismatch)?;
+            parsed_resources.push(StagingLoadTestTeardownResource { class, receipt_ref: receipt_ref.to_owned(), opaque_handle: handle.to_owned(), disposition });
+        }
+        Ok((parsed_scans, parsed_resources))
+    }
+}
+
+fn resource_class(value: Option<&str>) -> Option<StagingLoadTestResourceClass> {
+    Some(match value? {
+        "cas_reference" => StagingLoadTestResourceClass::CasReference, "webhook_inbox" => StagingLoadTestResourceClass::WebhookInbox,
+        "webhook_effect" => StagingLoadTestResourceClass::WebhookEffect, "dsr_artifact" => StagingLoadTestResourceClass::DsrArtifact,
+        "dsr_obligation" => StagingLoadTestResourceClass::DsrObligation, "audit_evidence" => StagingLoadTestResourceClass::AuditEvidence,
+        "billing_audit" => StagingLoadTestResourceClass::BillingAudit, "signup_artifact" => StagingLoadTestResourceClass::SignupArtifact,
+        "byok_artifact" => StagingLoadTestResourceClass::ByokArtifact, _ => return None,
     })
 }
 
