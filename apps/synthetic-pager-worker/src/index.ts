@@ -351,7 +351,7 @@ const handler: ExportedHandler<ReceiverEnv> = {
     return json({ error: "not_found" }, 404);
   },
   async scheduled(controller, env) {
-    if (controller.cron !== "59 23 * * 0") {
+    if (controller.cron !== "59 23 * * 1") {
       console.error("[synthetic_pager] rejected reason=unknown_cron");
       controller.noRetry();
       throw new Error("unknown deferred delivery cron");

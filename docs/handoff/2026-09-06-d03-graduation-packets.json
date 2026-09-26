@@ -457,13 +457,13 @@
       "dependency": "PagerDuty receiver Worker and production Service Binding",
       "action": "Owner deploys the receiver binding, runs each scheduled drill, and records 202/error behavior.",
       "artifact": "artifacts/d03/B072-scheduled-drills.json",
-      "command": "set -euo pipefail; export D03_SAMPLE_COUNT=1; test \"${SCHEDULED_DRILL_RECEIVER_DEPLOYED:?deploy receiver via SCHEDULED_DRILL_DELIVERY before observing}\" = 1; python3 scripts/verify_b072_scheduled_drills.py | tee artifacts/d03/B072-scheduled-drills.json; grep -Fq 'B-072 PASS' artifacts/d03/B072-scheduled-drills.json; grep -Fq 'SCHEDULED_DRILL_DELIVERY' wrangler.toml; grep -Fq 'service = \"corelink-synthetic-pager-staging\"' wrangler.toml; tail_rc=0; timeout 30s wrangler tail corelink-synthetic-pager-staging --format json --search synthetic_page_drills >> artifacts/d03/B072-scheduled-drills.json || tail_rc=$?; test \"$tail_rc\" -eq 124; grep -Eiq 'correlation|PagerDuty|synthetic_page_drills|202' artifacts/d03/B072-scheduled-drills.json; grep -Fq '0 14 * * 1' wrangler.toml; grep -Fq '59 23 * * 0' apps/synthetic-pager-worker/wrangler.toml",
+      "command": "set -euo pipefail; export D03_SAMPLE_COUNT=1; test \"${SCHEDULED_DRILL_RECEIVER_DEPLOYED:?deploy receiver via SCHEDULED_DRILL_DELIVERY before observing}\" = 1; python3 scripts/verify_b072_scheduled_drills.py | tee artifacts/d03/B072-scheduled-drills.json; grep -Fq 'B-072 PASS' artifacts/d03/B072-scheduled-drills.json; grep -Fq 'SCHEDULED_DRILL_DELIVERY' wrangler.toml; grep -Fq 'service = \"corelink-synthetic-pager-staging\"' wrangler.toml; tail_rc=0; timeout 30s wrangler tail corelink-synthetic-pager-staging --format json --search synthetic_page_drills >> artifacts/d03/B072-scheduled-drills.json || tail_rc=$?; test \"$tail_rc\" -eq 124; grep -Eiq 'correlation|PagerDuty|synthetic_page_drills|202' artifacts/d03/B072-scheduled-drills.json; grep -Fq '0 14 * * 1' wrangler.toml; grep -Fq '59 23 * * 1' apps/synthetic-pager-worker/wrangler.toml",
       "verify_means": "parked",
       "command_contract": {
         "owner_packet": "docs/handoff/2026-09-05-owner-action-packets-b008-b154.json#B-072",
         "profiles": [
           "0 14 * * 1",
-          "59 23 * * 0"
+          "59 23 * * 1"
         ],
         "sample_count": 1,
         "required": [

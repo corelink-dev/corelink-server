@@ -206,7 +206,7 @@ class StagingTopologyContractTests(unittest.TestCase):
                 'SYNTHETIC_DRILL_PROVIDER_MODE = "pagerduty"',
             ),
             "synthetic-receiver-staging-crons": (
-                'crons = ["59 23 * * 0"]',
+                'crons = ["59 23 * * 1"]',
                 'crons = []',
             ),
         }
