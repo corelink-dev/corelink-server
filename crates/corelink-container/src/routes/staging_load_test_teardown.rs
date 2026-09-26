@@ -8,16 +8,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::{
-    Json, Router,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::post,
+    Json, Router,
 };
 
 use crate::storage::{
     staging_load_test_admission::{
-        StagingLoadTestAdmissionGate, verify_staging_load_test_teardown_request,
+        verify_staging_load_test_teardown_request, StagingLoadTestAdmissionGate,
     },
     staging_load_test_ownership::{
         StagingLoadTestScenario, StagingLoadTestTeardownIdentity, StagingLoadTestTeardownReceipt,
