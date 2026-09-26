@@ -110,12 +110,9 @@ run_cargo() {
 }
 
 preflight_d1() {
-  # StorageEnv requires the complete native storage tuple even for D1 tests:
-  # this prevents a test from silently taking an in-memory fallback.
-  require_env \
-    CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN D1_DATABASE_ID \
-    R2_S3_ENDPOINT R2_S3_ACCESS_KEY_ID R2_S3_SECRET_ACCESS_KEY
-  require_https R2_S3_ENDPOINT
+  # D1 integration tests use only the D1 HTTP adapter and must not depend on
+  # credentials or resources owned by the separate R2 profile.
+  require_env CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN D1_DATABASE_ID
 }
 
 preflight_r2() {
