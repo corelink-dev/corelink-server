@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - "scripts/verify_b035_tls_surfaces.py"
+      - "scripts/probe_b035_tls_handshakes.py"
       - "tests/test_verify_b035_tls_surfaces.py"
       - "reports/b035/**"
       - ".github/workflows/b035-contract-pr.yml"
@@ -31,3 +32,5 @@ jobs:
         run: python3 -m unittest -v tests/test_verify_b035_tls_surfaces.py
       - name: Emit redacted static evidence
         run: python3 scripts/verify_b035_tls_surfaces.py --expect-open --json
+      - name: Validate read-only TLS probe source inventory
+        run: python3 scripts/probe_b035_tls_handshakes.py --inventory-only
