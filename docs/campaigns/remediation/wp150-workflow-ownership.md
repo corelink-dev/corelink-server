@@ -4,8 +4,8 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 230
-workflow-paths-sha256: 2c7dac4e62e02cc708dcabda340965dd7668af9f73ff6b7627e3670125f028c4
+workflow-count: 260
+workflow-paths-sha256: 5c1d78b2cfc4ebc0ccb2a4cb71239d5232bdcc7d8deddb5a5044c9430cb83ae3
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -31,6 +31,7 @@ workflow-paths-sha256: 2c7dac4e62e02cc708dcabda340965dd7668af9f73ff6b7627e367012
 .github/workflows/b035-contract-pr.yml | LEAD-BLOCKED | blocked
 .github/workflows/b035-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/b044-orphan-teardown.yml | LEAD-BLOCKED | blocked
+.github/workflows/b046-object-lock-receipt-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/b103-cargo-write-reproducer.yml | LEAD-BLOCKED | blocked
 .github/workflows/b105-cache-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/b125-audit-throughput-read-only.yml | LEAD-BLOCKED | blocked
@@ -102,6 +103,7 @@ workflow-paths-sha256: 2c7dac4e62e02cc708dcabda340965dd7668af9f73ff6b7627e367012
 .github/workflows/i1664-gpg-release-identity-audit.yml | LEAD-BLOCKED | blocked
 .github/workflows/i1675-live-probe.yml | LEAD-BLOCKED | blocked
 .github/workflows/i18n-stale.yml | LEAD-BLOCKED | blocked
+.github/workflows/i2587-gpg-audit-ci.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1635-consumer-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1635-durable-classification.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1641-pagerduty-contract.yml | LEAD-BLOCKED | blocked
@@ -133,11 +135,13 @@ workflow-paths-sha256: 2c7dac4e62e02cc708dcabda340965dd7668af9f73ff6b7627e367012
 .github/workflows/issue-1670-fleet-classification.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1670-fleet-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1670-hosted-classification.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1670-receipt-redaction.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1671-b129-diagnostic.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1671-b129-static.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1675-timeout-receipts.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1678-b216-dsr-dlq.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1679-classification.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1679-identity-regression.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1681-b314-exact-head.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1682-b316-vendor-review.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1690-p12-p14-verifier.yml | LEAD-BLOCKED | blocked
@@ -161,6 +165,7 @@ workflow-paths-sha256: 2c7dac4e62e02cc708dcabda340965dd7668af9f73ff6b7627e367012
 .github/workflows/issue-2148-derived-v0004-policy.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2152-cyclonedx-diagnostic.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2156-ci-bundle-1-contract.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2161-staging-ownership.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2167-b071-owner-packet.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2169-b105-hosted-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2176-grpc-deny-gate.yml | LEAD-BLOCKED | blocked
@@ -168,8 +173,32 @@ workflow-paths-sha256: 2c7dac4e62e02cc708dcabda340965dd7668af9f73ff6b7627e367012
 .github/workflows/issue-2178-reapi-cas-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2181-reapi-bytestream-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2182-reapi-action-cache-contract.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2183-reapi-composition.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2198-okf-adr-authority.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2370-hosted-migration.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2374-hosted-policy-proof.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2386-hosted-runner-contract.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2414-b057-sli.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2418-rustup-contract.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2496-b216-verifier.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2576-admission.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2579-cas-ownership.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2580-webhook-ownership.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2581-dsr-audit.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2582-signup-ownership.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2583-byok-ownership.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2586-windows-contract.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2586-windows-readiness.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2610-mutants-failure-receipt.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2612-provider-deferred.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2623-ownership-contract.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2627-stripe-fixtures.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2628-codeql-severity.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2663-teardown-contract.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2664-worker-synthetic-tenant.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2665-dsr-teardown.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2666-byok-teardown.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-605-billing-fixture.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-ci-pack.yml | LEAD-BLOCKED | blocked
 .github/workflows/legal-changes-review.yml | LEAD-BLOCKED | blocked
 .github/workflows/license-policy.yml | LEAD-BLOCKED | blocked
@@ -222,8 +251,9 @@ workflow-paths-sha256: 2c7dac4e62e02cc708dcabda340965dd7668af9f73ff6b7627e367012
 .github/workflows/slo-instrumentation.yml | LEAD-BLOCKED | blocked
 .github/workflows/smoke-install.yml | LEAD-BLOCKED | blocked
 .github/workflows/spec_validation.yml | LEAD-BLOCKED | blocked
-.github/workflows/staging-quarantine-apply.yml | LEAD-BLOCKED | blocked
+.github/workflows/staging-provider-preflight.yml | LEAD-BLOCKED | blocked
 .github/workflows/staging-provision-plan.yml | LEAD-BLOCKED | blocked
+.github/workflows/staging-quarantine-apply.yml | LEAD-BLOCKED | blocked
 .github/workflows/stale.yml | LEAD-BLOCKED | blocked
 .github/workflows/subprocessors-sync.yml | LEAD-BLOCKED | blocked
 .github/workflows/synthetic-pager-worker-deploy.yml | WP-B072 | owned
