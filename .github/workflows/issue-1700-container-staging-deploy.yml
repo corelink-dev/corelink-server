@@ -50,6 +50,25 @@ jobs:
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging/settings" \
             | python3 -c 'import json,sys; assert json.load(sys.stdin).get("success") is True'
+      - name: Fail closed when a canonical staging route exists
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.request
+          token=os.environ['CLOUDFLARE_API_TOKEN']
+          headers={'Authorization':f'Bearer {token}'}
+          def get(path):
+            with urllib.request.urlopen(urllib.request.Request('https://api.cloudflare.com/client/v4/'+path,headers=headers),timeout=20) as r:
+              body=json.load(r)
+            if not body.get('success'): raise SystemExit('Cloudflare route inventory denied')
+            return body['result']
+          zones=get('zones?name=humangr.com')
+          if len(zones)!=1: raise SystemExit('canonical staging zone is not unique')
+          routes=get('zones/'+zones[0]['id']+'/workers/routes')
+          found=[r for r in routes if r.get('script')=='corelink-staging' or r.get('pattern')=='staging.corelink.humangr.com/*']
+          print(json.dumps({'canonical_staging_route_count':len(found)}))
+          if found: raise SystemExit('canonical staging route exists; refusing deploy')
+          PY
       - name: Render and validate isolated root config
         run: |
           set -euo pipefail
@@ -69,3 +88,18 @@ jobs:
           corepack enable
           pnpm install --frozen-lockfile --ignore-scripts
           pnpm exec wrangler deploy --config "$RUNNER_TEMP/staging-config/root.toml"
+      - name: Read back canonical staging route inventory
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.request
+          h={'Authorization':'Bearer '+os.environ['CLOUDFLARE_API_TOKEN']}
+          def get(p):
+            with urllib.request.urlopen(urllib.request.Request('https://api.cloudflare.com/client/v4/'+p,headers=h),timeout=20) as r: b=json.load(r)
+            if not b.get('success'): raise SystemExit('Cloudflare route readback denied')
+            return b['result']
+          z=get('zones?name=humangr.com'); routes=get('zones/'+z[0]['id']+'/workers/routes')
+          found=[r for r in routes if r.get('script')=='corelink-staging' or r.get('pattern')=='staging.corelink.humangr.com/*']
+          print(json.dumps({'canonical_staging_route_count':len(found)}))
+          if found: raise SystemExit('post-deploy canonical staging route exists')
+          PY
