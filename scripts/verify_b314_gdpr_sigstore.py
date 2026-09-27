@@ -486,6 +486,17 @@ def _must_reject(label: str, root: Path, overrides: dict[str, str]) -> None:
     raise VerificationError(f"self-test mutation unexpectedly passed: {label}")
 
 
+def _replace_b314_backlog_marker(text: str, old: str, new: str) -> str:
+    start = text.find("### B-314 — ")
+    end = text.find("\n### B-315 — ", start)
+    if start < 0 or end < 0:
+        raise VerificationError("cannot scope self-test mutation to the B-314 BACKLOG block")
+    block = text[start:end]
+    if old not in block:
+        raise VerificationError(f"B-314 BACKLOG self-test marker is absent: {old}")
+    return text[:start] + block.replace(old, new, 1) + text[end:]
+
+
 def mutation_checks(root: Path = ROOT) -> int:
     """Exercise row, decision, posture, and runtime restoration mutations."""
     originals = {path: _read(root, path, {}) for path in (*LOCALES, TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, EVIDENCE, BACKLOG, WORKFLOW)}
@@ -502,9 +513,9 @@ def mutation_checks(root: Path = ROOT) -> int:
     count += 1
     _must_reject("signed receipt reference mutation", root, {EVIDENCE: originals[EVIDENCE].replace("issuecomment-5854794010", "issuecomment-1", 1)})
     count += 1
-    _must_reject("backlog done-state mutation", root, {BACKLOG: originals[BACKLOG].replace("status: done", "status: open", 1)})
+    _must_reject("backlog done-state mutation", root, {BACKLOG: _replace_b314_backlog_marker(originals[BACKLOG], "status: done", "status: open")})
     count += 1
-    _must_reject("backlog signed receipt removal", root, {BACKLOG: originals[BACKLOG].replace(DECISION_REFERENCE, "https://example.invalid/decision", 1)})
+    _must_reject("backlog signed receipt removal", root, {BACKLOG: _replace_b314_backlog_marker(originals[BACKLOG], DECISION_REFERENCE, "https://example.invalid/decision")})
     count += 1
     trust_mutation = originals[TRUST].replace("no customer-data path is wired", "customer-data path is wired", 1)
     _must_reject("trust current-flow posture removal", root, {TRUST: trust_mutation})
