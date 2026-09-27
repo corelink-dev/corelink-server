@@ -1,0 +1,46 @@
+{
+  "schema_version": 3,
+  "sequence": 10,
+  "transition": "base-derived-data",
+  "base_commit": "0a45fe71776cd04ecc2131eb64577593ec78879a",
+  "prior_snapshot_sha256": "02b226c7ac7262fdb36555a7b7ac88d30fd9a8899b10b543fe0cc411195d333e",
+  "prior_source_sha256": "a1e75e2990f92d1d10aecce8703c98410b14a9f600d8eeedcfad52975e9a31ae",
+  "source_sha256": "6b4030148216788d6734e6f811fe1c7468d1799b7eea7dd43b42b3e3d28808e8",
+  "prior_ledger_sha256": "65f1d0128922d0ff4eea5f74767b181bf1e35d17ea3eeaaba9e3b2454aeccc54",
+  "ledger_sha256": "07cee6d211ff118d128622202782435be60e6afb392955c570aaed9b4836ae1a",
+  "prior_catalog_sha256": {
+    "docs/campaigns/remediation/work-packages/B001-B045.md": "081c9885db8d79c18f2f31edb7864bb1ca1a18d53f408720f3f9e4f00524f9c6",
+    "docs/campaigns/remediation/work-packages/B046-B090.md": "1a164260a84f3adb406676e1505fd8379aad07b15a5c45365369dcef7b0586da",
+    "docs/campaigns/remediation/work-packages/B091-B130.md": "2875d5374471382a5422ceac83e3259fcd5780e55fa3e07f80746f7ceb2995ce",
+    "docs/campaigns/remediation/work-packages/B131-B167.md": "13805dab851c5023d7d49bc707ce0c30713a11aeca8b1e179c8710ad8d91671f"
+  },
+  "catalog_sha256": {
+    "docs/campaigns/remediation/work-packages/B001-B045.md": "081c9885db8d79c18f2f31edb7864bb1ca1a18d53f408720f3f9e4f00524f9c6",
+    "docs/campaigns/remediation/work-packages/B046-B090.md": "1a164260a84f3adb406676e1505fd8379aad07b15a5c45365369dcef7b0586da",
+    "docs/campaigns/remediation/work-packages/B091-B130.md": "2875d5374471382a5422ceac83e3259fcd5780e55fa3e07f80746f7ceb2995ce",
+    "docs/campaigns/remediation/work-packages/B131-B167.md": "13805dab851c5023d7d49bc707ce0c30713a11aeca8b1e179c8710ad8d91671f"
+  },
+  "item_count": 374,
+  "status_counts": {
+    "done": 333,
+    "open": 12,
+    "parked": 29
+  },
+  "open_ids": [
+    "B-008",
+    "B-032",
+    "B-035",
+    "B-065",
+    "B-086",
+    "B-089",
+    "B-097",
+    "B-111",
+    "B-154",
+    "B-170",
+    "B-314",
+    "B-316"
+  ],
+  "changed_ids": [
+    "B-114"
+  ]
+}

@@ -12931,24 +12931,10 @@ owner: tl
 status: parked
 verify: manual
 verify-means: |
-  parked — a alegação é sobre o repositório `corelink-runners`, e o `backlog_verify.py`
-  roda no `corelink-server`. Um `verify` automático aqui grepearia a árvore errada e
-  passaria verde para sempre, medindo a ausência do arquivo no repo onde ele nunca esteve.
-
-  Procedimento, no clone do `corelink-runners`: `grep -rln "runner-devenv"
-  .github/workflows/` — hoje retorna **vazio**, e é essa ausência que é a alegação.
-  Confirmar também que `Dockerfile.runner-devenv` existe (o defeito é o descasamento entre
-  Dockerfile presente e workflow ausente, não a falta do Dockerfile).
-
-  Fecha por qualquer um dos dois desfechos legítimos: existe workflow que constrói e
-  publica a imagem por digest, como os dois irmãos da frota; **ou** a feature DevEnv é
-  removida e o `Dockerfile.runner-devenv` sai junto. O segundo é decisão de produto e vale
-  como recusa registrada.
-
-  NÃO fecha por alguém construir a imagem à mão e pinar o digest. Imagem sem workflow que a
-  reproduza é a mesma dívida com outra roupa — o próximo deploy volta a depender de um
-  artefato que ninguém sabe reconstruir.
-last-verified: 2026-08-30
+  done — receipt exato de build/publicação do `corelink-runners` é validado pelo checker
+  P1. O receipt registra somente o build/publicação e seu artefato; não afirma deploy,
+  pin, mutação de provider ou uso/pull de imagem.
+last-verified: 2026-09-27
 ```
 
 ### B-115 — nenhum portão testa se um PR deixa a produção deployável
