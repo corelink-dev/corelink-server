@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: issue-1700-staging-custom-domain
+  cancel-in-progress: false
+
 jobs:
   deploy:
     if: >-
@@ -53,7 +57,8 @@ jobs:
       - name: Fail closed when a canonical staging route exists
         run: |
           set -euo pipefail
-          python3 scripts/verify_issue_1700_route_inventory.py
+          python3 scripts/verify_issue_1700_route_inventory.py \
+            > "$RUNNER_TEMP/staging-route-inventory-before.json"
       - name: Render and validate isolated root config
         run: |
           set -euo pipefail
@@ -61,19 +66,156 @@ jobs:
           python3 scripts/render_staging_wrangler.py --phase bootstrap --worker root --output "$RUNNER_TEMP/staging-config/root.toml"
           python3 - "$RUNNER_TEMP/staging-config/root.toml" <<'PY'
           import sys,tomllib
-          config=tomllib.load(open(sys.argv[1],'rb'))
+          from pathlib import Path
+          path=Path(sys.argv[1])
+          config=tomllib.loads(path.read_text())
+          config['account_id']='6a1fc1c626fc2628823e60b9db01f5cd'
+          path.write_text('account_id = "'+config['account_id']+'"\n'+path.read_text())
           assert config['name']=='corelink-staging'
+          assert config['account_id']=='6a1fc1c626fc2628823e60b9db01f5cd'
           assert config.get('workers_dev') is False
           assert not any(x in config for x in ('routes','route','custom_domain'))
           assert config['containers'][0]['image'].endswith('Dockerfile')
+          assert config['compatibility_date']=='2026-04-01'
+          assert set(config['compatibility_flags'])=={'nodejs_compat','enable_request_signal','request_signal_passthrough'}
           PY
-      - name: Deploy root with container rollout and no route
+      - name: Install pinned Wrangler and capture exact active preimage
+        id: preimage
         run: |
           set -euo pipefail
           corepack enable
           pnpm install --frozen-lockfile --ignore-scripts
-          pnpm exec wrangler deploy --config "$RUNNER_TEMP/staging-config/root.toml"
-      - name: Read back canonical staging route inventory
+          pnpm exec wrangler deployments list \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-deployments-before.json"
+          python3 scripts/staging_deployment_guard.py capture \
+            --deployments "$RUNNER_TEMP/staging-deployments-before.json" \
+            --output "$GITHUB_OUTPUT" \
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+
+      - name: Deploy root with container rollout and no route
+        id: deploy
+        continue-on-error: true
+        env:
+          DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
         run: |
           set -euo pipefail
-          python3 scripts/verify_issue_1700_route_inventory.py
+          pnpm exec wrangler deploy \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --strict \
+            --message "$DEPLOYMENT_MARKER"
+
+      - name: Identify only this run's exact rollout
+        id: candidate
+        if: always() && steps.preimage.outputs.preimage_version_id != ''
+        continue-on-error: true
+        env:
+          DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deployments list \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-deployments-after.json"
+          python3 scripts/staging_deployment_guard.py candidate \
+            --deployments "$RUNNER_TEMP/staging-deployments-after.json" \
+            --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
+            --marker "$DEPLOYMENT_MARKER" \
+            --output "$GITHUB_OUTPUT" \
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+
+      - name: Require the new deployment to be attributable before validation
+        if: always()
+        env:
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
+          CANDIDATE_VERSION_ID: ${{ steps.candidate.outputs.candidate_version_id }}
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_OUTCOME" = success
+          test "$CANDIDATE_OUTCOME" = success
+          test -n "$CANDIDATE_VERSION_ID"
+
+      - name: Verify deployed compatibility flags and empty route inventory
+        id: verify
+        if: steps.deploy.outcome == 'success' && steps.candidate.outputs.candidate_version_id != ''
+        env:
+          CANDIDATE_VERSION_ID: ${{ steps.candidate.outputs.candidate_version_id }}
+          DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deployments list \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-deployments-verify.json"
+          python3 scripts/staging_deployment_guard.py assert-candidate \
+            --deployments "$RUNNER_TEMP/staging-deployments-verify.json" \
+            --version-id "$CANDIDATE_VERSION_ID" \
+            --marker "$DEPLOYMENT_MARKER"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging/settings" \
+            --output "$RUNNER_TEMP/staging-worker-settings.json"
+          python3 scripts/staging_deployment_guard.py settings \
+            --response "$RUNNER_TEMP/staging-worker-settings.json" \
+            --topology infra/staging/topology.json \
+            > "$RUNNER_TEMP/staging-worker-settings-readback.json"
+          python3 scripts/verify_issue_1700_route_inventory.py \
+            > "$RUNNER_TEMP/staging-route-inventory-after.json"
+          python3 scripts/staging_deployment_guard.py record-success \
+            --response "$RUNNER_TEMP/staging-worker-settings.json" \
+            --topology infra/staging/topology.json \
+            --routes "$RUNNER_TEMP/staging-route-inventory-after.json" \
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+
+      - name: Roll back only this run to the recorded exact preimage
+        if: failure() && steps.candidate.outputs.candidate_version_id != ''
+        env:
+          PREIMAGE_VERSION_ID: ${{ steps.preimage.outputs.preimage_version_id }}
+          CANDIDATE_VERSION_ID: ${{ steps.candidate.outputs.candidate_version_id }}
+          DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
+          ROLLBACK_MARKER: issue-1700-route-free-rollback-${{ github.run_id }}-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deployments list \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-deployments-before-rollback.json"
+          python3 scripts/staging_deployment_guard.py rollback \
+            --deployments "$RUNNER_TEMP/staging-deployments-before-rollback.json" \
+            --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
+            --candidate-version-id "$CANDIDATE_VERSION_ID" \
+            --candidate-marker "$DEPLOYMENT_MARKER" \
+            --rollback-marker "$ROLLBACK_MARKER" \
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+          pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --yes \
+            --message "$ROLLBACK_MARKER"
+          pnpm exec wrangler deployments list \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-deployments-after-rollback.json"
+          python3 scripts/verify_issue_1700_route_inventory.py \
+            > "$RUNNER_TEMP/staging-route-inventory-after-rollback.json"
+          python3 scripts/staging_deployment_guard.py verify-rollback \
+            --deployments "$RUNNER_TEMP/staging-deployments-after-rollback.json" \
+            --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
+            --marker "$ROLLBACK_MARKER" \
+            --routes "$RUNNER_TEMP/staging-route-inventory-after-rollback.json" \
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+
+      - name: Upload redacted route-free deployment receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: issue-1700-route-free-deployment-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/staging-deploy-receipt.json
+            ${{ runner.temp }}/staging-route-inventory-before.json
+            ${{ runner.temp }}/staging-route-inventory-after.json
+            ${{ runner.temp }}/staging-route-inventory-after-rollback.json
+            ${{ runner.temp }}/staging-worker-settings-readback.json
+          retention-days: 30
+          if-no-files-found: warn

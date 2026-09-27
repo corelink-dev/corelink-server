@@ -23,7 +23,9 @@ class StagingQuarantineApplyContractTests(unittest.TestCase):
 
     def test_workflow_requires_protected_main_and_staging_environment(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("github.ref == 'refs/heads/main' && github.ref_protected", workflow)
+        self.assertIn(
+            "github.ref == 'refs/heads/main' && github.ref_protected", workflow
+        )
         self.assertIn("environment: staging", workflow)
         self.assertIn("STAGING_CF_API_TOKEN", workflow)
         self.assertIn("STAGING_CF_WORKER_API_TOKEN", workflow)
@@ -34,6 +36,19 @@ class StagingQuarantineApplyContractTests(unittest.TestCase):
         self.assertNotIn("K6_STAGING_", workflow)
         self.assertNotIn("DSR_DLQ_ALERT_ENDPOINT", workflow)
         self.assertNotIn("DSR_DLQ_ALERT_AUTH_TOKEN", workflow)
+
+    def test_provider_writers_share_staging_lock_with_route_free_rollout(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        route_free = Path(
+            ".github/workflows/issue-1700-container-staging-deploy.yml"
+        ).read_text(encoding="utf-8")
+        custom_domain = Path(
+            ".github/workflows/issue-1700-staging-custom-domain.yml"
+        ).read_text(encoding="utf-8")
+        group = "group: issue-1700-staging-custom-domain"
+        self.assertIn(group, workflow)
+        self.assertIn(group, route_free)
+        self.assertIn(group, custom_domain)
 
 
 if __name__ == "__main__":

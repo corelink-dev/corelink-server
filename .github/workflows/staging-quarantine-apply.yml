@@ -36,7 +36,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: staging-quarantine-apply
+  group: issue-1700-staging-custom-domain
   cancel-in-progress: false
 
 jobs:
