@@ -190,6 +190,60 @@ STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS = frozenset({
     "tests/test_verify_staging_target.py",
 })
 
+# One-time #1700 Container/D1 binding-proxy delivery. Every candidate path is
+# byte- and mode-pinned against this exact transition. The BASE checker reads
+# these entries as data and never imports or executes candidate code.
+STAGING_D1_BINDING_PROXY_PREIMAGES: dict[str, tuple[int, str] | None] = {
+    '.github/workflows/staging-quarantine-apply.yml': (0o644, '11937887c2dc88942e0c35e7b3824c9835c0f484e6ae1f0fdd8de4066a83c9da'),
+    'crates/corelink-container/src/storage.rs': (0o644, '89bd546ac229e17454dc27457e306662f8dbc3babab440c889ab2c485e9bf361'),
+    'crates/corelink-container/src/storage/d1_http.rs': (0o644, '57df01654b44a12c57663d4543b1290125c87346e014e3b8210624a2d9cb6dd2'),
+    'docs/internal/secrets-checklist.md': (0o644, '24d0e59ee398a92a1bfd037daf4482d619129118e6236c1bea974b76b4ef3b22'),
+    'infra/staging/README.md': (0o644, '4689c4a43dda1d69ecbb60cdc8a65b4e2f2e5e017f5783f06f567d70ff8ab0ea'),
+    'infra/staging/topology.json': (0o644, '586665e34c11bf91a34fb83247fdbafec9fdfb8e7a336ba4da6f5bda8266dd99'),
+    'pnpm-lock.yaml': (0o644, 'b2b79225204fbce1b33e64f03987f0b894b1f7a187daef51078411d6285e0278'),
+    'scripts/staging_bootstrap_provider.py': (0o644, '4684063fe7acbbc781ea177e029ea6d6ac7b7d4b906a814cf0c41b67eda8abf4'),
+    'scripts/verify_staging_provider_preflight.py': (0o644, '30c5e7fca9151d5a5147cc37b0ea49ced0100bd0dce5392eec4faa9e53afbfe0'),
+    'scripts/verify_staging_topology_contract.py': (0o644, '18a70767b543a5ea8cadda94a216c068de41a8a294182ef255067126a9fa0e27'),
+    'tests/test_staging_bootstrap_provider.py': (0o644, '189efec0ef4b61b5a5efbea105ad56c210196c4b051fc9c1119645ec3758f5f7'),
+    'tests/test_staging_custom_domain.py': (0o644, 'ebca7d9b0e46763cac025dfc79bda65291d1e77f2132176527f28c9f8238e3a2'),
+    'tests/test_staging_quarantine_apply_contract.py': (0o644, 'ceb689591b8a5e380ce34f91bc598262c8f9051aaa84b7e0d05c088f194dffe6'),
+    'worker/package.json': (0o644, '7b20dc56684526ad90f3b5998aa995f41b750e304397714ab34b6ece2e162348'),
+    'worker/src/durable_object.ts': (0o644, '5be00eb88931adf4b2789c15ff3e715407dcd3e67e176de370c0922b175356a7'),
+    'worker/src/durable_object_start.ts': (0o644, '26d78fadfb89ca7327f698696ec15c53c455823f3f2c1ae3c282af16b4cab244'),
+    'worker/src/index.ts': (0o644, '627c97d894c9d02521e279b1721a9b0a4346ab1050a586706321b94931fbee8c'),
+    'worker/src/staging_d1_binding_proxy.ts': None,
+    'worker/src/staging_d1_binding_proxy_entrypoint.ts': None,
+    'worker/tests/cloudflare_workers_node_stub.ts': None,
+    'worker/tests/staging_d1_binding_proxy.test.ts': None,
+    'worker/tests/staging_d1_binding_start_gate.test.ts': None,
+    'worker/vitest.config.mts': (0o644, '0ee4c1a03685a300e6ead7720901ab0ae9103da8ffb359a34c5b10e7d3e46a44'),
+}
+STAGING_D1_BINDING_PROXY_TARGETS: dict[str, tuple[int, str] | None] = {
+    '.github/workflows/staging-quarantine-apply.yml': (0o644, '24d901a61e2b45af71fc5ec0632455956690725f8f05f9959c0baf213deb1594'),
+    'crates/corelink-container/src/storage.rs': (0o644, 'ee16e0155fae72ddfe01fedb4b7d29bff087467b2a23c42c830a42f3aeb9b78e'),
+    'crates/corelink-container/src/storage/d1_http.rs': (0o644, '258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5'),
+    'docs/internal/secrets-checklist.md': (0o644, '6157f5653e1a4ebea7be4a11e69e04abd36f59eb5fed6fa23997bb48f18f45b8'),
+    'infra/staging/README.md': (0o644, '5f3daac1edba6320bcfc6663d57bece16a9c63b7977156c0fc3a3b562276a435'),
+    'infra/staging/topology.json': (0o644, 'a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14'),
+    'pnpm-lock.yaml': (0o644, '7d8509a802bad9c700070722a8e834c98aef18c925768fb9c763a90a5a10c6cc'),
+    'scripts/staging_bootstrap_provider.py': (0o644, '8a77837893f2bd094f1fd834042361e69375e1453ec1d4dde9c20c605d00ccdb'),
+    'scripts/verify_staging_provider_preflight.py': (0o644, 'ddc9d57aa31cbee273dabc923b23a3ef33fb11b40bbd3b746ad7dcaca0633b62'),
+    'scripts/verify_staging_topology_contract.py': (0o644, '48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9'),
+    'tests/test_staging_bootstrap_provider.py': (0o644, 'ec4633c038fd4ae1553464e00ba2ce6dfe79e10562f79243e0fb629d1d93e219'),
+    'tests/test_staging_custom_domain.py': (0o644, 'cfc063496302c06c8bc879c380c7f24e13088fdf8f2a5412def3e6e60b115afc'),
+    'tests/test_staging_quarantine_apply_contract.py': (0o644, 'b90d143271b96038ce2f51a23bc62b3be3fee546a231f003b9bcfbfb79a497bf'),
+    'worker/package.json': (0o644, '96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34'),
+    'worker/src/durable_object.ts': (0o644, 'bf71e6d39b7aed3c794fd4a6d7d8f31dd53244ba7d5d55c0a5ff1e8a6d8616d5'),
+    'worker/src/durable_object_start.ts': (0o644, '27e8b574f9848a361c7a369f7f6705ac9d621128bb181e951c425c60a8de7942'),
+    'worker/src/index.ts': (0o644, '18b960a74833284f953bd28818cd7260798d9570c17bce459502f7b7ca50f3cd'),
+    'worker/src/staging_d1_binding_proxy.ts': (0o644, '3617e543777d77f9ba0deb69a72c5b5ad523eb3aa7ce795e5b73562c7a6e3d3d'),
+    'worker/src/staging_d1_binding_proxy_entrypoint.ts': (0o644, 'af759d84e63a2016737c899cfba045f52c1fcf20061678a3612ddeec6c18bdab'),
+    'worker/tests/cloudflare_workers_node_stub.ts': (0o644, '0237103e747517298fea07261598d250e25edff6f412cd1df33695c1585cfcf7'),
+    'worker/tests/staging_d1_binding_proxy.test.ts': (0o644, '80d0c7aa2a4e1c71d6cb463ce5c236af6c32f63ae33399cb14a27fec6f1b9c51'),
+    'worker/tests/staging_d1_binding_start_gate.test.ts': (0o644, '49cab317e42d9cebf557ebaa0a52eacf5697f1f3858ecf6ae9b9baf448b971f6'),
+    'worker/vitest.config.mts': (0o644, 'e2c2f0e46d4a45d5e789f920f95b73ffd44e6a14a9450e11817426995feda506'),
+}
+
 # One reviewed B-035 closeout. The exact old/new bytes and file modes are
 # frozen against protected main after #2585's serial integration.
 B035_CLOSEOUT_PREIMAGES: dict[str, tuple[int, str]] = {'BACKLOG.md': (420, 'cb22a787eb4ccdcbe4fe45516326e2a4623d0a52f5f34eb515ba3ff65c8c94da'),
@@ -813,6 +867,46 @@ def _preauthorized_staging_custom_domain(candidate_root: Path, trusted_root: Pat
     )
 
 
+def _preauthorized_staging_d1_binding_proxy(candidate_root: Path, trusted_root: Path) -> bool:
+    """Recognize only the frozen 23-path #1700 D1 proxy successor tree."""
+    try:
+        candidate_entries = _candidate_tree_entries(candidate_root)
+        trusted_entries = _candidate_tree_entries(trusted_root)
+    except (OSError, RuntimeError):
+        return False
+    paths = set(STAGING_D1_BINDING_PROXY_PREIMAGES)
+    if len(paths) != 23 or set(STAGING_D1_BINDING_PROXY_TARGETS) != paths:
+        return False
+    changed = {
+        path for path in set(candidate_entries) | set(trusted_entries)
+        if candidate_entries.get(path) != trusted_entries.get(path)
+    }
+    if changed != paths:
+        return False
+    for path in paths:
+        target = STAGING_D1_BINDING_PROXY_TARGETS[path]
+        candidate = candidate_entries.get(path)
+        if (
+            target is None
+            or candidate is None
+            or candidate[0] != "file"
+            or candidate[1:] != target
+        ):
+            return False
+        preimage = STAGING_D1_BINDING_PROXY_PREIMAGES[path]
+        trusted = trusted_entries.get(path)
+        if preimage is None:
+            if trusted is not None:
+                return False
+        elif (
+            trusted is None
+            or trusted[0] != "file"
+            or trusted[1:] != preimage
+        ):
+            return False
+    return True
+
+
 def _preauthorized_b035_closeout(candidate_root: Path, trusted_root: Path) -> bool:
     """Admit only the frozen B-035 data/control successor, without executing it."""
     try:
@@ -903,7 +997,10 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
             )
         except RuntimeError:
             topology_changed = True
-    staging_transition = topology_changed and _preauthorized_staging_custom_domain(
+    staging_custom_domain_transition = topology_changed and _preauthorized_staging_custom_domain(
+        candidate_root, trusted_root
+    )
+    staging_d1_binding_proxy_transition = topology_changed and _preauthorized_staging_d1_binding_proxy(
         candidate_root, trusted_root
     )
     b035_transition: bool | None = None
@@ -911,7 +1008,13 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
         trusted = _regular_control(trusted_root, relative)
         candidate = _regular_control(candidate_root, relative)
         if candidate != trusted:
-            if relative in STAGING_CUSTOM_DOMAIN_PREIMAGES and staging_transition:
+            if (
+                relative in STAGING_CUSTOM_DOMAIN_PREIMAGES
+                and staging_custom_domain_transition
+            ) or (
+                relative in STAGING_D1_BINDING_PROXY_TARGETS
+                and staging_d1_binding_proxy_transition
+            ):
                 continue
             if relative == "scripts/verify_b057_sli.py" and _preauthorized_b057_c0(
                 candidate_root, trusted_root
@@ -958,7 +1061,10 @@ def check_candidate_staging_topology(candidate_root: Path, trusted_root: Path) -
             )
         except RuntimeError:
             topology_changed = True
-    if topology_changed and not _preauthorized_staging_custom_domain(candidate_root, trusted_root):
+    if topology_changed and not (
+        _preauthorized_staging_custom_domain(candidate_root, trusted_root)
+        or _preauthorized_staging_d1_binding_proxy(candidate_root, trusted_root)
+    ):
         raise RuntimeError("candidate mutated unapproved staging topology; candidate data was not executed")
 
 

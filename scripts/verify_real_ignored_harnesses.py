@@ -82,13 +82,31 @@ REQUIRED_TARGET_SOURCES = {
 # boundary; this manifest binds the repository-owned selector/source inputs.
 SOURCE_SHA256 = {
     "crates/corelink-container/src/routes/tier_select_store.rs": "2c8420e87367772276ac807dee0a9c386f304afecbb842e1214a91be3c120602",
-    "crates/corelink-container/src/storage/d1_http.rs": "57df01654b44a12c57663d4543b1290125c87346e014e3b8210624a2d9cb6dd2",
+    "crates/corelink-container/src/storage/d1_http.rs": "258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5",
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "2148abe19ae9b119dc17eca0f242e983b47f8f6100d8d6fbba0536aafcc88af7",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "1589c0bf78b5ecee786f39e71e66feb3bcd387ba1465d4ad5f22133cdcf14b4e",
     "crates/corelink-stripe-real/tests/live_integration.rs": "b7d8b83fb6f736c4675d7cb4d36727464b6d9ddcc97fe3d026a1e0fe182bb587",
     "crates/corelink-audit-chain/tests/neon_shadow_real.rs": "dfd22738e96d82695b40addf64b3dbaf611fbd8026346f0b4e33b28f10fe79eb",
 }
+
+# The #1700 delivery changes this source and its staging topology together.
+# Keep the trusted preimage usable until that exact delivery lands, then bind
+# the source to the new topology state so reverting only the Rust file fails.
+STAGING_D1_PROXY_TOPOLOGY_PATH = "infra/staging/topology.json"
+STAGING_D1_PROXY_SOURCE_PATH = "crates/corelink-container/src/storage/d1_http.rs"
+STAGING_D1_PROXY_TOPOLOGY_PREIMAGE_SHA256 = (
+    "586665e34c11bf91a34fb83247fdbafec9fdfb8e7a336ba4da6f5bda8266dd99"
+)
+STAGING_D1_PROXY_TOPOLOGY_TARGET_SHA256 = (
+    "a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14"
+)
+STAGING_D1_PROXY_SOURCE_PREIMAGE_SHA256 = (
+    "57df01654b44a12c57663d4543b1290125c87346e014e3b8210624a2d9cb6dd2"
+)
+STAGING_D1_PROXY_SOURCE_TARGET_SHA256 = (
+    "258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5"
+)
 
 
 def safe_failure_diagnostic(raw_output: str) -> str:
@@ -246,7 +264,21 @@ def fail(message: str) -> None:
 
 def verify_source_digests(root: Path = ROOT, overrides: dict[str, bytes] | None = None) -> None:
     """Fail before semantic parsing if any bound source byte changed."""
-    for relative, expected in SOURCE_SHA256.items():
+    def read(relative: str) -> bytes:
+        if overrides and relative in overrides:
+            return overrides[relative]
+        return (root / relative).read_bytes()
+
+    expected_sources = dict(SOURCE_SHA256)
+    topology_digest = hashlib.sha256(read(STAGING_D1_PROXY_TOPOLOGY_PATH)).hexdigest()
+    source_digest = {
+        STAGING_D1_PROXY_TOPOLOGY_PREIMAGE_SHA256: STAGING_D1_PROXY_SOURCE_PREIMAGE_SHA256,
+        STAGING_D1_PROXY_TOPOLOGY_TARGET_SHA256: STAGING_D1_PROXY_SOURCE_TARGET_SHA256,
+    }.get(topology_digest)
+    if source_digest is None:
+        fail("staging topology digest is outside the reviewed D1 source transition")
+    expected_sources[STAGING_D1_PROXY_SOURCE_PATH] = source_digest
+    for relative, expected in expected_sources.items():
         target = root / relative
         body = overrides[relative] if overrides and relative in overrides else target.read_bytes()
         actual = hashlib.sha256(body).hexdigest()

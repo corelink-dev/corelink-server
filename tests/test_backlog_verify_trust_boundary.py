@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 from scripts import backlog_verify
 from scripts import verify_backlog_wp_ledger
+from scripts import verify_real_ignored_harnesses
 
 backlog_ledger_successor = verify_backlog_wp_ledger.backlog_ledger_successor
 
@@ -313,6 +314,138 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
             backlog_verify, "STAGING_CUSTOM_DOMAIN_TARGETS", new_pins
         ):
             self.assertFalse(backlog_verify._preauthorized_staging_custom_domain(candidate, trusted))
+
+    def _staging_d1_proxy_fixture(self, *, delivered: bool = False):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        trusted = Path(directory.name) / "trusted"
+        candidate = Path(directory.name) / "candidate"
+        trusted.mkdir()
+        candidate.mkdir()
+        for relative in (
+            "scripts/backlog_verify.py",
+            "scripts/verify_backlog_wp_ledger.py",
+            "scripts/backlog_ledger_successor.py",
+            "scripts/backlog_ledger_contracts.py",
+        ):
+            self._write(trusted, relative, b"trusted control bytes\n")
+            self._write(candidate, relative, b"trusted control bytes\n")
+        preimages: dict[str, tuple[int, str] | None] = {}
+        targets: dict[str, tuple[int, str] | None] = {}
+        for relative, expected_preimage in backlog_verify.STAGING_D1_BINDING_PROXY_PREIMAGES.items():
+            target = b"frozen target bytes\n" + relative.encode()
+            target_pin = (0o644, hashlib.sha256(target).hexdigest())
+            targets[relative] = target_pin
+            if expected_preimage is None:
+                old = None
+                preimages[relative] = None
+            else:
+                old = b"trusted preimage bytes\n" + relative.encode()
+                preimages[relative] = (0o644, hashlib.sha256(old).hexdigest())
+            if delivered:
+                if old is not None:
+                    self._write(trusted, relative, target)
+                    self._write(candidate, relative, old)
+                else:
+                    self._write(trusted, relative, target)
+            else:
+                if old is not None:
+                    self._write(trusted, relative, old)
+                self._write(candidate, relative, target)
+        return trusted, candidate, preimages, targets
+
+    def test_1700_d1_binding_proxy_transition_accepts_only_exact_23_path_tree(self) -> None:
+        trusted, candidate, preimages, targets = self._staging_d1_proxy_fixture()
+        with patch.object(backlog_verify, "STAGING_D1_BINDING_PROXY_PREIMAGES", preimages), patch.object(
+            backlog_verify, "STAGING_D1_BINDING_PROXY_TARGETS", targets
+        ):
+            self.assertTrue(
+                backlog_verify._preauthorized_staging_d1_binding_proxy(candidate, trusted)
+            )
+            backlog_verify.check_candidate_controls(candidate, trusted, [])
+            backlog_verify.check_candidate_staging_topology(candidate, trusted)
+
+    def test_1700_d1_binding_proxy_transition_rejects_partial_foreign_mode_and_downgrade(self) -> None:
+        for mutation in ("partial", "foreign", "mode", "downgrade"):
+            with self.subTest(mutation=mutation):
+                trusted, candidate, preimages, targets = self._staging_d1_proxy_fixture(
+                    delivered=mutation == "downgrade"
+                )
+                path = sorted(targets)[0]
+                if mutation == "partial":
+                    self._write(candidate, path, (trusted / path).read_bytes())
+                elif mutation == "foreign":
+                    self._write(candidate, "scripts/foreign_control.py", b"candidate control\n")
+                elif mutation == "mode":
+                    (candidate / path).chmod(0o600)
+                with patch.object(backlog_verify, "STAGING_D1_BINDING_PROXY_PREIMAGES", preimages), patch.object(
+                    backlog_verify, "STAGING_D1_BINDING_PROXY_TARGETS", targets
+                ):
+                    self.assertFalse(
+                        backlog_verify._preauthorized_staging_d1_binding_proxy(candidate, trusted)
+                    )
+
+    def test_1700_d1_binding_proxy_constants_match_frozen_transition(self) -> None:
+        self.assertEqual(len(backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS), 23)
+        self.assertEqual(
+            backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
+                "infra/staging/topology.json"
+            ],
+            (0o644, "a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14"),
+        )
+        self.assertEqual(
+            backlog_verify.STAGING_D1_BINDING_PROXY_PREIMAGES[
+                "infra/staging/topology.json"
+            ],
+            (0o644, "586665e34c11bf91a34fb83247fdbafec9fdfb8e7a336ba4da6f5bda8266dd99"),
+        )
+
+    def test_b068_d1_source_pin_is_paired_with_exact_topology_state(self) -> None:
+        source = verify_real_ignored_harnesses.STAGING_D1_PROXY_SOURCE_PATH
+        topology = verify_real_ignored_harnesses.STAGING_D1_PROXY_TOPOLOGY_PATH
+        old_topology = b"old staging topology"
+        new_topology = b"new staging topology"
+        old_source = b"old D1 implementation"
+        new_source = b"new D1 proxy implementation"
+        old_topology_sha = hashlib.sha256(old_topology).hexdigest()
+        new_topology_sha = hashlib.sha256(new_topology).hexdigest()
+        old_source_sha = hashlib.sha256(old_source).hexdigest()
+        new_source_sha = hashlib.sha256(new_source).hexdigest()
+        self.assertEqual(
+            verify_real_ignored_harnesses.SOURCE_SHA256[source],
+            "258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5",
+        )
+        self.assertEqual(
+            verify_real_ignored_harnesses.STAGING_D1_PROXY_TOPOLOGY_PREIMAGE_SHA256,
+            "586665e34c11bf91a34fb83247fdbafec9fdfb8e7a336ba4da6f5bda8266dd99",
+        )
+        self.assertEqual(
+            verify_real_ignored_harnesses.STAGING_D1_PROXY_TOPOLOGY_TARGET_SHA256,
+            "a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14",
+        )
+        with (
+            patch.object(verify_real_ignored_harnesses, "SOURCE_SHA256", {source: new_source_sha}),
+            patch.object(verify_real_ignored_harnesses, "STAGING_D1_PROXY_TOPOLOGY_PREIMAGE_SHA256", old_topology_sha),
+            patch.object(verify_real_ignored_harnesses, "STAGING_D1_PROXY_TOPOLOGY_TARGET_SHA256", new_topology_sha),
+            patch.object(verify_real_ignored_harnesses, "STAGING_D1_PROXY_SOURCE_PREIMAGE_SHA256", old_source_sha),
+            patch.object(verify_real_ignored_harnesses, "STAGING_D1_PROXY_SOURCE_TARGET_SHA256", new_source_sha),
+        ):
+            root = Path("unused-root")
+            verify_real_ignored_harnesses.verify_source_digests(
+                root, {topology: old_topology, source: old_source}
+            )
+            verify_real_ignored_harnesses.verify_source_digests(
+                root, {topology: new_topology, source: new_source}
+            )
+            for topology_bytes, source_bytes in (
+                (old_topology, new_source),
+                (new_topology, old_source),
+                (b"unreviewed topology", new_source),
+            ):
+                with self.assertRaisesRegex(AssertionError, "source digest|topology digest"):
+                    verify_real_ignored_harnesses.verify_source_digests(
+                        root, {topology: topology_bytes, source: source_bytes}
+                    )
 
     def test_1700_staging_custom_domain_constants_bind_frozen_hashes(self) -> None:
         self.assertEqual(backlog_verify.STAGING_CUSTOM_DOMAIN_PREIMAGES, {
