@@ -341,6 +341,9 @@ def verify_baseline(candidate: Path, baseline: Path) -> None:
         "scripts/test_dependabot_policy_trust_boundary.sh",
         "crates/corelink-container/tests/signup_pilot.rs",
         "crates/corelink-container/tests/signup_pilot_live_d1.rs",
+        "crates/corelink-container/src/routes/dsr/adapter_d1.rs",
+        "crates/corelink-container/src/routes/dsr/adapter_d1_registry.rs",
+        "crates/corelink-container/src/routes/dsr/adapter_d1_tests.rs",
     }
     git_root = subprocess.run(
         ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
