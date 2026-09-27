@@ -9,7 +9,7 @@ the single source of truth for item status. This ledger derives work ownership,
 dependency order and completion contracts from that source; it never overrides
 the backlog.
 
-The current population is 374 items: 12 open, 333 done and 29 parked. The 12
+The current population is 374 items: 11 open, 334 done and 29 parked. The 11
 open items are partitioned exactly once across four contract catalogs:
 
 The historical candidate snapshot remains pinned in
@@ -24,25 +24,25 @@ and ledger rewrite therefore remains indeterminate rather than becoming a false
 closure. Every new BACKLOG/status observation must version a snapshot manifest and transition the ledger base in the same reviewed change. WP-150 workflow population and ownership updates are maintained in the dedicated tracked manifest; they do not require ledger successors.
 
 ```ledger-state
-base-ref: 83d9b21453773b9d3f90a3c14ef13ce5347ad874
-base-sha: 83d9b21453773b9d3f90a3c14ef13ce5347ad874
+base-ref: 55ae08e573fe6872bca540fba1cf4c5dbf1d96d0
+base-sha: 55ae08e573fe6872bca540fba1cf4c5dbf1d96d0
 observed-at: 2026-09-27
 item-count: 374
-open-count: 12
-done-count: 333
+open-count: 11
+done-count: 334
 parked-count: 29
-catalog-counts: B001-B045=3,B046-B090=3,B091-B130=2,B131-B373=4
+catalog-counts: B001-B045=2,B046-B090=3,B091-B130=2,B131-B373=4
 ```
 
 | Catalog | Numeric range | Open IDs |
 |---|---:|---:|
-| [`work-packages/B001-B045.md`](work-packages/B001-B045.md) | B-001..B-045 | 3 |
+| [`work-packages/B001-B045.md`](work-packages/B001-B045.md) | B-001..B-045 | 2 |
 | [`work-packages/B046-B090.md`](work-packages/B046-B090.md) | B-046..B-090 | 3 |
 | [`work-packages/B091-B130.md`](work-packages/B091-B130.md) | B-091..B-130 | 2 |
 | [`work-packages/B131-B167.md`](work-packages/B131-B167.md) | B-131..B-373 | 4 |
-| **Total** | | **12** |
+| **Total** | | **11** |
 
-The logical base includes the current B-008/B-032/B-035,
+The logical base includes the current B-008/B-032,
 B-065/B-086/B-089, B-097/B-111 and B-154/B-170/B-314/B-316 open
 population. B-373's retained 19-alert candidate census is historical; the
 authenticated 2026-09-12 post-merge census found zero open alerts.

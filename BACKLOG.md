@@ -7173,7 +7173,7 @@ response, not a TLS handshake failure or successful Bazel operation.
 ```backlog
 id: B-035
 repo: corelink-server
-owner: owner
+owner: tl
 status: done
 action-packet: docs/handoff/2026-09-05-owner-action-packets-b008-b154.json
 verify: |

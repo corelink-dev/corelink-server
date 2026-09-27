@@ -109,7 +109,7 @@
     },
     {
       "id": "B-035",
-      "owner": "owner",
+      "owner": "tl",
       "status": "done",
       "action_type": "prelaunch_tls_claim_reconciliation",
       "procedure": [
@@ -137,7 +137,7 @@
           "artifact_sha256",
           "prelaunch_disposition"
         ],
-        "item_schema": "decision records truthful_tls_1_2_prelaunch; source_sha binds PR #2691; workflow_run binds floor 1.2 and 24/24 handshakes; prelaunch_disposition states no executed instruments or notice recipients. The legacy evidence path is a packet locator, not an assertion that a new file or counsel signature exists."
+        "item_schema": "decision records truthful_tls_1_2_prelaunch; source_sha binds PR #2691; workflow_run binds floor 1.2 and 24/24 handshakes; prelaunch_disposition states no executed instruments or notice recipients. The source-bound receipt is strictly checked; no counsel signature is asserted."
       },
       "expected_postcondition": "Eight source claims and live Cloudflare floor agree at TLS 1.2 minimum, with TLS 1.3 where supported; #2163 terminal proof and #1645 prelaunch disposition close B-035 without an executed-customer amendment claim.",
       "retry_and_rollback": "If the floor or any source claim drifts, fail the exact inventory and reopen B-035; an executed customer obligation would require a new attributable decision before outward legal action.",

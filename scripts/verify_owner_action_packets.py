@@ -35,12 +35,10 @@ EXPECTED_IDS = (
     "B-072", "B-083", "B-102", "B-106", "B-113", "B-125", "B-128",
     "B-134", "B-142", "B-165",
 )
-# B-013 was reconciled from an external owner action to a repository-side
-# closure record after its redacted deletion evidence received a strict focal
-# verifier.  It therefore no longer belongs to the legacy ``owner`` subset;
-# the other ten legacy rows remain owner-controlled until their actions are
-# evidenced and reclassified.
-LEGACY_OWNER_IDS = frozenset(EXPECTED_IDS[:12]) - {"B-012", "B-013", "B-110"}
+# Terminal owner decisions move to the repository-side ``tl`` owner only after
+# their source-bound closure evidence receives a strict focal verifier. Other
+# legacy rows remain owner-controlled until their actions are evidenced.
+LEGACY_OWNER_IDS = frozenset(EXPECTED_IDS[:12]) - {"B-012", "B-013", "B-035", "B-110"}
 CLOSED_PACKET_IDS = frozenset({"B-012", "B-013", "B-035", "B-110", "B-165"})
 B089_SURFACES = (
     "legal/sla/v1.0.0.md",
