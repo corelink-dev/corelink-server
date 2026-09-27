@@ -258,6 +258,18 @@ fn runner_entitlement_reconcile_fence_is_registered_for_tenant_erasure() {
 }
 
 #[test]
+fn staging_synthetic_tenant_marker_is_classified_once_and_never_erased() {
+    let table = "staging_load_test_synthetic_tenants";
+    assert!(ALL_TENANT_KEYED_TABLES.contains(&table));
+    assert!(RETAIN_SET.contains(&table));
+    assert!(!TENANT_ID_TABLES.contains(&table));
+    assert!(!NAMESPACE_TABLES.contains(&table));
+    assert!(!SPECIAL_ERASE_TABLES.contains(&table));
+    assert!(!CAS_PLANE_OWNED.contains(&table));
+    assert_eq!(classification_count(table), 1);
+}
+
+#[test]
 fn epoch_contract_tables_are_retained_and_new_intents_are_erased() {
     for table in [
         "audit_chain_epoch_ledger",
