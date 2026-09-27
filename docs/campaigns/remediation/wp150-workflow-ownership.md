@@ -4,8 +4,8 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 260
-workflow-paths-sha256: 5c1d78b2cfc4ebc0ccb2a4cb71239d5232bdcc7d8deddb5a5044c9430cb83ae3
+workflow-count: 264
+workflow-paths-sha256: 14065f22ec9a222d8df0793e4c267b82d86750ada25e85eab112d3682eccfaad
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -60,6 +60,7 @@ workflow-paths-sha256: 5c1d78b2cfc4ebc0ccb2a4cb71239d5232bdcc7d8deddb5a5044c9430
 .github/workflows/cas_foundation.yml | LEAD-BLOCKED | blocked
 .github/workflows/cf-deploy-prod.yml | WP-B070 | owned
 .github/workflows/changelog-validate.yml | LEAD-BLOCKED | blocked
+.github/workflows/cloudflare-scoped-token-handoff.yml | LEAD-BLOCKED | blocked
 .github/workflows/codeql-evidence-watchdog.yml | LEAD-BLOCKED | blocked
 .github/workflows/codeql.yml | WP-132/142 | owned
 .github/workflows/compliance-weekly.yml | LEAD-BLOCKED | blocked
@@ -194,8 +195,11 @@ workflow-paths-sha256: 5c1d78b2cfc4ebc0ccb2a4cb71239d5232bdcc7d8deddb5a5044c9430
 .github/workflows/issue-2623-ownership-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2627-stripe-fixtures.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2628-codeql-severity.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2649-b114-policy.yml | WP-B114 | owned
 .github/workflows/issue-2663-teardown-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2664-worker-synthetic-tenant.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2699-cloudflare-handoff-contract.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2702-backlog-policy.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2665-dsr-teardown.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2666-byok-teardown.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-605-billing-fixture.yml | LEAD-BLOCKED | blocked

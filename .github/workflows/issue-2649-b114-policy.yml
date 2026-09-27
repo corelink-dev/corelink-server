@@ -1,0 +1,28 @@
+name: issue-2649 B-114 receipt policy
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - scripts/check_b114_cross_repo.py
+      - .github/workflows/issue-2649-b114-policy.yml
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - if: github.event_name == 'workflow_dispatch'
+        run: test "$GITHUB_SHA" = "${{ inputs.expected_sha }}"
+      - run: python3 scripts/check_b114_cross_repo.py --self-test
