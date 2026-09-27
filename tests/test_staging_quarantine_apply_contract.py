@@ -29,6 +29,9 @@ class StagingQuarantineApplyContractTests(unittest.TestCase):
         self.assertIn("environment: staging", workflow)
         self.assertIn("STAGING_CF_API_TOKEN", workflow)
         self.assertIn("STAGING_CF_WORKER_API_TOKEN", workflow)
+        self.assertIn("STAGING_CF_D1_RUNTIME_TOKEN", workflow)
+        self.assertIn('bind_env_secret "$root" CF_API_TOKEN STAGING_CF_D1_RUNTIME_TOKEN', workflow)
+        self.assertNotIn('bind_env_secret "$root" CF_API_TOKEN STAGING_CF_WORKER_API_TOKEN', workflow)
         self.assertIn("scope-probe-staging-1700", workflow)
         self.assertIn("inputs.mode == 'scope-probe'", workflow)
         self.assertIn('f"https://api.cloudflare.com/client/v4/{path}"', workflow)
@@ -49,6 +52,28 @@ class StagingQuarantineApplyContractTests(unittest.TestCase):
         self.assertIn(group, workflow)
         self.assertIn(group, route_free)
         self.assertIn(group, custom_domain)
+
+    def test_update_existing_uses_split_scoped_tokens_and_never_redeploys_code(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("- update-existing-secrets", workflow)
+        self.assertIn("inputs.mode == 'update-existing-secrets'", workflow)
+        self.assertIn("environment: staging", workflow)
+        self.assertIn("STAGING_CF_WORKER_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}", workflow)
+        self.assertIn("STAGING_CF_ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}", workflow)
+        self.assertIn("STAGING_CF_D1_RUNTIME_TOKEN: ${{ secrets.STAGING_CF_D1_RUNTIME_TOKEN }}", workflow)
+        self.assertIn("STAGING_CF_API_TOKEN: ${{ secrets.STAGING_CF_API_TOKEN }}", workflow)
+        self.assertIn("update-existing-secrets-staging-1700", workflow)
+        operation = workflow.split("  update-existing-secrets:", 1)[1]
+        self.assertIn("test -n \"$STAGING_CF_D1_RUNTIME_TOKEN\"", operation)
+        self.assertNotIn("secrets.STAGING_CF_API_TOKEN", operation)
+        self.assertNotIn("wrangler deploy", operation)
+        self.assertIn("--phase update-existing-apply", operation)
+        self.assertIn("persist-credentials: false", workflow)
+        provider = Path("scripts/staging_bootstrap_provider.py").read_text(encoding="utf-8")
+        self.assertIn("versions", provider)
+        self.assertIn('f"{version}@100%"', provider)
+        self.assertIn("issue-1700-secrets-rollback-", provider)
+        self.assertIn("if _active_exact_marker", provider)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ on:
         options:
           - scope-probe
           - quarantine-apply
+          - update-existing-secrets
       expected_sha:
         description: 'Exact protected main commit SHA to operate on'
         required: true
@@ -157,7 +158,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_API_TOKEN }}
       STAGING_CF_API_TOKEN: ${{ secrets.STAGING_CF_API_TOKEN }}
       STAGING_CF_ACCOUNT_ID: ${{ secrets.STAGING_CF_ACCOUNT_ID }}
-      STAGING_CF_WORKER_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+      STAGING_CF_D1_RUNTIME_TOKEN: ${{ secrets.STAGING_CF_D1_RUNTIME_TOKEN }}
       CF_ZONE_ID: ${{ vars.CF_ZONE_ID }}
       STAGING_R2_S3_ENDPOINT: ${{ secrets.STAGING_R2_S3_ENDPOINT }}
       CLERK_ISSUER_URL: ${{ secrets.STAGING_CLERK_ISSUER_URL }}
@@ -197,7 +198,7 @@ jobs:
           python3 scripts/verify_staging_topology_contract.py --expect ready
           test "$(jq -r '.deployment_state' infra/staging/topology.json)" = unprovisioned
           required=(
-            STAGING_CF_API_TOKEN STAGING_CF_ACCOUNT_ID STAGING_CF_WORKER_API_TOKEN
+            STAGING_CF_API_TOKEN STAGING_CF_ACCOUNT_ID STAGING_CF_D1_RUNTIME_TOKEN
             CF_ZONE_ID STAGING_R2_S3_ENDPOINT CLERK_ISSUER_URL CLERK_SECRET_KEY
             CLERK_WEBHOOK_SECRET ERASURE_SALT_KEY DSR_DLQ_REDRIVE_AUTH_KEY
             R2_S3_ACCESS_KEY_ID R2_S3_SECRET_ACCESS_KEY
@@ -210,8 +211,8 @@ jobs:
             printf '::error::Missing required staging input names: %s\n' "${missing[*]}"
             exit 1
           fi
-          if [[ "$STAGING_CF_API_TOKEN" == "$STAGING_CF_WORKER_API_TOKEN" ]]; then
-            echo '::error::provider and Worker runtime Cloudflare tokens must be distinct'
+          if [[ "$STAGING_CF_API_TOKEN" == "$STAGING_CF_D1_RUNTIME_TOKEN" ]]; then
+            echo '::error::provider and D1 runtime Cloudflare tokens must be distinct'
             exit 1
           fi
 
@@ -287,7 +288,7 @@ jobs:
           done
           bind_generated_secret "$signup" CORELINK_INTERNAL_AUTH_KEY
           bind_generated_secret "$signup" CORELINK_ERASE_AUTH_KEY
-          bind_env_secret "$root" CF_API_TOKEN STAGING_CF_WORKER_API_TOKEN
+          bind_env_secret "$root" CF_API_TOKEN STAGING_CF_D1_RUNTIME_TOKEN
           bind_env_secret "$root" CLOUDFLARE_ACCOUNT_ID STAGING_CF_ACCOUNT_ID
           for item in \
             "$root:CLERK_ISSUER_URL:CLERK_ISSUER_URL" \
@@ -324,5 +325,103 @@ jobs:
         with:
           name: staging-quarantine-apply-${{ github.run_id }}
           path: ${{ runner.temp }}/staging-quarantine-receipt.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  update-existing-secrets:
+    name: protected staging existing Worker secret update
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.mode == 'update-existing-secrets' &&
+      github.ref == 'refs/heads/main' && github.ref_protected
+    needs: contract
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 45
+    env:
+      STAGING_CF_WORKER_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+      STAGING_CF_ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
+      STAGING_CF_ACCOUNT_ID: ${{ secrets.STAGING_CF_ACCOUNT_ID }}
+      STAGING_CF_D1_RUNTIME_TOKEN: ${{ secrets.STAGING_CF_D1_RUNTIME_TOKEN }}
+      CF_ZONE_ID: ${{ vars.CF_ZONE_ID }}
+      STAGING_R2_S3_ENDPOINT: ${{ secrets.STAGING_R2_S3_ENDPOINT }}
+      STAGING_CLERK_ISSUER_URL: ${{ secrets.STAGING_CLERK_ISSUER_URL }}
+      STAGING_CLERK_SECRET_KEY: ${{ secrets.STAGING_CLERK_SECRET_KEY }}
+      STAGING_CLERK_WEBHOOK_SECRET: ${{ secrets.STAGING_CLERK_WEBHOOK_SECRET }}
+      STAGING_ERASURE_SALT_KEY: ${{ secrets.STAGING_ERASURE_SALT_KEY }}
+      STAGING_DSR_DLQ_REDRIVE_AUTH_KEY: ${{ secrets.STAGING_DSR_DLQ_REDRIVE_AUTH_KEY }}
+      STAGING_R2_S3_ACCESS_KEY_ID: ${{ secrets.STAGING_R2_S3_ACCESS_KEY_ID }}
+      STAGING_R2_S3_SECRET_ACCESS_KEY: ${{ secrets.STAGING_R2_S3_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Confirm exact protected existing-secret update
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = 'update-existing-secrets-staging-1700'
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test -n "$STAGING_CF_WORKER_API_TOKEN"
+          test -n "$STAGING_CF_ROUTE_READ_TOKEN"
+          test -n "$STAGING_CF_ACCOUNT_ID"
+          test -n "$STAGING_CF_D1_RUNTIME_TOKEN"
+          test -n "$CF_ZONE_ID"
+          test -n "$STAGING_R2_S3_ENDPOINT"
+          test "$STAGING_CF_WORKER_API_TOKEN" != "$STAGING_CF_ROUTE_READ_TOKEN"
+          test "$STAGING_CF_WORKER_API_TOKEN" != "$STAGING_CF_D1_RUNTIME_TOKEN"
+          test "$STAGING_CF_ROUTE_READ_TOKEN" != "$STAGING_CF_D1_RUNTIME_TOKEN"
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact protected target and inputs
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/verify_staging_target.py
+          python3 scripts/verify_staging_topology_contract.py --expect ready
+          test "$(jq -r '.deployment_state' infra/staging/topology.json)" = unprovisioned
+
+      - name: Install locked Wrangler dependencies
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Render exact no-route configs for the existing Workers
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/staging-config"
+          for worker in root signup synthetic; do
+            python3 scripts/render_staging_wrangler.py \
+              --phase bootstrap --worker "$worker" \
+              --output "$RUNNER_TEMP/staging-config/$worker.toml"
+          done
+
+      - name: Add only missing secrets with exact version rollback guards
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = 'update-existing-secrets-staging-1700'
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          python3 scripts/staging_bootstrap_provider.py \
+            --phase update-existing-apply \
+            --config-dir "$RUNNER_TEMP/staging-config" \
+            --receipt "$RUNNER_TEMP/staging-existing-secrets-receipt.json" \
+            --run-id "$GITHUB_RUN_ID" \
+            --sha "$GITHUB_SHA"
+
+      - name: Upload redacted existing-secret update receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-existing-secrets-${{ github.run_id }}
+          path: ${{ runner.temp }}/staging-existing-secrets-receipt.json
           retention-days: 30
           if-no-files-found: warn

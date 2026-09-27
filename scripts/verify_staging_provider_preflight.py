@@ -14,7 +14,7 @@ RENDERER = Path("scripts/render_staging_wrangler.py")
 # provider/renderer source drift must receive explicit preflight safety review
 # and updated pins.
 CANONICAL_PROVIDER_SOURCE_SHA256 = (
-    "77be0f999b0c9b97b6fe731afdd3d2db6fc8f9634315c9e49c4b5e6fa66d68e4"
+    "4684063fe7acbbc781ea177e029ea6d6ac7b7d4b906a814cf0c41b67eda8abf4"
 )
 CANONICAL_RENDERER_SOURCE_SHA256 = (
     "4dc4f24bf2e3d62f6ebd386567ec92490d90701f04fcfd4ecb752568f1ec8e9f"
