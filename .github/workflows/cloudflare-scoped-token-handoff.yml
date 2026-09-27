@@ -1,0 +1,295 @@
+name: Cloudflare scoped token handoff
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Allowlisted Cloudflare token operation
+        required: true
+        type: choice
+        options:
+          - r2-2564-mint
+          - worker-1700-mint
+      expected_sha:
+        description: Exact protected main commit SHA
+        required: true
+        type: string
+      confirm:
+        description: Type the exact mode confirmation phrase
+        required: true
+        type: string
+      recipient_public_key_b64:
+        description: Base64 encoded RSA public key for the one-time encrypted handoff
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-scoped-token-handoff-${{ inputs.mode }}
+  cancel-in-progress: false
+
+jobs:
+  scoped-token-handoff:
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.mode == 'r2-2564-mint' || inputs.mode == 'worker-1700-mint') &&
+      github.ref == 'refs/heads/main' && github.ref_protected && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.mode == 'r2-2564-mint' && 'real-integration' || 'staging' }}
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Validate protected exact-SHA request and recipient key
+        env:
+          MODE: ${{ inputs.mode }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CONFIRM: ${{ inputs.confirm }}
+          RECIPIENT_PUBLIC_KEY_B64: ${{ inputs.recipient_public_key_b64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            r2-2564-mint) test "$CONFIRM" = 'mint-r2-2564-corelink-b068-r2-isolated-20260926-staging' ;;
+            worker-1700-mint) test "$CONFIRM" = 'mint-worker-1700-staging-only' ;;
+            *) exit 1 ;;
+          esac
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test -n "$RECIPIENT_PUBLIC_KEY_B64"
+          mkdir -m 700 "$RUNNER_TEMP/cf-handoff"
+          printf '%s' "$RECIPIENT_PUBLIC_KEY_B64" | base64 --decode > "$RUNNER_TEMP/cf-handoff/recipient.pem"
+          openssl pkey -pubin -in "$RUNNER_TEMP/cf-handoff/recipient.pem" -text -noout \
+            | grep -q 'Public-Key: (3072 bit)'
+          unset RECIPIENT_PUBLIC_KEY_B64
+
+      - name: Checkout the exact protected commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Create one allowlisted token and encrypt its handoff
+        id: mint_token
+        env:
+          MODE: ${{ inputs.mode }}
+          GH_RUN_ID: ${{ github.run_id }}
+          CF_BOOTSTRAP_ADMIN_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          TOKEN_STATE_FILE: ${{ runner.temp }}/cf-handoff/token-id.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$CF_BOOTSTRAP_ADMIN_TOKEN"
+          cat > "$RUNNER_TEMP/cf-handoff/encrypt.js" <<'JS'
+          const fs = require("fs");
+          const crypto = require("crypto");
+          const publicKey = fs.readFileSync(process.argv[2]);
+          const outputPath = process.argv[3];
+          const chunks = [];
+          process.stdin.on("data", (chunk) => chunks.push(chunk));
+          process.stdin.on("end", () => {
+            const plaintext = Buffer.concat(chunks);
+            const key = crypto.randomBytes(32);
+            const nonce = crypto.randomBytes(12);
+            const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
+            const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+            const wrappedKey = crypto.publicEncrypt({
+              key: publicKey,
+              padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+              oaepHash: "sha256",
+            }, key);
+            const envelope = {
+              algorithm: "RSA-OAEP-SHA256+A256GCM",
+              recipient_key_sha256: crypto.createHash("sha256").update(crypto.createPublicKey(publicKey).export({type:"spki", format:"der"})).digest("hex"),
+              wrapped_key_b64: wrappedKey.toString("base64"),
+              nonce_b64: nonce.toString("base64"),
+              tag_b64: cipher.getAuthTag().toString("base64"),
+              ciphertext_b64: ciphertext.toString("base64"),
+            };
+            fs.writeFileSync(outputPath, JSON.stringify(envelope), {mode: 0o600, flag: "wx"});
+            key.fill(0);
+            plaintext.fill(0);
+          });
+          JS
+          python3 - <<'PY' | env -u CF_BOOTSTRAP_ADMIN_TOKEN node "$RUNNER_TEMP/cf-handoff/encrypt.js" "$RUNNER_TEMP/cf-handoff/recipient.pem" "$RUNNER_TEMP/cf-handoff/handoff.enc.json"
+          import datetime
+          import hashlib
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.request
+
+          account = "6a1fc1c626fc2628823e60b9db01f5cd"
+          run_id = os.environ["GH_RUN_ID"]
+          mode = os.environ["MODE"]
+          expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=7)
+          expires_on = expires.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+          if mode == "r2-2564-mint":
+              bucket = "corelink-b068-r2-isolated-20260926-staging"
+              group_id = "2efd5506f9c8494dacb1fa10a3e7d5b6"
+              token_name = f"corelink-2564-r2-{run_id}"
+              resource = f"com.cloudflare.edge.r2.bucket.{account}_default_{bucket}"
+              group_name = "Workers R2 Storage Bucket Item Write"
+              environment = "real-integration"
+          elif mode == "worker-1700-mint":
+              bucket = None
+              group_id = "e086da7e2179491d91ee5f35b3ca210a"
+              token_name = f"corelink-1700-worker-{run_id}"
+              resource = f"com.cloudflare.api.account.{account}"
+              group_name = "Workers Scripts Write"
+              environment = "staging"
+          else:
+              raise SystemExit("unsupported allowlisted mode")
+          # Official R2 group/resource docs: https://developers.cloudflare.com/r2/api/tokens/
+          # Official Workers Scripts Write ID and account scope:
+          # https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/subresources/permission_groups/methods/get/
+          body = {
+              "name": token_name,
+              "expires_on": expires_on,
+              "policies": [{
+                  "effect": "allow",
+                  "resources": {resource: "*"},
+                  "permission_groups": [{"id": group_id}],
+              }],
+          }
+          request = urllib.request.Request(
+              "https://api.cloudflare.com/client/v4/user/tokens",
+              data=json.dumps(body).encode(),
+              method="POST",
+              headers={"Authorization": f"Bearer {os.environ['CF_BOOTSTRAP_ADMIN_TOKEN']}", "Content-Type": "application/json"},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=25) as response:
+                  result = json.load(response)
+          except urllib.error.HTTPError as error:
+              print(json.dumps({"provider_status": error.code, "token_created": False}), file=sys.stderr)
+              raise SystemExit("Cloudflare token creation failed; response body suppressed")
+          if not isinstance(result, dict) or result.get("success") is not True:
+              raise SystemExit("Cloudflare token creation did not return success")
+          item = result.get("result") or {}
+          value = item.get("value")
+          token_id = item.get("id")
+          if not isinstance(token_id, str) or not token_id:
+              raise SystemExit("Cloudflare token response omitted identifier")
+          state = {"token_id": token_id, "token_name": token_name}
+          fd = os.open(os.environ["TOKEN_STATE_FILE"], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(fd, "w") as state_file:
+              json.dump(state, state_file)
+          if not isinstance(value, str) or not value:
+              raise SystemExit("Cloudflare token response omitted secret value")
+          if mode == "r2-2564-mint":
+              secret_values = {
+                  "R2_S3_ACCESS_KEY_ID": token_id,
+                  "R2_S3_SECRET_ACCESS_KEY": hashlib.sha256(value.encode()).hexdigest(),
+              }
+          else:
+              secret_values = {"STAGING_CF_WORKER_API_TOKEN": value}
+          payload = {
+              "schema": "corelink-cloudflare-token-handoff-v1",
+              "mode": mode,
+              "environment": environment,
+              "github_run_id": run_id,
+              "github_sha": os.environ["GITHUB_SHA"],
+              "account_id": account,
+              "bucket": bucket,
+              "permission_group": group_name,
+              "permission_group_id": group_id,
+              "resource": resource,
+              "expires_on": expires_on,
+              "token_id": token_id,
+              "secret_values": secret_values,
+          }
+          sys.stdout.write(json.dumps(payload, separators=(",", ":")))
+          PY
+          unset CF_BOOTSTRAP_ADMIN_TOKEN
+          test -s "$RUNNER_TEMP/cf-handoff/handoff.enc.json"
+          rm -f "$RUNNER_TEMP/cf-handoff/recipient.pem"
+
+      - name: Upload ciphertext only
+        id: upload_ciphertext
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cloudflare-${{ inputs.mode }}-handoff-${{ github.run_id }}
+          path: ${{ runner.temp }}/cf-handoff/handoff.enc.json
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Check for the encrypted handoff after any prior failure
+        id: check_handoff
+        if: always()
+        shell: bash
+        run: |
+          if [[ -s "$RUNNER_TEMP/cf-handoff/handoff.enc.json" ]]; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Retry ciphertext upload once after a transient artifact error
+        id: upload_recovery
+        if: failure() && steps.check_handoff.outputs.exists == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cloudflare-${{ inputs.mode }}-handoff-${{ github.run_id }}-recovery
+          path: ${{ runner.temp }}/cf-handoff/handoff.enc.json
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Revoke the run-scoped token when no encrypted handoff is available
+        if: always() && steps.upload_ciphertext.outcome != 'success' && steps.upload_recovery.outcome != 'success'
+        env:
+          MODE: ${{ inputs.mode }}
+          CF_BOOTSTRAP_ADMIN_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          TOKEN_STATE_FILE: ${{ runner.temp }}/cf-handoff/token-id.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -s "$TOKEN_STATE_FILE" ]]; then
+            echo '{"token_revoked":false,"reason":"no-created-token-marker"}'
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+
+          with open(os.environ["TOKEN_STATE_FILE"], encoding="utf-8") as state_file:
+              state = json.load(state_file)
+          token_id = state.get("token_id")
+          token_name = state.get("token_name")
+          if not isinstance(token_id, str) or not re.fullmatch(r"(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})", token_id):
+              raise SystemExit("created token identifier did not match expected format")
+          allowed_prefix = "corelink-2564-r2-" if os.environ["MODE"] == "r2-2564-mint" else "corelink-1700-worker-"
+          if not isinstance(token_name, str) or not token_name.startswith(allowed_prefix):
+              raise SystemExit("created token name escaped the selected issue prefix")
+          request = urllib.request.Request(
+              f"https://api.cloudflare.com/client/v4/user/tokens/{token_id}",
+              method="DELETE",
+              headers={"Authorization": f"Bearer {os.environ['CF_BOOTSTRAP_ADMIN_TOKEN']}", "Content-Type": "application/json"},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=25) as response:
+                  result = json.load(response)
+                  status = response.status
+          except urllib.error.HTTPError as error:
+              print(json.dumps({"provider_status": error.code, "token_revoked": False}), file=sys.stderr)
+              raise SystemExit("Cloudflare token revocation failed; response body suppressed")
+          if not isinstance(result, dict) or result.get("success") is not True:
+              raise SystemExit("Cloudflare token revocation did not return success")
+          print(json.dumps({"provider_status": status, "token_revoked": True, "token_name": token_name}, sort_keys=True))
+          PY
+          unset CF_BOOTSTRAP_ADMIN_TOKEN
+
+      - name: Remove temporary handoff files
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/cf-handoff"
