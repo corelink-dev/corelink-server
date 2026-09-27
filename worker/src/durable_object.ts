@@ -24,6 +24,7 @@
  *   - Constant-time PAT compare via crypto.subtle.timingSafeEqual.
  *   - Container is started fresh per cold-start; idle timeout triggers stop.
  */
+import { DurableObject as CloudflareDurableObject } from "cloudflare:workers";
 import {
   emitLifecycleEvent,
   hashForLog,
@@ -36,6 +37,7 @@ import {
   unavailablePath,
 } from "./durable_object_probes.js";
 import { startContainer as runStartContainer } from "./durable_object_start.js";
+import { installD1BindingProxy } from "./staging_d1_binding_proxy.js";
 import type {
   D1ProbeBinding,
   D1PathProbeResult,
@@ -170,7 +172,7 @@ const STALE_STARTING_MS = STARTUP_TIMEOUT_MS + 30_000;
 // Hashing helpers (INV-NO-PII-IN-LOGS)
 // ──────────────────────────────────────────────────────────────────────────────
 
-export class CoreLinkServer implements DurableObject {
+export class CoreLinkServer extends CloudflareDurableObject<Env> implements DurableObject {
   private readonly state: DurableObjectState;
   private readonly storage: DurableObjectStorage;
   private readonly env: Env;
@@ -185,6 +187,7 @@ export class CoreLinkServer implements DurableObject {
   private doIdHash = "";
 
   constructor(state: DurableObjectState, env: Env, now: () => number = Date.now) {
+    super(state, env);
     this.state = state;
     this.storage = state.storage;
     this.env = env;
@@ -522,10 +525,21 @@ export class CoreLinkServer implements DurableObject {
         armInactivityTimeout: (container, id) => this.armInactivityTimeout(container, id),
         waitForContainerHealth: (id, container) => this.waitForContainerHealth(id, container),
         destroyContainer: (id) => this.destroyContainer(id),
+        installStagingD1BindingProxy: () => this.installStagingD1BindingProxy(),
         setAlarm: (when) => this.storage.setAlarm(when),
       },
       requestId,
     );
+  }
+
+  private async installStagingD1BindingProxy(): Promise<void> {
+    const localExports = (this.ctx as unknown as {
+      exports: {
+        StagingD1BindingProxy: (options: { props: Record<string, never> }) => Fetcher;
+      };
+    }).exports;
+    const worker = localExports.StagingD1BindingProxy({ props: {} });
+    await installD1BindingProxy(this.state.container, worker);
   }
 
   /** Wait briefly for a container in "starting" state to become ready. */

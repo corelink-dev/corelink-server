@@ -28,6 +28,7 @@ export interface StartContainerContext {
   armInactivityTimeout(container: Container, requestId: string): Promise<void>;
   waitForContainerHealth(requestId: string, container: Container): Promise<boolean>;
   destroyContainer(requestId: string): Promise<void>;
+  installStagingD1BindingProxy(): Promise<void>;
   setAlarm(when: number): Promise<void>;
 }
 
@@ -90,6 +91,11 @@ export async function startContainer(
     await ctx.transitionStatus("starting", requestId);
 
     try {
+      if (ctx.env.ENVIRONMENT === "staging") {
+        // Fail the boot before it creates sockets if the internal D1 binding
+        // interceptor cannot be installed. Staging never uses an API-token fallback.
+        await ctx.installStagingD1BindingProxy();
+      }
       // Start container — returns void; container begins asynchronously
       container.start({
         // Egress required (P0-5): the native container reaches R2 (S3 API) and
@@ -108,7 +114,8 @@ export async function startContainer(
           R2_S3_ACCESS_KEY_ID: ctx.env.R2_S3_ACCESS_KEY_ID ?? "",
           R2_S3_SECRET_ACCESS_KEY: ctx.env.R2_S3_SECRET_ACCESS_KEY ?? "",
           CLOUDFLARE_ACCOUNT_ID: ctx.env.CLOUDFLARE_ACCOUNT_ID ?? "",
-          CF_API_TOKEN: ctx.env.CF_API_TOKEN ?? "",
+          CF_API_TOKEN: ctx.env.ENVIRONMENT === "staging" ? "" : (ctx.env.CF_API_TOKEN ?? ""),
+          D1_BINDING_PROXY: ctx.env.ENVIRONMENT === "staging" ? "1" : "",
           D1_DATABASE_ID: ctx.env.D1_DATABASE_ID ?? "",
           // Stream-5: internal PAT mint route gate secrets.
           // Container mounts `/_internal/pat/mint` only when both are non-empty.
