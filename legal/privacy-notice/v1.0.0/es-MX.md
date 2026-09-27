@@ -105,7 +105,7 @@ Tiempo de respuesta: hasta 20 días hábiles (acceso); 15 días hábiles (rectif
 
 Implementamos las siguientes medidas de seguridad:
 
-- Cifrado en tránsito (TLS 1.3).
+- Cifrado en tránsito (TLS 1.2 mínimo; TLS 1.3 se negocia cuando sea compatible).
 - Cifrado en reposo (R2 + Neon).
 - Autenticación multifactor (WebAuthn FIDO2).
 - Registro de auditoría append-only con cadena de hash (BLAKE3).

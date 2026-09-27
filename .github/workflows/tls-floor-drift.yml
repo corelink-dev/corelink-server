@@ -1,8 +1,9 @@
 name: B-035 single read-only TLS floor probe
 
-# The probe is deliberately manual-only. It reads min_tls_version once and
-# captures TLS handshakes for concrete source-bound ingress hostnames. It
-# sends no application request and has no provider write path.
+# The probe is deliberately manual-only. It reads min_tls_version once,
+# captures TLS handshakes for concrete source-bound ingress hostnames, and
+# performs read-only sccache PROPFIND, Bazel REAPI GET, and Turborepo status
+# operations. It has no cache-write or provider-write path.
 on:
   workflow_dispatch:
     inputs:
@@ -36,6 +37,8 @@ jobs:
         continue-on-error: true
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CORELINK_SCCACHE_TOKEN: ${{ secrets.CORELINK_SCCACHE_TOKEN }}
+          CORELINK_CANARY_PAT: ${{ secrets.CORELINK_CANARY_PAT }}
         run: python3 scripts/probe_b035_tls_handshakes.py --live --revision "$GITHUB_SHA" > "$RUNNER_TEMP/b035-tls-probe.json"
 
       - name: Upload redacted B-035 receipt
@@ -50,4 +53,4 @@ jobs:
         if: always()
         env:
           B035_REPORT: ${{ runner.temp }}/b035-tls-probe.json
-        run: python3 -c 'import json, os, pathlib, sys; p=json.loads(pathlib.Path(os.environ["B035_REPORT"]).read_text()); print("zone floor:", p["zone_floor"].get("status"), p["zone_floor"].get("value", "")); print("source validation:", p["source_validation"].get("status")); sys.exit(0 if p["zone_floor"].get("status") in {"match", "drift"} and p["source_validation"].get("status") == "all_markers_match" else 1)'
+        run: python3 -c 'import json, os, pathlib, sys; p=json.loads(pathlib.Path(os.environ["B035_REPORT"]).read_text()); ops=p.get("client_operations", []); print("zone floor:", p["zone_floor"].get("status"), p["zone_floor"].get("value", "")); print("source validation:", p["source_validation"].get("status")); print("read-only client operations:", [(x.get("client"), x.get("status"), x.get("http_status")) for x in ops]); sys.exit(0 if p["zone_floor"].get("status") == "match" and p["source_validation"].get("status") == "all_markers_match" and len(ops) == 3 and all(x.get("status") == "success" for x in ops) else 1)'
