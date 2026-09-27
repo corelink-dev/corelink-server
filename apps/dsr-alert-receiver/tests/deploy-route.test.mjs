@@ -219,6 +219,17 @@ describe("B-216 protected receiver route admission", () => {
   it("accepts only the exact empty or migrated schema and rejects unknown/partial state", async () => {
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
     expect(validateReceiptSchema([], migration)).toBe("empty");
+    const reservedD1Table = { name: "_cf_KV", sql: "CREATE TABLE _cf_KV (key TEXT PRIMARY KEY, value BLOB)" };
+    expect(validateReceiptSchema([reservedD1Table], migration)).toBe("empty");
+    expect(validateReceiptSchema([
+      reservedD1Table,
+      { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" },
+      { name: "dsr_alert_receipts", sql: migration },
+    ], migration)).toBe("applied");
+    errorCode(() => validateReceiptSchema([
+      reservedD1Table,
+      { name: "unexpected_internal_table", sql: "CREATE TABLE unexpected_internal_table (id TEXT)" },
+    ], migration), "database_schema_unknown");
     errorCode(() => validateReceiptSchema([{ name: "unknown_table", sql: "CREATE TABLE unknown_table (id TEXT)" }], migration), "database_schema_unknown");
     errorCode(() => validateReceiptSchema([{ name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" }], migration), "database_migration_state_unknown");
     errorCode(() => validateReceiptSchema([

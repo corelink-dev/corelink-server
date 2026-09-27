@@ -80,7 +80,9 @@ const normalizeSql = (sql) => sql.toLowerCase()
 
 export function validateReceiptSchema(rows, migration) {
   if (!Array.isArray(rows)) fail("database_schema_ambiguous");
-  const userTables = rows.filter((row) => typeof row?.name === "string" && !row.name.startsWith("sqlite_"));
+  // Cloudflare D1 exposes this reserved internal table in sqlite_master; do not
+  // generalize the exclusion to other provider-looking names.
+  const userTables = rows.filter((row) => typeof row?.name === "string" && !row.name.startsWith("sqlite_") && row.name !== "_cf_KV");
   const migrationTable = userTables.find((row) => row.name === "d1_migrations");
   const receiptTable = userTables.find((row) => row.name === "dsr_alert_receipts");
   if (userTables.some((row) => !["d1_migrations", "dsr_alert_receipts"].includes(row.name))) fail("database_schema_unknown");
