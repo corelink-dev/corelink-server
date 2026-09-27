@@ -1795,7 +1795,7 @@ last-verified: 2026-09-06
 ```backlog
 id: B-314
 repo: corelink-server
-owner: owner
+owner: tl
 status: done
 source-document: "PR containment audit #1490/#1506 addendum"
 source-locator: "apps/docs/docs/explanation/privacy/gdpr.mdx:191-200; four published locale copies"
