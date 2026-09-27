@@ -54,3 +54,5 @@ jobs:
         run: |
           cargo test --locked -p corelink-server --lib storage::staging_load_test_ownership::tests:: -- --nocapture
           cargo test --locked -p corelink-server --lib routes::staging_load_test_teardown::tests:: -- --nocapture
+          cargo test --locked -p corelink-server --lib webhook_inbox_d1::tests::verified_admission_context_registers_the_inbox_in_its_d1_batch -- --nocapture
+          cargo test --locked -p corelink-server --lib signup_d1_http::tests:: -- --nocapture

@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from validate_load_teardown_receipt import TeardownReceiptError, validate
+from verify_issue_2584_teardown import verify_atomic_locator_registration
 
 def receipt() -> dict[str, object]:
     resources: dict[str, dict[str, int]] = {}
@@ -41,6 +42,20 @@ class TeardownContractTests(unittest.TestCase):
         self.assertIn('"effect_key"', source)
         self.assertIn("WHERE event_id=?1 AND effect_key=?2 RETURNING event_id", source)
         self.assertIn("WHERE event_id=?1 AND effect_key=?2\"", source)
+
+    def test_owned_writers_fail_the_contract_without_an_atomic_locator(self) -> None:
+        webhook = (ROOT / "crates/corelink-container/src/webhook_inbox_d1.rs").read_text()
+        signup = (ROOT / "crates/corelink-container/src/signup_d1_http.rs").read_text()
+        with self.assertRaises(AssertionError):
+            verify_atomic_locator_registration(
+                webhook.replace("                locator,\n                unique_guard,", "                unique_guard,"),
+                signup,
+            )
+        with self.assertRaises(AssertionError):
+            verify_atomic_locator_registration(
+                webhook,
+                signup.replace("                ownership,\n                locator,", "                ownership,"),
+            )
 
 if __name__ == "__main__":
     unittest.main()

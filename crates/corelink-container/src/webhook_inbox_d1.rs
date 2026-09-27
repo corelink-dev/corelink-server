@@ -1200,7 +1200,7 @@ mod tests {
                     statements.len(),
                     match request_index {
                         0 => 2,
-                        1 | 2 => 5,
+                        1 | 2 => 6,
                         _ => 6,
                     }
                 );
@@ -1213,7 +1213,18 @@ mod tests {
                         .as_str()
                         .unwrap()
                         .contains("staging_load_test_resources"));
-                    assert!(statements[4]["sql"]
+                    assert_eq!(statements[3]["sql"], json!("INSERT INTO staging_load_test_teardown_locators (run_id, scenario, resource_class, receipt_ref, locator_kind, locator_json, registered_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"));
+                    assert_eq!(statements[3]["params"][0], json!("123"));
+                    assert_eq!(statements[3]["params"][1], json!("webhook"));
+                    assert_eq!(statements[3]["params"][2], json!("webhook_inbox"));
+                    assert_eq!(statements[3]["params"][3], statements[2]["params"][3]);
+                    assert_eq!(statements[3]["params"][4], json!("webhook_inbox_v1"));
+                    assert_eq!(
+                        statements[3]["params"][5],
+                        json!("{\"event_id\":\"evt_owned\"}")
+                    );
+                    assert_eq!(statements[3]["params"][6], json!(10));
+                    assert!(statements[5]["sql"]
                         .as_str()
                         .unwrap()
                         .contains("SELECT resource.receipt_ref"));
@@ -1227,6 +1238,21 @@ mod tests {
                         .as_str()
                         .unwrap()
                         .contains("staging_load_test_resources"));
+                    assert_eq!(statements[3]["sql"], json!("INSERT INTO staging_load_test_teardown_locators (run_id, scenario, resource_class, receipt_ref, locator_kind, locator_json, registered_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"));
+                    assert_eq!(statements[3]["params"][0], json!("123"));
+                    assert_eq!(statements[3]["params"][1], json!("webhook"));
+                    assert_eq!(statements[3]["params"][2], json!("webhook_effect"));
+                    assert_eq!(statements[3]["params"][3], statements[2]["params"][3]);
+                    assert_eq!(statements[3]["params"][4], json!("webhook_effect_v1"));
+                    assert_eq!(
+                        statements[3]["params"][5],
+                        json!("{\"effect_key\":\"effect-key\",\"event_id\":\"evt_owned\"}")
+                    );
+                    assert_eq!(statements[3]["params"][6], json!(11));
+                    assert!(statements[5]["sql"]
+                        .as_str()
+                        .unwrap()
+                        .contains("SELECT resource.receipt_ref"));
                 }
                 if request_index == 3 {
                     assert!(statements[0]["sql"]
@@ -1249,7 +1275,9 @@ mod tests {
                             || (request_index == 2 && index == 0)
                             || (request_index == 3 && (index == 0 || index == 2)) {
                             vec![serde_json::json!({"event_id": "evt_owned"})]
-                        } else if (request_index == 1 || request_index == 2 || request_index == 3) && index == 4 {
+                        } else if (request_index == 1 || request_index == 2) && index == 5 {
+                            vec![serde_json::json!({"receipt_ref": "a".repeat(64)})]
+                        } else if request_index == 3 && index == 4 {
                             vec![serde_json::json!({"receipt_ref": "a".repeat(64)})]
                                 } else { vec![] },
                                 "success": true
