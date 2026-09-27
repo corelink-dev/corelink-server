@@ -4,8 +4,8 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 266
-workflow-paths-sha256: 0a1739cd11943b5a8f60e6e992e9108a6e1fde531f45cb4ec3166f2eadb67ceb
+workflow-count: 267
+workflow-paths-sha256: 0b6658f15ed3169e6b4399c5007e548dd6e9aef32e9541fa90151525a79299d3
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -190,6 +190,7 @@ workflow-paths-sha256: 0a1739cd11943b5a8f60e6e992e9108a6e1fde531f45cb4ec3166f2ea
 .github/workflows/issue-2581-dsr-audit.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2582-signup-ownership.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2583-byok-ownership.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2584-teardown-receipt.yml | WP-B113 | owned
 .github/workflows/issue-2586-windows-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2586-windows-readiness.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2610-mutants-failure-receipt.yml | LEAD-BLOCKED | blocked
