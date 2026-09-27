@@ -439,7 +439,7 @@ def _check_runtime(workflow: str) -> None:
     for marker in ("github.event.pull_request.base.sha", "git diff --name-only", "git diff --unified=0", "expected_paths = [", "sorted(changed_paths) != sorted(expected_paths)"):
         if marker not in workflow:
             raise VerificationError(f"{WORKFLOW}: exact-head/path admission marker missing: {marker}")
-    for marker in ("PRIVATE KEY", "gh[pousr]_", "AKIA[0-9A-Z]{16}", "chr(64)", "[A-Z0-9.-]+\\.[A-Z]{2,}"):
+    for marker in ("PRIVATE KEY", "gh[pousr]_", "AKIA[0-9A-Z]{16}", "chr(64)", "[A-Z0-9.-]+\\.[A-Z]{2,}", "line[1:]", "lowercase_email_fixture", "pytest_decorator_fixture"):
         if marker not in workflow:
             raise VerificationError(f"{WORKFLOW}: redaction scan is missing marker: {marker}")
     if "test " not in workflow or "git rev-parse HEAD" not in workflow or "HEAD_SHA" not in workflow:
@@ -519,6 +519,8 @@ def mutation_checks(root: Path = ROOT) -> int:
     _must_reject("runtime checkout action pin removal", root, {WORKFLOW: originals[WORKFLOW].replace(CHECKOUT_ACTION, "uses: actions/checkout@v7", 1)})
     count += 1
     _must_reject("runtime email redaction pattern removal", root, {WORKFLOW: originals[WORKFLOW].replace("chr(64)", "chr(0)", 1)})
+    count += 1
+    _must_reject("runtime email scanner plus-prefix handling mutation", root, {WORKFLOW: originals[WORKFLOW].replace("pattern.search(line[1:])", "pattern.search(line)", 1)})
     count += 1
     command = "python3 -S scripts/verify_b314_gdpr_sigstore.py --self-test"
     _must_reject("runtime self-test duplication", root, {WORKFLOW: originals[WORKFLOW].replace(command, command + "\n          " + command, 1)})

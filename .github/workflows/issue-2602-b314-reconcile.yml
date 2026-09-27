@@ -69,6 +69,11 @@ jobs:
               ("email", re.compile(r"[A-Z0-9._%+-]+" + chr(64) + r"[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)),
               ("us-ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
           ]
+          email_pattern = dict(patterns)["email"]
+          lowercase_email_fixture = "person" + chr(64) + "example.com"
+          pytest_decorator_fixture = "@pytest.mark.parametrize"
+          if not email_pattern.search(lowercase_email_fixture) or email_pattern.search(pytest_decorator_fixture):
+              raise SystemExit("redaction scanner email-control self-test failed")
           current_path = "<unknown>"
           new_line_number = None
           for line in additions.splitlines():
@@ -82,7 +87,7 @@ jobs:
                   continue
               if line.startswith("+") and not line.startswith("+++"):
                   for category, pattern in patterns:
-                      if pattern.search(line):
+                      if pattern.search(line[1:]):
                           location = f"{current_path}:{new_line_number}" if new_line_number is not None else current_path
                           raise SystemExit(f"redaction scan found category={category} at {location}")
                   if new_line_number is not None:
