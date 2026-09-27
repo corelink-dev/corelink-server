@@ -118,10 +118,6 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-#[path = "signup_store.rs"]
-mod signup_store;
-pub use signup_store::{InMemorySignupStore, PilotSignupRecord, SignupStore};
-
 use crate::wall_clock::{default_wall_clock, WallClock};
 
 /// Canonical pilot-signup route path. The `:token` segment is the
@@ -737,6 +733,7 @@ pub fn router(state: SignupRouteState) -> Router {
 #[path = "signup_support.rs"]
 mod support;
 use support::{extract_client_ip, token_prefix, PRE_AUTH_TENANT};
+pub use support::{InMemorySignupStore, PilotSignupRecord, SignupStore};
 
 /// Pilot signup route handler.
 #[allow(clippy::too_many_lines, reason = "single-handler route surface")]
