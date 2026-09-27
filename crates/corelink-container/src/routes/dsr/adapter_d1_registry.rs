@@ -131,6 +131,10 @@ pub(super) const ALL_TENANT_KEYED_TABLES: &[&str] = &[
     "cas_retention",
     "abuse_score_history",
     "session_exchange_throttle",
+    // Migration 0151's exact-run staging ownership marker is append-only:
+    // its UPDATE/DELETE triggers preserve the synthetic-tenant witness for
+    // staging load-test reconciliation, so the DSR registry retains it too.
+    "staging_load_test_synthetic_tenants",
     // CAS-plane-owned
     "blob_meta",
     "ac_meta",
