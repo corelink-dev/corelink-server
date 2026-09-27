@@ -21,16 +21,70 @@ export const TARGET = Object.freeze({
 });
 
 export class RouteError extends Error {
-  constructor(code) {
+  constructor(code, providerFailure = null) {
     super(code);
     this.name = "RouteError";
     this.code = code;
+    this.providerFailure = providerFailure && sanitizeProviderFailure(providerFailure);
   }
 }
 
 const fail = (code) => { throw new RouteError(code); };
 const isUuid = (value) => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const D1_PAGE_SIZE = 100;
+
+const PROVIDER_FAILURE_CLASSES = new Set([
+  "provider_error_code",
+  "ambiguous_provider_error_code",
+  "process_exit",
+  "spawn_failure",
+]);
+
+function boundedExitCode(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 255 ? value : null;
+}
+
+function sanitizeProviderFailure(value) {
+  const failureClass = PROVIDER_FAILURE_CLASSES.has(value?.provider_failure_class)
+    ? value.provider_failure_class
+    : "spawn_failure";
+  const providerCode = failureClass === "provider_error_code"
+    && Number.isInteger(value?.provider_error_code)
+    && value.provider_error_code >= 0
+    && value.provider_error_code <= 999999
+    ? value.provider_error_code
+    : null;
+  return Object.freeze({
+    provider_failure_class: failureClass,
+    provider_error_code: providerCode,
+    process_exit_code: boundedExitCode(value?.process_exit_code),
+  });
+}
+
+export function classifyWranglerFailure(result) {
+  const processExitCode = boundedExitCode(result?.status);
+  if (result?.error) {
+    return sanitizeProviderFailure({ provider_failure_class: "spawn_failure", process_exit_code: processExitCode });
+  }
+  const output = [result?.stdout, result?.stderr].filter((part) => typeof part === "string").join("\n");
+  const markerPattern = /\[code:\s*([^\]\r\n]*)\]/gi;
+  const markers = [...output.matchAll(markerPattern)];
+  const markerPrefixes = [...output.matchAll(/\[code:/gi)];
+  if (markers.length === 1 && markerPrefixes.length === 1 && /^\d{1,6}$/.test(markers[0][1])) {
+    return sanitizeProviderFailure({
+      provider_failure_class: "provider_error_code",
+      provider_error_code: Number(markers[0][1]),
+      process_exit_code: processExitCode,
+    });
+  }
+  if (markerPrefixes.length > 0) {
+    return sanitizeProviderFailure({
+      provider_failure_class: "ambiguous_provider_error_code",
+      process_exit_code: processExitCode,
+    });
+  }
+  return sanitizeProviderFailure({ provider_failure_class: "process_exit", process_exit_code: processExitCode });
+}
 
 export function validateDispatch(context) {
   if (context.repository !== TARGET.repository) fail("repository_mismatch");
@@ -233,7 +287,9 @@ function runWrangler(args, { cwd, home, apiToken, receiverToken, input } = {}) {
     },
     maxBuffer: 8 * 1024 * 1024,
   });
-  if (result.error || result.status !== 0) fail("provider_command_failed");
+  if (result.error || result.status !== 0) {
+    throw new RouteError("provider_command_failed", classifyWranglerFailure(result));
+  }
   return result.stdout;
 }
 
@@ -379,6 +435,9 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     receipt.status = "failed";
     receipt.failed_stage = stage;
     receipt.failure_code = error instanceof RouteError ? error.code : "route_failed_closed";
+    if (stage === "worker_version_upload" && error instanceof RouteError && error.providerFailure) {
+      Object.assign(receipt, error.providerFailure);
+    }
     if (workerMutationStarted && tempConfig) {
       receipt.rollback_target = priorWorkerVersion ?? "absent";
       try {

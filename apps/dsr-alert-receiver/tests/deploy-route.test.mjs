@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   RouteError,
   TARGET,
+  classifyWranglerFailure,
   makeCloudflareApi,
   listNamedD1Databases,
   normalizeDeploymentList,
@@ -43,6 +44,67 @@ const errorCode = (fn, code) => {
 };
 
 describe("B-216 protected receiver route admission", () => {
+  it("classifies Wrangler failures into bounded numeric-only receipt fields", () => {
+    const sensitive = `${goodContext.apiToken} ${goodContext.receiverToken}`;
+    const providerFailure = classifyWranglerFailure({
+      status: 1,
+      stdout: `upload failed [code: 10021] ${sensitive}`,
+      stderr: `diagnostic ${sensitive}`,
+    });
+    expect(providerFailure).toEqual({
+      provider_failure_class: "provider_error_code",
+      provider_error_code: 10021,
+      process_exit_code: 1,
+    });
+    expect(JSON.stringify(providerFailure)).not.toContain(sensitive);
+
+    expect(classifyWranglerFailure({ status: 17, stdout: `opaque ${sensitive}`, stderr: "" })).toEqual({
+      provider_failure_class: "process_exit",
+      provider_error_code: null,
+      process_exit_code: 17,
+    });
+    for (const output of [
+      "[code: nope]",
+      "[code: 10021] [code: 10022]",
+      "[code: 1234567]",
+      "[code: 10021",
+      "[code: 10021] [code:",
+    ]) {
+      expect(classifyWranglerFailure({ status: 1, stdout: output, stderr: "" })).toEqual({
+        provider_failure_class: "ambiguous_provider_error_code",
+        provider_error_code: null,
+        process_exit_code: 1,
+      });
+    }
+    const spawnFailure = classifyWranglerFailure({
+      error: new Error(`spawn failure ${sensitive}`),
+      status: null,
+      stdout: sensitive,
+      stderr: sensitive,
+    });
+    expect(spawnFailure).toEqual({
+      provider_failure_class: "spawn_failure",
+      provider_error_code: null,
+      process_exit_code: null,
+    });
+    expect(JSON.stringify(spawnFailure)).not.toContain(sensitive);
+
+    const untrustedFailure = new RouteError("provider_command_failed", {
+      provider_failure_class: "process_exit",
+      provider_error_code: 10021,
+      process_exit_code: 1,
+      extra_sensitive: sensitive,
+    });
+    expect(untrustedFailure.message).toBe("provider_command_failed");
+    expect(untrustedFailure.providerFailure).toEqual({
+      provider_failure_class: "process_exit",
+      provider_error_code: null,
+      process_exit_code: 1,
+    });
+    expect(JSON.stringify(untrustedFailure.providerFailure)).not.toContain(sensitive);
+    expect(JSON.stringify(untrustedFailure)).not.toContain(sensitive);
+  });
+
   it("accepts only canonical repository, main ref, exact checkout SHA, and named protected secrets", () => {
     expect(validateDispatch(goodContext)).toBe(goodContext.sha);
     errorCode(() => validateDispatch({ ...goodContext, repository: "fork/corelink-server" }), "repository_mismatch");
