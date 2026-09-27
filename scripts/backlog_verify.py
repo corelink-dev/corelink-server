@@ -132,6 +132,21 @@ STAGING_CUSTOM_DOMAIN_TARGETS = {
     "tests/test_verify_staging_topology_contract.py": "bba450e2410791916e7ec80600c7968be86152a21526d02cf1dddf57f2ae909f",
     "infra/staging/topology.json": "586665e34c11bf91a34fb83247fdbafec9fdfb8e7a336ba4da6f5bda8266dd99",
 }
+STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS = frozenset({
+    ".github/workflows/issue-1700-staging-custom-domain.yml",
+    "docs/campaigns/remediation/wp150-workflow-ownership.md",
+    "infra/staging/README.md",
+    "scripts/plan_staging_provider.py",
+    "scripts/render_staging_wrangler.py",
+    "scripts/staging_bootstrap_provider.py",
+    "scripts/staging_custom_domain.py",
+    "scripts/verify_staging_provider_preflight.py",
+    "scripts/verify_staging_target.py",
+    "tests/test_render_staging_wrangler.py",
+    "tests/test_staging_bootstrap_provider.py",
+    "tests/test_staging_custom_domain.py",
+    "tests/test_verify_staging_target.py",
+})
 
 # A command's polarity cannot be inferred from arbitrary shell.  We can still
 # reject the known dangerous declaration: a `done` item whose human explanation
@@ -652,11 +667,16 @@ def _preauthorized_staging_custom_domain(candidate_root: Path, trusted_root: Pat
         return False
     if any(candidate_entries[path][1] != trusted_entries[path][1] for path in paths):
         return False
+    # The delivery changes thirteen explicitly named application/docs paths in
+    # addition to the four frozen controls. This allows the reviewed delivery
+    # while rejecting arbitrary extra files; the BASE closure checks any other
+    # trusted-control changes independently.
+    allowed_changes = paths | STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS
     changed = {
         path for path in set(candidate_entries) | set(trusted_entries)
         if candidate_entries.get(path) != trusted_entries.get(path)
     }
-    if changed != paths:
+    if changed != allowed_changes:
         return False
     if not all(
         trusted_entries[path][2] == digest

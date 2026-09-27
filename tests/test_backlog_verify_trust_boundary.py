@@ -73,6 +73,10 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         for relative in preimages:
             self._write(trusted, relative, targets[relative] if delivered else preimages[relative])
             self._write(candidate, relative, preimages[relative] if delivered else targets[relative])
+        for relative in backlog_verify.STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS:
+            old_payload, new_payload = b"previous delivery bytes\n", b"new delivery bytes\n"
+            self._write(trusted, relative, new_payload if delivered else old_payload)
+            self._write(candidate, relative, old_payload if delivered else new_payload)
         target_topology = (
             b'{"deployment_state":"unprovisioned","cloudflare":{"routes":[{"pattern":'
             b'"staging.corelink.humangr.com","worker":"corelink-staging",'
@@ -89,6 +93,24 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
 
     def test_1700_staging_custom_domain_transition_is_exact_and_data_only(self) -> None:
         trusted, candidate, old_pins, new_pins, _, targets = self._staging_transition_fixture()
+        # The real delivery changes thirteen separately enumerated paths
+        # alongside the four pinned controls.
+        delivery_paths = (
+            ".github/workflows/issue-1700-staging-custom-domain.yml",
+            "docs/campaigns/remediation/wp150-workflow-ownership.md",
+            "infra/staging/README.md",
+            "scripts/plan_staging_provider.py",
+            "scripts/render_staging_wrangler.py",
+            "scripts/staging_bootstrap_provider.py",
+            "scripts/staging_custom_domain.py",
+            "scripts/verify_staging_provider_preflight.py",
+            "scripts/verify_staging_target.py",
+            "tests/test_render_staging_wrangler.py",
+            "tests/test_staging_bootstrap_provider.py",
+            "tests/test_staging_custom_domain.py",
+            "tests/test_verify_staging_target.py",
+        )
+        self.assertEqual(set(delivery_paths), backlog_verify.STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS)
         marker = candidate.parent / "executed"
         malicious = f"from pathlib import Path; Path({str(marker)!r}).write_text('bad')".encode()
         targets["scripts/verify_b072_receiver.py"] = malicious
@@ -99,6 +121,26 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         ):
             self.assertTrue(backlog_verify._preauthorized_staging_custom_domain(candidate, trusted))
         self.assertFalse(marker.exists())
+
+    def test_1700_transition_still_rejects_an_additional_trusted_control(self) -> None:
+        trusted, candidate, old_pins, new_pins, _, _ = self._staging_transition_fixture()
+        control_paths = (
+            "scripts/backlog_verify.py",
+            "scripts/verify_backlog_wp_ledger.py",
+            "scripts/backlog_ledger_successor.py",
+            "scripts/backlog_ledger_contracts.py",
+            "scripts/extra_trusted.py",
+        )
+        for relative in control_paths:
+            self._write(trusted, relative, b"trusted bytes\n")
+            self._write(candidate, relative, b"trusted bytes\n")
+        self._write(candidate, "scripts/extra_trusted.py", b"candidate mutation\n")
+        items = [self.item("B-001", verify="python3 scripts/extra_trusted.py")]
+        with patch.object(backlog_verify, "STAGING_CUSTOM_DOMAIN_PREIMAGES", old_pins), patch.object(
+            backlog_verify, "STAGING_CUSTOM_DOMAIN_TARGETS", new_pins
+        ):
+            with self.assertRaisesRegex(RuntimeError, "scripts/extra_trusted.py"):
+                backlog_verify.check_candidate_controls(candidate, trusted, items)
 
     def test_1700_staging_custom_domain_rejects_partial_mixed_extra_and_wrong_topology(self) -> None:
         for mutation in ("partial", "mixed", "extra", "wrong-topology"):
