@@ -49,6 +49,7 @@ struct HarnessCleanup {
     client: StripeRealClient,
     run_id: String,
     receipt_dir: PathBuf,
+    test_name: String,
     customers: Vec<String>,
     checkouts: Vec<(String, String)>,
     cleanup_failed: bool,
@@ -57,15 +58,23 @@ struct HarnessCleanup {
 impl HarnessCleanup {
     fn new(client: StripeRealClient) -> Self {
         let run_id = require_protected_stripe_run_id();
-        Self::with_receipt_dir(client, run_id, repo_receipt_dir())
+        let test_name = current_test_selector().expect("libtest test name must be available");
+        Self::with_receipt_dir(client, run_id, repo_receipt_dir(), test_name)
     }
 
-    fn with_receipt_dir(client: StripeRealClient, run_id: String, receipt_dir: PathBuf) -> Self {
+    fn with_receipt_dir(
+        client: StripeRealClient,
+        run_id: String,
+        receipt_dir: PathBuf,
+        test_name: String,
+    ) -> Self {
         assert!(safe_selector(&run_id, 80));
+        assert!(safe_selector(&test_name, 100));
         Self {
             client,
             run_id,
             receipt_dir,
+            test_name,
             customers: Vec::new(),
             checkouts: Vec::new(),
             cleanup_failed: false,
@@ -81,14 +90,10 @@ impl HarnessCleanup {
 
     fn receipt(&mut self, kind: &str, id: &str, status: &str) {
         let digest = hex::encode(Sha256::digest(id.as_bytes()));
-        let Some(test_name) = current_test_selector() else {
-            self.cleanup_failed = true;
-            return;
-        };
         let path = self.receipt_dir.join("cleanup.jsonl");
         let result = (|| -> std::io::Result<()> {
             let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-            writeln!(file, "{{\"run_id\":\"{}\",\"test\":\"{}\",\"kind\":\"{}\",\"id_sha256\":\"{}\",\"status\":\"{}\"}}", self.run_id, test_name, kind, digest, status)
+            writeln!(file, "{{\"run_id\":\"{}\",\"test\":\"{}\",\"kind\":\"{}\",\"id_sha256\":\"{}\",\"status\":\"{}\"}}", self.run_id, self.test_name, kind, digest, status)
         })();
         if result.is_err() {
             self.cleanup_failed = true;
@@ -609,6 +614,7 @@ mod cleanup_fault_injection {
         let receipt_dir =
             std::env::temp_dir().join(format!("stripe-cleanup-fault-{}", uuid_like()));
         std::fs::create_dir_all(&receipt_dir).expect("temp receipt dir");
+        let test_name = current_test_selector().expect("libtest test name");
         let result = runtime.block_on(async move {
             tokio::task::spawn_blocking(move || {
                 let panic_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
@@ -616,6 +622,7 @@ mod cleanup_fault_injection {
                         client,
                         "run-fault-1".into(),
                         receipt_dir.clone(),
+                        test_name,
                     );
                     guard.customer(customer_id);
                     panic!("injected assertion failure");
