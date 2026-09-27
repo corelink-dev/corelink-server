@@ -1053,6 +1053,29 @@ def test_v0009_candidate_cannot_replace_the_trusted_policy(tmp_path, monkeypatch
         ledger.backlog_verify.check_candidate_controls(candidate, base, [])
 
 
+def test_v0010_ledger_derives_only_the_pinned_full_state_delta():
+    policy = ledger._successor_policy()
+    base = "f" * 40
+    prior = (
+        "base-ref: b312a963122e9041f8a56e10127ef20e6367aea3\n"
+        "base-sha: b312a963122e9041f8a56e10127ef20e6367aea3\n"
+        "observed-at: 2026-09-24\nitem-count: 374\nopen-count: 12\n"
+        "done-count: 332\nparked-count: 30\nThe current population is 374 items: 12 open, 332 done and 30 parked.\ncatalog-counts: fixed\n"
+    ).encode()
+    expected = prior.replace(
+        b"b312a963122e9041f8a56e10127ef20e6367aea3", base.encode()
+    ).replace(b"2026-09-24", b"2026-09-27").replace(
+        b"done-count: 332", b"done-count: 333"
+    ).replace(b"parked-count: 30", b"parked-count: 29")
+    expected = expected.replace(b"12 open, 332 done and 30 parked.", b"12 open, 333 done and 29 parked.")
+    assert policy._v0010_ledger(prior, base) == expected
+    for field in (b"observed-at: 2026-09-24", b"done-count: 332", b"parked-count: 30", b"The current population is 374 items: 12 open, 332 done and 30 parked."):
+        with pytest.raises(LedgerError, match="v0010 derivation source drifted"):
+            policy._v0010_ledger(prior.replace(field, b"", 1), base)
+        with pytest.raises(LedgerError, match="v0010 derivation source drifted"):
+            policy._v0010_ledger(prior.replace(field, field + b"\n" + field, 1), base)
+
+
 def test_b315_style_two_parent_merge_replays_successor(tmp_path, monkeypatch):
     base, candidate = _successor_fixture(tmp_path, monkeypatch)
     assert ledger.validate_candidate_successor(base, candidate)["sequence"] == 3
@@ -1205,3 +1228,94 @@ def test_candidate_catalog_contracts_are_validated_before_merge(mutation, match)
         ledger_text = ledger_text.replace("WP-148 | WP-140,WP-146", "WP-148 | none", 1)
     with pytest.raises(LedgerError, match=match):
         ledger.validate_complete_catalog_state(backlog, ledger_text, catalog_data, root, base_sha)
+
+
+def test_v0010_authorizer_accepts_only_pinned_b114_transition():
+    """Exercise the real v0010 predicate against its immutable BASE and source pins."""
+    root = Path(__file__).resolve().parents[1]
+    policy = ledger._successor_policy()
+    pinned = successor.V0010_RECONCILIATION
+    prior = policy._git_state_bytes(root, pinned["anchor_base_commit"])
+    trusted_base = pinned["anchor_base_commit"]
+    old_section = _section(prior["BACKLOG.md"], "B-114")
+    current_section = """### B-114 — a imagem `corelink-runner-devenv` não existe e nenhum workflow a constrói
+
+Descoberto em 2026-08-30 ao destravar o deploy de produção, e a cadeia importa mais que o
+sintoma:
+
+```
+deploy de prod  →  BLOQUEADO: RunnerDevEnvDO não exportado pelo spawn-worker
+  deploy do spawn-worker  →  BLOQUEADO: "Latest tags are not allowed"
+    corelink-runner-devenv:latest  →  A IMAGEM NUNCA FOI CONSTRUÍDA
+      grep -rln "runner-devenv" .github/workflows/  →  VAZIO
+```
+
+O `:latest` é o sintoma — a Cloudflare recusa tags móveis. A causa é que **nada produz a
+imagem**. Os dois contêineres irmãos da frota são pinados por digest; só o DevEnv não é,
+porque não há digest a pinar. O `Dockerfile.runner-devenv` existe no repo da frota e nenhum
+workflow o constrói.
+
+**O custo não foi a feature incompleta, foi o bloqueio colateral.** Enquanto durou, nenhum
+deploy de produção passava, com 43 commits presos — entre eles o #1410, que conserta a
+tabela fantasma que parte o apagamento do **GDPR Art. 17** no meio. Uma feature de
+desenvolvimento incompleta segurou uma correção de conformidade.
+
+Destravado em #1447 desacoplando o binding, deliberadamente **sem** construir a imagem às
+pressas: ligar feature nova pelo caminho apressado só para desbloquear é exatamente como o
+defeito chegou aqui. Este item cobre a dívida que sobrou.
+
+```backlog
+id: B-114
+repo: corelink-runners
+owner: tl
+status: done
+verify: python3 scripts/check_b114_cross_repo.py --receipt
+verify-means: |
+  done — receipt exato de build/publicação do `corelink-runners` é validado pelo checker
+  P1. O receipt registra somente o build/publicação e seu artefato; não afirma deploy,
+  pin, mutação de provider ou uso/pull de imagem.
+last-verified: 2026-09-27
+```
+
+""".encode("utf-8")
+    assert ledger._sha256(old_section) == pinned["prior_section_sha256"]
+    assert ledger._sha256(current_section) == pinned["current_section_sha256"]
+    current = dict(prior)
+    current["BACKLOG.md"] = prior["BACKLOG.md"].replace(old_section, current_section, 1)
+    current[ledger.LEDGER_RELATIVE.as_posix()] = policy._v0010_ledger(
+        prior[ledger.LEDGER_RELATIVE.as_posix()], trusted_base,
+    )
+    assert ledger._sha256(current["BACKLOG.md"]) == pinned["source_sha256"]
+    catalog_hashes = {
+        path.as_posix(): ledger._sha256(prior[path.as_posix()])
+        for path in policy._catalog_relatives()
+    }
+    previous = {
+        "sequence": 9,
+        "source_sha256": pinned["previous_source_sha256"],
+    }
+    receipt = {
+        "base_commit": trusted_base,
+        "changed_ids": list(pinned["changed_ids"]),
+        "prior_source_sha256": pinned["previous_source_sha256"],
+        "source_sha256": pinned["source_sha256"],
+        "prior_ledger_sha256": pinned["prior_ledger_sha256"],
+        "prior_catalog_sha256": catalog_hashes,
+        "catalog_sha256": catalog_hashes,
+    }
+    authorizes = lambda old=prior, new=current, rec=receipt, seq=10: (
+        policy._v0010_reconciliation_authorized(
+            previous, old, new, rec, seq, trusted_base=trusted_base,
+        )
+    )
+    assert authorizes()
+    assert not authorizes(seq=9)
+    assert not authorizes(rec={**receipt, "changed_ids": []})
+
+    for old, new in (
+        (prior, {**current, ledger.LEDGER_RELATIVE.as_posix(): current[ledger.LEDGER_RELATIVE.as_posix()].replace(b"observed-at: 2026-09-27", b"observed-at: 2026-09-26")}),
+        (prior, {**current, ledger.LEDGER_RELATIVE.as_posix(): current[ledger.LEDGER_RELATIVE.as_posix()].replace(b"done-count: 333", b"done-count: 332")}),
+        (prior, {**current, "BACKLOG.md": current["BACKLOG.md"].replace(b"last-verified: 2026-09-27", b"last-verified: 2026-09-26", 1)}),
+        (prior, {**current, "docs/campaigns/remediation/work-packages/B001-B045.md": prior["docs/campaigns/remediation/work-packages/B001-B045.md"] + b"\n"}),
+    ):
+        assert not authorizes(old=old, new=new)

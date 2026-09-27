@@ -476,6 +476,21 @@ impl StagingLoadTestAdmissionGate {
             .map(|context| Some(Arc::new(context)))
     }
 
+    /// Authenticate a teardown credential without consuming its one-time
+    /// admission nonce.  Teardown operates only on an already sealed durable
+    /// run; consuming again would make a lost terminal response impossible to
+    /// replay.  This context is therefore identity-only and must never reach a
+    /// staging writer.
+    pub(crate) fn verify_for_teardown(
+        &self,
+        credential: &str,
+        expected_scenario: StagingLoadTestScenario,
+    ) -> Result<Arc<StagingLoadTestAdmissionContext>, StagingLoadTestAdmissionError> {
+        let now_ms = unix_time_ms()?;
+        let admission = self.verifier.verify(credential, now_ms)?;
+        teardown_context_from_verified(admission, expected_scenario, now_ms).map(Arc::new)
+    }
+
     #[cfg(test)]
     pub(crate) fn from_parts_for_test(
         verifier: StagingLoadTestAdmissionVerifier,
@@ -486,6 +501,27 @@ impl StagingLoadTestAdmissionGate {
             store: Arc::new(store),
         }
     }
+}
+
+fn teardown_context_from_verified(
+    admission: VerifiedStagingLoadTestAdmission,
+    expected_scenario: StagingLoadTestScenario,
+    now_ms: i64,
+) -> Result<StagingLoadTestAdmissionContext, StagingLoadTestAdmissionError> {
+    let expected = StagingLoadTestAdmissionExpectation {
+        run_id: &admission.run_id,
+        scenario: expected_scenario,
+        target_environment: &admission.target_environment,
+        target_deployment_sha: &admission.target_deployment_sha,
+    };
+    validate_claim(&expected, &admission, now_ms)?;
+    Ok(StagingLoadTestAdmissionContext {
+        run_id: admission.run_id,
+        scenario: admission.scenario,
+        target_environment: admission.target_environment,
+        target_deployment_sha: admission.target_deployment_sha,
+        admitted_at_ms: now_ms,
+    })
 }
 
 /// Read the optional staging admission header and run its mandatory gate.
@@ -514,6 +550,23 @@ pub async fn admit_staging_load_test_request(
             .await
         }
     }
+}
+
+/// Read and authenticate a mandatory teardown admission header without
+/// creating a run or consuming a nonce.  The physical service itself requires
+/// an exact sealed run before it can mutate or replay its immutable receipt.
+pub(crate) fn verify_staging_load_test_teardown_request(
+    gate: Option<&StagingLoadTestAdmissionGate>,
+    headers: &axum::http::HeaderMap,
+    expected_scenario: StagingLoadTestScenario,
+) -> Result<Arc<StagingLoadTestAdmissionContext>, StagingLoadTestAdmissionError> {
+    let gate = gate.ok_or(StagingLoadTestAdmissionError::InvalidCredential)?;
+    let credential = headers
+        .get(STAGING_LOAD_TEST_ADMISSION_HEADER)
+        .ok_or(StagingLoadTestAdmissionError::InvalidCredential)?
+        .to_str()
+        .map_err(|_| StagingLoadTestAdmissionError::InvalidCredential)?;
+    gate.verify_for_teardown(credential, expected_scenario)
 }
 
 fn validate_claim(
@@ -800,6 +853,31 @@ mod tests {
             validate_claim(&expected, &claim, 150),
             Err(StagingLoadTestAdmissionError::Expired)
         );
+    }
+
+    #[test]
+    fn teardown_verification_is_read_only_and_replayable_for_one_exact_identity() {
+        let claim = || {
+            VerifiedStagingLoadTestAdmission::from_verified_claims(
+                "123".into(),
+                StagingLoadTestScenario::Cas,
+                "staging".into(),
+                SHA.into(),
+                "a".repeat(64),
+                100,
+                200,
+            )
+        };
+        let first = teardown_context_from_verified(claim(), StagingLoadTestScenario::Cas, 150)
+            .expect("first authenticated teardown context");
+        let replay = teardown_context_from_verified(claim(), StagingLoadTestScenario::Cas, 151)
+            .expect("replayed authenticated teardown context");
+        assert_eq!(first.run_id(), replay.run_id());
+        assert_eq!(
+            first.target_deployment_sha(),
+            replay.target_deployment_sha()
+        );
+        assert_eq!(first.scenario(), replay.scenario());
     }
 
     #[tokio::test]

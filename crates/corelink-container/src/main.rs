@@ -408,6 +408,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         warn!("CORELINK_INTERNAL_AUTH_KEY unset; /_internal/dsr/* routes NOT mounted (dev/CI)");
     }
 
+    // #2584: exact-run physical teardown is an authenticated staging-only
+    // capability. Its builder requires the staging admission verifier, D1
+    // writer and export R2 client; any absent or invalid piece leaves this
+    // destructive route unmounted.
+    if let Some(teardown_router) =
+        corelink_server::routes::staging_load_test_teardown::build_router_from_env().await
+    {
+        info!("routes: exact staging load-test teardown route mounted");
+        app = app.merge(teardown_router);
+    } else {
+        warn!(
+            "staging admission / D1 / R2 config incomplete or non-staging; \
+             exact staging load-test teardown route NOT mounted (fail-CLOSED)"
+        );
+    }
+
     // S-09 audit-chain drain: `POST /_internal/audit/drain` — seals the live
     // `audit_outbox` trail into the BLAKE3 tamper-evident hash chain (closes the
     // "audit trail is mutable / not tamper-evident" gap). Gated by the dedicated
