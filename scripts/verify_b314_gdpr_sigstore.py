@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Fail-closed contract for the B-314 GDPR transfer-table decision.
+"""Fail-closed contract for the approved B-314 four-locale reconciliation.
 
-The current notice still has one combined ``PagerDuty / GitHub / Sigstore``
-recipient row in each published locale, while the Trust Center says that
-Sigstore is not a customer-data sub-processor.  This verifier intentionally
-has *open* polarity: it exits zero while that exact, four-locale inconsistency
-and the pending Legal/DPO decision remain.  Once either the row population or
-the pending decision changes, it exits non-zero and forces a backlog transition.
+The signed prelaunch decision selects remove_sigstore_row for the four
+customer-data transfer tables. This verifier has done-state polarity: it exits
+zero only while all four tables match the exact approved row, the evidence and
+handoff agree with the signed decision, and the bounded CI workflow remains
+credentialless and exact-head.
 
 Only the GDPR transfer-table truth is in scope.  This does not delete or judge
 ``cosign-sign.yml`` and does not decide the B-005/B-112/B-118 keep-versus-retire
@@ -35,13 +34,20 @@ GENERATOR = "scripts/gen-public-subprocessors.py"
 LEGAL_REGISTER = "legal/sub-processors.md"
 VENDOR_REGISTER = "specs/_compliance/VENDOR-RISK-REGISTER.md"
 PACKET = "docs/handoff/2026-09-06-b314-gdpr-sigstore-transfer.json"
-WORKFLOW = ".github/workflows/backlog-verify.yml"
+EVIDENCE = "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json"
+BACKLOG = "BACKLOG.md"
+WORKFLOW = ".github/workflows/issue-2602-b314-reconcile.yml"
 TEST = "tests/test_verify_b314_gdpr_sigstore.py"
+DECISION_REFERENCE = "https://github.com/HuGR-dev/corelink-server/issues/2601#issuecomment-5854794010"
+EFFECTIVE_TIMESTAMP = "2026-09-27T09:48:32Z"
+NOTICE_VERSION = "B-314-prelaunch-2026-09-27"
+CHECKOUT_ACTION = "uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0"
 
 TABLE_HEADING = "| Recipient | Country | Mechanism | What's transferred |"
-CANONICAL_SIGSTORE_ROW = "| PagerDuty / GitHub / Sigstore | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
-SIGSTORE_ROW = re.compile(
-    r"^\|\s*PagerDuty\s*/\s*GitHub\s*/\s*Sigstore\s*\|\s*US\s*\|"
+CANONICAL_ROW = "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
+PRE_DECISION_ROW = "| PagerDuty / GitHub / Sigstore | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
+ROW_PREFIX = re.compile(
+    r"^\|\s*PagerDuty\s*/\s*GitHub(?:\s*/\s*Sigstore)?\s*\|\s*US\s*\|"
     r"\s*DPF\s*\+\s*SCC\s*\+\s*sub-processor-specific posture\s*\|"
     r"\s*Operational metadata;\s*no end-user PII\s*\|\s*$",
     re.IGNORECASE,
@@ -61,17 +67,16 @@ REQUIRED_PACKET_FIELDS = {
     "references",
 }
 EXPECTED_LOCALES = list(LOCALES)
-EXPECTED_WIRING = (
-    "apps/docs/docs/explanation/privacy/gdpr.mdx",
-    *LOCALES[1:],
-    TRUST,
-    GENERATOR,
-    LEGAL_REGISTER,
-    VENDOR_REGISTER,
+EXPECTED_CHANGED_PATHS = (
+    *LOCALES,
     PACKET,
+    EVIDENCE,
+    BACKLOG,
     "scripts/verify_b314_gdpr_sigstore.py",
     TEST,
+    WORKFLOW,
 )
+EXPECTED_WIRING = (*LOCALES, TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, EVIDENCE, BACKLOG, TEST)
 
 
 class VerificationError(RuntimeError):
@@ -127,15 +132,22 @@ def _check_packet(packet: dict[str, Any]) -> None:
         raise VerificationError("B-314 packet schema_version must be 1")
     for key in ("finding", "status", "owner", "non_claim", "retry_and_rollback"):
         _require_text(packet, key)
-    if packet["finding"] != "B-314" or packet["owner"] != "owner":
+    if packet["finding"] != "B-314" or packet["owner"] != "gmhelmold":
         raise VerificationError("B-314 packet identity/owner drifted")
-    if packet["status"] != "owner-action-pending":
-        raise VerificationError("B-314 packet no longer records the pending external decision")
+    if packet["status"] != "decision-applied":
+        raise VerificationError("B-314 packet does not record the applied signed decision")
+    for marker in (
+        "does not claim Sigstore receives no operational metadata",
+        "does not claim release-signing flows ceased",
+        "does not infer a Sigstore transfer basis",
+    ):
+        if marker not in packet["non_claim"]:
+            raise VerificationError(f"B-314 packet lost non-claim: {marker}")
     scope = packet["scope"]
     if not isinstance(scope, dict) or set(scope) != {"question", "population", "out_of_scope"}:
-        raise VerificationError("B-314 scope must name question, exact population, and out-of-scope work")
+        raise VerificationError("B-314 scope must name the exact population and out-of-scope work")
     if scope["population"] != EXPECTED_LOCALES:
-        raise VerificationError("B-314 scope population is not exactly the four published locales")
+        raise VerificationError("B-314 scope population is not exactly the four GDPR locales")
     if not isinstance(scope["question"], str) or "Sigstore" not in scope["question"]:
         raise VerificationError("B-314 scope question lost the Sigstore decision")
     if not isinstance(scope["out_of_scope"], list) or not all(isinstance(v, str) for v in scope["out_of_scope"]):
@@ -146,34 +158,61 @@ def _check_packet(packet: dict[str, Any]) -> None:
             raise VerificationError(f"B-314 scope does not fence out {marker}")
 
     baseline = packet["baseline"]
-    if not isinstance(baseline, dict) or set(baseline) != {"row_count_per_locale", "row_identity", "posture_sources"}:
+    if not isinstance(baseline, dict) or set(baseline) != {
+        "row_count_per_locale", "row_identity", "reviewed_source_revision", "posture_sources"
+    }:
         raise VerificationError("B-314 baseline schema drifted")
-    if baseline["row_count_per_locale"] != 1 or baseline["row_identity"] != "PagerDuty / GitHub / Sigstore":
-        raise VerificationError("B-314 baseline does not pin the measured row population")
+    if (
+        baseline["row_count_per_locale"] != 1
+        or baseline["row_identity"] != "PagerDuty / GitHub / Sigstore"
+        or baseline["reviewed_source_revision"] != "897efed958a36c3e1b34a5104c21906071ca44af"
+    ):
+        raise VerificationError("B-314 baseline does not pin the reviewed pre-decision row")
     if baseline["posture_sources"] != [TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER]:
         raise VerificationError("B-314 baseline posture sources drifted")
 
     decision = packet["decision"]
-    if not isinstance(decision, dict) or set(decision) != {"state", "allowed_outcomes", "required_reviewers"}:
+    decision_fields = {
+        "state", "allowed_outcomes", "selected_outcome", "reviewers", "reviewer_model",
+        "receipt_reference", "effective_timestamp", "notice_version", "notice_determination",
+    }
+    if not isinstance(decision, dict) or set(decision) != decision_fields:
         raise VerificationError("B-314 decision schema drifted")
-    if decision["state"] != "pending" or decision["allowed_outcomes"] != ["remove_sigstore_row", "retain_and_document_transfer"]:
-        raise VerificationError("B-314 decision is no longer explicitly pending or has unapproved outcomes")
-    if decision["required_reviewers"] != ["Legal Counsel", "DPO"]:
-        raise VerificationError("B-314 requires both Legal Counsel and DPO review")
+    if (
+        decision["state"] != "complete"
+        or decision["allowed_outcomes"] != ["remove_sigstore_row", "retain_and_document_transfer"]
+        or decision["selected_outcome"] != "remove_sigstore_row"
+    ):
+        raise VerificationError("B-314 does not record the one approved remove_sigstore_row outcome")
+    expected_reviewers = [
+        {"identity": "gmhelmold", "authority": "Legal Counsel"},
+        {"identity": "gmhelmold", "authority": "DPO"},
+    ]
+    if decision["reviewers"] != expected_reviewers or decision["reviewer_model"] != (
+        "One person exercising both functions; not two independent signers."
+    ):
+        raise VerificationError("B-314 reviewer identities/dual-role model drifted")
+    if (
+        decision["receipt_reference"] != DECISION_REFERENCE
+        or decision["effective_timestamp"] != EFFECTIVE_TIMESTAMP
+        or decision["notice_version"] != NOTICE_VERSION
+        or "No individual notice or re-consent is required" not in decision["notice_determination"]
+    ):
+        raise VerificationError("B-314 signed receipt, effective time, or notice decision drifted")
 
     action = packet["owner_action"]
     if not isinstance(action, list) or len(action) != 4 or not all(isinstance(v, str) for v in action):
-        raise VerificationError("B-314 owner_action must contain four executable steps")
-    if not action[0].startswith("UI:") or not action[1].startswith("RUN:") or not action[2].startswith("UI:") or not action[3].startswith("RUN:"):
-        raise VerificationError("B-314 owner_action UI/RUN boundaries drifted")
-    for marker in ("Legal", "DPO", "no customer data", "four locales", "signed disposition"):
+        raise VerificationError("B-314 owner_action must contain four recorded completion steps")
+    if not action[0].startswith("RECEIPT:") or not action[1].startswith("RUN:") or not action[2].startswith("NOTICE:") or not action[3].startswith("VERIFY:"):
+        raise VerificationError("B-314 owner_action completion boundaries drifted")
+    for marker in ("Legal Counsel", "DPO", "four", "PagerDuty", "GitHub", "effective timestamp", "non-claims"):
         if marker not in " ".join(action):
             raise VerificationError(f"B-314 owner action lost {marker}")
 
     evidence = packet["evidence"]
     if not isinstance(evidence, dict) or set(evidence) != {"path", "format", "required_fields", "completion_rule"}:
         raise VerificationError("B-314 evidence schema drifted")
-    if evidence["path"] != "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json" or evidence["format"] != "json":
+    if evidence["path"] != EVIDENCE or evidence["format"] != "json":
         raise VerificationError("B-314 evidence path/format drifted")
     required = evidence["required_fields"]
     if not isinstance(required, list) or required != [
@@ -185,18 +224,112 @@ def _check_packet(packet: dict[str, Any]) -> None:
         raise VerificationError("B-314 evidence required fields drifted")
     if not isinstance(evidence["completion_rule"], str) or any(
         marker not in evidence["completion_rule"]
-        for marker in (
-            "signed-artifact hash/reference", "notice version", "transfer basis",
-            "recipient/data-category scope", "approved notice wording",
-            "exact published diff", "effective timestamp", "four",
-        )
+        for marker in ("four exact", "signed remove_sigstore_row intent", "preserve PagerDuty and GitHub", "effective timestamp")
     ):
-        raise VerificationError("B-314 evidence completion rule is not review-bound")
+        raise VerificationError("B-314 evidence completion rule is not decision-bound")
     refs = packet["references"]
     if not isinstance(refs, list) or not all(isinstance(v, str) for v in refs):
         raise VerificationError("B-314 references must be a list of strings")
-    if any(path not in refs for path in ("BACKLOG.md#B-314", TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER)):
-        raise VerificationError("B-314 references omit canonical backlog or posture source")
+    if any(path not in refs for path in ("BACKLOG.md#B-314", DECISION_REFERENCE, EVIDENCE, TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER)):
+        raise VerificationError("B-314 references omit the signed decision, evidence, or posture source")
+
+
+def _check_evidence(evidence: dict[str, Any]) -> None:
+    required_keys = {
+        "schema_version", "captured_at", "decision", "legal_reviewer", "dpo_reviewer",
+        "notice_version", "transfer_basis", "recipient_scope", "data_category_scope",
+        "approved_notice_wording", "published_diff", "signed_artifact_sha256_or_reference",
+        "effective_timestamp",
+    }
+    if set(evidence) != required_keys or evidence.get("schema_version") != 1:
+        raise VerificationError("B-314 signed-decision evidence fields/schema drifted")
+    if not re.fullmatch(r"2026-09-27T\d{2}:\d{2}:\d{2}Z", str(evidence["captured_at"])):
+        raise VerificationError("B-314 evidence captured_at must be a UTC timestamp")
+    if evidence["decision"] != {
+        "outcome": "remove_sigstore_row",
+        "scope": "Only the Sigstore recipient text in the four GDPR customer-data transfer tables.",
+        "reviewed_source_revision": "897efed958a36c3e1b34a5104c21906071ca44af",
+    }:
+        raise VerificationError("B-314 evidence decision differs from the signed receipt")
+    reviewer_fields = (
+        ("legal_reviewer", "Legal Counsel"),
+        ("dpo_reviewer", "DPO"),
+    )
+    for key, authority in reviewer_fields:
+        reviewer = evidence[key]
+        if not isinstance(reviewer, dict) or reviewer != {
+            "identity": "gmhelmold",
+            "authority": authority,
+            "signature_reference": DECISION_REFERENCE,
+            "signer_relationship": (
+                "Same person and GitHub identity as the DPO reviewer; not an independent second signer."
+                if key == "legal_reviewer"
+                else "Same person and GitHub identity as the Legal Counsel reviewer; not an independent second signer."
+            ),
+        }:
+            raise VerificationError(f"B-314 {authority} reviewer identity/reference drifted")
+    if evidence["notice_version"] != NOTICE_VERSION or evidence["effective_timestamp"] != EFFECTIVE_TIMESTAMP:
+        raise VerificationError("B-314 notice version/effective timestamp drifted")
+    if evidence["transfer_basis"] is not None:
+        raise VerificationError("B-314 removal decision must not invent a Sigstore transfer basis")
+    expected_recipient_scope = {
+        "table_scope": "Customer-data international-transfer disclosure only.",
+        "removed_recipient": "Sigstore",
+        "preserved_recipients": ["PagerDuty", "GitHub"],
+        "non_claim": "Sigstore continues in CoreLink-owned artifact signing/provenance flows; this decision does not assert those flows ceased or that Sigstore receives no operational metadata or personal data universally.",
+    }
+    if evidence["recipient_scope"] != expected_recipient_scope:
+        raise VerificationError("B-314 recipient scope or non-claim drifted")
+    if evidence["data_category_scope"] != (
+        "This decision covers only the customer-data transfer-table row and makes no universal absence claim about operational metadata, transparency-log entries, or personal data in any Sigstore flow."
+    ):
+        raise VerificationError("B-314 data-category scope broadened beyond the signed decision")
+    if evidence["approved_notice_wording"] != (
+        "No individual notice or re-consent is required for this prelaunch correction because there are no customers and all four GDPR pages remain drafts not approved for publication."
+    ):
+        raise VerificationError("B-314 notice/re-consent determination drifted")
+    expected_diff = {
+        "reviewed_intent": "Remove only / Sigstore from the Recipient cell; preserve every other row field and all other table rows.",
+        "files": list(LOCALES),
+        "before": PRE_DECISION_ROW.removeprefix("| ").removesuffix(" |"),
+        "after": CANONICAL_ROW.removeprefix("| ").removesuffix(" |"),
+        "preserved_fields": [
+            "Country: US",
+            "Mechanism: DPF + SCC + sub-processor-specific posture",
+            "What's transferred: Operational metadata; no end-user PII",
+        ],
+    }
+    if evidence["published_diff"] != expected_diff:
+        raise VerificationError("B-314 four-locale diff intent is not exact")
+    if evidence["signed_artifact_sha256_or_reference"] != DECISION_REFERENCE:
+        raise VerificationError("B-314 signed artifact reference drifted")
+
+
+def _check_backlog(backlog: str) -> None:
+    fence = chr(96) * 3
+    match = re.search(
+        rf"(?ms)^### B-314 — .*?^{fence}backlog\n(?P<body>.*?)^{fence}",
+        backlog,
+    )
+    if match is None:
+        raise VerificationError("BACKLOG.md is missing the B-314 block")
+    block = match.group("body")
+    if not re.search(r"(?m)^status: done$", block):
+        raise VerificationError("BACKLOG B-314 is not in done state")
+    for marker in (
+        "remove_sigstore_row",
+        DECISION_REFERENCE,
+        EFFECTIVE_TIMESTAMP,
+        NOTICE_VERSION,
+        "preserve PagerDuty and GitHub",
+        "does not assert",
+        "no individual notice or re-consent",
+        "scripts/verify_b314_gdpr_sigstore.py",
+        EVIDENCE,
+        "release-signing flows ceased",
+    ):
+        if marker not in block:
+            raise VerificationError(f"BACKLOG B-314 omitted completed decision detail: {marker}")
 
 
 def _check_locale(path: str, text: str) -> None:
@@ -205,18 +338,16 @@ def _check_locale(path: str, text: str) -> None:
     if len(heading_indexes) != 1:
         raise VerificationError(f"{path}: expected one transfer-table heading, found {len(heading_indexes)}")
     start = heading_indexes[0]
-    rows = [line for line in lines[start + 1 :] if line.startswith("|") and SIGSTORE_ROW.fullmatch(line)]
-    if len(rows) != 1:
-        raise VerificationError(f"{path}: expected exactly one baseline Sigstore recipient row, found {len(rows)}")
-    if rows[0] != CANONICAL_SIGSTORE_ROW:
-        raise VerificationError(f"{path}: baseline row case/spacing drifted: {rows[0]!r}")
-    # A second Sigstore mention inside the table must not hide a duplicate row
-    # behind a changed mechanism or a translated spelling.
     table_tail = lines[start + 1 :]
     table_end = next((i for i, line in enumerate(table_tail) if line.startswith("## ")), len(table_tail))
-    sigstore_mentions = sum(line.lower().count("sigstore") for line in table_tail[:table_end])
-    if sigstore_mentions != 1:
-        raise VerificationError(f"{path}: transfer table has {sigstore_mentions} Sigstore mentions, expected one")
+    table_rows = [line for line in table_tail[:table_end] if line.startswith("|")]
+    recipient_rows = [line for line in table_rows if "PagerDuty / GitHub" in line]
+    if len(recipient_rows) != 1 or recipient_rows[0] != CANONICAL_ROW:
+        raise VerificationError(f"{path}: recipient row is not the exact approved value: {recipient_rows!r}")
+    if any("sigstore" in line.lower() for line in table_rows):
+        raise VerificationError(f"{path}: Sigstore was restored in the customer-data transfer table")
+    if ROW_PREFIX.fullmatch(recipient_rows[0]) is None:
+        raise VerificationError(f"{path}: approved recipient row mechanism/categories drifted")
 
 
 def _check_posture(trust: str, generator: str, legal_register: str, vendor_register: str) -> None:
@@ -265,52 +396,69 @@ def _check_posture(trust: str, generator: str, legal_register: str, vendor_regis
 
 
 def _check_runtime(workflow: str) -> None:
-    # The backlog workflow is deliberately pull_request_target: it checks the
-    # candidate BACKLOG as data with the immutable BASE checkout and never runs
-    # candidate-controlled verifier code.  The all-tree path keeps this guard
-    # live for every B-314 source; a narrower list would silently miss drift.
-    blocks = {}
-    for event, boundary in (("pull_request_target", r"^  push:"), ("push", r"^  schedule:")):
-        if len(re.findall(rf"^  {event}:", workflow, re.MULTILINE)) != 1:
-            raise VerificationError(f"{WORKFLOW}: expected exactly one {event} trigger block")
-        match = re.search(rf"^  {event}:\n(?P<body>.*?)(?={boundary})", workflow, re.MULTILINE | re.DOTALL)
-        if match is None:
-            raise VerificationError(f"{WORKFLOW}: missing {event} trigger block")
-        blocks[event] = match.group("body")
-    if re.search(r"^  pull_request:", workflow, re.MULTILINE):
-        raise VerificationError(f"{WORKFLOW}: unsafe pull_request trigger must not be restored")
-    for event, body in blocks.items():
-        wildcard_count = sum(line.strip() == 'paths: ["**"]' for line in body.splitlines())
-        if wildcard_count == 1:
-            continue
-        if wildcard_count:
-            raise VerificationError(f"{WORKFLOW}: {event} has ambiguous all-tree path coverage")
-        for path in EXPECTED_WIRING:
-            entry = f'- "{path}"'
-            if sum(line.strip() == entry for line in body.splitlines()) != 1:
-                raise VerificationError(f"{WORKFLOW}: {event} is missing B-314 path coverage for {path}")
+    if CHECKOUT_ACTION not in workflow:
+        raise VerificationError(f"{WORKFLOW}: checkout action must be pinned to the approved full commit SHA")
+    if len(re.findall(r"^  pull_request:$", workflow, re.MULTILINE)) != 1:
+        raise VerificationError(f"{WORKFLOW}: expected one unprivileged pull_request trigger")
+    for event in ("pull_request_target", "push", "schedule", "workflow_dispatch"):
+        if re.search(rf"^  {event}:", workflow, re.MULTILINE):
+            raise VerificationError(f"{WORKFLOW}: forbidden {event} trigger")
+    trigger = re.search(r"(?ms)^  pull_request:\n(?P<body>.*?)(?=^permissions:)", workflow)
+    if trigger is None:
+        raise VerificationError(f"{WORKFLOW}: pull_request trigger block is malformed")
+    path_match = re.search(r"(?ms)^    paths:\n(?P<body>(?:^      - \"[^\"]+\"\n)+)", trigger.group("body"))
+    if path_match is None:
+        raise VerificationError(f"{WORKFLOW}: exact path filter is missing")
+    path_lines = [line.strip()[3:-1] for line in path_match.group("body").splitlines()]
+    if path_lines != list(EXPECTED_CHANGED_PATHS):
+        raise VerificationError(f"{WORKFLOW}: path filter differs from the frozen owned-file set")
+    if "**" in path_match.group("body") or "*" in path_match.group("body"):
+        raise VerificationError(f"{WORKFLOW}: wildcard path admission is forbidden")
+    if "permissions:\n  contents: read\n" not in workflow:
+        raise VerificationError(f"{WORKFLOW}: contents must be read-only")
+    if "runs-on: ubuntu-24.04" not in workflow or "self-hosted" in workflow:
+        raise VerificationError(f"{WORKFLOW}: runner must be GitHub-hosted ubuntu-24.04")
+    if "secrets." in workflow or "id-token: write" in workflow or "deployment:" in workflow:
+        raise VerificationError(f"{WORKFLOW}: secrets, deployment, or provider authority is forbidden")
+    head_ref = "ref: " + "$" + "{{ github.event.pull_request.head.sha }}"
+    head_repo = "repository: " + "$" + "{{ github.event.pull_request.head.repo.full_name }}"
+    if workflow.count(head_ref) != 1:
+        raise VerificationError(f"{WORKFLOW}: checkout must pin the exact pull-request head SHA")
+    if workflow.count(head_repo) != 1:
+        raise VerificationError(f"{WORKFLOW}: checkout must use the pull-request head repository")
+    if "persist-credentials: false" not in workflow:
+        raise VerificationError(f"{WORKFLOW}: checkout credentials must not persist")
     command = "python3 -S scripts/verify_b314_gdpr_sigstore.py --self-test"
     if sum(line.strip() == command for line in workflow.splitlines()) != 1:
-        raise VerificationError(f"{WORKFLOW}: expected one B-314 self-test step")
+        raise VerificationError(f"{WORKFLOW}: expected one B-314 self-test")
     pytest_command = f"python3 -m pytest -q {TEST}"
     if sum(line.strip() == pytest_command for line in workflow.splitlines()) != 1:
-        raise VerificationError(f"{WORKFLOW}: B-314 focused pytest is not wired")
-    for command_name, command_line in (("self-test", command), ("focused pytest", pytest_command)):
-        command_lines = workflow.splitlines()
-        indexes = [index for index, line in enumerate(command_lines) if line.strip() == command_line]
-        for index in indexes:
-            step_start = max(
-                (candidate for candidate in range(index, -1, -1) if command_lines[candidate].startswith("      - name:")),
-                default=-1,
-            )
-            step = command_lines[step_start : index + 1]
-            if not any(line.strip() == "working-directory: _base" for line in step):
-                raise VerificationError(f"{WORKFLOW}: B-314 {command_name} must run from immutable _base")
+        raise VerificationError(f"{WORKFLOW}: expected one focused B-314 pytest command")
+    if "pytest==8.4.2" not in workflow:
+        raise VerificationError(f"{WORKFLOW}: focused pytest dependency must be pinned")
+    for marker in ("github.event.pull_request.base.sha", "git diff --name-only", "git diff --unified=0", "expected_paths = [", "sorted(changed_paths) != sorted(expected_paths)"):
+        if marker not in workflow:
+            raise VerificationError(f"{WORKFLOW}: exact-head/path admission marker missing: {marker}")
+    for marker in ("PRIVATE KEY", "gh[pousr]_", "AKIA[0-9A-Z]{16}", "@[A-Z0-9.-]+"):
+        if marker not in workflow:
+            raise VerificationError(f"{WORKFLOW}: redaction scan is missing marker: {marker}")
+    if "test " not in workflow or "git rev-parse HEAD" not in workflow or "HEAD_SHA" not in workflow:
+        raise VerificationError(f"{WORKFLOW}: exact checked-out head SHA is not asserted")
+    admission_start = workflow.find("expected_paths = [")
+    admission_end = workflow.find("]", admission_start)
+    if admission_start < 0 or admission_end < 0:
+        raise VerificationError(f"{WORKFLOW}: changed-file allowlist is malformed")
+    admission = workflow[admission_start : admission_end + 1]
+    for path in EXPECTED_CHANGED_PATHS:
+        if admission.count(path) != 1:
+            raise VerificationError(f"{WORKFLOW}: changed-file admission does not include exactly one {path}")
 
 
 def verify(root: Path = ROOT, *, overrides: dict[str, str] | None = None) -> None:
     overrides = {} if overrides is None else dict(overrides)
-    known = set(LOCALES) | {TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, WORKFLOW, "BACKLOG.md"}
+    known = set(LOCALES) | {
+        TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, EVIDENCE, BACKLOG, WORKFLOW
+    }
     unknown = set(overrides) - known
     if unknown:
         raise VerificationError(f"unknown override target(s): {sorted(unknown)}")
@@ -323,6 +471,8 @@ def verify(root: Path = ROOT, *, overrides: dict[str, str] | None = None) -> Non
         _read(root, VENDOR_REGISTER, overrides),
     )
     _check_packet(_load_packet(_read(root, PACKET, overrides)))
+    _check_evidence(_load_packet(_read(root, EVIDENCE, overrides)))
+    _check_backlog(_read(root, BACKLOG, overrides))
     _check_runtime(_read(root, WORKFLOW, overrides))
 
 
@@ -336,20 +486,21 @@ def _must_reject(label: str, root: Path, overrides: dict[str, str]) -> None:
 
 def mutation_checks(root: Path = ROOT) -> int:
     """Exercise row, decision, posture, and runtime restoration mutations."""
-    originals = {path: _read(root, path, {}) for path in (*LOCALES, TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, WORKFLOW)}
+    originals = {path: _read(root, path, {}) for path in (*LOCALES, TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, EVIDENCE, BACKLOG, WORKFLOW)}
     count = 0
     for path in LOCALES:
-        _must_reject("row removal", root, {path: originals[path].replace(next(line for line in originals[path].splitlines() if SIGSTORE_ROW.fullmatch(line)), "", 1)})
+        row = next(line for line in originals[path].splitlines() if line == CANONICAL_ROW)
+        _must_reject("missing locale row", root, {path: originals[path].replace(row, "", 1)})
         count += 1
-        row = next(line for line in originals[path].splitlines() if SIGSTORE_ROW.fullmatch(line))
-        _must_reject("row duplicate/restoration", root, {path: originals[path].replace(row, row + "\n" + row, 1)})
+        _must_reject("Sigstore restoration", root, {path: originals[path].replace(row, PRE_DECISION_ROW, 1)})
         count += 1
-        mixed_case = row.replace("Sigstore", "SIGSTORE", 1)
-        _must_reject("case-insensitive row duplicate", root, {path: originals[path].replace(row, row + "\n" + mixed_case, 1)})
+        _must_reject("mechanism mutation", root, {path: originals[path].replace("DPF + SCC + sub-processor-specific posture", "SCC only", 1)})
         count += 1
-        _must_reject("row mechanism mutation", root, {path: originals[path].replace("DPF + SCC + sub-processor-specific posture", "SCC only", 1)})
-        count += 1
-    _must_reject("pending decision mutation", root, {PACKET: originals[PACKET].replace('"state": "pending"', '"state": "remove_sigstore_row"', 1)})
+    _must_reject("decision outcome mutation", root, {PACKET: originals[PACKET].replace('"selected_outcome": "remove_sigstore_row"', '"selected_outcome": "retain_and_document_transfer"', 1)})
+    count += 1
+    _must_reject("signed receipt reference mutation", root, {EVIDENCE: originals[EVIDENCE].replace("issuecomment-5854794010", "issuecomment-1", 1)})
+    count += 1
+    _must_reject("backlog done-state mutation", root, {BACKLOG: originals[BACKLOG].replace("status: done", "status: open", 1)})
     count += 1
     trust_mutation = originals[TRUST].replace("no customer-data path is wired", "customer-data path is wired", 1)
     _must_reject("trust current-flow posture removal", root, {TRUST: trust_mutation})
@@ -363,7 +514,9 @@ def mutation_checks(root: Path = ROOT) -> int:
     vendor_mutation = originals[VENDOR_REGISTER].replace("no customer-data path is wired", "customer-data path is wired", 1)
     _must_reject("vendor-register current-flow posture removal", root, {VENDOR_REGISTER: vendor_mutation})
     count += 1
-    _must_reject("runtime path coverage removal", root, {WORKFLOW: originals[WORKFLOW].replace('    paths: ["**"]', "", 1)})
+    _must_reject("runtime path coverage removal", root, {WORKFLOW: originals[WORKFLOW].replace('      - "' + LOCALES[0] + '"', "", 1)})
+    count += 1
+    _must_reject("runtime checkout action pin removal", root, {WORKFLOW: originals[WORKFLOW].replace(CHECKOUT_ACTION, "uses: actions/checkout@v7", 1)})
     count += 1
     command = "python3 -S scripts/verify_b314_gdpr_sigstore.py --self-test"
     _must_reject("runtime self-test duplication", root, {WORKFLOW: originals[WORKFLOW].replace(command, command + "\n          " + command, 1)})
@@ -379,10 +532,10 @@ def main(argv: list[str] | None = None) -> int:
         verify()
         mutations = mutation_checks() if args.self_test else 0
     except (OSError, VerificationError) as exc:
-        print(f"B-314 open gate FAIL: {exc}", file=sys.stderr)
+        print(f"B-314 done-state reconciliation FAIL: {exc}", file=sys.stderr)
         return 1
     suffix = f"; mutations={mutations}" if args.self_test else ""
-    print(f"B-314 open gate PASS: four locale rows + pending Legal/DPO packet{suffix}")
+    print(f"B-314 done-state reconciliation PASS: exact four-locale removal + signed decision evidence{suffix}")
     return 0
 
 
