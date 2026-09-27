@@ -12928,8 +12928,8 @@ defeito chegou aqui. Este item cobre a dívida que sobrou.
 id: B-114
 repo: corelink-runners
 owner: tl
-status: parked
-verify: manual
+status: done
+verify: python3 scripts/check_b114_cross_repo.py --receipt
 verify-means: |
   done — receipt exato de build/publicação do `corelink-runners` é validado pelo checker
   P1. O receipt registra somente o build/publicação e seu artefato; não afirma deploy,
