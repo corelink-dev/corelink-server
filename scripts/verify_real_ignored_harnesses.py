@@ -81,8 +81,8 @@ REQUIRED_TARGET_SOURCES = {
 # run. The self-hosted runner's PATH/toolchain remains the infrastructure trust
 # boundary; this manifest binds the repository-owned selector/source inputs.
 SOURCE_SHA256 = {
-    "crates/corelink-container/src/routes/tier_select_store.rs": "f871b8ba90348a4ae8c7f9a8421065efc7759406597976b727ef00014c11e5ea",
-    "crates/corelink-container/src/storage/d1_http.rs": "cc05e6834cee821c1f7e52041a6d5cbd7570f87618af3d3ab65d6132d3fb5a7a",
+    "crates/corelink-container/src/routes/tier_select_store.rs": "37c0cc992da7f77b95996066c25eadd39a2f92279d35dcfc8077a7bcdd187f97",
+    "crates/corelink-container/src/storage/d1_http.rs": "57df01654b44a12c57663d4543b1290125c87346e014e3b8210624a2d9cb6dd2",
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "2148abe19ae9b119dc17eca0f242e983b47f8f6100d8d6fbba0536aafcc88af7",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "1589c0bf78b5ecee786f39e71e66feb3bcd387ba1465d4ad5f22133cdcf14b4e",
@@ -231,7 +231,7 @@ def verify_exact_manifest() -> None:
         "neon": ("corelink-audit-chain", "test/neon_shadow_real", ("neon-real",)),
     }
     expected_env = {
-        "d1": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID", "R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY"),
+        "d1": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID"),
         "r2": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID", "R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_TEST_BUCKET"),
         "stripe": ("HUGR_WALLET_BASE", "HUGR_WALLET_TOKEN", "HUGR_STRIPE_REF", "STRIPE_AUTH_MODE", "STRIPE_PRICE_ID_STARTER"),
         "neon": ("NEON_TEST_DSN",),
@@ -427,6 +427,13 @@ def assert_contract(workflow: str, runner: str) -> None:
         fail("workflow interpolates the dispatch input into shell source")
     if 'bash scripts/run-real-ignored-harnesses.sh "${{ inputs.profile }}"' in wf:
         fail("dispatch input is interpolated directly into shell source")
+    for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY"):
+        expected = f"{name}: ${{{{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.{name} || '' }}}}"
+        if expected not in wf:
+            fail(f"R2 credential is not restricted to the R2/all profile: {name}")
+    expected_bucket = "R2_TEST_BUCKET: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && vars.R2_TEST_BUCKET || '' }}"
+    if expected_bucket not in wf:
+        fail("R2 test bucket is not restricted to the R2/all profile")
     if runs.count("python3 scripts/verify_real_ignored_harnesses.py") != 1:
         fail("semantic executor guard is missing or only comment bait")
     if runs.count('bash scripts/run-real-ignored-harnesses.sh "$REAL_HARNESS_PROFILE"') != 1:
@@ -520,7 +527,8 @@ def assert_contract(workflow: str, runner: str) -> None:
             fail(f"{profile} profile does not preflight before execution")
 
     # Environment preconditions are part of correctness: absent credentials
-    # must fail before a test can fall back to an in-memory adapter.
+    # must fail before a test can fall back to an in-memory adapter. Keep the
+    # set closed across profiles while each profile gates only its own inputs.
     for name in (
         "CLOUDFLARE_ACCOUNT_ID",
         "CF_API_TOKEN",
@@ -823,13 +831,32 @@ def mutation_checks(workflow: str, runner: str, contract_workflow: str) -> None:
     expect_rejected("PAT signing secret", workflow, runner + "\nexport CORELINK_PAT_SIGNING_KEY_HEX=unsafe\n")
     # A direct shell interpolation reintroduces command/injection ambiguity.
     expect_rejected("direct profile interpolation", workflow.replace('bash scripts/run-real-ignored-harnesses.sh "$REAL_HARNESS_PROFILE"', 'bash scripts/run-real-ignored-harnesses.sh "${{ inputs.profile }}"', 1), runner)
+    # A D1 dispatch must not receive the sibling profile's credential values.
+    expect_rejected(
+        "D1 receives R2 secret",
+        workflow.replace(
+            "R2_S3_SECRET_ACCESS_KEY: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.R2_S3_SECRET_ACCESS_KEY || '' }}",
+            "R2_S3_SECRET_ACCESS_KEY: ${{ secrets.R2_S3_SECRET_ACCESS_KEY }}",
+            1,
+        ),
+        runner,
+    )
+    expect_rejected(
+        "D1 receives R2 bucket",
+        workflow.replace(
+            "R2_TEST_BUCKET: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && vars.R2_TEST_BUCKET || '' }}",
+            "R2_TEST_BUCKET: ${{ vars.R2_TEST_BUCKET }}",
+            1,
+        ),
+        runner,
+    )
     # The Stripe mode and price are both load-bearing; accepting either missing
     # value would silently exercise another auth/price configuration.
     expect_rejected("missing wallet-broker mode", workflow, runner.replace('[[ "$STRIPE_AUTH_MODE" == wallet-broker ]]', '[[ "$STRIPE_AUTH_MODE" == any-mode ]]', 1))
     expect_rejected("missing Starter price", workflow, runner.replace('[[ "$STRIPE_PRICE_ID_STARTER" == price_* ]]', '[[ "$STRIPE_PRICE_ID_STARTER" == any_* ]]', 1))
     # A preflight that contains a cargo call can mutate the external system
     # before a later profile is checked.
-    expect_rejected("cargo in D1 preflight", workflow, runner.replace("  require_https R2_S3_ENDPOINT\n}\n\npreflight_r2", "  require_https R2_S3_ENDPOINT\n  run_cargo d1 d1_target --package corelink-server --lib\n}\n\npreflight_r2", 1))
+    expect_rejected("cargo in D1 preflight", workflow, runner.replace("  require_env CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN D1_DATABASE_ID\n}\n\npreflight_r2", "  require_env CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN D1_DATABASE_ID\n  run_cargo d1 d1_target --package corelink-server --lib\n}\n\npreflight_r2", 1))
     expect_rejected("late Neon check omitted from all", workflow, runner.replace("    preflight_neon\n    run_d1", "    run_d1", 1))
 
 
@@ -898,7 +925,7 @@ def preflight_runtime_checks() -> None:
         root = Path(temp)
         for missing in ("HUGR_WALLET_TOKEN", "STRIPE_PRICE_ID_STARTER", "NEON_TEST_DSN"):
             marker = root / f"cargo-{missing}"
-            fake_cargo = root / f"fake-cargo-{missing}"
+            fake_cargo = root / "cargo"
             fake_cargo.write_text(
                 "#!/bin/sh\n"
                 f"printf invoked > {marker}\n"
@@ -909,7 +936,7 @@ def preflight_runtime_checks() -> None:
             env = os.environ.copy()
             env.update(baseline)
             env.pop(missing, None)
-            env["CARGO_BIN"] = str(fake_cargo)
+            env["PATH"] = os.pathsep.join((str(root), env.get("PATH", "")))
             result = subprocess.run(
                 ["bash", str(RUNNER_PATH), "all"],
                 env=env,
@@ -923,6 +950,70 @@ def preflight_runtime_checks() -> None:
                 fail(f"missing {missing} unexpectedly allowed all profile")
             if marker.exists():
                 fail(f"missing {missing} invoked cargo before failing preflight")
+
+    for missing in ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID"):
+        with tempfile.TemporaryDirectory(prefix="b068-d1-missing-") as temp:
+            root = Path(temp)
+            marker = root / "cargo-invoked"
+            fake_cargo = root / "cargo"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                f"printf invoked > {marker}\n"
+                "exit 99\n",
+                encoding="utf-8",
+            )
+            fake_cargo.chmod(0o700)
+            env = os.environ.copy()
+            env.update(baseline)
+            env.pop(missing, None)
+            env["PATH"] = os.pathsep.join((str(root), env.get("PATH", "")))
+            result = subprocess.run(
+                ["bash", str(RUNNER_PATH), "d1"],
+                env=env,
+                cwd=ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0 or marker.exists():
+                fail(f"missing D1 prerequisite {missing} did not fail before cargo")
+
+    # The D1 profile is independent of the sibling R2 resource. Prove that
+    # its own preflight reaches the selected test command with only D1 inputs.
+    with tempfile.TemporaryDirectory(prefix="b068-d1-only-") as temp:
+        root = Path(temp)
+        marker = root / "cargo-invoked"
+        fake_cargo = root / "cargo"
+        fake_cargo.write_text(
+            "#!/bin/sh\n"
+            f"printf invoked > {marker}\n"
+            "exit 99\n",
+            encoding="utf-8",
+        )
+        fake_cargo.chmod(0o700)
+        env = os.environ.copy()
+        env.update(
+            {
+                "CLOUDFLARE_ACCOUNT_ID": "account",
+                "CF_API_TOKEN": "cf-token",
+                "D1_DATABASE_ID": "database",
+                "PATH": os.pathsep.join((str(root), os.environ.get("PATH", ""))),
+            }
+        )
+        for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_TEST_BUCKET"):
+            env.pop(name, None)
+        result = subprocess.run(
+            ["bash", str(RUNNER_PATH), "d1"],
+            env=env,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 99 or not marker.exists():
+            fail("D1-only inputs did not pass preflight without R2 credentials")
 
 
 def main() -> int:

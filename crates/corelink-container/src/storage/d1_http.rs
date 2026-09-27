@@ -135,6 +135,21 @@ impl D1HttpClient {
         Self::from_d1_parts(account_id, database_id, api_token, true)
     }
 
+    /// Construct a writable D1 client from the D1-only integration inputs.
+    ///
+    /// Test-only so live D1 integration tests do not require an unrelated R2
+    /// credential tuple. Production code should use the scoped constructors.
+    #[cfg(test)]
+    pub(crate) fn from_d1_env_for_integration_tests() -> Result<Self, String> {
+        let account_id = super::non_empty_env("CLOUDFLARE_ACCOUNT_ID")
+            .ok_or_else(|| "CLOUDFLARE_ACCOUNT_ID is required".to_owned())?;
+        let database_id = super::non_empty_env("D1_DATABASE_ID")
+            .ok_or_else(|| "D1_DATABASE_ID is required".to_owned())?;
+        let api_token = super::non_empty_env("CF_API_TOKEN")
+            .ok_or_else(|| "CF_API_TOKEN is required".to_owned())?;
+        Self::from_d1_parts(account_id, database_id, api_token, false)
+    }
+
     /// Construct the narrow staging load-test ledger writer without requiring
     /// or loading any R2 credentials. This is crate-private; callers receive
     /// the typed append-only adapter rather than an unrestricted public D1
@@ -1211,8 +1226,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires live CF D1 credentials"]
     async fn d1_http_blob_meta_round_trip() {
-        let env = StorageEnv::from_env().expect("all env vars must be set");
-        let client = D1HttpClient::new(&env).expect("client");
+        let client = D1HttpClient::from_d1_env_for_integration_tests().expect("D1 credentials");
         // Query a definitely-absent record — should return Ok(None).
         let result = client
             .cas_meta_lookup("00000000-0000-0000-0000-000000000000", "__no_such_digest__")
@@ -1226,8 +1240,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires live CF D1 credentials"]
     async fn d1_http_tenant_admin_lookup_round_trip() {
-        let env = StorageEnv::from_env().expect("all env vars must be set");
-        let client = D1HttpClient::new(&env).expect("client");
+        let client = D1HttpClient::from_d1_env_for_integration_tests().expect("D1 credentials");
         let result = client
             .tenant_admin_lookup("00000000-0000-0000-0000-000000000000")
             .await

@@ -946,8 +946,6 @@ mod tests {
 
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use crate::storage::StorageEnv;
-
     /// The secret-redacting `Debug` never surfaces the CF API token.
     /// (Construction of a real `D1HttpClient` requires env; WP-A adds the
     /// behavioural coverage of the SQL paths.)
@@ -969,22 +967,19 @@ mod tests {
     // Prerequisites:
     //   * A D1 *test* DB with migrations `0038_dpa_acceptances.sql` +
     //     `0039_tier_selection.sql` applied.
-    //   * All `StorageEnv` env vars exported (R2_S3_* are read by
-    //     `StorageEnv::from_env()` even though only the D1/CF ones are hit).
+    //   * CLOUDFLARE_ACCOUNT_ID, CF_API_TOKEN, and D1_DATABASE_ID exported.
     //
     // Manual run:
     //
     // ```bash
     // CLOUDFLARE_ACCOUNT_ID=<acc> CF_API_TOKEN=<tok> D1_DATABASE_ID=<id> \
-    //   R2_S3_ENDPOINT=<ep> R2_S3_ACCESS_KEY_ID=<akid> \
-    //   R2_S3_SECRET_ACCESS_KEY=<secret> \
     //   cargo test -p corelink-server d1_ -- --ignored
     // ```
     //
     // Each test uses a UNIQUE per-run tenant id (`process id` + a monotonic
-    // counter) so concurrent runs and re-runs against the same shared test DB
-    // never collide. Rows are left behind (it is a throwaway test DB); the
-    // lock row is released where it matters.
+    // counter). The issue operator uses a dedicated disposable DB, deletes it
+    // after the run, and verifies the database is absent, including the one
+    // free-tier fixture row left by this test.
     // ──────────────────────────────────────────────────────────────────────
 
     /// Monotonic suffix so multiple tests / repeats within one process never
@@ -998,13 +993,12 @@ mod tests {
         format!("test-{label}-{pid}-{seq}")
     }
 
-    /// Build the live store from `StorageEnv::from_env()`. Panics with a clear
-    /// message if the credentials are not present (the test is `#[ignore]`d, so
-    /// this only fires when explicitly opted in).
+    /// Build the live store from D1-only credentials. Panics with a clear
+    /// message when they are absent (the test is `#[ignore]`d, so this only
+    /// fires when explicitly opted in).
     fn live_store() -> D1HttpTierSelectStore {
-        let env = StorageEnv::from_env()
-            .expect("all StorageEnv env vars must be set (CLOUDFLARE_ACCOUNT_ID, CF_API_TOKEN, D1_DATABASE_ID, R2_S3_*)");
-        let client = D1HttpClient::new(&env).expect("build D1HttpClient");
+        let client = D1HttpClient::from_d1_env_for_integration_tests()
+            .expect("CLOUDFLARE_ACCOUNT_ID, CF_API_TOKEN, and D1_DATABASE_ID must be set");
         D1HttpTierSelectStore::new(Arc::new(client))
     }
 
