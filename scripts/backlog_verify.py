@@ -117,6 +117,37 @@ B057_C0_TARGETS = {
     ".github/workflows/issue-2414-b057-sli.yml": "feed9cf65ce17f8a11427db710ff0dbae26ad185ca38c1effeffdb94bfc09084",
 }
 
+# One-time #1700 Custom Domain transition. This admits only the exact three
+# trusted control edits plus their exact unprovisioned topology input. The
+# BASE copy of this file checks bytes only; it never imports candidate code.
+STAGING_CUSTOM_DOMAIN_PREIMAGES = {
+    "scripts/verify_b072_receiver.py": "8acce3d50dbe4ad9a3df24d33e56828203a51510eab3fcfa3bff2b46c0b27a69",
+    "scripts/verify_staging_topology_contract.py": "ba7abe9d5887269a69fcf2a8cfcec6d60d579ecd53f72a3ec6e9cc74250c677b",
+    "tests/test_verify_staging_topology_contract.py": "97d1f75eb3608dbf71cc0506922ddd7b88b92f7f8f0812f01d392ee535be8103",
+    "infra/staging/topology.json": "5156d6578d662020777a7e98cb1b91a181c6b4536afbd2c4a9498be06f57357e",
+}
+STAGING_CUSTOM_DOMAIN_TARGETS = {
+    "scripts/verify_b072_receiver.py": "3bfa5d552f9d588c424c25a2cb7654dd840f77279cd89ff249f594c052674ecc",
+    "scripts/verify_staging_topology_contract.py": "18a70767b543a5ea8cadda94a216c068de41a8a294182ef255067126a9fa0e27",
+    "tests/test_verify_staging_topology_contract.py": "bba450e2410791916e7ec80600c7968be86152a21526d02cf1dddf57f2ae909f",
+    "infra/staging/topology.json": "586665e34c11bf91a34fb83247fdbafec9fdfb8e7a336ba4da6f5bda8266dd99",
+}
+STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS = frozenset({
+    ".github/workflows/issue-1700-staging-custom-domain.yml",
+    "docs/campaigns/remediation/wp150-workflow-ownership.md",
+    "infra/staging/README.md",
+    "scripts/plan_staging_provider.py",
+    "scripts/render_staging_wrangler.py",
+    "scripts/staging_bootstrap_provider.py",
+    "scripts/staging_custom_domain.py",
+    "scripts/verify_staging_provider_preflight.py",
+    "scripts/verify_staging_target.py",
+    "tests/test_render_staging_wrangler.py",
+    "tests/test_staging_bootstrap_provider.py",
+    "tests/test_staging_custom_domain.py",
+    "tests/test_verify_staging_target.py",
+})
+
 # A command's polarity cannot be inferred from arbitrary shell.  We can still
 # reject the known dangerous declaration: a `done` item whose human explanation
 # explicitly says the check remains `open`.  Unmarked legacy entries remain
@@ -305,6 +336,7 @@ def check(
     max_age: int,
     *,
     trusted_by_id: dict[str, Item] | None = None,
+    authorized_verify_deltas: dict[str, tuple[str, str]] | None = None,
     enforce_manual_age: bool = False,
     execution_mode: str = "candidate",
 ) -> None:
@@ -334,9 +366,11 @@ def check(
 
     trusted = (trusted_by_id or {}).get(item.id)
     if trusted is not None and item.raw.get("verify") != trusted.raw.get("verify"):
-        item.verdict = BROKEN
-        item.detail = "verify declaration differs from BASE; semantic execution is deferred to exact-SHA CI"
-        return
+        expected_delta = (trusted.raw.get("verify"), item.raw.get("verify"))
+        if expected_delta != (authorized_verify_deltas or {}).get(item.id):
+            item.verdict = BROKEN
+            item.detail = "verify declaration differs from BASE; semantic execution is deferred to exact-SHA CI"
+            return
     if execution_mode == "candidate":
         item.verdict = CONFIRMED
         item.detail = "verify declaration is syntactically present; semantic execution is deferred to exact-SHA CI"
@@ -617,12 +651,94 @@ def _preauthorized_b057_c0(candidate_root: Path, trusted_root: Path) -> bool:
     )
 
 
+def _preauthorized_staging_custom_domain(candidate_root: Path, trusted_root: Path) -> bool:
+    """Recognize only the frozen #1700 verifier/topology byte transition."""
+    try:
+        candidate_entries = _candidate_tree_entries(candidate_root)
+        trusted_entries = _candidate_tree_entries(trusted_root)
+    except (OSError, RuntimeError):
+        return False
+    paths = set(STAGING_CUSTOM_DOMAIN_PREIMAGES)
+    if set(STAGING_CUSTOM_DOMAIN_TARGETS) != paths:
+        return False
+    if any(candidate_entries.get(path, ("", 0, ""))[0] != "file" for path in paths):
+        return False
+    if any(trusted_entries.get(path, ("", 0, ""))[0] != "file" for path in paths):
+        return False
+    if any(candidate_entries[path][1] != trusted_entries[path][1] for path in paths):
+        return False
+    # The delivery changes thirteen explicitly named application/docs paths in
+    # addition to the four frozen controls. This allows the reviewed delivery
+    # while rejecting arbitrary extra files; the BASE closure checks any other
+    # trusted-control changes independently.
+    allowed_changes = paths | STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS
+    changed = {
+        path for path in set(candidate_entries) | set(trusted_entries)
+        if candidate_entries.get(path) != trusted_entries.get(path)
+    }
+    if changed != allowed_changes:
+        return False
+    if not all(
+        trusted_entries[path][2] == digest
+        for path, digest in STAGING_CUSTOM_DOMAIN_PREIMAGES.items()
+    ) or not all(
+        candidate_entries[path][2] == digest
+        for path, digest in STAGING_CUSTOM_DOMAIN_TARGETS.items()
+    ):
+        return False
+    try:
+        topology = json.loads((candidate_root / "infra/staging/topology.json").read_bytes())
+        cloudflare = topology["cloudflare"]
+        domains = cloudflare["routes"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return (
+        topology.get("deployment_state") == "unprovisioned"
+        and isinstance(domains, list)
+        and domains == [{
+            "pattern": "staging.corelink.humangr.com",
+            "worker": "corelink-staging",
+            "zone_name": "humangr.com",
+            "custom_domain": True,
+        }]
+    )
+
+
 def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_items: list[Item]) -> None:
     """Fail closed when PR data changes a trusted control in the closure."""
+    topology_path = "infra/staging/topology.json"
+    candidate_topology = candidate_root / topology_path
+    trusted_topology = trusted_root / topology_path
+    try:
+        candidate_topology.lstat()
+        candidate_has_topology = True
+    except FileNotFoundError:
+        candidate_has_topology = False
+    try:
+        trusted_topology.lstat()
+        trusted_has_topology = True
+    except FileNotFoundError:
+        trusted_has_topology = False
+    if candidate_has_topology != trusted_has_topology:
+        topology_changed = True
+    elif not candidate_has_topology:
+        topology_changed = False
+    else:
+        try:
+            topology_changed = _regular_control(candidate_root, topology_path) != _regular_control(
+                trusted_root, topology_path
+            )
+        except RuntimeError:
+            topology_changed = True
+    staging_transition = topology_changed and _preauthorized_staging_custom_domain(
+        candidate_root, trusted_root
+    )
     for relative in sorted(_candidate_control_paths(trusted_root, trusted_items)):
         trusted = _regular_control(trusted_root, relative)
         candidate = _regular_control(candidate_root, relative)
         if candidate != trusted:
+            if relative in STAGING_CUSTOM_DOMAIN_PREIMAGES and staging_transition:
+                continue
             if relative == "scripts/verify_b057_sli.py" and _preauthorized_b057_c0(
                 candidate_root, trusted_root
             ):
@@ -631,6 +747,36 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
                 f"candidate mutated trusted backlog control {relative}; "
                 "candidate verifier code is data-only and was not executed"
             )
+
+
+def check_candidate_staging_topology(candidate_root: Path, trusted_root: Path) -> None:
+    """Reject topology-only or malformed changes after ledger diagnostics."""
+    topology_path = "infra/staging/topology.json"
+    candidate_topology = candidate_root / topology_path
+    trusted_topology = trusted_root / topology_path
+    try:
+        candidate_topology.lstat()
+        candidate_has_topology = True
+    except FileNotFoundError:
+        candidate_has_topology = False
+    try:
+        trusted_topology.lstat()
+        trusted_has_topology = True
+    except FileNotFoundError:
+        trusted_has_topology = False
+    if candidate_has_topology != trusted_has_topology:
+        topology_changed = True
+    elif not candidate_has_topology:
+        topology_changed = False
+    else:
+        try:
+            topology_changed = _regular_control(candidate_root, topology_path) != _regular_control(
+                trusted_root, topology_path
+            )
+        except RuntimeError:
+            topology_changed = True
+    if topology_changed and not _preauthorized_staging_custom_domain(candidate_root, trusted_root):
+        raise RuntimeError("candidate mutated unapproved staging topology; candidate data was not executed")
 
 
 def validate_candidate_transitions(
@@ -1048,6 +1194,7 @@ def main() -> int:
         return 2
     items = parse(text)
     trusted_by_id: dict[str, Item] | None = None
+    authorized_verify_deltas: dict[str, tuple[str, str]] = {}
     if candidate_mode:
         trusted_path = Path(args.trusted_file).resolve()
         if not trusted_path.is_file() or trusted_path.is_symlink():
@@ -1075,13 +1222,27 @@ def main() -> int:
             trusted_root = Path(args.trusted_root).resolve()
             try:
                 if ledger.successor_required(trusted_root, candidate_root):
-                    ledger.validate_candidate_successor(trusted_root, candidate_root, today=today)
+                    receipt = ledger.validate_candidate_successor(
+                        trusted_root, candidate_root, today=today,
+                    )
+                    authorized_ids = set(receipt["changed_ids"])
+                    candidate_by_id = {item.id: item for item in items if item.raw}
+                    for item_id in authorized_ids:
+                        trusted_item = trusted_by_id.get(item_id)
+                        candidate_item = candidate_by_id.get(item_id)
+                        if trusted_item is None or candidate_item is None:
+                            continue
+                        old_verify = trusted_item.raw.get("verify")
+                        new_verify = candidate_item.raw.get("verify")
+                        if isinstance(old_verify, str) and isinstance(new_verify, str) and old_verify != new_verify:
+                            authorized_verify_deltas[item_id] = (old_verify, new_verify)
                 else:
                     transition_errors = validate_candidate_transitions(items, trusted_items, today)
                     if transition_errors:
                         raise RuntimeError("candidate transition rejected:\n" + "\n".join(transition_errors))
             except ledger.LedgerError as exc:
                 raise RuntimeError(f"candidate ledger successor rejected: {exc}") from exc
+            check_candidate_staging_topology(candidate_root, trusted_root)
             validate_candidate_workflow(candidate_root, trusted_root)
         except (OSError, RuntimeError) as exc:
             print(f"FATAL: {exc}", file=sys.stderr)
@@ -1317,6 +1478,7 @@ def main() -> int:
             today,
             args.max_age_days,
             trusted_by_id=trusted_by_id,
+            authorized_verify_deltas=authorized_verify_deltas,
             enforce_manual_age=execution_mode in {"fixture", "trusted"},
             execution_mode=execution_mode,
         )

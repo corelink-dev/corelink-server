@@ -8,6 +8,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "crates/corelink-container/src/storage/staging_load_test_admission.rs"
+V2_MIGRATION = ROOT / "migrations/d1/0152_staging_load_test_request_nonces.sql"
 WORKER = ROOT / "worker/src/durable_object_start.ts"
 MATRIX = ROOT / "docs/internal/secrets-checklist.md"
 DEPLOY = ROOT / ".github/workflows/cf-deploy-prod.yml"
@@ -38,23 +39,41 @@ def env_parity_errors(worker: str, matrix: str, deploy: str) -> list[str]:
 def main() -> int:
     source = MODULE.read_text(encoding="utf-8")
     required = (
-        'const AUTH_DOMAIN: &[u8] = b"corelink/staging-load-admission-auth/v1\\0";',
-        'const NONCE_DOMAIN: &[u8] = b"corelink/staging-load-admission-nonce/v1\\0";',
+        'const AUTH_DOMAIN_V1: &[u8] = b"corelink/staging-load-admission-auth/v1\\0";',
+        'const AUTH_DOMAIN_V2: &[u8] = b"corelink/staging-load-admission-auth/v2\\0";',
+        'const NONCE_DOMAIN_V1: &[u8] = b"corelink/staging-load-admission-nonce/v1\\0";',
+        'const NONCE_DOMAIN_V2: &[u8] = b"corelink/staging-load-admission-nonce/v2\\0";',
         "mac.verify_slice(&tag)",
         "fn decode_nonce(",
         "fn nonce_digest_hex(",
+        "StagingLoadTestAdmissionVersion::V2 => (SQL_INSERT_RUN_V2, SQL_INSERT_REQUEST_NONCE)",
+        "ON CONFLICT(run_id, scenario) DO NOTHING",
         "for byte in nonce_bytes.iter().copied()",
         "for byte in bytes",
         'write!(&mut encoded, "{byte:02x}")',
         ".batch(vec![",
-        "D1BatchStatement::new(SQL_INSERT_RUN, run_params)",
-        "D1BatchStatement::new(SQL_INSERT_NONCE, nonce_params)",
+        "StagingLoadTestAdmissionVersion::V1 => (SQL_INSERT_RUN, SQL_INSERT_NONCE)",
+        "D1BatchStatement::new(run_sql, run_params)",
+        "D1BatchStatement::new(nonce_sql, nonce_params)",
         '.field("key", &"[REDACTED]")',
         '.field("nonce_digest", &"[REDACTED]")',
     )
     missing = [fragment for fragment in required if fragment not in source]
     if missing:
         print(f"missing #2576 contract fragments: {missing!r}", file=sys.stderr)
+        return 1
+    migration = V2_MIGRATION.read_text(encoding="utf-8")
+    migration_required = (
+        "CREATE TABLE IF NOT EXISTS staging_load_test_request_nonces",
+        "PRIMARY KEY (nonce_digest)",
+        "trg_staging_load_test_request_nonce_requires_exact_open_run",
+        "AND state = 'open'",
+        "trg_staging_load_test_request_nonce_no_update",
+        "trg_staging_load_test_request_nonce_no_delete",
+    )
+    missing_migration = [fragment for fragment in migration_required if fragment not in migration]
+    if missing_migration or "UNIQUE (run_id, scenario)" in migration:
+        print(f"missing or unsafe #2576 v2 migration fragments: {missing_migration!r}", file=sys.stderr)
         return 1
     if FORBIDDEN_INDEX.search(source):
         print("nonce/digest indexing or slicing is forbidden", file=sys.stderr)
