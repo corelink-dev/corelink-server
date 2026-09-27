@@ -1076,6 +1076,209 @@ def test_v0010_ledger_derives_only_the_pinned_full_state_delta():
             policy._v0010_ledger(prior.replace(field, field + b"\n" + field, 1), base)
 
 
+V0010_B114_SECTION = (
+    b'### B-114 \xe2\x80\x94 a imagem `corelink-runner-devenv` n\xc3\xa3o existe e ne'
+    b'nhum workflow a constr\xc3\xb3i\n\nDescoberto em 2026-08-30 ao destravar'
+    b' o deploy de produ\xc3\xa7\xc3\xa3o, e a cadeia importa mais que o\nsintoma:\n'
+    b'\n```\ndeploy de prod  \xe2\x86\x92  BLOQUEADO: RunnerDevEnvDO n\xc3\xa3o exporta'
+    b'do pelo spawn-worker\n  deploy do spawn-worker  \xe2\x86\x92  BLOQUEADO: "'
+    b'Latest tags are not allowed"\n    corelink-runner-devenv:latest  '
+    b'\xe2\x86\x92  A IMAGEM NUNCA FOI CONSTRU\xc3\x8dDA\n      grep -rln "runner-deve'
+    b'nv" .github/workflows/  \xe2\x86\x92  VAZIO\n```\n\nO `:latest` \xc3\xa9 o sintoma'
+    b' \xe2\x80\x94 a Cloudflare recusa tags m\xc3\xb3veis. A causa \xc3\xa9 que **nada pro'
+    b'duz a\nimagem**. Os dois cont\xc3\xaaineres irm\xc3\xa3os da frota s\xc3\xa3o pinad'
+    b'os por digest; s\xc3\xb3 o DevEnv n\xc3\xa3o \xc3\xa9,\nporque n\xc3\xa3o h\xc3\xa1 digest a pi'
+    b'nar. O `Dockerfile.runner-devenv` existe no repo da frota e nenh'
+    b'um\nworkflow o constr\xc3\xb3i.\n\n**O custo n\xc3\xa3o foi a feature incomplet'
+    b'a, foi o bloqueio colateral.** Enquanto durou, nenhum\ndeploy de '
+    b'produ\xc3\xa7\xc3\xa3o passava, com 43 commits presos \xe2\x80\x94 entre eles o #1410'
+    b', que conserta a\ntabela fantasma que parte o apagamento do **GDP'
+    b'R Art. 17** no meio. Uma feature de\ndesenvolvimento incompleta s'
+    b'egurou uma corre\xc3\xa7\xc3\xa3o de conformidade.\n\nDestravado em #1447 desa'
+    b'coplando o binding, deliberadamente **sem** construir a imagem \xc3'
+    b'\xa0s\npressas: ligar feature nova pelo caminho apressado s\xc3\xb3 para d'
+    b'esbloquear \xc3\xa9 exatamente como o\ndefeito chegou aqui. Este item c'
+    b'obre a d\xc3\xadvida que sobrou.\n\n```backlog\nid: B-114\nrepo: corelink-'
+    b'runners\nowner: tl\nstatus: done\nverify: python3 scripts/check_b11'
+    b'4_cross_repo.py --receipt\nverify-means: |\n  done \xe2\x80\x94 receipt exa'
+    b'to de build/publica\xc3\xa7\xc3\xa3o do `corelink-runners` \xc3\xa9 validado pelo '
+    b'checker\n  P1. O receipt registra somente o build/publica\xc3\xa7\xc3\xa3o e '
+    b'seu artefato; n\xc3\xa3o afirma deploy,\n  pin, muta\xc3\xa7\xc3\xa3o de provider o'
+    b'u uso/pull de imagem.\nlast-verified: 2026-09-27\n```\n\n'
+)
+
+
+def _v0010_candidate_tree(
+    tmp_path: Path,
+) -> tuple[Path, Path, dict[str, object]]:
+    """Materialize the final B-114 receipt against its immutable pre-transition BASE."""
+    root = Path(__file__).resolve().parents[1]
+    policy = ledger._successor_policy()
+    base_root = tmp_path / "trusted-base"
+    subprocess.run(
+        [
+            "git", "worktree", "add", "--quiet", "--detach", str(base_root),
+            "13a32c356110bc95210dd3724840626c342c9f42",
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    base_sha = _git(base_root, "rev-parse", "HEAD")
+    candidate = tmp_path / "candidate"
+    subprocess.run(
+        ["git", "worktree", "add", "--quiet", "--detach", str(candidate), base_sha],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    base_state = policy._state_bytes(base_root)
+
+    source = base_state["BACKLOG.md"]
+    section_start = source.index(b"### B-114 ")
+    section_end = source.index(b"### B-115 ", section_start)
+    old_section = source[section_start:section_end]
+    new_section = V0010_B114_SECTION
+    assert ledger._sha256(new_section) == successor.V0010_RECONCILIATION["current_section_sha256"]
+    candidate_backlog = source[:section_start] + new_section + source[section_end:]
+    (candidate / "BACKLOG.md").write_bytes(candidate_backlog)
+
+    anchor = successor.V0010_RECONCILIATION["anchor_base_commit"]
+    prior = policy._git_state_bytes(base_root, anchor)
+    ledger_path = ledger.LEDGER_RELATIVE.as_posix()
+    (candidate / ledger_path).write_bytes(policy._v0010_ledger(prior[ledger_path], base_sha))
+    current = policy._state_bytes(candidate)
+    previous_path = candidate / "docs/campaigns/remediation/backlog-ledger-snapshot-v0009.json"
+    previous_raw = previous_path.read_bytes()
+    previous = json.loads(previous_raw)
+    catalogs = {
+        path.as_posix(): ledger._sha256(prior[path.as_posix()])
+        for path in policy._catalog_relatives()
+    }
+    backlog_text = current["BACKLOG.md"].decode("utf-8")
+    counts = ledger.backlog_status_counts(backlog_text)
+    receipt = {
+        "schema_version": 3,
+        "sequence": 10,
+        "transition": "base-derived-data",
+        "base_commit": base_sha,
+        "prior_snapshot_sha256": ledger._sha256(previous_raw),
+        "prior_source_sha256": ledger._sha256(prior["BACKLOG.md"]),
+        "source_sha256": ledger._sha256(current["BACKLOG.md"]),
+        "prior_ledger_sha256": ledger._sha256(prior[ledger_path]),
+        "ledger_sha256": ledger._sha256(current[ledger_path]),
+        "prior_catalog_sha256": catalogs,
+        "catalog_sha256": {
+            path.as_posix(): ledger._sha256(current[path.as_posix()])
+            for path in policy._catalog_relatives()
+        },
+        "item_count": sum(counts.values()),
+        "status_counts": {key: counts.get(key, 0) for key in ("done", "open", "parked")},
+        "open_ids": sorted(ledger.open_backlog_ids(backlog_text)),
+        "changed_ids": ["B-114"],
+    }
+    (candidate / "docs/campaigns/remediation/backlog-ledger-snapshot-v0010.json").write_text(
+        json.dumps(receipt, indent=2) + "\n",
+    )
+
+    trusted_items = ledger.backlog_verify.parse(base_state["BACKLOG.md"].decode("utf-8"))
+    controls = ledger.backlog_verify._candidate_control_paths(base_root, trusted_items)
+    controls.add(".github/workflows/backlog-verify.yml")
+    controls.add("docs/campaigns/remediation/B-114-corelink-runners-receipt.md")
+    for relative in controls:
+        for destination in (base_root, candidate):
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / relative, target)
+    return base_root, candidate, receipt
+
+
+def test_v0010_candidate_cli_accepts_only_the_fully_authorized_b114_delta(tmp_path):
+    """The full BASE-owned CLI gate accepts the exact receipt without running its command."""
+    root = Path(__file__).resolve().parents[1]
+    base_root, candidate, receipt = _v0010_candidate_tree(tmp_path)
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(root / "scripts/backlog_verify.py"),
+                "--candidate-file", str(candidate / "BACKLOG.md"),
+                "--trusted-file", str(base_root / "BACKLOG.md"),
+                "--candidate-root", str(candidate),
+                "--trusted-root", str(base_root),
+                "--today", "2026-09-27",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "374 item(s): confirmed=374" in result.stdout
+        assert receipt["source_sha256"] == successor.V0010_RECONCILIATION["source_sha256"]
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(candidate)], cwd=root, check=False)
+        subprocess.run(["git", "worktree", "remove", "--force", str(base_root)], cwd=root, check=False)
+
+
+def test_v0010_authorizer_rejects_other_ids_and_unpinned_receipt_hashes(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    policy = ledger._successor_policy()
+    anchor = successor.V0010_RECONCILIATION["anchor_base_commit"]
+    base_root, candidate, receipt = _v0010_candidate_tree(tmp_path)
+    base_sha = _git(base_root, "rev-parse", "HEAD")
+    prior = policy._git_state_bytes(base_root, anchor)
+    previous = json.loads(
+        (candidate / ledger.SNAPSHOT_DIRECTORY / "backlog-ledger-snapshot-v0009.json").read_text()
+    )
+    current = policy._state_bytes(candidate)
+    authorize = lambda rec=receipt, old=previous, new=current: policy._v0010_reconciliation_authorized(
+        old, prior, new, rec, 10, trusted_base=base_sha,
+    )
+    assert authorize(receipt)
+    assert not authorize({**receipt, "changed_ids": ["B-065"]})
+    assert not authorize({**receipt, "source_sha256": "0" * 64})
+    assert not authorize({**receipt, "prior_source_sha256": "0" * 64})
+    assert not authorize(old={**previous, "source_sha256": "0" * 64})
+    changed_command = dict(current)
+    changed_command["BACKLOG.md"] = current["BACKLOG.md"].replace(
+        b"scripts/check_b114_cross_repo.py --receipt",
+        b"scripts/check_b114_cross_repo.py --self-test",
+        1,
+    )
+    assert not authorize(new=changed_command)
+
+
+def test_v0010_backlog_cli_rejects_mutated_candidate_checker(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    base_root, candidate, _ = _v0010_candidate_tree(tmp_path)
+    try:
+        checker = candidate / "scripts/backlog_verify.py"
+        checker.write_bytes(checker.read_bytes() + b"\n# candidate mutation\n")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(root / "scripts/backlog_verify.py"),
+                "--candidate-file", str(candidate / "BACKLOG.md"),
+                "--trusted-file", str(base_root / "BACKLOG.md"),
+                "--candidate-root", str(candidate),
+                "--trusted-root", str(base_root),
+                "--today", "2026-09-27",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "candidate mutated trusted backlog control scripts/backlog_verify.py" in result.stdout + result.stderr
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(candidate)], cwd=root, check=False)
+        subprocess.run(["git", "worktree", "remove", "--force", str(base_root)], cwd=root, check=False)
+
+
 def test_b315_style_two_parent_merge_replays_successor(tmp_path, monkeypatch):
     base, candidate = _successor_fixture(tmp_path, monkeypatch)
     assert ledger.validate_candidate_successor(base, candidate)["sequence"] == 3
