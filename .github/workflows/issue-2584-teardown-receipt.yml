@@ -1,0 +1,58 @@
+name: Issue 2584 teardown receipt
+
+on:
+  pull_request:
+    paths:
+      - crates/corelink-container/src/webhook_inbox_d1.rs
+      - crates/corelink-container/src/signup_d1_http.rs
+      - crates/corelink-container/src/storage/staging_load_test_ownership.rs
+      - crates/corelink-container/src/storage/staging_load_test_admission.rs
+      - crates/corelink-container/src/routes.rs
+      - crates/corelink-container/src/main.rs
+      - crates/corelink-container/src/routes/staging_load_test_teardown.rs
+      - scripts/validate_load_teardown_receipt.py
+      - scripts/verify_issue_2584_teardown.py
+      - tests/test_issue_2584_teardown.py
+      - .github/workflows/issue-2584-teardown-receipt.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  locator-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Bind proof to exact head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "${EXPECTED_SHA}" = "$(git rev-parse HEAD)"
+      - name: Validate immutable locator contract
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          w = Path("crates/corelink-container/src/webhook_inbox_d1.rs").read_text()
+          s = Path("crates/corelink-container/src/signup_d1_http.rs").read_text()
+          required = ("webhook_inbox_v1", "webhook_effect_v1", "signup_pilot_v1", "teardown_locator_statement", "signup_teardown_locator_statement")
+          assert all(token in (w + s) for token in required)
+          PY
+      - name: Run bounded receipt verifier and adversarial negatives
+        run: |
+          python3 scripts/verify_issue_2584_teardown.py
+          python3 -m unittest tests/test_issue_2584_teardown.py
+      - name: Install repository Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable toolchain action
+        with:
+          toolchain: 1.91.1
+      - name: Install pinned Protobuf compiler required by corelink-reapi
+        uses: arduino/setup-protoc@f4d5893b897028ff5739576ea0409746887fa536 # v3.0.0
+      - name: Exercise exact-head teardown route and service contracts
+        timeout-minutes: 10
+        run: |
+          cargo test --locked -p corelink-server --lib storage::staging_load_test_ownership::tests:: -- --nocapture
+          cargo test --locked -p corelink-server --lib routes::staging_load_test_teardown::tests:: -- --nocapture
+          cargo test --locked -p corelink-server --lib webhook_inbox_d1::tests::verified_admission_context_registers_the_inbox_in_its_d1_batch -- --nocapture
+          cargo test --locked -p corelink-server --lib signup_d1_http::tests:: -- --nocapture

@@ -66,6 +66,7 @@
 use std::sync::Arc;
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::routes::signup::{PilotSignupRecord, SignupStore};
@@ -378,6 +379,7 @@ impl SignupStore for D1HttpSignupStore {
         let ownership = registration
             .d1_statement(registered_at_ms)
             .map_err(|_| "signup store: staging ownership registration rejected")?;
+        let locator = signup_teardown_locator_statement(&context, &opaque_handle, registered_at_ms);
 
         let insert_binds = vec![
             json!(record.id.to_string()),
@@ -394,10 +396,35 @@ impl SignupStore for D1HttpSignupStore {
             .batch(vec![
                 D1BatchStatement::new(SQL_INSERT, insert_binds),
                 ownership,
+                locator,
             ])
             .map_err(|_| "signup store: staging signup batch failed")?;
         Ok(record)
     }
+}
+
+fn signup_teardown_locator_statement(
+    context: &crate::storage::staging_load_test_admission::StagingLoadTestAdmissionContext,
+    signup_id: &str,
+    now_ms: i64,
+) -> D1BatchStatement {
+    let mut digest = Sha256::new();
+    digest.update(b"corelink-staging-load-test-resource-receipt-v1\0");
+    for part in [
+        context.run_id().as_bytes(),
+        context.scenario().as_str().as_bytes(),
+        context.target_deployment_sha().as_bytes(),
+        b"signup_artifact".as_slice(),
+        signup_id.as_bytes(),
+        b"disposable".as_slice(),
+    ] {
+        digest.update((part.len() as u64).to_be_bytes());
+        digest.update(part);
+    }
+    D1BatchStatement::new(
+        "INSERT INTO staging_load_test_teardown_locators (run_id, scenario, resource_class, receipt_ref, locator_kind, locator_json, registered_at_ms) VALUES (?1, ?2, 'signup_artifact', ?3, 'signup_pilot_v1', ?4, ?5)",
+        vec![json!(context.run_id()), json!(context.scenario().as_str()), json!(hex::encode(digest.finalize())), json!(json!({ "signup_id": signup_id }).to_string()), json!(now_ms)],
+    )
 }
 
 #[cfg(test)]
@@ -408,8 +435,11 @@ impl SignupStore for D1HttpSignupStore {
     reason = "tests are allowed these primitives"
 )]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::sync::Mutex;
 
+    use hmac::{Hmac, KeyInit, Mac};
     use uuid::Uuid;
 
     use super::*;
@@ -611,5 +641,146 @@ mod tests {
             err.contains("durable signup store unavailable"),
             "loud fail-closed message, got: {err}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn verified_admission_context_registers_signup_locator_in_its_d1_batch() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("loopback address")
+        );
+        let server = std::thread::spawn(move || {
+            for request_index in 0..3 {
+                let (mut stream, _) = listener.accept().expect("loopback accept");
+                let mut bytes = Vec::new();
+                loop {
+                    let mut buffer = [0_u8; 4096];
+                    let read = stream.read(&mut buffer).expect("request read");
+                    bytes.extend_from_slice(&buffer[..read]);
+                    let Some(headers_end) = bytes.windows(4).position(|part| part == b"\r\n\r\n")
+                    else {
+                        continue;
+                    };
+                    let headers = std::str::from_utf8(&bytes[..headers_end]).expect("headers utf8");
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("content-length: ")
+                                .or_else(|| line.strip_prefix("Content-Length: "))
+                        })
+                        .expect("content length")
+                        .parse::<usize>()
+                        .expect("content length number");
+                    if bytes.len() >= headers_end + 4 + length {
+                        break;
+                    }
+                }
+                let body_start = bytes
+                    .windows(4)
+                    .position(|part| part == b"\r\n\r\n")
+                    .unwrap()
+                    + 4;
+                let request: serde_json::Value =
+                    serde_json::from_slice(&bytes[body_start..]).expect("D1 request");
+                let result = match request_index {
+                    0 => {
+                        assert_eq!(
+                            request["batch"].as_array().expect("admission batch").len(),
+                            2
+                        );
+                        vec![
+                            json!({"results": [], "success": true}),
+                            json!({"results": [], "success": true}),
+                        ]
+                    }
+                    1 => {
+                        assert_eq!(request["sql"], json!(SQL_LOOKUP_EXISTING));
+                        assert_eq!(request["params"], json!(["new@example.com", "tok-new"]));
+                        vec![json!({"results": [], "success": true})]
+                    }
+                    _ => {
+                        let statements = request["batch"].as_array().expect("signup batch");
+                        assert_eq!(
+                            statements.len(),
+                            3,
+                            "locator must share the signup D1 batch"
+                        );
+                        assert_eq!(statements[0]["sql"], json!(SQL_INSERT));
+                        assert!(statements[1]["sql"]
+                            .as_str()
+                            .unwrap()
+                            .contains("staging_load_test_resources"));
+                        assert_eq!(statements[2]["sql"], json!("INSERT INTO staging_load_test_teardown_locators (run_id, scenario, resource_class, receipt_ref, locator_kind, locator_json, registered_at_ms) VALUES (?1, ?2, 'signup_artifact', ?3, 'signup_pilot_v1', ?4, ?5)"));
+                        assert_eq!(statements[2]["params"][0], json!("123"));
+                        assert_eq!(statements[2]["params"][1], json!("signup"));
+                        assert_eq!(statements[2]["params"][2], statements[1]["params"][3]);
+                        assert_eq!(
+                            statements[2]["params"][3],
+                            json!(format!(
+                                "{{\"signup_id\":\"{}\"}}",
+                                statements[0]["params"][0].as_str().unwrap()
+                            ))
+                        );
+                        assert_eq!(statements[2]["params"][4], json!(1_700_000_000_000_i64));
+                        vec![json!({"results": [], "success": true}); 3]
+                    }
+                };
+                let body = json!({"result": result, "success": true, "errors": []}).to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).expect("response write");
+            }
+        });
+        let env = crate::storage::StorageEnv {
+            r2_endpoint: "https://localhost:1".to_owned(),
+            r2_access_key_id: "test".to_owned(),
+            r2_secret_access_key: "test".to_owned(),
+            cloudflare_account_id: "test".to_owned(),
+            cf_api_token: "test".to_owned(),
+            d1_database_id: "test".to_owned(),
+        };
+        let admission_client =
+            D1HttpClient::new_for_loopback_test(&env, &endpoint).expect("admission D1 client");
+        let signup_client = Arc::new(
+            D1HttpClient::new_for_loopback_test(&env, &endpoint).expect("signup D1 client"),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let target_sha = "a".repeat(40);
+        let payload = format!(
+            "v1.123.signup.staging.{}.{now}.{}.{}",
+            target_sha,
+            now + 60_000,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        let key = b"01234567890123456789012345678901";
+        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC key");
+        mac.update(b"corelink/staging-load-admission-auth/v1\0");
+        mac.update(payload.as_bytes());
+        let verifier =
+            crate::storage::staging_load_test_admission::StagingLoadTestAdmissionVerifier::new(
+                "staging", key,
+            )
+            .expect("staging verifier");
+        let verified = verifier
+            .verify(
+                &format!("{payload}.{}", hex::encode(mac.finalize().into_bytes())),
+                now,
+            )
+            .expect("verified admission");
+        let context = crate::storage::staging_load_test_admission::StagingLoadTestAdmissionStore::from_d1_client_for_test(admission_client).consume_verified_admission(crate::storage::staging_load_test_admission::StagingLoadTestAdmissionExpectation { run_id: "123", scenario: StagingLoadTestScenario::Signup, target_environment: "staging", target_deployment_sha: &target_sha }, verified).await.expect("durably consumed admission");
+        let store = D1HttpSignupStore::from_d1_client(signup_client);
+        assert_eq!(
+            store
+                .insert_or_existing_with_context(
+                    record("new@example.com", "tok-new"),
+                    Some(&context)
+                )
+                .expect("atomic signup write")
+                .email,
+            "new@example.com"
+        );
+        server.join().expect("loopback D1 server");
     }
 }
