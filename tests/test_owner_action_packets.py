@@ -216,12 +216,20 @@ class OwnerActionPacketTests(unittest.TestCase):
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes((ROOT / name).read_bytes())
+            for name in (
+                "legal/sla/v1.1.0.md", "marketing/sales/FAQ-MASTER.md",
+                "apps/docs/src/pages/pricing.tsx",
+            ):
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((ROOT / name).read_bytes())
             MODULE._check_b089_surface_contract(item, root)
 
             mutations = (
-                (MODULE.B089_SURFACES[0], "| **Starter** |", "| **Solo** |"),
-                (MODULE.B089_SURFACES[0], "Service credits per §4.", "No service credits."),
-                (MODULE.B089_SURFACES[1], "Pro-tier customers are entitled to a", "Pro-tier customers are not entitled to a"),
+                ("legal/sla/v1.1.0.md", "| Solo | No | No | No | No |", "| Solo | Yes | No | No | No |"),
+                ("apps/docs/src/pages/legal/terms.tsx", "No SLA service-credit program is currently active", "An SLA service-credit program is currently active"),
+                ("marketing/sales/FAQ-MASTER.md", "SLA service credits are not active for any tier today", "SLA service credits are active for every tier today"),
+                ("apps/docs/src/pages/pricing.tsx", "const APP_BASE =", "const APP_BASE = \"99.9% SLA + credits\"; // const APP_BASE ="),
                 (MODULE.B089_SURFACES[2], '"solo",', '"business",'),
                 (MODULE.B089_SURFACES[2], '  solo: {\n    id: "solo",', '  solo: {\n    slaCredits: true,\n    id: "solo",'),
                 (MODULE.B089_SURFACES[2], '  starter: {\n    id: "starter",', '  starter: {\n    slaCredits: true,\n    id: "starter",'),

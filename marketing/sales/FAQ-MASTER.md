@@ -50,6 +50,11 @@ tags: ["sales", "faq", "objection-handling", "r-prep", "ga", "customer-facing-so
 | Region pin | shared | 1 of 4 | 1 of 4 | up to 2 | up to 2 | all 4 |
 | Uptime SLO | best-effort | 99.5% | 99.5% | 99.9% | 99.9% | 99.95% |
 
+**SLA service credits are not active for any tier today.** The Enterprise-only
+credit policy is a prelaunch draft, not a current customer entitlement; do not
+quote service-credit eligibility or automatic issuance until the approved SLA
+and release gates are in effect.
+
 **Lighthouse** is our design-partner pilot **program**, not a separate billing tier — a Lighthouse customer still lands on one of the six tiers above (typically comped or discounted) and gets the extra concierge playbook (`marketing/lighthouse-kit/CUSTOMER-PLAYBOOK.md`) layered on top. Per-tier TPS ceilings live in the rate-limit ladder (`marketing/sales/RATE-LIMIT-FAQ.md` RL1) — that ladder is versioned separately from this pricing ladder; check `crates/corelink-ratelimit/src/tier.rs` for the current mapping before quoting a number.
 
 The egress numbers are *generous* by build-cache standards because the underlying R2 substrate has zero egress fees on cache reads (see `BLOG-POSTS/05-fast-cache-hit-economics.md`); the cap exists to prevent abuse, not to extract bandwidth rent.
@@ -94,7 +99,7 @@ A prior version of this answer sold BYOK as included on Enterprise and as a $99/
 
 **Q:** If we cancel mid-term, what's the refund posture?
 
-**A:** Two cases. (1) **You cancel for convenience** (mid-annual-prepay): you receive a prorated refund of unused months minus a 30-day notice equivalent. We do not enforce minimum-term penalties beyond the unused-prepay clawback. (2) **You cancel for cause** (an SLA breach we've acknowledged via the public status page, or a material DPA breach): full refund of the current paid period plus an exit-assistance window. The audit-chain export is included free in either case — your data is yours, content-addressed, and portable by construction (you can leave any time; we are aware "BLAKE3 digests are content-addressed" is *itself* an escape hatch, see P34).
+**A:** Two cases. (1) **You cancel for convenience** (mid-annual-prepay): the refund posture is governed by the applicable agreement. (2) **For an SLA breach:** no service-credit program is currently active. If a future SLA becomes effective, its service credits are the sole remedy for covered breaches except for a valid termination under that SLA&rsquo;s §8; a pro-rata refund of prepaid fees applies only on that valid termination and is not added again for the same breach. A material DPA breach is governed by the applicable executed DPA and agreement; this FAQ does not establish a separate refund entitlement. The audit-chain export is included free in either case — your data is yours, content-addressed, and portable by construction (you can leave any time; we are aware "BLAKE3 digests are content-addressed" is *itself* an escape hatch, see P34).
 
 **Sources:** standard MSA §10 (cancellation); `legal/dpa/v1.0.0` §11 (termination).
 

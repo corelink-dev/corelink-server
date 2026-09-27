@@ -20,8 +20,8 @@ def code_with_comments_blank(text: str) -> str:
     return re.sub(r"//[^\n]*", "", text)
 
 
-def check_claim(text: str) -> None:
-    # Markdown comments and fenced examples cannot satisfy a contractual claim.
+def visible_markdown(text: str) -> str:
+    """Return visible prose; comments and fenced examples are not policy evidence."""
     visible: list[str] = []
     fence = False
     html = False
@@ -49,35 +49,61 @@ def check_claim(text: str) -> None:
             visible.append(raw)
     if fence or html:
         fail("unterminated Markdown fence/comment")
-    if not any(CLAIM.search(line) for line in visible):
-        fail("SLA no longer contains the automatic-credit promise")
+    return "\n".join(visible)
+
+
+def check_draft(text: str) -> None:
+    visible = visible_markdown(text)
+    required = (
+        "DRAFT — NOT EFFECTIVE", "not a customer agreement", "Enterprise-only",
+        "No SLA service-credit program is currently active", "SLA_CREDITS_ENABLED",
+        "#2568", "100%", "sole and exclusive remedy", "Free", "Solo", "Starter", "Pro", "Max",
+    )
+    for marker in required:
+        if marker.lower() not in visible.lower():
+            fail(f"v1.1.0 draft is missing required inactive-policy marker: {marker}")
+    if CLAIM.search(visible):
+        fail("v1.1.0 draft contains an active automatic-credit promise")
+    if "no credit formula is defined" not in visible.lower() or "synthetic-page or byok" not in visible.lower():
+        fail("v1.1.0 draft must keep synthetic-page and BYOK credits excluded")
+
+
+def check_historical(text: str) -> None:
+    if "issued automatically against the next invoice" not in text:
+        fail("historical v1.0.0 automatic-issuance bytes drifted")
+    if "sole and exclusive remedy" not in text:
+        fail("historical v1.0.0 remedy bytes drifted")
 
 
 def check_tree() -> None:
-    sla = ROOT / "legal/sla/v1.0.0.md"
-    if sla.is_symlink() or not sla.is_file(): fail("SLA missing or non-regular")
-    check_claim(sla.read_text(encoding="utf-8"))
-    files = [p for root in (ROOT / "crates", ROOT / "worker/src", ROOT / "apps")
-             for p in root.rglob("*") if p.is_file() and not p.is_symlink()
-             and p.suffix in {".rs", ".ts", ".tsx"}
-             and "target" not in p.parts and "node_modules" not in p.parts]
-    if not files: fail("empty implementation population")
-    for path in files:
-        code = code_with_comments_blank(path.read_text(encoding="utf-8"))
-        if TOKENS.search(code):
-            fail(f"credit implementation token is active or ambiguous: {path}")
+    historical = ROOT / "legal/sla/v1.0.0.md"
+    draft = ROOT / "legal/sla/v1.1.0.md"
+    if historical.is_symlink() or not historical.is_file(): fail("historical SLA missing or non-regular")
+    if draft.is_symlink() or not draft.is_file(): fail("prelaunch draft missing or non-regular")
+    check_historical(historical.read_text(encoding="utf-8"))
+    check_draft(draft.read_text(encoding="utf-8"))
+    config = (ROOT / "apps/signup-worker/wrangler.toml").read_text(encoding="utf-8")
+    for flag in ("SLA_CREDITS_ENABLED", "SLA_OBSERVATIONS_ENABLED"):
+        if not re.search(rf'{flag}\s*=\s*"false"', config):
+            fail(f"provider readiness gate must remain false: {flag}")
+    terms = (ROOT / "apps/docs/src/pages/legal/terms.tsx").read_text(encoding="utf-8")
+    if "No SLA service-credit program is currently active" not in terms:
+        fail("Terms no longer fail closed while the release gates are pending")
+    pricing = (ROOT / "apps/docs/src/pages/pricing.tsx").read_text(encoding="utf-8")
+    if "99.9% SLA + credits" in pricing:
+        fail("public pricing page reintroduced the inactive SLA-credit claim")
 
 
 def self_test() -> None:
-    try: check_claim("<!-- issued automatically against next invoice -->")
+    try: check_draft("<!-- DRAFT — NOT EFFECTIVE; Enterprise-only; no SLA program -->")
     except RuntimeError: pass
-    else: fail("comment-only claim passed")
-    try: check_claim("```text\nissued automatically against next invoice\n```")
+    else: fail("comment-only policy passed")
+    try: check_draft("```text\nDRAFT — NOT EFFECTIVE; Enterprise-only; no SLA program\n```")
     except RuntimeError: pass
-    else: fail("fenced claim passed")
-    try: check_claim("## no credit")
+    else: fail("fenced policy passed")
+    try: check_draft("## no credit")
     except RuntimeError: pass
-    else: fail("missing-claim mutation passed")
+    else: fail("missing-policy mutation passed")
     if TOKENS.search(code_with_comments_blank("// service_credit\nfn ok() {}")):
         fail("comment mutation became active")
     if not TOKENS.search(code_with_comments_blank('const x = "service_credit";')):
@@ -90,4 +116,4 @@ if __name__ == "__main__":
     except (OSError, RuntimeError, UnicodeError) as error:
         print(f"B-089 semantic check FAILED: {error}")
         raise SystemExit(1)
-    print("B-089 semantic check PASS: live SLA promise and zero active credit implementation")
+    print("B-089 semantic check PASS: inactive public policy and disabled provider gates")

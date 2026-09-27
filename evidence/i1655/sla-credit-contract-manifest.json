@@ -5,12 +5,17 @@
   "credentialless": true,
   "network_calls": false,
   "mutating_actions": false,
-  "status": "repository_contract_ready_external_receipt_pending",
+  "status": "prelaunch_draft_pending_counsel_entity_provider_and_release_gates",
   "contract": {
-    "legal_instrument": "legal/sla/v1.0.0.md",
-    "legal_instrument_version": "1.0.0",
-    "automatic_credit_clause": "§4: credits are issued automatically against the next invoice",
-    "exclusive_remedy_clause": "§4.5: service credits are the sole and exclusive remedy, subject to stated exceptions",
+    "historical_instrument": "legal/sla/v1.0.0.md",
+    "historical_version": "1.0.0 (approved historically; never customer-executed per Owner statement)",
+    "prelaunch_draft": "legal/sla/v1.1.0.md",
+    "draft_version": "1.1.0 (not effective, not published, not a customer agreement)",
+    "eligibility": "Enterprise only; Free, Solo, Starter, Pro, and Max are ineligible",
+    "covered_measures": ["uptime", "p99 GET latency", "DSR erasure", "billing reconciliation"],
+    "excluded_measures": ["synthetic-page", "BYOK kill-switch"],
+    "issuance": "no active, manual, or automatic issuance; requires #2568 Stripe proof and separate release acceptance",
+    "exclusive_remedy_clause": "draft only: covered Enterprise SLO credits are sole remedy, subject to valid §8 termination and stated exceptions",
     "service_period": "UTC calendar month",
     "report_cutoff": "within 10 business days after month close",
     "credit_cap": "100% of Monthly Service Fee per Service Period",
@@ -24,9 +29,12 @@
     "tests": "apps/signup-worker/tests/sla_credit_cron.test.ts",
     "verifier": "scripts/verify_b089_sla_credits.py",
     "runtime_config": "apps/signup-worker/wrangler.toml",
-    "effective_terms": "legal/sla/v1.0.0.md",
+    "historical_terms": "legal/sla/v1.0.0.md",
+    "prelaunch_draft": "legal/sla/v1.1.0.md",
     "pricing_surface": "apps/docs/src/lib/pricing.ts",
-    "terms_surface": "apps/docs/src/pages/legal/terms.tsx"
+    "terms_surface": "apps/docs/src/pages/legal/terms.tsx",
+    "faq_surface": "marketing/sales/FAQ-MASTER.md",
+    "public_pricing_surface": "apps/docs/src/pages/pricing.tsx"
   },
   "invariants": [
     "No observation is published before a closed UTC month and the ten-business-day report cutoff.",
@@ -71,14 +79,14 @@
     }
   ],
   "contract_decisions_pending": [
-    "The executed SLA defines Free, Starter, Pro, and Enterprise, while the published product ladder also sells Solo and Max; those tiers have no corresponding executed SLA tier.",
-    "The published Terms grant Pro an automatic credit, while apps/docs/src/lib/pricing.ts marks Pro slaCredits=false and its test expects only Enterprise to have credits.",
-    "Owner and counsel must decide whether to amend the signed instrument and align published pricing/Terms before enabling credits."
+    "The Owner-approved six-tier eligibility policy is drafted, but it is not effective or customer-executed.",
+    "Counsel approval of the complete successor text and confirmation of the contracting legal entity remain pending.",
+    "#2568 Stripe test-mode proof and separate controlled release acceptance remain pending; no activation or publication is authorized."
   ],
   "prohibited": [
     "issuing credits or calling Stripe from this repository-only artifact",
     "enabling either production flag",
-    "editing or replacing the signed/effective SLA or other legal instrument",
+    "editing legal/sla/v1.0.0.md or treating v1.1.0 as effective before all gates",
     "inventing provider, invoice, migration, or reconciliation evidence",
     "storing credentials, routing keys, or provider responses in git"
   ],

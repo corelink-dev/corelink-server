@@ -288,14 +288,6 @@ export default function Pricing(): ReactElement {
               ))}
             </tr>
             <tr>
-              <th scope="row">99.9% SLA + credits</th>
-              {CANONICAL_TIERS.map((t) => (
-                <td key={t}>
-                  <CheckOrDash included={TIER_RATE_CARD[t].slaCredits} />
-                </td>
-              ))}
-            </tr>
-            <tr>
               <th scope="row">DPA + MSA</th>
               {CANONICAL_TIERS.map((t) => (
                 <td key={t}>

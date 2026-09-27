@@ -12,11 +12,16 @@ on:
       - apps/signup-worker/tests/sla_credit_cron.test.ts
       - apps/signup-worker/wrangler.toml
       - legal/sla/v1.0.0.md
+      - legal/sla/v1.1.0.md
       - apps/docs/src/pages/legal/terms.tsx
+      - apps/docs/src/pages/pricing.tsx
       - apps/docs/src/lib/pricing.ts
+      - marketing/sales/FAQ-MASTER.md
       - migrations/d1/0117_sla_credit_ledger.sql
       - scripts/verify_b089_sla_credits.py
+      - scripts/verify_b089_credit_contract.py
       - scripts/verify_owner_action_packets.py
+      - tests/test_owner_action_packets.py
       - .github/workflows/notarize-macos.yml
       - .github/workflows/sign-windows.yml
       - .github/workflows/release-cli.yml
@@ -32,11 +37,16 @@ on:
       - apps/signup-worker/tests/sla_credit_cron.test.ts
       - apps/signup-worker/wrangler.toml
       - legal/sla/v1.0.0.md
+      - legal/sla/v1.1.0.md
       - apps/docs/src/pages/legal/terms.tsx
+      - apps/docs/src/pages/pricing.tsx
       - apps/docs/src/lib/pricing.ts
+      - marketing/sales/FAQ-MASTER.md
       - migrations/d1/0117_sla_credit_ledger.sql
       - scripts/verify_b089_sla_credits.py
+      - scripts/verify_b089_credit_contract.py
       - scripts/verify_owner_action_packets.py
+      - tests/test_owner_action_packets.py
       - .github/workflows/notarize-macos.yml
       - .github/workflows/sign-windows.yml
       - .github/workflows/release-cli.yml
@@ -70,9 +80,16 @@ jobs:
           mkdir -p artifacts/issue-1655
           python3 -S scripts/verify_b089_sla_credits.py --json \
             > artifacts/issue-1655/repository-contract.json
+          python3 -S scripts/verify_b089_credit_contract.py
 
       - name: Verify canonical B-089 owner-packet contract
         run: python3 -S scripts/verify_owner_action_packets.py --id B-089
+
+      - name: Exercise focused owner-packet mutation tests
+        run: python3 -S -m unittest discover -s tests -p 'test_owner_action_packets.py' -k b089
+
+      - name: Validate directly affected customer-facing claims
+        run: python3 scripts/validate_docs_reality.py
 
       - name: Check evidence manifest boundaries
         run: |
@@ -86,7 +103,7 @@ jobs:
           assert manifest["credentialless"] is True
           assert manifest["network_calls"] is False
           assert manifest["mutating_actions"] is False
-          assert manifest["status"] == "repository_contract_ready_external_receipt_pending"
+          assert manifest["status"] == "prelaunch_draft_pending_counsel_entity_provider_and_release_gates"
           assert len(manifest["external_receipts_required"]) == 4
           assert all(item["credential_required"] is True for item in manifest["external_receipts_required"])
           assert manifest["contract_decisions_pending"]
