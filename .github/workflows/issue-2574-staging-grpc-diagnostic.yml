@@ -1,0 +1,54 @@
+name: issue 2574 staging gRPC diagnostic
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/issue-2176-grpc-deny-gate.yml"
+      - ".github/workflows/issue-2574-staging-grpc-diagnostic.yml"
+      - "scripts/verify_i2176_grpc_deny_gate.py"
+      - "scripts/verify_i2574_grpc_diagnostic_policy.py"
+      - "tests/test_verify_i2176_grpc_deny_gate.py"
+      - "tests/test_verify_i2574_grpc_diagnostic_policy.py"
+      - "tests/test_i2574_p0_transition_fixture.py"
+      - "tests/fixtures/i2574_old_base_bytes/**"
+      - "tests/fixtures/i2574_delivery_bytes/**"
+      - "docs/internal/secrets-checklist.md"
+      - "docs/campaigns/remediation/wp150-workflow-ownership.md"
+      - "specs/03_architecture/issue-2176-grpc-transport-contract.md"
+      - "worker/src/grpc_transport_gate.ts"
+      - "worker/src/grpc_*.ts"
+      - "worker/src/index_fetch.ts"
+      - "worker/src/index_env.ts"
+      - "worker/src/index_env_contract.ts"
+      - "worker/src/durable_object.ts"
+      - "worker/src/durable_object_probes.ts"
+      - "worker/src/durable_object_start.ts"
+      - "worker/src/lib/internal_auth.ts"
+      - "worker/tests/grpc_*.test.ts"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic-contract:
+    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Assert exact candidate head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - uses: ./.github/actions/setup-pnpm
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts --filter @corelink/worker...
+      - run: pnpm --dir worker exec vitest run tests/grpc_staging_transport.test.ts tests/grpc_transport_gate.test.ts
+      - run: python3 -S -m unittest -v tests/test_verify_i2176_grpc_deny_gate.py tests/test_verify_i2574_grpc_diagnostic_policy.py tests/test_i2574_p0_transition_fixture.py
