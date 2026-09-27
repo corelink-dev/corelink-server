@@ -17,6 +17,7 @@ ZONE_NAME = "humangr.com"
 ACCOUNT_ID = "6a1fc1c626fc2628823e60b9db01f5cd"
 API_ROOT = "https://api.cloudflare.com/client/v4"
 MAX_ITEMS = 1000
+ZONE_PAGE_SIZE = 50
 MAX_RESPONSE_BYTES = 2_000_000
 ID_RE = re.compile(r"^[0-9a-f]{32}$")
 DNS_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -94,10 +95,41 @@ def route_matches_canonical(pattern: Any) -> bool:
     return _host_can_match_canonical(normalized_host)
 
 
-def _check_pagination(envelope: dict[str, Any], result: list[Any], label: str) -> None:
+def _check_zone_pagination(envelope: dict[str, Any], result: list[Any]) -> None:
     info = envelope.get("result_info")
     if not isinstance(info, dict):
-        raise InventoryError(f"{label} pagination metadata is incomplete")
+        raise InventoryError("zone pagination metadata is incomplete")
+    page = info.get("page")
+    per_page = info.get("per_page")
+    count = info.get("count")
+    total_count = info.get("total_count")
+    total_pages = info.get("total_pages")
+    # Cloudflare defines total_count as the unfiltered total, while count is
+    # for this name-filtered response; these values need not be equal.
+    if (
+        type(page) is not int
+        or page != 1
+        or type(per_page) is not int
+        or per_page != ZONE_PAGE_SIZE
+        or type(count) is not int
+        or count != len(result)
+        or type(total_count) is not int
+        or total_count < count
+        or type(total_pages) is not int
+        or total_pages != 1
+        or len(result) >= per_page
+    ):
+        raise InventoryError("zone inventory is incomplete or exceeds the bound")
+
+
+def _check_unexpected_route_pagination(
+    envelope: dict[str, Any], result: list[Any]
+) -> None:
+    if "result_info" not in envelope:
+        return
+    info = envelope.get("result_info")
+    if not isinstance(info, dict):
+        raise InventoryError("unexpected route pagination metadata is malformed")
     page = info.get("page")
     per_page = info.get("per_page")
     count = info.get("count")
@@ -107,30 +139,33 @@ def _check_pagination(envelope: dict[str, Any], result: list[Any], label: str) -
         type(page) is not int
         or page != 1
         or type(per_page) is not int
-        or per_page < 1
+        or not 1 <= per_page <= MAX_ITEMS
         or type(count) is not int
         or count != len(result)
         or type(total_count) is not int
         or total_count != len(result)
         or type(total_pages) is not int
         or total_pages != 1
-        or len(result) > min(per_page, MAX_ITEMS)
     ):
-        raise InventoryError(f"{label} inventory is incomplete or exceeds the bound")
+        raise InventoryError("unexpected route pagination metadata is incomplete")
 
 
-def validate_envelope(payload: Any, label: str) -> tuple[list[Any], dict[str, Any]]:
+def _validate_success_list(
+    payload: Any, label: str
+) -> tuple[list[Any], dict[str, Any]]:
     if not isinstance(payload, dict) or payload.get("success") is not True:
         raise InventoryError(f"{label} API response was unsuccessful or malformed")
     result = payload.get("result")
     if not isinstance(result, list):
         raise InventoryError(f"{label} result is not a list")
-    _check_pagination(payload, result, label)
+    if len(result) > MAX_ITEMS:
+        raise InventoryError(f"{label} result exceeds the bounded inventory size")
     return result, payload
 
 
 def validate_zone_inventory(payload: Any) -> str:
-    zones, envelope = validate_envelope(payload, "zone")
+    zones, envelope = _validate_success_list(payload, "zone")
+    _check_zone_pagination(envelope, zones)
     if len(zones) != 1:
         raise InventoryError("canonical zone is absent or ambiguous")
     zone = zones[0]
@@ -150,16 +185,19 @@ def validate_zone_inventory(payload: Any) -> str:
 
 
 def validate_route_inventory(payload: Any) -> list[dict[str, Any]]:
-    routes, _ = validate_envelope(payload, "route")
+    routes, envelope = _validate_success_list(payload, "route")
+    _check_unexpected_route_pagination(envelope, routes)
     checked: list[dict[str, Any]] = []
     for route in routes:
-        if (
-            not isinstance(route, dict)
-            or "pattern" not in route
-            or "script" not in route
-        ):
+        if not isinstance(route, dict) or not isinstance(route.get("id"), str):
             raise InventoryError("route entry is malformed or incomplete")
-        if route["script"] is not None and not isinstance(route["script"], str):
+        if not route["id"] or len(route["id"]) > 32:
+            raise InventoryError("route identifier is malformed")
+        if "pattern" not in route:
+            raise InventoryError("route entry is missing its pattern")
+        if route.get("script") is not None and (
+            not isinstance(route["script"], str) or not route["script"]
+        ):
             raise InventoryError("route Worker target is malformed")
         checked.append(route)
     return checked
@@ -185,17 +223,6 @@ def _get_json(token: str, path: str) -> Any:
         ) from error
 
 
-def read_route_inventory(token: str) -> list[dict[str, Any]]:
-    if not token:
-        raise InventoryError("Cloudflare token input is absent")
-    zone_query = urllib.parse.urlencode({"name": ZONE_NAME, "per_page": MAX_ITEMS})
-    zone_id = validate_zone_inventory(_get_json(token, f"zones?{zone_query}"))
-    route_query = urllib.parse.urlencode({"per_page": MAX_ITEMS})
-    return validate_route_inventory(
-        _get_json(token, f"zones/{zone_id}/workers/routes?{route_query}")
-    )
-
-
 def verify_route_free_from_payloads(
     zone_payload: Any, route_payload: Any
 ) -> dict[str, int]:
@@ -215,11 +242,10 @@ def verify_route_free_from_payloads(
 def verify_route_free(token: str) -> dict[str, int]:
     if not token:
         raise InventoryError("Cloudflare token input is absent")
-    zone_query = urllib.parse.urlencode({"name": ZONE_NAME, "per_page": MAX_ITEMS})
+    zone_query = urllib.parse.urlencode({"name": ZONE_NAME, "per_page": ZONE_PAGE_SIZE})
     zone_payload = _get_json(token, f"zones?{zone_query}")
     zone_id = validate_zone_inventory(zone_payload)
-    route_query = urllib.parse.urlencode({"per_page": MAX_ITEMS})
-    route_payload = _get_json(token, f"zones/{zone_id}/workers/routes?{route_query}")
+    route_payload = _get_json(token, f"zones/{zone_id}/workers/routes")
     return verify_route_free_from_payloads(zone_payload, route_payload)
 
 
