@@ -12,6 +12,7 @@ import { serveEdgeOptimisations } from "./index_edge_stage.js";
 import { finishResponse } from "./index_finish_stage.js";
 import { runScheduled } from "./index_schedule.js";
 import { rejectUnprovenGrpcTransport } from "./grpc_transport_gate.js";
+import { forwardStagingGrpcDiagnostic } from "./grpc_staging_transport.js";
 
 let requestCounter = 0;
 
@@ -20,6 +21,8 @@ export const baseHandler: ExportedHandler<Env> = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const grpcTransportGate = rejectUnprovenGrpcTransport(request);
     if (grpcTransportGate !== null) return grpcTransportGate;
+    const stagingGrpcResponse = await forwardStagingGrpcDiagnostic(request, env);
+    if (stagingGrpcResponse !== null) return stagingGrpcResponse;
     const requestStart = Date.now();
     const requestId = resolveRequestId(request);
     requestCounter = (requestCounter + 1) | 0;
