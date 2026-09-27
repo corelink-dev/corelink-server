@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Verify the corelink-server boundary for the B-114/B-135/B-138 image family.
 
-B-114 and B-138 remain external image holds owned by the sibling
-``corelink-runners`` repository. B-135 is closed by an exact redacted receipt
-for the sibling PR that delivered its tested tree to ``main``; this repository
-still cannot build, pin, or inspect the image itself. The boundary therefore
-keeps B-114/B-138 open/manual, validates B-135's exact receipt, avoids inventing
-a local image or OCI-label consumer, and ensures the one local container-build
+B-114 is closed by an exact sibling build/publication receipt, while B-138
+remains an external image hold owned by the sibling ``corelink-runners``
+repository. B-135 is closed by an exact redacted receipt for the sibling PR
+that delivered its tested tree to ``main``; this repository still cannot build,
+pin, or inspect the image itself. The boundary validates the B-114/B-135
+receipts, keeps B-138 parked/manual, and avoids inventing a local image or OCI-label consumer, and ensures the one local container-build
 lane checks its baked tools before invoking a build. ``--self-test`` mutates
 each control in memory and proves the verifier rejects the weakened contract.
 """
