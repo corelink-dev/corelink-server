@@ -4,8 +4,8 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 272
-workflow-paths-sha256: dd93c5e5afe95187c119e0fe44b984f3fa7f7ce550dd657e38553a3210901b99
+workflow-count: 273
+workflow-paths-sha256: d8392f6c8f78032855fbfef055f79b23bbe417806961c7dc6f8bd994a8a5382d
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -39,6 +39,7 @@ workflow-paths-sha256: dd93c5e5afe95187c119e0fe44b984f3fa7f7ce550dd657e38553a321
 .github/workflows/b152-actions-monitor.yml | WP-152 | owned
 .github/workflows/b156-published-claims.yml | LEAD-BLOCKED | blocked
 .github/workflows/b165-latency-monitor.yml | WP-165 | owned
+.github/workflows/b216-receiver-deploy-nonprod.yml | LEAD-BLOCKED | blocked
 .github/workflows/b249-dt-webhook-sunset.yml | LEAD-BLOCKED | blocked
 .github/workflows/b251-d03-read-only-probe.yml | LEAD-BLOCKED | blocked
 .github/workflows/backlog-verify.yml | WP-148 | owned

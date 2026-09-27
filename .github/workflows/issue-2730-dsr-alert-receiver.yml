@@ -4,10 +4,10 @@ on:
   pull_request:
     paths:
       - "apps/dsr-alert-receiver/**"
-      - ".github/workflows/issue-2730-dsr-alert-receiver.yml"
       - ".github/actions/setup-pnpm/action.yml"
+      - ".github/workflows/issue-2730-dsr-alert-receiver.yml"
+      - ".github/workflows/b216-receiver-deploy-nonprod.yml"
       - "docs/campaigns/remediation/wp150-workflow-ownership.md"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -58,7 +58,17 @@ jobs:
           pnpm --dir apps/dsr-alert-receiver typecheck
           pnpm --dir apps/dsr-alert-receiver test
       - name: Assert privacy and path boundary
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          if git diff --name-only "$BASE_SHA...HEAD" | grep -Eqv '^(apps/dsr-alert-receiver/|\.github/workflows/issue-2730-dsr-alert-receiver\.yml$|docs/campaigns/remediation/wp150-workflow-ownership\.md$)'; then exit 1; fi
+          if git diff --name-only "$BASE_SHA...HEAD" | grep -Eqv '^(apps/dsr-alert-receiver/|\.github/workflows/(issue-2730-dsr-alert-receiver|b216-receiver-deploy-nonprod)\.yml$|docs/campaigns/remediation/wp150-workflow-ownership\.md$)'; then exit 1; fi
           ! rg -n 'console\.(log|error|warn)|DSR_DLQ_ALERT_AUTH_TOKEN|tenant_id|subject_id|raw body' apps/dsr-alert-receiver/src
+      - name: Lint exact changed receiver workflows
+        run: |
+          set -euo pipefail
+          if ! command -v actionlint >/dev/null 2>&1; then
+            bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+            export PATH="$PWD:$PATH"
+          fi
+          actionlint -color .github/workflows/issue-2730-dsr-alert-receiver.yml .github/workflows/b216-receiver-deploy-nonprod.yml
