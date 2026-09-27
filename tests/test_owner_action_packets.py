@@ -216,12 +216,46 @@ class OwnerActionPacketTests(unittest.TestCase):
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes((ROOT / name).read_bytes())
+            for name in (
+                "legal/sla/v1.1.0.md", "marketing/sales/FAQ-MASTER.md",
+                "apps/docs/src/pages/pricing.tsx",
+            ):
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((ROOT / name).read_bytes())
             MODULE._check_b089_surface_contract(item, root)
 
             mutations = (
-                (MODULE.B089_SURFACES[0], "| **Starter** |", "| **Solo** |"),
-                (MODULE.B089_SURFACES[0], "Service credits per §4.", "No service credits."),
-                (MODULE.B089_SURFACES[1], "Pro-tier customers are entitled to a", "Pro-tier customers are not entitled to a"),
+                (MODULE.B089_SURFACES[0], "| **Free** | ≥ 99.0% |", "| **Free** | ≥ 99.1% |"),
+                ("legal/sla/v1.1.0.md", "| Solo | No | No | No | No |", "| Solo | Yes | No | No | No |"),
+                ("legal/sla/v1.1.0.md", "| `0 < shortfall < 0.5 pp` | 5% |", "| `0 < shortfall < 0.5 pp` | 6% |"),
+                ("legal/sla/v1.1.0.md", "| `0.5 pp ≤ shortfall < 1.0 pp` | 10% |", "| `0.5 pp ≤ shortfall < 1.0 pp` | 11% |"),
+                ("legal/sla/v1.1.0.md", "| `1.0 pp ≤ shortfall < 2.5 pp` | 25% |", "| `1.0 pp ≤ shortfall < 2.5 pp` | 26% |"),
+                ("legal/sla/v1.1.0.md", "| `2.5 pp ≤ shortfall ≤ 5.0 pp` | 50% |", "| `2.5 pp ≤ shortfall ≤ 5.0 pp` | 51% |"),
+                ("legal/sla/v1.1.0.md", "| `shortfall > 5.0 pp` or absolute uptime `< 95%` | 100% plus the §4 termination right |", "| `shortfall > 5.0 pp` or absolute uptime `< 95%` | 99% plus the §4 termination right |"),
+                ("legal/sla/v1.1.0.md", "| `0 < excess ≤ 25%` | 5% |", "| `0 < excess ≤ 25%` | 6% |"),
+                ("legal/sla/v1.1.0.md", "| `25% < excess ≤ 50%` | 10% |", "| `25% < excess ≤ 50%` | 11% |"),
+                ("legal/sla/v1.1.0.md", "| `excess > 50%` | 25% |", "| `excess > 50%` | 26% |"),
+                ("legal/sla/v1.1.0.md", "| DSR erasure `30 days ≤ duration < 45 days` | 5% |", "| DSR erasure `30 days ≤ duration < 45 days` | 6% |"),
+                ("legal/sla/v1.1.0.md", "| DSR erasure `duration ≥ 45 days` | 25% plus DPO incident review |", "| DSR erasure `duration ≥ 45 days` | 26% plus DPO incident review |"),
+                ("legal/sla/v1.1.0.md", "| Billing reconciliation drift `≥ 0.1%` sustained for `> 24 hours` | 10% |", "| Billing reconciliation drift `≥ 0.1%` sustained for `> 24 hours` | 11% |"),
+                ("legal/sla/v1.1.0.md", "| Target met or exceeded | 0% |\n", ""),
+                ("legal/sla/v1.1.0.md", "| Target met or exceeded | 0% |\n", "| Target met or exceeded | 0% |\n| Target met or exceeded | 0% |\n"),
+                ("legal/sla/v1.1.0.md", "| Target met or exceeded | 0% |\n", "| Target met or exceeded | 0% |\n| Unexpected result | 7% |\n"),
+                ("legal/sla/v1.1.0.md", "Credits stack only across distinct SLOs", "Credits stack across any SLOs"),
+                ("legal/sla/v1.1.0.md", "aggregate is capped at 100%", "aggregate is capped at 90%"),
+                ("legal/sla/v1.1.0.md", "Catastrophic uptime takes priority", "Ordinary uptime takes priority"),
+                ("legal/sla/v1.1.0.md", "No separate refund is added for the same\nordinary SLA breach.", "A separate refund is added for the same\nordinary SLA breach."),
+                ("legal/sla/v1.1.0.md", "A signed Enterprise Order Form may change only the metrics, rates, or remedies\nthat it expressly identifies.", "A signed Enterprise Order Form may change all metrics, rates, or remedies\nwithout limits."),
+                ("legal/sla/v1.1.0.md", "three consecutive months of uptime breach", "two consecutive months of uptime breach"),
+                ("legal/sla/v1.1.0.md", "one\ncatastrophic uptime breach", "two\ncatastrophic uptime breaches"),
+                ("legal/sla/v1.1.0.md", "repeated DSR erasure breach in two consecutive", "repeated DSR erasure breach in one consecutive"),
+                ("legal/sla/v1.1.0.md", "pro-rata refund of prepaid fees applies only after a valid termination", "pro-rata refund of prepaid fees applies after any breach"),
+                ("legal/sla/v1.1.0.md", "is not a second recovery for the same SLA breach.", "is a second recovery for the same SLA breach."),
+                ("legal/sla/v1.1.0.md", "no promise\nof automatic or manual issuance", "a promise\nof automatic or manual issuance"),
+                ("apps/docs/src/pages/legal/terms.tsx", "No SLA service-credit program is currently active", "An SLA service-credit program is currently active"),
+                ("marketing/sales/FAQ-MASTER.md", "SLA service credits are not active for any tier today", "SLA service credits are active for every tier today"),
+                ("apps/docs/src/pages/pricing.tsx", "const APP_BASE =", "const APP_BASE = \"99.9% SLA + credits\"; // const APP_BASE ="),
                 (MODULE.B089_SURFACES[2], '"solo",', '"business",'),
                 (MODULE.B089_SURFACES[2], '  solo: {\n    id: "solo",', '  solo: {\n    slaCredits: true,\n    id: "solo",'),
                 (MODULE.B089_SURFACES[2], '  starter: {\n    id: "starter",', '  starter: {\n    slaCredits: true,\n    id: "starter",'),
