@@ -83,8 +83,15 @@ jobs:
           tests/test_backlog_ledger_successor.py::test_v0008_replays_only_the_pinned_delivered_b113_and_b098_prose
           tests/test_backlog_ledger_successor.py::test_successor_chain_rejects_unreceipted_post_v0008_drift
           tests/test_backlog_ledger_successor.py::test_v0008_historical_admission_is_byte_and_merge_pinned
+      - name: Prove pinned v0009 B-086 historical policy
+        if: github.head_ref == 'codex/issue-2649-v0009-history-policy-20260927' || github.ref_name == 'codex/issue-2649-v0009-history-policy-20260927'
+        run: |
+          set -euo pipefail
+          timeout 8m python -m pytest -vv tests/test_backlog_ledger_successor.py::test_v0009_authorizes_only_the_pinned_b057_delta_and_keeps_v0008
+          timeout 8m python -m pytest -vv 'tests/test_backlog_ledger_successor.py::test_v0009_rejects_nearby_unauthorized_b057_transitions[changed-history]'
+          timeout 8m python -m pytest -vv 'tests/test_backlog_ledger_successor.py::test_v0009_rejects_nearby_unauthorized_b057_transitions[changed-b086-history-section]'
       - name: Prove derived policy through v0009 and mutation rejection
-        if: github.head_ref != 'codex/issue-2414-c0-policy' && github.ref_name != 'codex/issue-2414-c0-policy' && github.head_ref != 'codex/issue-2649-v0008-history-policy-20260926' && github.ref_name != 'codex/issue-2649-v0008-history-policy-20260926'
+        if: github.head_ref != 'codex/issue-2414-c0-policy' && github.ref_name != 'codex/issue-2414-c0-policy' && github.head_ref != 'codex/issue-2649-v0008-history-policy-20260926' && github.ref_name != 'codex/issue-2649-v0008-history-policy-20260926' && github.head_ref != 'codex/issue-2649-v0009-history-policy-20260927' && github.ref_name != 'codex/issue-2649-v0009-history-policy-20260927'
         run: >-
           python -m pytest -vv
           tests/test_backlog_ledger_successor.py::test_v0004_policy_derives_only_b012_retirement_from_pr_base
