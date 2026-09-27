@@ -126,7 +126,7 @@ EXPECTED_RECEIVER_SETTINGS = {
     "workers_dev": False,
     "compatibility_date": "2026-04-01",
     "compatibility_flags": [],
-    "crons": ["59 23 * * 0"],
+    "crons": ["59 23 * * 1"],
     "vars": {
         "ENVIRONMENT": "staging",
         "SYNTHETIC_DRILL_ENABLED": "false",

@@ -123,7 +123,7 @@ def main() -> None:
         (
             "drop-receiver-cron-gate",
             "apps/synthetic-pager-worker/src/index.ts",
-            'if (controller.cron !== "59 23 * * 0") {',
+            'if (controller.cron !== "59 23 * * 1") {',
             'if (false) {',
         ),
         (
