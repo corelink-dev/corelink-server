@@ -8,7 +8,7 @@ name: issue 1649 Stripe test-mode evidence
 #
 # Required protected-environment secret:
 #   STRIPE_SECRET_KEY — Stripe test restricted key (rk_test_...) with only
-#     Accounts: Read and Customers: Write. A missing secret makes the executor
+#     Accounts: Read, Products: Read, and Customers: Write. A missing secret makes the executor
 #     skip; any other prefix fails closed before a network call.
 # Required dispatch input:
 #   confirm = run-i1649-stripe-test-mode
@@ -26,15 +26,16 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Read-only account identity probe for #2565, or the existing disposable customer lifecycle probe'
+        description: 'Read-only account identity or Starter price probe for #2565, or the existing disposable customer lifecycle probe'
         required: true
         type: choice
         default: customer-lifecycle
         options:
           - identity-only
+          - starter-price-readonly
           - customer-lifecycle
       confirm:
-        description: 'Type run-i2565-stripe-identity-only for identity-only, or run-i1649-stripe-test-mode for customer-lifecycle'
+        description: 'Type the mode-specific confirmation: run-i2565-stripe-identity-only, run-i2565-stripe-starter-price-readonly, or run-i1649-stripe-test-mode'
         required: true
         type: string
 
@@ -114,6 +115,18 @@ jobs:
           python3 scripts/stripe_test_mode_evidence.py --identity-only \
             --output artifacts/issue-2565-stripe-identity-receipt.json
 
+      - name: Read-only Starter test price lookup
+        if: steps.secret-gate.outputs.run == 'true' && inputs.mode == 'starter-price-readonly'
+        env:
+          I2565_CONFIRM: ${{ inputs.confirm }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_TEST_ACCOUNT_ID: ${{ vars.STRIPE_TEST_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${STRIPE_SECRET_KEY}"
+          python3 scripts/stripe_test_mode_evidence.py --starter-price-readonly \
+            --output artifacts/issue-2565-stripe-starter-price-receipt.json
+
       - name: Upload redacted receipt
         if: always() && steps.secret-gate.outputs.run == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -122,5 +135,6 @@ jobs:
           path: |
             artifacts/issue-1649-stripe-test-mode-receipt.json
             artifacts/issue-2565-stripe-identity-receipt.json
+            artifacts/issue-2565-stripe-starter-price-receipt.json
           if-no-files-found: error
           retention-days: 14

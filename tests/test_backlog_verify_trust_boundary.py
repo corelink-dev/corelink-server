@@ -62,6 +62,35 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
             {relative: hashlib.sha256(contents).hexdigest() for relative, contents in targets.items()},
         )
 
+    def _b029_load_gate_fixture(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        trusted, candidate = Path(directory.name) / "trusted", Path(directory.name) / "candidate"
+        trusted.mkdir()
+        candidate.mkdir()
+        preimages: dict[str, str | None] = {}
+        targets: dict[str, str] = {}
+        modes: dict[str, int] = {}
+        for relative in backlog_verify.B029_LOAD_GATE_TARGETS:
+            old = None if relative in {
+                "scripts/staging_load_lifecycle_auth.py",
+                "tests/load/k6/lib/staging_load_admission.js",
+                "tests/test_staging_load_lifecycle_auth.py",
+            } else f"old:{relative}".encode()
+            new = f"new:{relative}".encode()
+            if old is not None:
+                self._write(trusted, relative, old)
+                preimages[relative] = hashlib.sha256(old).hexdigest()
+            else:
+                preimages[relative] = None
+            self._write(candidate, relative, new)
+            targets[relative] = hashlib.sha256(new).hexdigest()
+            modes[relative] = 0o755 if relative == "scripts/verify_b029_load_gate.py" else 0o644
+            (candidate / relative).chmod(modes[relative])
+            if old is not None:
+                (trusted / relative).chmod(modes[relative])
+        return trusted, candidate, preimages, targets, modes
+
     def _staging_transition_fixture(self, *, delivered: bool = False):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -206,6 +235,53 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
             self.assertTrue(backlog_verify._preauthorized_b057_c0(candidate, trusted))
         self.assertFalse(marker.exists(), "candidate verifier code was executed")
 
+    def test_b029_load_gate_transition_is_full_pinned_and_data_only(self) -> None:
+        trusted, candidate, preimages, targets, modes = self._b029_load_gate_fixture()
+        verifier = "scripts/verify_b029_load_gate.py"
+        marker = candidate.parent / "candidate-code-executed"
+        payload = (
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('executed')\n"
+        ).encode()
+        self._write(candidate, verifier, payload)
+        (candidate / verifier).chmod(0o755)
+        targets[verifier] = hashlib.sha256(payload).hexdigest()
+        with patch.object(backlog_verify, "B029_LOAD_GATE_PREIMAGES", preimages), patch.object(
+            backlog_verify, "B029_LOAD_GATE_TARGETS", targets
+        ), patch.object(backlog_verify, "B029_LOAD_GATE_TARGET_MODES", modes):
+            self.assertTrue(backlog_verify._preauthorized_b029_load_gate(candidate, trusted))
+            with patch.object(backlog_verify, "_candidate_control_paths", return_value={verifier}):
+                backlog_verify.check_candidate_controls(candidate, trusted, [])
+        self.assertFalse(marker.exists(), "candidate verifier code was executed")
+
+    def test_b029_load_gate_rejects_partial_mixed_extra_downgrade_mode_and_symlink(self) -> None:
+        for mutation in ("partial", "mixed", "extra", "downgrade", "wrong-mode", "symlink"):
+            with self.subTest(mutation=mutation):
+                trusted, candidate, preimages, targets, modes = self._b029_load_gate_fixture()
+                verifier = "scripts/verify_b029_load_gate.py"
+                if mutation == "partial":
+                    self._write(candidate, verifier, (trusted / verifier).read_bytes())
+                    (candidate / verifier).chmod(0o755)
+                elif mutation == "mixed":
+                    self._write(candidate, verifier, b"unapproved mixed bytes\n")
+                    (candidate / verifier).chmod(0o755)
+                elif mutation == "extra":
+                    self._write(candidate, "unapproved.txt", b"extra\n")
+                elif mutation == "wrong-mode":
+                    (candidate / verifier).chmod(0o644)
+                elif mutation == "symlink":
+                    payload = candidate.parent / "external-pinned-verifier.py"
+                    payload.write_bytes((candidate / verifier).read_bytes())
+                    (candidate / verifier).unlink()
+                    (candidate / verifier).symlink_to(payload)
+                else:
+                    self._write(trusted, verifier, (candidate / verifier).read_bytes())
+                    (trusted / verifier).chmod(0o755)
+                with patch.object(backlog_verify, "B029_LOAD_GATE_PREIMAGES", preimages), patch.object(
+                    backlog_verify, "B029_LOAD_GATE_TARGETS", targets
+                ), patch.object(backlog_verify, "B029_LOAD_GATE_TARGET_MODES", modes):
+                    self.assertFalse(backlog_verify._preauthorized_b029_load_gate(candidate, trusted))
+
     def test_b057_c0_allows_an_unchanged_inherited_symlink_without_following_it(self) -> None:
         trusted, candidate, preimages, targets = self._c0_fixture()
         outside = candidate.parent / "outside"
@@ -343,6 +419,7 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         self.assertIn("pull_request_target:", workflow)
         self.assertNotIn("\n  pull_request:\n", workflow)
         self.assertIn("  verify:\n    runs-on: ubuntu-24.04", workflow)
+        self.assertIn('    env:\n      PYTHONDONTWRITEBYTECODE: "1"', workflow)
         self.assertIn(
             "  trusted_semantic:\n"
             "    if: github.event_name == 'push' || github.event_name == 'schedule'\n"
@@ -708,6 +785,16 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         backlog_verify.validate_candidate_workflow(self.candidate)
         b314_marker = "      - name: Prove BASE B-314 owner-gate mutation teeth"
         mutations = {
+            "job-bytecode-env-removed": baseline.replace(
+                '      PYTHONDONTWRITEBYTECODE: "1"\n', "", 1,
+            ),
+            "job-bytecode-env-wrong": baseline.replace(
+                'PYTHONDONTWRITEBYTECODE: "1"', 'PYTHONDONTWRITEBYTECODE: "0"', 1,
+            ),
+            "job-bytecode-env-extra": baseline.replace(
+                '      PYTHONDONTWRITEBYTECODE: "1"\n',
+                '      PYTHONDONTWRITEBYTECODE: "1"\n      BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n', 1,
+            ),
             "root-env-bash-env": baseline.replace(
                 "name: backlog-verify\n",
                 "name: backlog-verify\nenv:\n  BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n", 1,
@@ -717,8 +804,8 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
                 "name: backlog-verify\ndefaults:\n  run:\n    shell: bash\n", 1,
             ),
             "job-env-bash-env": baseline.replace(
-                "    timeout-minutes: 10\n",
-                "    timeout-minutes: 10\n    env:\n      BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n", 1,
+                '      PYTHONDONTWRITEBYTECODE: "1"\n',
+                '      PYTHONDONTWRITEBYTECODE: "1"\n      BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n', 1,
             ),
             "job-defaults": baseline.replace(
                 "    timeout-minutes: 10\n",

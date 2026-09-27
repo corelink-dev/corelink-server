@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -20,6 +21,66 @@ SPEC.loader.exec_module(MODULE)
 
 
 class StripeRestrictedKeyContractTests(unittest.TestCase):
+    def test_starter_price_mode_is_read_only_and_resolves_exact_active_monthly_price(self) -> None:
+        responses = [
+            (200, {"object": "account", "id": "acct_expected"}),
+            (200, {"data": [{"id": "prod_starter", "name": "CoreLink Starter", "active": True, "livemode": False}], "has_more": False}),
+            (200, {"data": [{"id": "price_starter", "active": True, "livemode": False, "currency": "usd", "unit_amount": 4900, "recurring": {"interval": "month", "interval_count": 1}}], "has_more": False}),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "receipt.json"
+            with patch.object(MODULE, "request_json", side_effect=responses) as request:
+                result = MODULE.run_starter_price_probe(
+                    "rk_test_fixture", "987654", "acct_expected", output
+                )
+            self.assertEqual(result, 0)
+            self.assertEqual(request.call_args_list[0].args, ("rk_test_fixture", "GET", "/v1/account"))
+            self.assertEqual(request.call_args_list[1].args, ("rk_test_fixture", "GET", "/v1/products?active=true&limit=100"))
+            self.assertEqual(request.call_args_list[2].args, ("rk_test_fixture", "GET", "/v1/prices?product=prod_starter&active=true&limit=100"))
+            self.assertTrue(all(call.args[1] == "GET" for call in request.call_args_list))
+            receipt_text = output.read_text(encoding="utf-8")
+            receipt = json.loads(receipt_text)
+            self.assertEqual(
+                receipt["starter_price"]["id_sha256"],
+                hashlib.sha256(b"price_starter").hexdigest(),
+            )
+            self.assertIs(receipt["starter_price"]["id_present"], False)
+            self.assertNotIn("price_starter", receipt_text)
+            self.assertEqual(receipt["starter_price"]["unit_amount"], 4900)
+            self.assertIs(receipt["livemode"], False)
+            self.assertEqual(receipt["provider_mutations"], 0)
+            self.assertNotIn("prod_starter", receipt_text)
+
+    def test_starter_price_mode_checks_account_before_catalog_and_rejects_ambiguity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "receipt.json"
+            with patch.object(MODULE, "request_json", return_value=(200, {"object": "account", "id": "acct_other"})) as request:
+                with self.assertRaises(MODULE.ProbeError):
+                    MODULE.run_starter_price_probe("rk_test_fixture", "987654", "acct_expected", output)
+            request.assert_called_once_with("rk_test_fixture", "GET", "/v1/account")
+            responses = [
+                (200, {"object": "account", "id": "acct_expected"}),
+                (200, {"data": [
+                    {"id": "prod_starter_a", "name": "CoreLink Starter", "active": True, "livemode": False},
+                    {"id": "prod_starter_b", "name": "CoreLink Starter", "active": True, "livemode": False},
+                ], "has_more": False}),
+            ]
+            with patch.object(MODULE, "request_json", side_effect=responses) as request:
+                with self.assertRaises(MODULE.ProbeError):
+                    MODULE.run_starter_price_probe("rk_test_fixture", "987654", "acct_expected", output)
+            self.assertEqual(request.call_count, 2)
+
+    def test_bounded_catalog_pagination_fails_closed_at_page_limit(self) -> None:
+        pages = [
+            (200, {"data": [{"id": f"prod_{i}"}], "has_more": True})
+            for i in range(5)
+        ]
+        with patch.object(MODULE, "request_json", side_effect=pages) as request:
+            with self.assertRaises(MODULE.ProbeError):
+                MODULE._bounded_list("rk_test_fixture", "/v1/products?active=true&limit=100")
+        self.assertEqual(request.call_count, 5)
+        self.assertIn("starting_after=prod_0", request.call_args_list[1].args[2])
+
     def test_identity_only_performs_one_read_and_records_boolean_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "receipt.json"
@@ -122,6 +183,7 @@ class StripeRestrictedKeyContractTests(unittest.TestCase):
         mutations = (
             original.replace("rk_test_", "sk_test_"),
             original.replace("Accounts: Read", "Accounts: Write"),
+            original.replace("Products: Read", "Products: Write"),
             original.replace("Customers: Write", "Customers: Read"),
             original.replace("identity-only", "customer-mutation-only"),
             original.replace("STRIPE_TEST_ACCOUNT_ID", "STRIPE_OTHER_ACCOUNT_ID"),

@@ -69,7 +69,7 @@ def require_contract(contract: dict[str, Any]) -> list[str]:
     cloudflare = contract.get("cloudflare", {})
     if cloudflare.get("zone_name") != "humangr.com":
         failures.append("zone-boundary")
-    if cloudflare.get("route") != f"{HOSTNAME}/*" or (
+    if cloudflare.get("route") != HOSTNAME or (
         cloudflare.get("root_worker"),
         cloudflare.get("signup_worker"),
         cloudflare.get("synthetic_receiver_worker"),
