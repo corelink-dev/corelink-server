@@ -2,12 +2,14 @@
 """Semantic B-089 contract check; comments and generated trees are not evidence."""
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CLAIM = re.compile(r"issued automatically|automatic(?:ly)?[^\n]*credit", re.I)
 TOKENS = re.compile(r"\b(?:service_credit|sla_credit|credit_note|balance_transaction)\b")
+HISTORICAL_V1_SHA256 = "4b6e39a0891eecf32640e9815386436e155e3334cd655ea180ca6f3bc1af6d09"
 
 
 def fail(message: str) -> None:
@@ -53,26 +55,40 @@ def visible_markdown(text: str) -> str:
 
 
 def check_draft(text: str) -> None:
-    visible = visible_markdown(text)
+    visible_lines = visible_markdown(text).splitlines()
+    visible = re.sub(r"\s+", " ", " ".join(visible_lines))
     required = (
         "DRAFT — NOT EFFECTIVE", "not a customer agreement", "Enterprise-only",
         "No SLA service-credit program is currently active", "SLA_CREDITS_ENABLED",
         "#2568", "100%", "sole and exclusive remedy", "Free", "Solo", "Starter", "Pro", "Max",
+        "0 < shortfall < 0.5 pp", "0.5 pp ≤ shortfall < 1.0 pp", "1.0 pp ≤ shortfall < 2.5 pp",
+        "2.5 pp ≤ shortfall ≤ 5.0 pp", "shortfall > 5.0 pp", "absolute uptime `< 95%`",
+        "0 < excess ≤ 25%", "25% < excess ≤ 50%", "excess > 50%",
+        "DSR erasure `30 days ≤ duration < 45 days`", "DSR erasure `duration ≥ 45 days`",
+        "Billing reconciliation drift `≥ 0.1%` sustained for `> 24 hours`",
+        "Credits stack only across distinct SLOs in the same Service Period.",
+        "aggregate is capped at 100% of the Monthly Service Fee.",
+        "Catastrophic uptime takes priority over every lower band.",
+        "No separate refund is added for the same ordinary SLA breach.",
+        "A signed Enterprise Order Form may change only the metrics, rates, or remedies that it expressly identifies.",
+        "three consecutive months of uptime breach against an applicable §2 SLO",
+        "one catastrophic uptime breach", "repeated DSR erasure breach in two consecutive months",
+        "A pro-rata refund of prepaid fees applies only after a valid termination under this section",
+        "is not a second recovery for the same SLA breach.",
+        "no promise of automatic or manual issuance", "separate controlled release acceptance is recorded",
     )
     for marker in required:
         if marker.lower() not in visible.lower():
             fail(f"v1.1.0 draft is missing required inactive-policy marker: {marker}")
-    if CLAIM.search(visible):
+    if any(CLAIM.search(line) for line in visible_lines):
         fail("v1.1.0 draft contains an active automatic-credit promise")
     if "no credit formula is defined" not in visible.lower() or "synthetic-page or byok" not in visible.lower():
         fail("v1.1.0 draft must keep synthetic-page and BYOK credits excluded")
 
 
-def check_historical(text: str) -> None:
-    if "issued automatically against the next invoice" not in text:
-        fail("historical v1.0.0 automatic-issuance bytes drifted")
-    if "sole and exclusive remedy" not in text:
-        fail("historical v1.0.0 remedy bytes drifted")
+def check_historical(raw: bytes) -> None:
+    if hashlib.sha256(raw).hexdigest() != HISTORICAL_V1_SHA256:
+        fail("historical v1.0.0 SHA-256 differs from the approved base bytes")
 
 
 def check_tree() -> None:
@@ -80,7 +96,7 @@ def check_tree() -> None:
     draft = ROOT / "legal/sla/v1.1.0.md"
     if historical.is_symlink() or not historical.is_file(): fail("historical SLA missing or non-regular")
     if draft.is_symlink() or not draft.is_file(): fail("prelaunch draft missing or non-regular")
-    check_historical(historical.read_text(encoding="utf-8"))
+    check_historical(historical.read_bytes())
     check_draft(draft.read_text(encoding="utf-8"))
     config = (ROOT / "apps/signup-worker/wrangler.toml").read_text(encoding="utf-8")
     for flag in ("SLA_CREDITS_ENABLED", "SLA_OBSERVATIONS_ENABLED"):

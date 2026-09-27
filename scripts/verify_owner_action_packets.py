@@ -45,6 +45,7 @@ B089_SURFACES = (
     "apps/docs/src/pages/legal/terms.tsx",
     "apps/docs/src/lib/pricing.ts",
 )
+B089_HISTORICAL_V1_SHA256 = "4b6e39a0891eecf32640e9815386436e155e3334cd655ea180ca6f3bc1af6d09"
 ITEM_FIELDS = {
     "id", "owner", "status", "action_type", "procedure",
     "inputs_and_credentials_boundary", "evidence", "expected_postcondition",
@@ -730,16 +731,31 @@ def _check_b089_surface_contract(item: dict[str, object], root: Path = ROOT) -> 
         except (OSError, UnicodeDecodeError) as exc:
             raise PacketError(f"B-089 source unreadable: {path_text}") from exc
 
-    historical = sources[B089_SURFACES[0]]
-    if "issued automatically against the next invoice" not in historical or "sole and exclusive remedy" not in historical:
-        raise PacketError("B-089 historical v1.0.0 source changed")
+    historical_path = root / B089_SURFACES[0]
+    if hashlib.sha256(historical_path.read_bytes()).hexdigest() != B089_HISTORICAL_V1_SHA256:
+        raise PacketError("B-089 historical v1.0.0 SHA-256 differs from the approved base bytes")
     draft_path = root / "legal/sla/v1.1.0.md"
     if draft_path.is_symlink() or not draft_path.is_file():
         raise PacketError("B-089 v1.1.0 prelaunch draft missing or non-regular")
-    draft = draft_path.read_text(encoding="utf-8")
+    draft = re.sub(r"\s+", " ", draft_path.read_text(encoding="utf-8"))
     for marker in (
         "DRAFT — NOT EFFECTIVE", "not a customer agreement", "No SLA service-credit program is currently active",
         "SLA_CREDITS_ENABLED", "#2568", "Counsel approval", "Free", "Solo", "Starter", "Pro", "Max", "Enterprise",
+        "0 < shortfall < 0.5 pp", "0.5 pp ≤ shortfall < 1.0 pp", "1.0 pp ≤ shortfall < 2.5 pp",
+        "2.5 pp ≤ shortfall ≤ 5.0 pp", "shortfall > 5.0 pp", "absolute uptime `< 95%`",
+        "0 < excess ≤ 25%", "25% < excess ≤ 50%", "excess > 50%",
+        "DSR erasure `30 days ≤ duration < 45 days`", "DSR erasure `duration ≥ 45 days`",
+        "Billing reconciliation drift `≥ 0.1%` sustained for `> 24 hours`",
+        "Credits stack only across distinct SLOs in the same Service Period.",
+        "aggregate is capped at 100% of the Monthly Service Fee.",
+        "Catastrophic uptime takes priority over every lower band.",
+        "No separate refund is added for the same ordinary SLA breach.",
+        "A signed Enterprise Order Form may change only the metrics, rates, or remedies that it expressly identifies.",
+        "three consecutive months of uptime breach against an applicable §2 SLO",
+        "one catastrophic uptime breach", "repeated DSR erasure breach in two consecutive months",
+        "A pro-rata refund of prepaid fees applies only after a valid termination under this section",
+        "is not a second recovery for the same SLA breach.",
+        "no promise of automatic or manual issuance", "separate controlled release acceptance is recorded",
     ):
         if marker.lower() not in draft.lower():
             raise PacketError(f"B-089 v1.1.0 draft missing policy marker: {marker}")
