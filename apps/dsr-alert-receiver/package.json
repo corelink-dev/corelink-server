@@ -1,0 +1,1 @@
+{"name":"@corelink/dsr-alert-receiver","private":true,"version":"0.1.0","type":"module","engines":{"node":">=20.0.0","pnpm":">=10.0.0"},"scripts":{"test":"vitest run","typecheck":"tsc --noEmit"},"devDependencies":{"@cloudflare/workers-types":"^4.20260619.1","typescript":"^6.0.3","vitest":"^4.1.11","wrangler":"^4.111.0"}}
