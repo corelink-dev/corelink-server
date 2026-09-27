@@ -200,6 +200,45 @@ LOCKED_PERIMETER_PATHS = (
     Path(".github/workflows/container-build-push-prod.yml"),
 )
 
+# Exact #1700 transition needed to load the already-reviewed ContainerProxy
+# export. This exception is available only when the whole protected 23-path
+# delivery tree matches its aggregate pin; the package and lockfile must both
+# move from these exact preimages to these exact successors.
+STAGING_D1_PROXY_PACKAGE_LOCK_PREIMAGES = {
+    Path("worker/package.json"): "7b20dc56684526ad90f3b5998aa995f41b750e304397714ab34b6ece2e162348",
+    Path("pnpm-lock.yaml"): "b2b79225204fbce1b33e64f03987f0b894b1f7a187daef51078411d6285e0278",
+}
+STAGING_D1_PROXY_PACKAGE_LOCK_TARGETS = {
+    Path("worker/package.json"): "96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34",
+    Path("pnpm-lock.yaml"): "7d8509a802bad9c700070722a8e834c98aef18c925768fb9c763a90a5a10c6cc",
+}
+STAGING_D1_PROXY_DELIVERY_PATHS = frozenset(map(Path, (
+    ".github/workflows/staging-quarantine-apply.yml",
+    "crates/corelink-container/src/storage.rs",
+    "crates/corelink-container/src/storage/d1_http.rs",
+    "docs/internal/secrets-checklist.md",
+    "infra/staging/README.md",
+    "infra/staging/topology.json",
+    "pnpm-lock.yaml",
+    "scripts/staging_bootstrap_provider.py",
+    "scripts/verify_staging_provider_preflight.py",
+    "scripts/verify_staging_topology_contract.py",
+    "tests/test_staging_bootstrap_provider.py",
+    "tests/test_staging_custom_domain.py",
+    "tests/test_staging_quarantine_apply_contract.py",
+    "worker/package.json",
+    "worker/src/durable_object.ts",
+    "worker/src/durable_object_start.ts",
+    "worker/src/index.ts",
+    "worker/src/staging_d1_binding_proxy.ts",
+    "worker/src/staging_d1_binding_proxy_entrypoint.ts",
+    "worker/tests/cloudflare_workers_node_stub.ts",
+    "worker/tests/staging_d1_binding_proxy.test.ts",
+    "worker/tests/staging_d1_binding_start_gate.test.ts",
+    "worker/vitest.config.mts",
+)))
+STAGING_D1_PROXY_DELIVERY_TREE_SHA256 = "c3be4d5980841b0a05a339d43ae184d8cd5477afbcc19f7a9f7a1e42dc02284b"
+
 # The hosted-runner campaign owns these CI-only workflow files in a separate,
 # closed-world contract.  Their runner and checkout settings cannot change the
 # Worker entrypoint or Container ingress guarded above, so pinning their bytes
@@ -358,6 +397,36 @@ def require_exact(candidate: Path, trusted_base: Path, relative: Path) -> None:
         raise ContractError(f"{relative}: candidate must equal the protected base")
 
 
+def preauthorized_staging_d1_proxy_tree(
+    candidate: Path,
+    trusted_base: Path,
+    changes: set[Path],
+) -> bool:
+    if len(STAGING_D1_PROXY_DELIVERY_PATHS) != 23 or changes != STAGING_D1_PROXY_DELIVERY_PATHS:
+        return False
+    if set(STAGING_D1_PROXY_PACKAGE_LOCK_PREIMAGES) != set(STAGING_D1_PROXY_PACKAGE_LOCK_TARGETS):
+        return False
+    for relative, preimage in STAGING_D1_PROXY_PACKAGE_LOCK_PREIMAGES.items():
+        if not is_regular_digest(trusted_base, relative, preimage):
+            return False
+        target = STAGING_D1_PROXY_PACKAGE_LOCK_TARGETS[relative]
+        if not is_regular_digest(candidate, relative, target):
+            return False
+    rows: list[str] = []
+    for relative in sorted(STAGING_D1_PROXY_DELIVERY_PATHS, key=str):
+        if node_kind(candidate / relative) != "regular":
+            return False
+        mode = (candidate / relative).lstat().st_mode & 0o777
+        if mode != 0o644:
+            return False
+        digest = sha256_file(candidate, relative)
+        if digest is None:
+            return False
+        rows.append(f"{relative}\t{mode:04o}\t{digest}\n")
+    tree_digest = hashlib.sha256("".join(rows).encode("utf-8")).hexdigest()
+    return tree_digest == STAGING_D1_PROXY_DELIVERY_TREE_SHA256
+
+
 def expected_index(trusted_base: Path) -> str:
     base_index = read(trusted_base, INDEX)
     canonical_import = IMPORT_ANCHOR + DENY_IMPORT
@@ -417,7 +486,13 @@ def validate(candidate: Path, trusted_base: Path) -> None:
     # CI-only and credentialless.
     if set(MIGRATABLE_CI_PATHS) & set(LOCKED_PERIMETER_PATHS):
         raise ContractError("migratable CI paths must not bypass the locked perimeter")
+    changes = changed_paths(trusted_base, candidate)
+    staging_d1_proxy_tree = preauthorized_staging_d1_proxy_tree(
+        candidate, trusted_base, changes
+    )
     for relative in LOCKED_PERIMETER_PATHS:
+        if staging_d1_proxy_tree and relative in STAGING_D1_PROXY_DELIVERY_PATHS:
+            continue
         require_exact(candidate, trusted_base, relative)
 
     # Once #2574's protected predicate exists in BASE, neither its policy
@@ -430,6 +505,8 @@ def validate(candidate: Path, trusted_base: Path) -> None:
         frozen_policy = {Path(path) for path in policy.POLICY | policy.POLICY_FIXTURES}
         frozen_policy.add(B141_TEST)
         for relative in frozen_policy:
+            if staging_d1_proxy_tree and relative in STAGING_D1_PROXY_DELIVERY_PATHS:
+                continue
             require_regular_mode(trusted_base, relative)
             require_regular_mode(candidate, relative)
             require_exact(candidate, trusted_base, relative)
@@ -437,9 +514,7 @@ def validate(candidate: Path, trusted_base: Path) -> None:
     # Inspect the full union before selecting an admission branch.  This is
     # deliberately closed-world: a candidate cannot use a partial delivery or
     # an unrelated Container change to reach a weaker legacy deny check.
-    changes = changed_paths(trusted_base, candidate)
-
-    if policy is not None:
+    if policy is not None and not staging_d1_proxy_tree:
         phase = classify_phase(trusted_base)
         ci_changes = set(MIGRATABLE_CI_PATHS)
         ci_only = changes <= ci_changes and all(
@@ -483,6 +558,15 @@ def validate(candidate: Path, trusted_base: Path) -> None:
                 raise ContractError(f"mount base drift: {relative}")
             if not is_regular_digest(candidate, relative, mounted):
                 raise ContractError(f"mount candidate drift: {relative}")
+        return
+
+    if staging_d1_proxy_tree:
+        # The protected gRPC gate now includes a separately reviewed staging
+        # diagnostic forwarder, so its older bootstrap-shape constructor no
+        # longer describes current main. The exact #1700 tree may proceed only
+        # with the entire current gRPC ingress contract unchanged.
+        for relative in (INDEX, GATE, CONTRACT, WORKFLOW):
+            require_exact(candidate, trusted_base, relative)
         return
 
     base_is_bootstrap = (

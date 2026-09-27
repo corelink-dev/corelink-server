@@ -236,10 +236,10 @@ STAGING_D1_BINDING_PROXY_TARGETS: dict[str, tuple[int, str] | None] = {
     'worker/src/durable_object.ts': (0o644, 'bf71e6d39b7aed3c794fd4a6d7d8f31dd53244ba7d5d55c0a5ff1e8a6d8616d5'),
     'worker/src/durable_object_start.ts': (0o644, '27e8b574f9848a361c7a369f7f6705ac9d621128bb181e951c425c60a8de7942'),
     'worker/src/index.ts': (0o644, '18b960a74833284f953bd28818cd7260798d9570c17bce459502f7b7ca50f3cd'),
-    'worker/src/staging_d1_binding_proxy.ts': (0o644, '3617e543777d77f9ba0deb69a72c5b5ad523eb3aa7ce795e5b73562c7a6e3d3d'),
+    'worker/src/staging_d1_binding_proxy.ts': (0o644, '01e5ac58773118bae44c9d11ff2b3cdd0ba376579f43317af8b4fd2138b7a92d'),
     'worker/src/staging_d1_binding_proxy_entrypoint.ts': (0o644, 'af759d84e63a2016737c899cfba045f52c1fcf20061678a3612ddeec6c18bdab'),
     'worker/tests/cloudflare_workers_node_stub.ts': (0o644, '0237103e747517298fea07261598d250e25edff6f412cd1df33695c1585cfcf7'),
-    'worker/tests/staging_d1_binding_proxy.test.ts': (0o644, '80d0c7aa2a4e1c71d6cb463ce5c236af6c32f63ae33399cb14a27fec6f1b9c51'),
+    'worker/tests/staging_d1_binding_proxy.test.ts': (0o644, '6eb924bbe1aff66f9d223adb9c490c1500a6a9dfa3a3160182ffda45c72f4e78'),
     'worker/tests/staging_d1_binding_start_gate.test.ts': (0o644, '49cab317e42d9cebf557ebaa0a52eacf5697f1f3858ecf6ae9b9baf448b971f6'),
     'worker/vitest.config.mts': (0o644, 'e2c2f0e46d4a45d5e789f920f95b73ffd44e6a14a9450e11817426995feda506'),
 }

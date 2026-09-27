@@ -6,6 +6,10 @@ import sys
 import unittest
 from pathlib import Path
 import fnmatch
+import hashlib
+import shutil
+import tempfile
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -13,6 +17,106 @@ import verify_i2176_grpc_deny_gate as verify
 
 
 class TrustedGrpcDenyGateTests(unittest.TestCase):
+    def _staging_d1_proxy_fixture(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        trusted = root / "trusted"
+        candidate = root / "candidate"
+        package = Path("worker/package.json")
+        lock = Path("pnpm-lock.yaml")
+        paths = frozenset({package, lock} | {
+            Path(f"tests/fixture/staging-proxy-{index:02}.txt")
+            for index in range(21)
+        })
+        originals = {path: f"trusted preimage {path}\n".encode() for path in paths}
+        targets = {path: f"reviewed target {path}\n".encode() for path in paths}
+        verify.write_fixture_base(trusted)
+        verify.write(trusted, verify.INDEX, verify.expected_index(trusted))
+        verify.write(trusted, verify.GATE, verify.GATE_SOURCE)
+        verify.write(trusted, verify.CONTRACT, verify.CONTRACT_SOURCE)
+        for path, content in originals.items():
+            verify.write(trusted, path, content.decode())
+        shutil.copytree(trusted, candidate, dirs_exist_ok=True, symlinks=True)
+        for path, content in targets.items():
+            verify.write(candidate, path, content.decode())
+
+        package_lock_preimages = {
+            path: hashlib.sha256(originals[path]).hexdigest()
+            for path in (package, lock)
+        }
+        package_lock_targets = {
+            path: hashlib.sha256(targets[path]).hexdigest()
+            for path in (package, lock)
+        }
+        rows = []
+        for path in sorted(paths, key=str):
+            rows.append(
+                f"{path}\t0644\t{hashlib.sha256(targets[path]).hexdigest()}\n"
+            )
+        tree_digest = hashlib.sha256("".join(rows).encode()).hexdigest()
+        patches = (
+            patch.object(verify, "STAGING_D1_PROXY_PACKAGE_LOCK_PREIMAGES", package_lock_preimages),
+            patch.object(verify, "STAGING_D1_PROXY_PACKAGE_LOCK_TARGETS", package_lock_targets),
+            patch.object(verify, "STAGING_D1_PROXY_DELIVERY_PATHS", paths),
+            patch.object(verify, "STAGING_D1_PROXY_DELIVERY_TREE_SHA256", tree_digest),
+        )
+        for item in patches:
+            item.__enter__()
+        self.addCleanup(lambda: [item.__exit__(None, None, None) for item in reversed(patches)])
+        return trusted, candidate, paths, originals, targets
+
+    def test_1700_package_lock_exception_requires_exact_frozen_delivery_tree(self) -> None:
+        trusted, candidate, _paths, _originals, _targets = self._staging_d1_proxy_fixture()
+        verify.validate(candidate, trusted)
+
+    def test_1700_package_lock_exception_constants_bind_exact_23_path_tree(self) -> None:
+        self.assertEqual(len(verify.STAGING_D1_PROXY_DELIVERY_PATHS), 23)
+        self.assertEqual(
+            verify.STAGING_D1_PROXY_PACKAGE_LOCK_PREIMAGES,
+            {
+                Path("worker/package.json"): "7b20dc56684526ad90f3b5998aa995f41b750e304397714ab34b6ece2e162348",
+                Path("pnpm-lock.yaml"): "b2b79225204fbce1b33e64f03987f0b894b1f7a187daef51078411d6285e0278",
+            },
+        )
+        self.assertEqual(
+            verify.STAGING_D1_PROXY_PACKAGE_LOCK_TARGETS,
+            {
+                Path("worker/package.json"): "96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34",
+                Path("pnpm-lock.yaml"): "7d8509a802bad9c700070722a8e834c98aef18c925768fb9c763a90a5a10c6cc",
+            },
+        )
+        self.assertEqual(
+            verify.STAGING_D1_PROXY_DELIVERY_TREE_SHA256,
+            "c3be4d5980841b0a05a339d43ae184d8cd5477afbcc19f7a9f7a1e42dc02284b",
+        )
+
+    def test_1700_package_lock_exception_rejects_partial_foreign_mixed_and_downgrade(self) -> None:
+        for mutation in ("partial", "foreign", "mixed", "downgrade", "grpc"):
+            with self.subTest(mutation=mutation):
+                trusted, candidate, paths, originals, targets = self._staging_d1_proxy_fixture()
+                package = Path("worker/package.json")
+                lock = Path("pnpm-lock.yaml")
+                if mutation == "partial":
+                    (candidate / lock).write_bytes(originals[lock])
+                elif mutation == "foreign":
+                    verify.write(candidate, "tests/foreign-staging-path.txt", "foreign\n")
+                elif mutation == "mixed":
+                    (candidate / lock).write_bytes(b"unreviewed lock state\n")
+                elif mutation == "downgrade":
+                    for path in paths:
+                        (trusted / path).write_bytes(targets[path])
+                        (candidate / path).write_bytes(originals[path])
+                else:
+                    content = verify.read(candidate, verify.INDEX)
+                    verify.write(candidate, verify.INDEX, content.replace(
+                        "if (grpcTransportGate !== null) return grpcTransportGate;",
+                        "",
+                        1,
+                    ))
+                with self.assertRaises(verify.ContractError):
+                    verify.validate(candidate, trusted)
+
     def test_2578_mount_is_exactly_the_reviewed_ten_path_transition(self) -> None:
         expected = {
             ".github/workflows/issue-2183-reapi-composition.yml": ("e7120a3bf5978cb83c1a5efea8c5388edf4dffa925d53a1b4b83696f8e35bc48", "bb382d6898ce95fb690c62bfc50334e94889dbf371fa7a0871dd7bac5e24b431"),

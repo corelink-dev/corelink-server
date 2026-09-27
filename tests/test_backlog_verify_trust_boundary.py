@@ -399,6 +399,26 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
             ],
             (0o644, "586665e34c11bf91a34fb83247fdbafec9fdfb8e7a336ba4da6f5bda8266dd99"),
         )
+        self.assertEqual(
+            backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS["worker/package.json"],
+            (0o644, "96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34"),
+        )
+        self.assertEqual(
+            backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS["pnpm-lock.yaml"],
+            (0o644, "7d8509a802bad9c700070722a8e834c98aef18c925768fb9c763a90a5a10c6cc"),
+        )
+        self.assertEqual(
+            backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
+                "worker/src/staging_d1_binding_proxy.ts"
+            ],
+            (0o644, "01e5ac58773118bae44c9d11ff2b3cdd0ba376579f43317af8b4fd2138b7a92d"),
+        )
+        self.assertEqual(
+            backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
+                "worker/tests/staging_d1_binding_proxy.test.ts"
+            ],
+            (0o644, "6eb924bbe1aff66f9d223adb9c490c1500a6a9dfa3a3160182ffda45c72f4e78"),
+        )
 
     def test_b068_d1_source_pin_is_paired_with_exact_topology_state(self) -> None:
         source = verify_real_ignored_harnesses.STAGING_D1_PROXY_SOURCE_PATH
