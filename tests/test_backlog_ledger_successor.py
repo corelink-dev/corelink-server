@@ -1060,7 +1060,7 @@ def test_v0010_ledger_derives_only_the_pinned_full_state_delta():
         "base-ref: b312a963122e9041f8a56e10127ef20e6367aea3\n"
         "base-sha: b312a963122e9041f8a56e10127ef20e6367aea3\n"
         "observed-at: 2026-09-24\nitem-count: 374\nopen-count: 12\n"
-        "done-count: 332\nparked-count: 30\ncatalog-counts: fixed\n"
+        "done-count: 332\nparked-count: 30\nThe current population is 374 items: 12 open, 332 done and 30 parked.\ncatalog-counts: fixed\n"
     ).encode()
     expected = prior.replace(
         b"b312a963122e9041f8a56e10127ef20e6367aea3", base.encode()
@@ -1068,7 +1068,7 @@ def test_v0010_ledger_derives_only_the_pinned_full_state_delta():
         b"done-count: 332", b"done-count: 333"
     ).replace(b"parked-count: 30", b"parked-count: 29")
     assert policy._v0010_ledger(prior, base) == expected
-    for field in (b"observed-at: 2026-09-24", b"done-count: 332", b"parked-count: 30"):
+    for field in (b"observed-at: 2026-09-24", b"done-count: 332", b"parked-count: 30", b"The current population is 374 items: 12 open, 332 done and 30 parked."):
         with pytest.raises(LedgerError, match="v0010 derivation source drifted"):
             policy._v0010_ledger(prior.replace(field, b"", 1), base)
         with pytest.raises(LedgerError, match="v0010 derivation source drifted"):

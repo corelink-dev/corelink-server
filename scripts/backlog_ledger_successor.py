@@ -692,7 +692,7 @@ def install(api):
         return text.encode("utf-8")
 
     def _v0010_ledger(prior_raw: bytes, base_sha: str) -> bytes:
-        """Derive only the ledger-base advance for the B-114 receipt."""
+        """Derive the pinned ledger-state and population advance for B-114."""
         text = prior_raw.decode("utf-8")
         for old, new in (
             ("base-ref: b312a963122e9041f8a56e10127ef20e6367aea3", f"base-ref: {base_sha}"),
@@ -700,6 +700,7 @@ def install(api):
             ("observed-at: 2026-09-24", "observed-at: 2026-09-27"),
             ("done-count: 332", "done-count: 333"),
             ("parked-count: 30", "parked-count: 29"),
+            ("The current population is 374 items: 12 open, 332 done and 30 parked.", "The current population is 374 items: 12 open, 333 done and 29 parked."),
         ):
             if text.count(old) != 1:
                 raise LedgerError("v0010 derivation source drifted")
