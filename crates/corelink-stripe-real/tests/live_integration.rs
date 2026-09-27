@@ -242,6 +242,144 @@ mod cleanup_fault_injection {
     }
 
     #[test]
+    fn missing_checkout_url_expires_session_then_deletes_customer_without_ids_in_error() {
+        use wiremock::matchers::query_param;
+
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _run_id = RestoreEnv::set("REAL_HARNESS_RUN_ID", "run-fault-missing-url");
+        let _price = RestoreEnv::set("STRIPE_PRICE_ID_STARTER", "price_test_fixture");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        let customer_id = "cus_missing_url_fixture";
+        let checkout_id = "cs_missing_url_fixture";
+        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let open_session = serde_json::json!({
+            "id": checkout_id,
+            "customer": customer_id,
+            "url": null,
+            "status": "open",
+            "payment_status": "unpaid",
+            "payment_intent": null,
+            "subscription": null,
+            "metadata": {"test_run_id": "run-fault-missing-url"}
+        });
+        let expired_session = serde_json::json!({
+            "id": checkout_id,
+            "customer": customer_id,
+            "url": null,
+            "status": "expired",
+            "metadata": {"test_run_id": "run-fault-missing-url"}
+        });
+
+        runtime.block_on(async {
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/customers")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id,
+                    "email": null
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&open_session))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/checkout/sessions/{checkout_id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&open_session))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!(
+                    "{proxy}/v1/checkout/sessions/{checkout_id}/expire"
+                )))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&expired_session))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/checkout/sessions/{checkout_id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&expired_session))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id,
+                    "metadata": {"test_run_id": "run-fault-missing-url"}
+                })))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/subscriptions")))
+                .and(query_param("customer", customer_id))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": [], "has_more": false
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/payment_intents")))
+                .and(query_param("customer", customer_id))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": [], "has_more": false
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id, "deleted": true
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                    "error": {"type": "invalid_request_error", "code": "resource_missing"}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        });
+
+        let client = StripeRealClient::builder()
+            .config(StripeClientConfig::wallet_broker(
+                server.uri(),
+                SecretString::from("hugrw_fake_test_token"),
+                "stripe-prod-test",
+            ))
+            .build()
+            .expect("mock client");
+        let req = CheckoutSessionRequest::new(
+            TenantId::new("tenant_missing_url".into()),
+            TierKind::Starter,
+            "missing-url@example.test",
+            "https://example.test/ok",
+            "https://example.test/cancel",
+        );
+        let error = client
+            .create_checkout_session(&req)
+            .expect_err("missing URL must fail closed");
+        let message = error.to_string();
+        assert!(message.contains("run-owned checkout/customer cleanup passed"));
+        assert!(!message.contains(customer_id));
+        assert!(!message.contains(checkout_id));
+    }
+
+    #[test]
     fn panic_still_attempts_guarded_cleanup_and_receipt_redacts_ids() {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
