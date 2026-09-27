@@ -125,7 +125,7 @@ jobs:
           # Keep the six output buckets, but aggregate both counters in one
           # audit_outbox scan. The former correlated subqueries rescanned the
           # 84k-row production table twelve times and failed in the D1 lane.
-          SQL[hourly]='WITH hour_offsets(hour_offset) AS (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5), clock AS (SELECT CAST(strftime("%s", "now") AS INTEGER) / 3600 * 3600 AS anchor_s), aggregate_counts AS (SELECT c.anchor_s, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 3600) * 1000 AND enqueued_at < c.anchor_s * 1000 THEN 1 END) AS arrivals_0, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 3600) * 1000 AND emitted_at < c.anchor_s * 1000 THEN 1 END) AS sealed_0, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 7200) * 1000 AND enqueued_at < (c.anchor_s - 3600) * 1000 THEN 1 END) AS arrivals_1, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 7200) * 1000 AND emitted_at < (c.anchor_s - 3600) * 1000 THEN 1 END) AS sealed_1, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 10800) * 1000 AND enqueued_at < (c.anchor_s - 7200) * 1000 THEN 1 END) AS arrivals_2, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 10800) * 1000 AND emitted_at < (c.anchor_s - 7200) * 1000 THEN 1 END) AS sealed_2, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 14400) * 1000 AND enqueued_at < (c.anchor_s - 10800) * 1000 THEN 1 END) AS arrivals_3, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 14400) * 1000 AND emitted_at < (c.anchor_s - 10800) * 1000 THEN 1 END) AS sealed_3, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 18000) * 1000 AND enqueued_at < (c.anchor_s - 14400) * 1000 THEN 1 END) AS arrivals_4, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 18000) * 1000 AND emitted_at < (c.anchor_s - 14400) * 1000 THEN 1 END) AS sealed_4, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 21600) * 1000 AND enqueued_at < (c.anchor_s - 18000) * 1000 THEN 1 END) AS arrivals_5, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 21600) * 1000 AND emitted_at < (c.anchor_s - 18000) * 1000 THEN 1 END) AS sealed_5 FROM audit_outbox CROSS JOIN clock c), bucket_counts AS (SELECT h.hour_offset, a.anchor_s, CASE h.hour_offset WHEN 0 THEN a.arrivals_0 WHEN 1 THEN a.arrivals_1 WHEN 2 THEN a.arrivals_2 WHEN 3 THEN a.arrivals_3 WHEN 4 THEN a.arrivals_4 WHEN 5 THEN a.arrivals_5 END AS arrivals, CASE h.hour_offset WHEN 0 THEN a.sealed_0 WHEN 1 THEN a.sealed_1 WHEN 2 THEN a.sealed_2 WHEN 3 THEN a.sealed_3 WHEN 4 THEN a.sealed_4 WHEN 5 THEN a.sealed_5 END AS sealed_rows FROM hour_offsets h CROSS JOIN aggregate_counts a) SELECT strftime("%Y-%m-%dT%H:00:00Z", anchor_s - (hour_offset + 1) * 3600, "unixepoch") AS window_start_utc, strftime("%Y-%m-%dT%H:00:00Z", anchor_s - hour_offset * 3600, "unixepoch") AS window_end_utc, arrivals, sealed_rows FROM bucket_counts ORDER BY hour_offset DESC'
+          SQL[hourly]='WITH hour_offsets(hour_offset) AS (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5), clock AS (SELECT CAST(strftime("%s", "now") AS INTEGER) / 3600 * 3600 AS anchor_s), aggregate_counts AS (SELECT c.anchor_s, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 3600) * 1000 AND enqueued_at < c.anchor_s * 1000 THEN 1 END) AS arrivals_0, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 3600) * 1000 AND emitted_at < c.anchor_s * 1000 THEN 1 END) AS sealed_0, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 7200) * 1000 AND enqueued_at < (c.anchor_s - 3600) * 1000 THEN 1 END) AS arrivals_1, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 7200) * 1000 AND emitted_at < (c.anchor_s - 3600) * 1000 THEN 1 END) AS sealed_1, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 10800) * 1000 AND enqueued_at < (c.anchor_s - 7200) * 1000 THEN 1 END) AS arrivals_2, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 10800) * 1000 AND emitted_at < (c.anchor_s - 7200) * 1000 THEN 1 END) AS sealed_2, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 14400) * 1000 AND enqueued_at < (c.anchor_s - 10800) * 1000 THEN 1 END) AS arrivals_3, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 14400) * 1000 AND emitted_at < (c.anchor_s - 10800) * 1000 THEN 1 END) AS sealed_3, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 18000) * 1000 AND enqueued_at < (c.anchor_s - 14400) * 1000 THEN 1 END) AS arrivals_4, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 18000) * 1000 AND emitted_at < (c.anchor_s - 14400) * 1000 THEN 1 END) AS sealed_4, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 21600) * 1000 AND enqueued_at < (c.anchor_s - 18000) * 1000 THEN 1 END) AS arrivals_5, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 21600) * 1000 AND emitted_at < (c.anchor_s - 18000) * 1000 THEN 1 END) AS sealed_5, COUNT(CASE WHEN enqueued_at < c.anchor_s * 1000 AND (emitted_at IS NULL OR emitted_at >= c.anchor_s * 1000) THEN 1 END) AS boundary_unsealed FROM audit_outbox CROSS JOIN clock c), bucket_counts AS (SELECT h.hour_offset, a.anchor_s, CASE h.hour_offset WHEN 0 THEN a.arrivals_0 WHEN 1 THEN a.arrivals_1 WHEN 2 THEN a.arrivals_2 WHEN 3 THEN a.arrivals_3 WHEN 4 THEN a.arrivals_4 WHEN 5 THEN a.arrivals_5 END AS arrivals, CASE h.hour_offset WHEN 0 THEN a.sealed_0 WHEN 1 THEN a.sealed_1 WHEN 2 THEN a.sealed_2 WHEN 3 THEN a.sealed_3 WHEN 4 THEN a.sealed_4 WHEN 5 THEN a.sealed_5 END AS sealed_rows, a.boundary_unsealed FROM hour_offsets h CROSS JOIN aggregate_counts a) SELECT strftime("%Y-%m-%dT%H:00:00Z", anchor_s - (hour_offset + 1) * 3600, "unixepoch") AS window_start_utc, strftime("%Y-%m-%dT%H:00:00Z", anchor_s - hour_offset * 3600, "unixepoch") AS window_end_utc, arrivals, sealed_rows, boundary_unsealed FROM bucket_counts ORDER BY hour_offset DESC'
           SQL[latency]='SELECT COUNT(*) AS valid_latency_rows, MIN(emitted_at - enqueued_at) AS min_latency_ms, AVG(emitted_at - enqueued_at) AS mean_latency_ms, MAX(emitted_at - enqueued_at) AS max_latency_ms, (SELECT latency_ms FROM (SELECT emitted_at - enqueued_at AS latency_ms, ROW_NUMBER() OVER (ORDER BY emitted_at - enqueued_at) AS row_number, COUNT(*) OVER () AS sample_size FROM audit_outbox WHERE emitted_at IS NOT NULL AND enqueued_at >= (strftime("%s", "now") - 21600) * 1000 AND emitted_at >= enqueued_at) ranked WHERE row_number = CAST((sample_size + 1) / 2 AS INTEGER)) AS median_latency_ms, (SELECT latency_ms FROM (SELECT emitted_at - enqueued_at AS latency_ms, ROW_NUMBER() OVER (ORDER BY emitted_at - enqueued_at) AS row_number, COUNT(*) OVER () AS sample_size FROM audit_outbox WHERE emitted_at IS NOT NULL AND enqueued_at >= (strftime("%s", "now") - 21600) * 1000 AND emitted_at >= enqueued_at) ranked WHERE row_number = CAST((sample_size * 90 + 99) / 100 AS INTEGER)) AS p90_latency_ms FROM audit_outbox WHERE emitted_at IS NOT NULL AND enqueued_at >= (strftime("%s", "now") - 21600) * 1000 AND emitted_at >= enqueued_at'
           SQL[heads]='SELECT COUNT(*) AS chain_heads, SUM(CASE WHEN head_signature IS NOT NULL AND length(trim(head_signature)) > 0 THEN 1 ELSE 0 END) AS signed_heads FROM audit_chain_head'
           SQL[partition]='WITH partitions AS (SELECT tenant_id, region, COUNT(*) AS row_count, SUM(CASE WHEN emitted_at IS NULL THEN 1 ELSE 0 END) AS unsealed_rows FROM audit_outbox GROUP BY tenant_id, region) SELECT COUNT(DISTINCT region) AS regions, COALESCE(SUM(row_count), 0) AS partition_rows, COALESCE(SUM(unsealed_rows), 0) AS partition_unsealed_rows, COUNT(*) AS partition_count FROM partitions'
@@ -233,6 +233,19 @@ jobs:
           replay = by_id["replay"][0]
           head_tail = by_id["head_tail"][0]
           failures = []
+          bucket_counts = []
+          boundary_values = []
+          for row in hourly:
+              counts = (row.get("arrivals"), row.get("sealed_rows"), row.get("boundary_unsealed"))
+              if any(type(value) is not int or value < 0 for value in counts):
+                  failures.append("hourly_count_null_negative_or_invalid")
+                  break
+              bucket_counts.append((counts[0], counts[1]))
+              boundary_values.append(counts[2])
+          if len(bucket_counts) == 6 and len(set(boundary_values)) != 1:
+              failures.append("hourly_boundary_backlog_inconsistent")
+          if len(bucket_counts) == 6 and any(arrivals == 0 or sealed_rows == 0 for arrivals, sealed_rows in bucket_counts):
+              failures.append("hourly_bucket_empty_arrivals_or_seals")
           try:
               bucket_starts = [
                   datetime.strptime(row["window_start_utc"], "%Y-%m-%dT%H:00:00Z").replace(tzinfo=timezone.utc)
@@ -247,7 +260,8 @@ jobs:
                   and (index == 0 or bucket_ends[index - 1] == start)
                   for index, (start, end) in enumerate(zip(bucket_starts, bucket_ends))
               )
-              if not complete_hour_buckets or bucket_ends[-1] > datetime.now(timezone.utc):
+              current_anchor = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+              if not complete_hour_buckets or bucket_ends[-1] != current_anchor:
                   failures.append("hourly_window_labels_not_six_complete_consecutive_utc_buckets")
           except (KeyError, TypeError, ValueError):
               failures.append("hourly_window_labels_invalid")
@@ -263,6 +277,24 @@ jobs:
               failures.append("chain_head_control_empty")
           if int(heads.get("signed_heads") or 0) != int(heads.get("chain_heads") or 0):
               failures.append("unsigned_chain_head_detected")
+          reconstructed = []
+          if len(bucket_counts) == 6 and len(set(boundary_values)) == 1:
+              closing = boundary_values[0]
+              for arrivals, sealed_rows in reversed(bucket_counts):
+                  opening = closing - arrivals + sealed_rows
+                  if opening < 0:
+                      failures.append("hourly_reconstructed_backlog_negative")
+                      break
+                  reconstructed.append((opening, closing, opening + arrivals))
+                  closing = opening
+              if len(reconstructed) == 6:
+                  reconstructed.reverse()
+                  for row, (opening, closing, demand) in zip(hourly, reconstructed):
+                      row["opening_unsealed"] = opening
+                      row["closing_unsealed"] = closing
+                      row["demand_rows"] = demand
+                  if reconstructed[-1][1] != boundary_values[0]:
+                      failures.append("hourly_boundary_backlog_reconciliation_failed")
           if sum(int(row.get("arrivals") or 0) for row in hourly) <= 0:
               failures.append("six_hour_window_has_no_arrivals")
           if sum(int(row.get("sealed_rows") or 0) for row in hourly) <= 0:
@@ -284,6 +316,27 @@ jobs:
           for key in ("head_tail_mismatches", "head_behind", "head_ahead", "head_hash_mismatches"):
               if int(head_tail.get(key) or 0) != 0:
                   failures.append(f"head_tail_{key}")
+          control_failures = list(failures)
+          qualified = [index for index, (_, _, demand) in enumerate(reconstructed) if demand >= 3141]
+          if not control_failures:
+              if not qualified:
+                  failures.append("throughput_capacity_inconclusive_no_qualified_hour")
+              for index in qualified:
+                  if bucket_counts[index][1] < 3141:
+                      failures.append(f"throughput_below_3141_bucket_{index}")
+              if reconstructed[-1][1] > reconstructed[0][0]:
+                  failures.append("six_hour_backlog_growth")
+              p90 = latency.get("p90_latency_ms")
+              oldest = population.get("oldest_unsealed_age_ms")
+              if type(p90) is not int or p90 < 0 or p90 > 4_200_000:
+                  failures.append("p90_seal_latency_above_70_minutes_or_invalid")
+              if type(oldest) is not int or oldest < 0 or oldest > 4_200_000:
+                  failures.append("oldest_unsealed_above_70_minutes_or_invalid")
+          threshold_status = (
+              "INVALID" if control_failures else
+              "FAIL" if any(reason != "throughput_capacity_inconclusive_no_qualified_hour" for reason in failures) else
+              "INCONCLUSIVE" if not qualified else "PASS"
+          )
           receipt["captured_at"] = datetime.now(timezone.utc).isoformat()
           receipt["window"] = {
               "hours": 6,
@@ -302,7 +355,15 @@ jobs:
               "replay_sequence_control": replay,
               "head_tail_control": head_tail,
           }
-          receipt["owner_threshold"] = "not numerically specified; owner review required"
+          receipt["owner_threshold"] = {
+              "decision_ref": "https://github.com/HuGR-dev/corelink-server/issues/1668#issuecomment-5855265681",
+              "sealed_rows_per_demand_qualified_hour_min": 3141,
+              "demand_rows_per_qualified_hour_min": 3141,
+              "p90_seal_latency_max_ms": 4_200_000,
+              "oldest_unsealed_max_ms": 4_200_000,
+              "qualified_bucket_count": len(qualified),
+              "status": threshold_status,
+          }
           receipt["failure_reasons"] = failures
           receipt["valid"] = not failures
           with open(path, "w", encoding="utf-8") as stream:

@@ -3,12 +3,12 @@
     {
       "success": true,
       "results": [
-        {"window_start_utc": "2026-09-22T00:00:00Z", "window_end_utc": "2026-09-22T01:00:00Z", "arrivals": 12, "sealed_rows": 12},
-        {"window_start_utc": "2026-09-22T01:00:00Z", "window_end_utc": "2026-09-22T02:00:00Z", "arrivals": 14, "sealed_rows": 14},
-        {"window_start_utc": "2026-09-22T02:00:00Z", "window_end_utc": "2026-09-22T03:00:00Z", "arrivals": 11, "sealed_rows": 11},
-        {"window_start_utc": "2026-09-22T03:00:00Z", "window_end_utc": "2026-09-22T04:00:00Z", "arrivals": 15, "sealed_rows": 15},
-        {"window_start_utc": "2026-09-22T04:00:00Z", "window_end_utc": "2026-09-22T05:00:00Z", "arrivals": 13, "sealed_rows": 13},
-        {"window_start_utc": "2026-09-22T05:00:00Z", "window_end_utc": "2026-09-22T06:00:00Z", "arrivals": 16, "sealed_rows": 16}
+        {"window_start_utc": "2026-09-22T00:00:00Z", "window_end_utc": "2026-09-22T01:00:00Z", "arrivals": 12, "sealed_rows": 12, "boundary_unsealed": 0},
+        {"window_start_utc": "2026-09-22T01:00:00Z", "window_end_utc": "2026-09-22T02:00:00Z", "arrivals": 14, "sealed_rows": 14, "boundary_unsealed": 0},
+        {"window_start_utc": "2026-09-22T02:00:00Z", "window_end_utc": "2026-09-22T03:00:00Z", "arrivals": 11, "sealed_rows": 11, "boundary_unsealed": 0},
+        {"window_start_utc": "2026-09-22T03:00:00Z", "window_end_utc": "2026-09-22T04:00:00Z", "arrivals": 15, "sealed_rows": 15, "boundary_unsealed": 0},
+        {"window_start_utc": "2026-09-22T04:00:00Z", "window_end_utc": "2026-09-22T05:00:00Z", "arrivals": 13, "sealed_rows": 13, "boundary_unsealed": 0},
+        {"window_start_utc": "2026-09-22T05:00:00Z", "window_end_utc": "2026-09-22T06:00:00Z", "arrivals": 16, "sealed_rows": 16, "boundary_unsealed": 0}
       ]
     }
   ]

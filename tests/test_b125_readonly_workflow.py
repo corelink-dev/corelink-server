@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import subprocess
 import sys
+import textwrap
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +33,7 @@ REQUIRED_COLUMNS = {
     "window_end_utc",
     "arrivals",
     "sealed_rows",
+    "boundary_unsealed",
 }
 
 
@@ -79,7 +82,8 @@ def test_hourly_sql_is_one_select_only_aggregate_with_six_offsets() -> None:
     assert ";" not in sql
     assert not re.search(r"\b(?:INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|PRAGMA|ATTACH|DETACH)\b", sql)
     assert "aggregate_counts AS" in sql
-    assert sql.count("COUNT(CASE WHEN") == 12
+    assert sql.count("COUNT(CASE WHEN") == 13
+    assert "enqueued_at < c.anchor_s * 1000 AND (emitted_at IS NULL OR emitted_at >= c.anchor_s * 1000)" in sql
     assert {int(value) for value in re.findall(r"arrivals_(\d)", sql)} == set(range(6))
     assert {int(value) for value in re.findall(r"sealed_(\d)", sql)} == set(range(6))
 
@@ -87,13 +91,22 @@ def test_hourly_sql_is_one_select_only_aggregate_with_six_offsets() -> None:
 def test_hourly_sql_executes_as_six_row_sqlite_aggregate() -> None:
     connection = sqlite3.connect(":memory:")
     connection.execute("CREATE TABLE audit_outbox (enqueued_at INTEGER, emitted_at INTEGER)")
+    anchor_ms = int(datetime.now(timezone.utc).timestamp()) // 3600 * 3600 * 1000
     connection.executemany(
         "INSERT INTO audit_outbox VALUES (?, ?)",
-        [(0, 0), (None, None), (1, 1)],
+        [
+            (anchor_ms - 7 * 3600_000, anchor_ms - 5 * 3600_000),
+            (anchor_ms - 3 * 3600_000, anchor_ms),
+            (anchor_ms - 2 * 3600_000, None),
+            (anchor_ms + 1_000, None),
+        ],
     )
     result = connection.execute(_hourly_sql()).fetchall()
     assert len(result) == 6
-    assert all(len(row) == 4 for row in result)
+    assert all(len(row) == 5 for row in result)
+    # The current partial hour is excluded; a seal exactly at the boundary
+    # still counted as unsealed at that boundary.
+    assert all(row[4] == 2 for row in result)
 
 
 def test_aggregate_fixtures_preserve_six_row_redacted_shape() -> None:
@@ -105,6 +118,7 @@ def test_aggregate_fixtures_preserve_six_row_redacted_shape() -> None:
         assert all(set(row) == REQUIRED_COLUMNS for row in rows)
         assert all(isinstance(row["arrivals"], int) and row["arrivals"] >= 0 for row in rows)
         assert all(isinstance(row["sealed_rows"], int) and row["sealed_rows"] >= 0 for row in rows)
+        assert all(row["boundary_unsealed"] == 0 for row in rows)
         if expected is None:
             expected = rows
         else:
@@ -150,6 +164,7 @@ def test_all_production_control_queries_are_single_read_only_selects() -> None:
         expected_rows = 6 if query_id == "hourly" else 1
         assert len(rows) == expected_rows, f"{query_id} returned {len(rows)} rows"
         if query_id == "hourly":
+            assert all(len(row) == 5 and row[4] == rows[0][4] for row in rows)
             starts = [
                 datetime.strptime(row[0], "%Y-%m-%dT%H:00:00Z").replace(tzinfo=timezone.utc)
                 for row in rows
@@ -286,3 +301,97 @@ def test_workflow_keeps_unredacted_provider_output_out_of_artifacts_and_logs() -
     assert 'path: "$raw_dir"' not in source
     assert 'echo "$stderr"' not in source
     assert 'echo "$raw"' not in source
+
+
+def _final_receipt_script() -> str:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    after_queries = source.split(
+        "for query_id in population partition hourly latency heads burst integrity replay head_tail; do", 1
+    )[1]
+    match = re.search(r'python3 - "\$receipt" <<\'PY\'\n(.*?)\n          PY', after_queries, re.DOTALL)
+    assert match, "final workflow receipt gate must remain executable Python"
+    return textwrap.dedent(match.group(1)) + "\n"
+
+
+def _complete_receipt(arrivals: int = 3141, seals: int = 3141, boundary: int = 0) -> dict:
+    anchor = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    hourly = [
+        {
+            "window_start_utc": (anchor - timedelta(hours=6-index)).strftime("%Y-%m-%dT%H:00:00Z"),
+            "window_end_utc": (anchor - timedelta(hours=5-index)).strftime("%Y-%m-%dT%H:00:00Z"),
+            "arrivals": arrivals,
+            "sealed_rows": seals,
+            "boundary_unsealed": boundary,
+        }
+        for index in range(6)
+    ]
+    rows = {
+        "population": {"total_rows": 20_000, "unsealed_rows": boundary, "oldest_unsealed_age_ms": 0},
+        "partition": {"partition_count": 1, "partition_rows": 20_000, "partition_unsealed_rows": boundary},
+        "hourly": hourly,
+        "latency": {"valid_latency_rows": 18_846, "min_latency_ms": 1, "mean_latency_ms": 1000,
+                    "median_latency_ms": 1000, "p90_latency_ms": 1000, "max_latency_ms": 1000},
+        "heads": {"chain_heads": 1, "signed_heads": 1},
+        "burst": {"populated_hours": 6, "peak_hour_arrivals": max(arrivals, 513)},
+        "integrity": {"sealed_rows": 18_846, "malformed_seals": 0, "negative_latency_rows": 0,
+                      "duplicate_chain_hash_rows": 0},
+        "replay": {"repeated_sequence_rows": 0, "sequence_gap_rows": 0, "duplicate_sequence_groups": 0},
+        "head_tail": {"head_tail_mismatches": 0, "head_behind": 0, "head_ahead": 0,
+                      "head_hash_mismatches": 0},
+    }
+    return {"queries": [{"id": key, "rows": value if isinstance(value, list) else [value]} for key, value in rows.items()]}
+
+
+def _evaluate_receipt(tmp_path: Path, payload: dict) -> tuple[int, dict]:
+    path = tmp_path / "b125-receipt.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-S", "-", str(path)], input=_final_receipt_script(), text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    return result.returncode, json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_real_receipt_gate_reconstructs_six_hours_and_applies_owner_threshold(tmp_path: Path) -> None:
+    code, receipt = _evaluate_receipt(tmp_path, _complete_receipt())
+    assert code == 0
+    assert receipt["valid"] is True
+    assert receipt["owner_threshold"]["status"] == "PASS"
+    assert receipt["owner_threshold"]["qualified_bucket_count"] == 6
+    assert all(row["opening_unsealed"] == row["closing_unsealed"] == 0 for row in receipt["measurements"]["hourly"])
+
+
+def test_real_receipt_gate_rejects_invalid_or_inconclusive_boundaries(tmp_path: Path) -> None:
+    mutations = []
+    null_boundary = _complete_receipt()
+    null_boundary["queries"][2]["rows"][0]["boundary_unsealed"] = None
+    mutations.append((null_boundary, "INVALID", "hourly_count_null_negative_or_invalid"))
+    negative_boundary = _complete_receipt()
+    negative_boundary["queries"][2]["rows"][0]["boundary_unsealed"] = -1
+    mutations.append((negative_boundary, "INVALID", "hourly_count_null_negative_or_invalid"))
+    inconsistent_boundary = _complete_receipt()
+    inconsistent_boundary["queries"][2]["rows"][0]["boundary_unsealed"] = 1
+    mutations.append((inconsistent_boundary, "INVALID", "hourly_boundary_backlog_inconsistent"))
+    empty_hour = _complete_receipt()
+    empty_hour["queries"][2]["rows"][0]["arrivals"] = 0
+    mutations.append((empty_hour, "INVALID", "hourly_bucket_empty_arrivals_or_seals"))
+    negative_reconstruction = _complete_receipt(arrivals=3142, seals=3141)
+    mutations.append((negative_reconstruction, "INVALID", "hourly_reconstructed_backlog_negative"))
+    wrong_hour = _complete_receipt()
+    wrong_hour["queries"][2]["rows"][-1]["window_end_utc"] = "2026-01-01T00:00:00Z"
+    mutations.append((wrong_hour, "INVALID", "hourly_window_labels_not_six_complete_consecutive_utc_buckets"))
+    no_qualified_demand = _complete_receipt(arrivals=12, seals=12)
+    mutations.append((no_qualified_demand, "INCONCLUSIVE", "throughput_capacity_inconclusive_no_qualified_hour"))
+    slow_without_demand = _complete_receipt(arrivals=12, seals=12)
+    slow_without_demand["queries"][3]["rows"][0]["p90_latency_ms"] = 4_200_001
+    mutations.append((slow_without_demand, "FAIL", "p90_seal_latency_above_70_minutes_or_invalid"))
+    below_throughput = _complete_receipt(arrivals=3141, seals=3140, boundary=6)
+    mutations.append((below_throughput, "FAIL", "throughput_below_3141_bucket_0"))
+    growing_backlog = _complete_receipt(arrivals=3142, seals=3141, boundary=6)
+    mutations.append((growing_backlog, "FAIL", "six_hour_backlog_growth"))
+    for payload, expected_status, expected_reason in mutations:
+        code, receipt = _evaluate_receipt(tmp_path, payload)
+        assert code != 0
+        assert receipt["valid"] is False
+        assert receipt["owner_threshold"]["status"] == expected_status
+        assert expected_reason in receipt["failure_reasons"]
