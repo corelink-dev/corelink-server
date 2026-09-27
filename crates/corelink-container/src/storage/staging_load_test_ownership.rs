@@ -383,8 +383,10 @@ pub(crate) fn reconcile_staging_load_test_teardown(
         if !receipts.insert((resource.class.as_str(), resource.receipt_ref.as_str())) {
             return Err(StagingLoadTestTeardownError::DuplicateResource);
         }
-        if resource.class.requires_retention()
-            && resource.disposition != StagingLoadTestDisposition::Retained
+        if (resource.class.requires_retention()
+            && resource.disposition != StagingLoadTestDisposition::Retained)
+            || (!resource.class.requires_retention()
+                && resource.disposition != StagingLoadTestDisposition::Disposable)
         {
             return Err(StagingLoadTestTeardownError::InvalidDisposition);
         }
@@ -400,15 +402,16 @@ pub(crate) fn reconcile_staging_load_test_teardown(
         if scan_counts.get(class_name) != Some(&rows.len()) {
             return Err(StagingLoadTestTeardownError::CountMismatch);
         }
+        let inventory = rows.len();
         let mut attempted = 0;
         let mut deleted = 0;
         let mut preserved = 0;
         let mut quarantined = 0;
         for resource in rows {
-            attempted += 1;
             let action = if resource.disposition == StagingLoadTestDisposition::Retained {
                 StagingLoadTestTeardownAction::Preserved
             } else {
+                attempted += 1;
                 delete_disposable(resource)
             };
             match action {
@@ -426,13 +429,13 @@ pub(crate) fn reconcile_staging_load_test_teardown(
                 _ => return Err(StagingLoadTestTeardownError::InvalidDisposition),
             }
         }
-        if quarantined != 0 || deleted + preserved != attempted {
+        if quarantined != 0 || deleted + preserved != inventory {
             return Err(StagingLoadTestTeardownError::PartialDelete);
         }
         counts.insert(
             class_name,
             StagingLoadTestTeardownCounts {
-                inventory: attempted,
+                inventory,
                 attempted,
                 deleted,
                 preserved,
@@ -1713,7 +1716,86 @@ mod tests {
         let encoded = serde_json::to_string(&receipt).expect("receipt serializes");
         assert!(!encoded.contains("test-handle"));
         assert_eq!(receipt.resources["cas_reference"].preserved, 1);
+        assert_eq!(receipt.resources["cas_reference"].attempted, 0);
+        assert_eq!(receipt.resources["cas_reference"].inventory, 1);
         assert_eq!(receipt.resources["webhook_inbox"].deleted, 1);
+        assert_eq!(receipt.resources["webhook_inbox"].attempted, 1);
+    }
+
+    #[test]
+    fn teardown_counts_all_nine_classes_with_retained_attempts_zero() {
+        let identity = StagingLoadTestTeardownIdentity::for_test();
+        let mut scans = complete_scans();
+        let resources = STAGING_LOAD_TEST_RESOURCE_CLASSES
+            .into_iter()
+            .enumerate()
+            .map(|(index, class)| {
+                scans[index].observed_count = 1;
+                StagingLoadTestTeardownResource::for_test(
+                    class,
+                    &format!("{index:064x}"),
+                    if class.requires_retention() {
+                        StagingLoadTestDisposition::Retained
+                    } else {
+                        StagingLoadTestDisposition::Disposable
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let receipt = reconcile_staging_load_test_teardown(
+            &identity,
+            None,
+            &scans,
+            &resources,
+            10,
+            |_| StagingLoadTestTeardownAction::Deleted,
+        )
+        .expect("valid nine-class receipt");
+        for class in STAGING_LOAD_TEST_RESOURCE_CLASSES {
+            let count = &receipt.resources[class.as_str()];
+            assert_eq!(count.inventory, 1);
+            if class.requires_retention() {
+                assert_eq!(count.attempted, 0);
+                assert_eq!(count.preserved, 1);
+            } else {
+                assert_eq!(count.attempted, 1);
+                assert_eq!(count.deleted, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn teardown_rejects_nonretained_disposition_before_any_callback() {
+        let identity = StagingLoadTestTeardownIdentity::for_test();
+        let mut scans = complete_scans();
+        scans[0].observed_count = 1;
+        scans[1].observed_count = 1;
+        let valid = StagingLoadTestTeardownResource::for_test(
+            StagingLoadTestResourceClass::CasReference,
+            &"f".repeat(64),
+            StagingLoadTestDisposition::Retained,
+        );
+        let invalid = StagingLoadTestTeardownResource::for_test(
+            StagingLoadTestResourceClass::WebhookInbox,
+            &"g".repeat(64),
+            StagingLoadTestDisposition::Retained,
+        );
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(
+            reconcile_staging_load_test_teardown(
+                &identity,
+                None,
+                &scans,
+                &[valid, invalid],
+                10,
+                |_| {
+                    calls.set(calls.get() + 1);
+                    StagingLoadTestTeardownAction::Deleted
+                },
+            ),
+            Err(StagingLoadTestTeardownError::InvalidDisposition)
+        );
+        assert_eq!(calls.get(), 0);
     }
 
     #[test]
