@@ -58,6 +58,29 @@ jobs:
         run: |
           pnpm --dir apps/dsr-alert-receiver typecheck
           pnpm --dir apps/dsr-alert-receiver test
+      - name: Run credentialless Wrangler bundle dry-run
+        env:
+          DRY_RUN_HOME: ${{ runner.temp }}/b216-wrangler-empty-home
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          mkdir -p "$DRY_RUN_HOME"
+          chmod 700 "$DRY_RUN_HOME"
+          RUNNER_UID="$(id -u)"
+          RUNNER_GID="$(id -g)"
+          sudo unshare --net -- setpriv \
+            --reuid "$RUNNER_UID" \
+            --regid "$RUNNER_GID" \
+            --clear-groups -- \
+            env -i \
+            "PATH=$PATH" \
+            "HOME=$DRY_RUN_HOME" \
+            "RUNNER_TEMP=$RUNNER_TEMP" \
+            "GITHUB_SHA=$EXPECTED_HEAD" \
+            CI=true \
+            WRANGLER_SEND_METRICS=false \
+            node apps/dsr-alert-receiver/scripts/run-wrangler-dry-run.mjs
       - name: Assert privacy and path boundary
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
