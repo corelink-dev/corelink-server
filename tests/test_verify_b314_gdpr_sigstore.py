@@ -51,8 +51,18 @@ def test_packet_duplicate_key_is_rejected() -> None:
 @pytest.mark.parametrize("path", (verify.LEGAL_REGISTER, verify.VENDOR_REGISTER))
 def test_register_posture_is_load_bearing(path: str) -> None:
     source = _text(path)
-    marker = "not a customer-data sub-processor" if path == verify.LEGAL_REGISTER else "no customer-data path is wired"
-    mutated = source.replace(marker, "customer-data path is wired", 1)
+    if path == verify.LEGAL_REGISTER:
+        mutated = source.replace(
+            "Sigstore is not a customer-data sub-processor",
+            "Sigstore is a customer-data sub-processor",
+            1,
+        )
+    else:
+        mutated = source.replace(
+            "no customer-data path is wired",
+            "customer-data path is wired",
+            1,
+        )
     with pytest.raises(verify.VerificationError):
         verify.verify(overrides={path: mutated})
 

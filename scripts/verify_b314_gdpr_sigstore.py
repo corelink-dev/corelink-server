@@ -374,13 +374,24 @@ def _check_posture(trust: str, generator: str, legal_register: str, vendor_regis
         # The contractual register names the same recipient as
         # ``The Linux Foundation (Sigstore)``; the public/register sources use
         # ``Sigstore (Linux Foundation)``. Both are exact, unambiguous names.
-        folded = " ".join(text.split())
-        identity = (
-            "The Linux Foundation (Sigstore)"
-            if label == LEGAL_REGISTER
-            else required[0]
-        )
-        for marker in (identity, *required[1:]):
+        if label == LEGAL_REGISTER:
+            legal_rows = [
+                line for line in text.splitlines()
+                if line.startswith("| The Linux Foundation (Sigstore) |")
+            ]
+            if len(legal_rows) != 1:
+                raise VerificationError(f"{LEGAL_REGISTER}: expected exactly one Sigstore row")
+            folded = " ".join(legal_rows[0].split())
+            legal_markers = (
+                "The Linux Foundation (Sigstore)",
+                "Current release-SLSA, CAS, and TSA paths send only CoreLink-owned artifact/signing metadata",
+                *required[1:],
+                "Sigstore is not a customer-data sub-processor",
+            )
+        else:
+            folded = " ".join(text.split())
+            legal_markers = (required[0], *required[1:])
+        for marker in legal_markers:
             if marker not in folded:
                 raise VerificationError(f"{label}: scoped posture marker missing: {marker}")
     folded_trust = " ".join(trust.split())
@@ -523,7 +534,11 @@ def mutation_checks(root: Path = ROOT) -> int:
     generator_mutation = originals[GENERATOR].replace("transparency-log seam is not a live transport", "transparency-log seam is a live transport", 1)
     _must_reject("generator deferred-seam posture removal", root, {GENERATOR: generator_mutation})
     count += 1
-    legal_mutation = originals[LEGAL_REGISTER].replace("not a customer-data sub-processor", "a customer-data sub-processor")
+    legal_mutation = originals[LEGAL_REGISTER].replace(
+        "Sigstore is not a customer-data sub-processor",
+        "Sigstore is a customer-data sub-processor",
+        1,
+    )
     _must_reject("contractual posture restoration", root, {LEGAL_REGISTER: legal_mutation})
     count += 1
     vendor_mutation = originals[VENDOR_REGISTER].replace("no customer-data path is wired", "customer-data path is wired", 1)
