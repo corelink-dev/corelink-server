@@ -66,7 +66,7 @@ def test_missing_target_and_unknown_override_fail_closed(tmp_path: Path) -> None
 
 def test_workflow_requires_exact_head_path_admission_and_redaction() -> None:
     source = _text(verify.WORKFLOW)
-    for needle in (verify.CHECKOUT_ACTION, "pull_request:", "github.event.pull_request.head.sha", "expected_paths = [", "PRIVATE KEY", "chr(64)", "line[1:]", "lowercase_email_fixture", "pytest_decorator_fixture"):
+    for needle in (verify.CHECKOUT_ACTION, "pull_request:", "github.event.pull_request.head.sha", "expected_paths = [", "PRIVATE KEY", verify.EMAIL_REGEX_EXPRESSION, "line[1:]", "lowercase_email_fixture", "pytest_decorator_fixture"):
         assert needle in source
     mutated = source.replace("github.event.pull_request.head.sha", "github.event.pull_request.base.sha", 1)
     with pytest.raises(verify.VerificationError):

@@ -42,6 +42,7 @@ DECISION_REFERENCE = "https://github.com/HuGR-dev/corelink-server/issues/2601#is
 EFFECTIVE_TIMESTAMP = "2026-09-27T09:48:32Z"
 NOTICE_VERSION = "B-314-prelaunch-2026-09-27"
 CHECKOUT_ACTION = "uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0"
+EMAIL_REGEX_EXPRESSION = 're.compile(r"[A-Z0-9._%+-]+" + chr(64) + r"[A-Z0-9.-]+\\.[A-Z]{2,}", re.IGNORECASE)'
 
 TABLE_HEADING = "| Recipient | Country | Mechanism | What's transferred |"
 CANONICAL_ROW = "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
@@ -430,17 +431,17 @@ def _check_runtime(workflow: str) -> None:
     if "persist-credentials: false" not in workflow:
         raise VerificationError(f"{WORKFLOW}: checkout credentials must not persist")
     command = "python3 -S scripts/verify_b314_gdpr_sigstore.py --self-test"
-    if sum(line.strip() == command for line in workflow.splitlines()) != 1:
+    if sum(line.strip() in (command, f"run: {command}") for line in workflow.splitlines()) != 1:
         raise VerificationError(f"{WORKFLOW}: expected one B-314 self-test")
     pytest_command = f"python3 -m pytest -q {TEST}"
-    if sum(line.strip() == pytest_command for line in workflow.splitlines()) != 1:
+    if sum(line.strip() in (pytest_command, f"run: {pytest_command}") for line in workflow.splitlines()) != 1:
         raise VerificationError(f"{WORKFLOW}: expected one focused B-314 pytest command")
     if "pytest==8.4.2" not in workflow:
         raise VerificationError(f"{WORKFLOW}: focused pytest dependency must be pinned")
-    for marker in ("github.event.pull_request.base.sha", "git diff --name-only", "git diff --unified=0", "expected_paths = [", "sorted(changed_paths) != sorted(expected_paths)"):
+    for marker in ("github.event.pull_request.base.sha", '"--name-only"', '"--unified=0"', "expected_paths = [", "sorted(changed_paths) != sorted(expected_paths)"):
         if marker not in workflow:
             raise VerificationError(f"{WORKFLOW}: exact-head/path admission marker missing: {marker}")
-    for marker in ("PRIVATE KEY", "gh[pousr]_", "AKIA[0-9A-Z]{16}", "chr(64)", "[A-Z0-9.-]+\\.[A-Z]{2,}", "line[1:]", "lowercase_email_fixture", "pytest_decorator_fixture"):
+    for marker in ("PRIVATE KEY", "gh[pousr]_", "AKIA[0-9A-Z]{16}", EMAIL_REGEX_EXPRESSION, "line[1:]", "lowercase_email_fixture", "pytest_decorator_fixture"):
         if marker not in workflow:
             raise VerificationError(f"{WORKFLOW}: redaction scan is missing marker: {marker}")
     if "test " not in workflow or "git rev-parse HEAD" not in workflow or "HEAD_SHA" not in workflow:
