@@ -343,6 +343,7 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         self.assertIn("pull_request_target:", workflow)
         self.assertNotIn("\n  pull_request:\n", workflow)
         self.assertIn("  verify:\n    runs-on: ubuntu-24.04", workflow)
+        self.assertIn('    env:\n      PYTHONDONTWRITEBYTECODE: "1"', workflow)
         self.assertIn(
             "  trusted_semantic:\n"
             "    if: github.event_name == 'push' || github.event_name == 'schedule'\n"
