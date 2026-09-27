@@ -380,6 +380,18 @@ class B029LoadGateTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_request_admission_census_rejects_static_or_missing_fresh_auth(self) -> None:
+        self.assertEqual(verifier.admission_client_gaps(ROOT), [])
+        with tempfile.TemporaryDirectory() as directory:
+            contract = Path(directory)
+            for relative in (verifier.ADMISSION_HELPER, verifier.LIFECYCLE_AUTH, *verifier.ADMISSION_CALLS):
+                destination = contract / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(ROOT / relative, destination)
+            helper = contract / verifier.ADMISSION_HELPER
+            helper.write_text(helper.read_text().replace("crypto.randomBytes(32)", "crypto.randomBytes(16)", 1))
+            self.assertTrue(verifier.admission_client_gaps(contract))
+
     def test_focused_pack_covers_comparator_inputs(self) -> None:
         workflow = (ROOT / ".github/workflows/load-test-nightly.yml").read_text()
         self.assertEqual(self._assess_workflow(workflow), [])

@@ -183,12 +183,17 @@ jobs:
         env:
           K6_TARGET_HOST: ${{ secrets.K6_TARGET_HOST }}
           K6_TARGET_IDENTITY_RECEIPT: ${{ secrets.K6_TARGET_IDENTITY_RECEIPT }}
+          K6_STAGING_LOAD_ADMISSION_KEY: ${{ secrets.CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY }}
         run: |
           set -euo pipefail
           if [[ -z "${K6_TARGET_HOST:-}" ]]; then
             echo "::error::K6_TARGET_HOST secret missing in staging environment"
             exit 1
           fi
+          test -n "${K6_STAGING_LOAD_ADMISSION_KEY:-}" || {
+            echo "::error::CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY is required"
+            exit 1
+          }
           # Normalize one explicitly permitted trailing slash, then require the
           # exact owner-approved endpoint. No dev, API-prefixed, or path variant.
           CANONICAL_TARGET='https://staging.corelink.humangr.com'
@@ -217,7 +222,10 @@ jobs:
         id: run_k6
         env:
           K6_TARGET_HOST:        ${{ steps.target_host.outputs.target_host }}
-          K6_AUTH_BEARER:        ${{ secrets.K6_STAGING_PAT }}
+          K6_STAGING_LOAD_ADMISSION_KEY: ${{ secrets.CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY }}
+          K6_RUN_ID:             ${{ github.run_id }}
+          K6_STAGING_LOAD_SCENARIO: ${{ matrix.scenario.id }}
+          K6_TARGET_DEPLOYMENT_SHA: ${{ steps.target_host.outputs.deployment_sha }}
           K6_STRIPE_WHSEC:       ${{ secrets.K6_STAGING_STRIPE_WHSEC }}
           K6_MFA_STUB_TOKEN:     ${{ secrets.K6_STAGING_MFA_STUB }}
           K6_BYOK_TEST_CMK_ID:   ${{ secrets.K6_STAGING_BYOK_CMK_ID }}
@@ -255,36 +263,60 @@ jobs:
           printf '{"scenario":"%s","outcome":"%s"}\n' "${SCENARIO}" "${OUTCOME}" \
             > "tests/load/results/${SCENARIO}/status.json"
 
-      - name: upload results
-        if: steps.filter.outputs.enabled == 'true' && always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: k6-${{ matrix.scenario.id }}-${{ github.run_id }}
-          path: tests/load/results/
-          retention-days: 30
-          if-no-files-found: error
+      - name: seal synthetic staging state
+        id: seal
+        if: steps.filter.outputs.enabled == 'true' && steps.target_host.outcome == 'success' && always()
+        env:
+          K6_TARGET_HOST: ${{ steps.target_host.outputs.target_host }}
+          K6_STAGING_LOAD_ADMISSION_KEY: ${{ secrets.CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY }}
+          SCENARIO: ${{ matrix.scenario.id }}
+          TARGET_DEPLOYMENT_SHA: ${{ steps.target_host.outputs.deployment_sha }}
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          CREDENTIAL="$(python3 scripts/staging_load_lifecycle_auth.py --version v1 --key "$K6_STAGING_LOAD_ADMISSION_KEY" --run-id "$GITHUB_RUN_ID" --scenario "$SCENARIO" --deployment-sha "$TARGET_DEPLOYMENT_SHA")"
+          HTTP_STATUS=$(timeout 30s curl --silent --show-error --max-redirs 0 --request POST --header "x-corelink-staging-load-admission: ${CREDENTIAL}" "${K6_TARGET_HOST}/_internal/staging/load-tests/${SCENARIO}/seal" --output "${RUNNER_TEMP}/seal-receipt.json" --write-out '%{http_code}')
+          test "$HTTP_STATUS" = 200
+          python3 scripts/staging_load_lifecycle_auth.py --validate-seal --receipt "${RUNNER_TEMP}/seal-receipt.json" --run-id "$GITHUB_RUN_ID" --scenario "$SCENARIO" --deployment-sha "$TARGET_DEPLOYMENT_SHA"
+          cp "${RUNNER_TEMP}/seal-receipt.json" "tests/load/results/${SCENARIO}/seal-receipt-${GITHUB_RUN_ID}.json"
 
       - name: teardown synthetic staging state
         if: steps.filter.outputs.enabled == 'true' && steps.target_host.outcome == 'success' && always()
         env:
           K6_TARGET_HOST: ${{ steps.target_host.outputs.target_host }}
-          K6_STAGING_TEARDOWN_TOKEN: ${{ secrets.K6_STAGING_TEARDOWN_TOKEN }}
+          K6_STAGING_LOAD_ADMISSION_KEY: ${{ secrets.CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY }}
           SCENARIO: ${{ matrix.scenario.id }}
+          TARGET_DEPLOYMENT_SHA: ${{ steps.target_host.outputs.deployment_sha }}
         timeout-minutes: 1
         run: |
           set -euo pipefail
-          test -n "${K6_STAGING_TEARDOWN_TOKEN:-}" || {
-            echo "::error::K6_STAGING_TEARDOWN_TOKEN is required; refusing to leave synthetic state unmanaged"
+          test -n "${K6_STAGING_LOAD_ADMISSION_KEY:-}" || {
+            echo "::error::admission key is required; refusing to leave synthetic state unmanaged"
             exit 1
           }
-          payload=$(printf '{"run_id":"%s","scenario":"%s"}' "$GITHUB_RUN_ID" "$SCENARIO")
-          timeout 30s curl --fail --silent --show-error --location \
+          CREDENTIAL="$(python3 scripts/staging_load_lifecycle_auth.py --version v1 --key "$K6_STAGING_LOAD_ADMISSION_KEY" --run-id "$GITHUB_RUN_ID" --scenario "$SCENARIO" --deployment-sha "$TARGET_DEPLOYMENT_SHA")"
+          HTTP_STATUS=$(timeout 30s curl --silent --show-error --max-redirs 0 \
             --request POST \
-            --header "Authorization: Bearer ${K6_STAGING_TEARDOWN_TOKEN}" \
-            --header 'Content-Type: application/json' \
-            --data "$payload" \
-            "${K6_TARGET_HOST}/_internal/load-test/teardown" \
-            --output /dev/null
+            --header "x-corelink-staging-load-admission: ${CREDENTIAL}" \
+            "${K6_TARGET_HOST}/_internal/staging/load-tests/${SCENARIO}/teardown" \
+            --output "${RUNNER_TEMP}/teardown-receipt.json" --write-out '%{http_code}')
+          test "$HTTP_STATUS" = 200
+          python3 scripts/validate_load_teardown_receipt.py --receipt "${RUNNER_TEMP}/teardown-receipt.json" --run-id "$GITHUB_RUN_ID" --scenario "$SCENARIO" --deployment-sha "$TARGET_DEPLOYMENT_SHA" --output "tests/load/results/${SCENARIO}/teardown-receipt-${GITHUB_RUN_ID}.json"
+
+      - name: preserve workload failure after cleanup
+        if: steps.filter.outputs.enabled == 'true' && always()
+        env:
+          OUTCOME: ${{ steps.run_k6.outcome }}
+        run: test "$OUTCOME" = success
+
+      - name: upload results
+        if: steps.filter.outputs.enabled == 'true' && always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.1
+        with:
+          name: k6-${{ matrix.scenario.id }}-${{ github.run_id }}
+          path: tests/load/results/
+          retention-days: 30
+          if-no-files-found: error
 
   baseline-regression:
     name: baseline regression check (median ≤ +20% vs stored baseline)

@@ -63,7 +63,7 @@
 // SAFETY RAILS
 //   * Refuses to run if K6_TARGET_HOST is not a `staging.*` or `dev.*`
 //     hostname (matches the other R3-prep scripts).
-//   * Refuses to run if K6_AUTH_BEARER is missing (setup() throws).
+//   * Refuses to run without a request-scoped staging admission key.
 //   * Refuses to run if DURATION > 30s and K6_ENDURANCE_CONFIRM != "yes"
 //     when running interactively (catches accidental local 24h kicks).
 //
@@ -77,7 +77,6 @@
 // USAGE (CI 2h nightly):
 //   DURATION=2h \
 //   K6_TARGET_HOST=https://staging.corelink.humangr.com \
-//   K6_AUTH_BEARER=$STAGING_PAT \
 //   K6_ENDURANCE_CONFIRM=yes \
 //   K6_PROMETHEUS_RW_SERVER_URL=https://prom-rw.staging.corelink.humangr.com/api/v1/write \
 //   k6 run --out experimental-prometheus-rw \
@@ -90,12 +89,12 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Counter, Trend, Gauge, Rate } from 'k6/metrics';
 import { SharedArray } from 'k6/data';
+import { admissionHeaders, requireAdmissionConfig } from '../lib/staging_load_admission.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Env + safety
 // ─────────────────────────────────────────────────────────────────────────
 const TARGET_HOST = __ENV.K6_TARGET_HOST || 'https://staging.corelink.humangr.com';
-const AUTH_BEARER = __ENV.K6_AUTH_BEARER || '';
 const RUN_ID = __ENV.K6_RUN_ID || '';
 const DURATION = __ENV.DURATION || '24h';
 const VUS = Number(__ENV.VUS || '50');
@@ -278,15 +277,14 @@ export const options = {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────
 function authHeaders(tenant, extra) {
-  return Object.assign(
+  return admissionHeaders(Object.assign(
     {
-      authorization: `Bearer ${AUTH_BEARER}`,
       'x-corelink-load-test': 'endurance-24h',
       'x-corelink-load-test-run-id': RUN_ID,
       'x-corelink-tenant-hint': tenant.tenant_id,
     },
     extra || {},
-  );
+  ));
 }
 
 function record(op, res) {
@@ -446,10 +444,9 @@ const memPollFail = new Counter('endurance_memory_poll_failures_total');
 export function pollMemory(data) {
   if (data && data.start_s) TEST_START_S = data.start_s;
   const res = http.get(`${TARGET_HOST}/v1/admin/diagnostics/memory`, {
-    headers: {
-      authorization: `Bearer ${AUTH_BEARER}`,
+    headers: admissionHeaders({
       'x-corelink-load-test-run-id': RUN_ID,
-    },
+    }),
     tags: Object.assign({ op: 'memory_poll' }, hourTags()),
   });
   if (res.status === 200) {
@@ -477,7 +474,7 @@ export function pollMemory(data) {
 // Lifecycle hooks
 // ─────────────────────────────────────────────────────────────────────────
 export function setup() {
-  if (!AUTH_BEARER) throw new Error('K6_AUTH_BEARER required (staging PAT)');
+  requireAdmissionConfig();
   if (!/^\d{1,20}$/.test(RUN_ID)) throw new Error('K6_RUN_ID must be the numeric GitHub run id');
   const startS = Math.floor(Date.now() / 1000);
   console.log(

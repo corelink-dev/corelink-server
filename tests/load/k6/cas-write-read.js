@@ -32,13 +32,13 @@ import { check } from 'k6';
 import { Counter, Trend } from 'k6/metrics';
 import { SharedArray } from 'k6/data';
 import { recordClassA, recordClassB, formatCogs, cogsBlock } from './lib/cogs.js';
+import { admissionHeaders, requireAdmissionConfig } from './lib/staging_load_admission.js';
 
 const TARGET_HOST = __ENV.K6_TARGET_HOST || 'https://staging.corelink.humangr.com';
-const AUTH_BEARER = __ENV.K6_AUTH_BEARER || '';
 
 // Defer env-required gate to setup() (k6 inspect runs module-load only).
 export function setup() {
-  if (!AUTH_BEARER) throw new Error('K6_AUTH_BEARER required (staging PAT)');
+  requireAdmissionConfig();
   return {};
 }
 
@@ -97,10 +97,9 @@ const blobBody = (function () {
 })();
 
 function casHeaders(extra) {
-  return Object.assign({
-    'authorization': `Bearer ${AUTH_BEARER}`,
+  return admissionHeaders(Object.assign({
     'x-corelink-load-test': 'r3-prep',
-  }, extra || {});
+  }, extra || {}));
 }
 
 // We use a stable, k6-computable digest hint: sha256 of the first 32 bytes
