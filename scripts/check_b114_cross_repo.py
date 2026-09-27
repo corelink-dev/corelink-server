@@ -53,8 +53,9 @@ def self_test() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--receipt", action="store_true")
     args = parser.parse_args()
-    if args.self_test:
+    if args.self_test or not args.receipt:
         try:
             self_test()
         except ContractError as error:
