@@ -383,9 +383,12 @@ def _self_test(root: Path) -> None:
 
     target = root / INSTRUMENTS[0].path
     original = target.read_text(encoding="utf-8")
-    mutant = original.replace(INSTRUMENTS[0].claim, "TLS 1.3 minimum", 1)
-    if mutant == original:
-        raise VerificationError("self-test mutation did not alter a contract claim")
+    claim_pattern = re.compile(
+        r"\s+".join(re.escape(part) for part in INSTRUMENTS[0].claim.split())
+    )
+    mutant, replacements = claim_pattern.subn("TLS 1.3 minimum", original, count=1)
+    if replacements != 1:
+        raise VerificationError("self-test mutation did not alter exactly one contract claim")
     target_report = inventory_from_overrides(root, {INSTRUMENTS[0].path: mutant})
     if target_report["status"] != "drift_or_incomplete":
         raise VerificationError("corrected contract claim did not fail closed")
