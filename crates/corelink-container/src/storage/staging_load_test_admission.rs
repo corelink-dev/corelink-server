@@ -15,11 +15,53 @@ use super::{
     staging_load_test_ownership::StagingLoadTestScenario,
 };
 
-const AUTH_DOMAIN: &[u8] = b"corelink/staging-load-admission-auth/v1\0";
-const NONCE_DOMAIN: &[u8] = b"corelink/staging-load-admission-nonce/v1\0";
+const AUTH_DOMAIN_V1: &[u8] = b"corelink/staging-load-admission-auth/v1\0";
+const AUTH_DOMAIN_V2: &[u8] = b"corelink/staging-load-admission-auth/v2\0";
+const NONCE_DOMAIN_V1: &[u8] = b"corelink/staging-load-admission-nonce/v1\0";
+const NONCE_DOMAIN_V2: &[u8] = b"corelink/staging-load-admission-nonce/v2\0";
 const MAX_CLAIM_LIFETIME_MS: i64 = 15 * 60 * 1_000;
 const SQL_INSERT_RUN: &str = "INSERT INTO staging_load_test_runs (run_id, scenario, target_environment, target_deployment_sha, state, admitted_at_ms) VALUES (?1, ?2, 'staging', ?3, 'open', ?4)";
 const SQL_INSERT_NONCE: &str = "INSERT INTO staging_load_test_admission_nonces (nonce_digest, run_id, scenario, target_environment, target_deployment_sha, issued_at_ms, expires_at_ms, admitted_at_ms) VALUES (?1, ?2, ?3, 'staging', ?4, ?5, ?6, ?7)";
+const SQL_INSERT_RUN_V2: &str = "INSERT INTO staging_load_test_runs (run_id, scenario, target_environment, target_deployment_sha, state, admitted_at_ms) VALUES (?1, ?2, 'staging', ?3, 'open', ?4) ON CONFLICT(run_id, scenario) DO NOTHING";
+const SQL_INSERT_REQUEST_NONCE: &str = "INSERT INTO staging_load_test_request_nonces (nonce_digest, run_id, scenario, target_environment, target_deployment_sha, issued_at_ms, expires_at_ms, admitted_at_ms) VALUES (?1, ?2, ?3, 'staging', ?4, ?5, ?6, ?7)";
+
+/// Wire version selected only after authenticating the exact credential.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StagingLoadTestAdmissionVersion {
+    V1,
+    V2,
+}
+
+impl StagingLoadTestAdmissionVersion {
+    fn parse(value: &str) -> Result<Self, StagingLoadTestAdmissionError> {
+        match value {
+            "v1" => Ok(Self::V1),
+            "v2" => Ok(Self::V2),
+            _ => Err(StagingLoadTestAdmissionError::InvalidCredential),
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::V1 => "v1",
+            Self::V2 => "v2",
+        }
+    }
+
+    const fn auth_domain(self) -> &'static [u8] {
+        match self {
+            Self::V1 => AUTH_DOMAIN_V1,
+            Self::V2 => AUTH_DOMAIN_V2,
+        }
+    }
+
+    const fn nonce_domain(self) -> &'static [u8] {
+        match self {
+            Self::V1 => NONCE_DOMAIN_V1,
+            Self::V2 => NONCE_DOMAIN_V2,
+        }
+    }
+}
 
 /// Header carrying an untrusted, signed staging-admission credential.
 ///
@@ -85,7 +127,7 @@ impl fmt::Display for StagingLoadTestAdmissionError {
 
 impl std::error::Error for StagingLoadTestAdmissionError {}
 
-/// Server-only verifier for version-one staging admission credentials.
+/// Server-only verifier for versioned staging admission credentials.
 pub struct StagingLoadTestAdmissionVerifier {
     key: Vec<u8>,
 }
@@ -122,7 +164,7 @@ impl StagingLoadTestAdmissionVerifier {
         Self::new(&environment, key.as_bytes())
     }
 
-    /// Verify `v1.run.scenario.staging.sha.issued.expires.nonce.tag` at `now_ms`.
+    /// Verify a v1 or v2 admission credential at `now_ms`.
     ///
     /// The tag covers the exact canonical fields under a domain-separated HMAC;
     /// [`Mac::verify_slice`] provides the tag's constant-time comparison.
@@ -141,7 +183,10 @@ impl StagingLoadTestAdmissionVerifier {
         let expires = fields.next();
         let nonce = fields.next();
         let tag = fields.next();
-        if version != Some("v1") || fields.next().is_some() {
+        let version = version
+            .ok_or(StagingLoadTestAdmissionError::InvalidCredential)
+            .and_then(StagingLoadTestAdmissionVersion::parse)?;
+        if fields.next().is_some() {
             return Err(StagingLoadTestAdmissionError::InvalidCredential);
         }
         let (
@@ -171,7 +216,7 @@ impl StagingLoadTestAdmissionVerifier {
         if environment != "staging" {
             return Err(StagingLoadTestAdmissionError::NonStaging);
         }
-        let nonce_digest = nonce_digest_hex(&decode_nonce(nonce)?)?;
+        let nonce_digest = nonce_digest_hex(version, &decode_nonce(nonce)?)?;
         let issued_at_ms = parse_canonical_i64(issued)?;
         let expires_at_ms = parse_canonical_i64(expires)?;
         validate_lifetime(issued_at_ms, expires_at_ms)?;
@@ -179,15 +224,23 @@ impl StagingLoadTestAdmissionVerifier {
             return Err(StagingLoadTestAdmissionError::Expired);
         }
         let tag = decode_hex_32(tag).ok_or(StagingLoadTestAdmissionError::InvalidCredential)?;
-        let signed =
-            canonical_signed_payload(run_id, scenario, sha, issued_at_ms, expires_at_ms, nonce);
+        let signed = canonical_signed_payload(
+            version,
+            run_id,
+            scenario,
+            sha,
+            issued_at_ms,
+            expires_at_ms,
+            nonce,
+        );
         let mut mac = HmacSha256::new_from_slice(&self.key)
             .map_err(|_| StagingLoadTestAdmissionError::InvalidCredential)?;
-        mac.update(AUTH_DOMAIN);
+        mac.update(version.auth_domain());
         mac.update(signed.as_bytes());
         mac.verify_slice(&tag)
             .map_err(|_| StagingLoadTestAdmissionError::InvalidCredential)?;
         Ok(VerifiedStagingLoadTestAdmission {
+            version,
             run_id: run_id.to_owned(),
             scenario,
             target_environment: environment.to_owned(),
@@ -245,10 +298,39 @@ impl StagingLoadTestAdmissionVerifier {
         expires_at_ms: i64,
         nonce: &str,
     ) -> String {
-        let signed =
-            canonical_signed_payload(run_id, scenario, sha, issued_at_ms, expires_at_ms, nonce);
+        self.sign_for_test_version(
+            StagingLoadTestAdmissionVersion::V1,
+            run_id,
+            scenario,
+            sha,
+            issued_at_ms,
+            expires_at_ms,
+            nonce,
+        )
+    }
+
+    #[cfg(test)]
+    fn sign_for_test_version(
+        &self,
+        version: StagingLoadTestAdmissionVersion,
+        run_id: &str,
+        scenario: StagingLoadTestScenario,
+        sha: &str,
+        issued_at_ms: i64,
+        expires_at_ms: i64,
+        nonce: &str,
+    ) -> String {
+        let signed = canonical_signed_payload(
+            version,
+            run_id,
+            scenario,
+            sha,
+            issued_at_ms,
+            expires_at_ms,
+            nonce,
+        );
         let mut mac = HmacSha256::new_from_slice(&self.key).expect("test key is valid");
-        mac.update(AUTH_DOMAIN);
+        mac.update(version.auth_domain());
         mac.update(signed.as_bytes());
         let tag = lower_hex(mac.finalize().into_bytes()).expect("String formatting is infallible");
         format!("{signed}.{tag}")
@@ -257,6 +339,7 @@ impl StagingLoadTestAdmissionVerifier {
 
 /// Authenticated claim with private fields, consumable only by this module.
 pub struct VerifiedStagingLoadTestAdmission {
+    version: StagingLoadTestAdmissionVersion,
     run_id: String,
     scenario: StagingLoadTestScenario,
     target_environment: String,
@@ -269,6 +352,7 @@ pub struct VerifiedStagingLoadTestAdmission {
 impl fmt::Debug for VerifiedStagingLoadTestAdmission {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VerifiedStagingLoadTestAdmission")
+            .field("version", &self.version)
             .field("run_id", &self.run_id)
             .field("scenario", &self.scenario)
             .field("target_environment", &self.target_environment)
@@ -293,6 +377,7 @@ impl VerifiedStagingLoadTestAdmission {
         expires_at_ms: i64,
     ) -> Self {
         Self {
+            version: StagingLoadTestAdmissionVersion::V1,
             run_id,
             scenario,
             target_environment,
@@ -399,10 +484,14 @@ impl StagingLoadTestAdmissionStore {
             json!(admission.expires_at_ms),
             json!(now_ms),
         ];
+        let (run_sql, nonce_sql) = match admission.version {
+            StagingLoadTestAdmissionVersion::V1 => (SQL_INSERT_RUN, SQL_INSERT_NONCE),
+            StagingLoadTestAdmissionVersion::V2 => (SQL_INSERT_RUN_V2, SQL_INSERT_REQUEST_NONCE),
+        };
         self.d1
             .batch(vec![
-                D1BatchStatement::new(SQL_INSERT_RUN, run_params),
-                D1BatchStatement::new(SQL_INSERT_NONCE, nonce_params),
+                D1BatchStatement::new(run_sql, run_params),
+                D1BatchStatement::new(nonce_sql, nonce_params),
             ])
             .await
             .map_err(|error| {
@@ -488,6 +577,9 @@ impl StagingLoadTestAdmissionGate {
     ) -> Result<Arc<StagingLoadTestAdmissionContext>, StagingLoadTestAdmissionError> {
         let now_ms = unix_time_ms()?;
         let admission = self.verifier.verify(credential, now_ms)?;
+        if admission.version != StagingLoadTestAdmissionVersion::V1 {
+            return Err(StagingLoadTestAdmissionError::InvalidCredential);
+        }
         teardown_context_from_verified(admission, expected_scenario, now_ms).map(Arc::new)
     }
 
@@ -685,9 +777,12 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-fn nonce_digest_hex(nonce_bytes: &[u8; 32]) -> Result<String, StagingLoadTestAdmissionError> {
+fn nonce_digest_hex(
+    version: StagingLoadTestAdmissionVersion,
+    nonce_bytes: &[u8; 32],
+) -> Result<String, StagingLoadTestAdmissionError> {
     let mut hasher = Sha256::new();
-    hasher.update(NONCE_DOMAIN);
+    hasher.update(version.nonce_domain());
     for byte in nonce_bytes.iter().copied() {
         hasher.update([byte]);
     }
@@ -729,6 +824,7 @@ fn scenario_name(scenario: StagingLoadTestScenario) -> &'static str {
 }
 
 fn canonical_signed_payload(
+    version: StagingLoadTestAdmissionVersion,
     run_id: &str,
     scenario: StagingLoadTestScenario,
     sha: &str,
@@ -737,7 +833,8 @@ fn canonical_signed_payload(
     nonce: &str,
 ) -> String {
     format!(
-        "v1.{run_id}.{}.staging.{sha}.{issued}.{expires}.{nonce}",
+        "{}.{run_id}.{}.staging.{sha}.{issued}.{expires}.{nonce}",
+        version.as_str(),
         scenario_name(scenario)
     )
 }
@@ -824,13 +921,60 @@ mod tests {
     }
     #[test]
     fn nonce_digest_is_lowercase_domain_separated_without_indexing() {
-        let digest =
-            nonce_digest_hex(&decode_nonce(NONCE).expect("canonical nonce")).expect("digest");
+        let digest = nonce_digest_hex(
+            StagingLoadTestAdmissionVersion::V1,
+            &decode_nonce(NONCE).expect("canonical nonce"),
+        )
+        .expect("digest");
         assert_eq!(
             digest,
             "1fff857caecccadff3a32ad2952ad385c0e9c40e165de7a86bc2a86f2ce4dfc2"
         );
         assert!(decode_nonce(&"A".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn v1_and_v2_have_fixed_domain_separated_golden_vectors() {
+        let verifier = verifier();
+        let nonce = "01".repeat(32);
+        let v1 = verifier.sign_for_test("123", StagingLoadTestScenario::Cas, SHA, 100, 200, &nonce);
+        let v2 = verifier.sign_for_test_version(
+            StagingLoadTestAdmissionVersion::V2,
+            "123",
+            StagingLoadTestScenario::Cas,
+            SHA,
+            100,
+            200,
+            &nonce,
+        );
+        assert_eq!(v1, "v1.123.cas.staging.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.100.200.0101010101010101010101010101010101010101010101010101010101010101.f88e1d1d59d229df680c16e2f7794006d73cb825acce3a2fade0a7ebf99b0449");
+        assert_eq!(v2, "v2.123.cas.staging.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.100.200.0101010101010101010101010101010101010101010101010101010101010101.4a9e71c49e1be9cc1e03bb2b0050da8bf1e9c8477206fd9b18710c6c7f24d5cf");
+        assert!(matches!(
+            verifier.verify(&v2.replacen("v2.", "v1.", 1), 150),
+            Err(StagingLoadTestAdmissionError::InvalidCredential)
+        ));
+        let v2_digest = nonce_digest_hex(
+            StagingLoadTestAdmissionVersion::V2,
+            &decode_nonce(&nonce).expect("canonical nonce"),
+        )
+        .expect("digest");
+        assert_eq!(
+            v2_digest,
+            "7cf37d42fc6f8c0e08ef4ffbf1f8719e26b684af5345742e991ba9f32156cf78"
+        );
+        let shared_v1 =
+            verifier.sign_for_test("123", StagingLoadTestScenario::Cas, SHA, 100, 200, NONCE);
+        let shared_v2 = verifier.sign_for_test_version(
+            StagingLoadTestAdmissionVersion::V2,
+            "123",
+            StagingLoadTestScenario::Cas,
+            SHA,
+            100,
+            200,
+            NONCE,
+        );
+        assert_eq!(shared_v1, "v1.123.cas.staging.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.100.200.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.70fa88c64030477e8acbee233efb48d2f8996f98ae8983a8ea5a705b39fdea8c");
+        assert_eq!(shared_v2, "v2.123.cas.staging.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.100.200.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.4e2eac1b4406894df9d64b59ef5ad2446ab0ab707425280f37fb207ca8eb0ab0");
     }
     #[test]
     fn expected_identity_rejects_rebinding_and_future_claims() {
@@ -878,6 +1022,38 @@ mod tests {
             replay.target_deployment_sha()
         );
         assert_eq!(first.scenario(), replay.scenario());
+    }
+
+    #[test]
+    fn teardown_rejects_a_valid_v2_writer_credential() {
+        let verifier = verifier();
+        let now_ms = unix_time_ms().expect("clock");
+        let credential = verifier.sign_for_test_version(
+            StagingLoadTestAdmissionVersion::V2,
+            "123",
+            StagingLoadTestScenario::Cas,
+            SHA,
+            now_ms - 1,
+            now_ms + 60_000,
+            NONCE,
+        );
+        let env = crate::storage::StorageEnv {
+            r2_endpoint: "https://localhost:1".to_owned(),
+            r2_access_key_id: "test".to_owned(),
+            r2_secret_access_key: "test".to_owned(),
+            cloudflare_account_id: "test".to_owned(),
+            cf_api_token: "test".to_owned(),
+            d1_database_id: "test".to_owned(),
+        };
+        let store = StagingLoadTestAdmissionStore::from_d1_client_for_test(
+            D1HttpClient::new_for_loopback_test(&env, "http://127.0.0.1:1")
+                .expect("loopback D1 client"),
+        );
+        let gate = StagingLoadTestAdmissionGate::from_parts_for_test(verifier, store);
+        assert_eq!(
+            gate.verify_for_teardown(&credential, StagingLoadTestScenario::Cas),
+            Err(StagingLoadTestAdmissionError::InvalidCredential)
+        );
     }
 
     #[tokio::test]

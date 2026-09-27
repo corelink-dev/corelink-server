@@ -62,6 +62,118 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
             {relative: hashlib.sha256(contents).hexdigest() for relative, contents in targets.items()},
         )
 
+    def _staging_transition_fixture(self, *, delivered: bool = False):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        trusted, candidate = Path(directory.name) / "trusted", Path(directory.name) / "candidate"
+        trusted.mkdir()
+        candidate.mkdir()
+        preimages = {path: f"old:{path}".encode() for path in backlog_verify.STAGING_CUSTOM_DOMAIN_PREIMAGES}
+        targets = {path: f"new:{path}".encode() for path in backlog_verify.STAGING_CUSTOM_DOMAIN_TARGETS}
+        for relative in preimages:
+            self._write(trusted, relative, targets[relative] if delivered else preimages[relative])
+            self._write(candidate, relative, preimages[relative] if delivered else targets[relative])
+        for relative in backlog_verify.STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS:
+            old_payload, new_payload = b"previous delivery bytes\n", b"new delivery bytes\n"
+            self._write(trusted, relative, new_payload if delivered else old_payload)
+            self._write(candidate, relative, old_payload if delivered else new_payload)
+        target_topology = (
+            b'{"deployment_state":"unprovisioned","cloudflare":{"routes":[{"pattern":'
+            b'"staging.corelink.humangr.com","worker":"corelink-staging",'
+            b'"zone_name":"humangr.com","custom_domain":true}]}}'
+        )
+        preimages["infra/staging/topology.json"] = b'{"deployment_state":"unprovisioned", "cloudflare":{"routes":[]}}'
+        targets["infra/staging/topology.json"] = target_topology
+        # Rewrite topology with the compact, semantically exact target fixture.
+        self._write(trusted, "infra/staging/topology.json", target_topology if delivered else preimages["infra/staging/topology.json"])
+        self._write(candidate, "infra/staging/topology.json", preimages["infra/staging/topology.json"] if delivered else target_topology)
+        old_pins = {path: hashlib.sha256(data).hexdigest() for path, data in preimages.items()}
+        new_pins = {path: hashlib.sha256(data).hexdigest() for path, data in targets.items()}
+        return trusted, candidate, old_pins, new_pins, preimages, targets
+
+    def test_1700_staging_custom_domain_transition_is_exact_and_data_only(self) -> None:
+        trusted, candidate, old_pins, new_pins, _, targets = self._staging_transition_fixture()
+        # The real delivery changes thirteen separately enumerated paths
+        # alongside the four pinned controls.
+        delivery_paths = (
+            ".github/workflows/issue-1700-staging-custom-domain.yml",
+            "docs/campaigns/remediation/wp150-workflow-ownership.md",
+            "infra/staging/README.md",
+            "scripts/plan_staging_provider.py",
+            "scripts/render_staging_wrangler.py",
+            "scripts/staging_bootstrap_provider.py",
+            "scripts/staging_custom_domain.py",
+            "scripts/verify_staging_provider_preflight.py",
+            "scripts/verify_staging_target.py",
+            "tests/test_render_staging_wrangler.py",
+            "tests/test_staging_bootstrap_provider.py",
+            "tests/test_staging_custom_domain.py",
+            "tests/test_verify_staging_target.py",
+        )
+        self.assertEqual(set(delivery_paths), backlog_verify.STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS)
+        marker = candidate.parent / "executed"
+        malicious = f"from pathlib import Path; Path({str(marker)!r}).write_text('bad')".encode()
+        targets["scripts/verify_b072_receiver.py"] = malicious
+        new_pins["scripts/verify_b072_receiver.py"] = hashlib.sha256(malicious).hexdigest()
+        self._write(candidate, "scripts/verify_b072_receiver.py", malicious)
+        with patch.object(backlog_verify, "STAGING_CUSTOM_DOMAIN_PREIMAGES", old_pins), patch.object(
+            backlog_verify, "STAGING_CUSTOM_DOMAIN_TARGETS", new_pins
+        ):
+            self.assertTrue(backlog_verify._preauthorized_staging_custom_domain(candidate, trusted))
+        self.assertFalse(marker.exists())
+
+    def test_1700_transition_still_rejects_an_additional_trusted_control(self) -> None:
+        trusted, candidate, old_pins, new_pins, _, _ = self._staging_transition_fixture()
+        control_paths = (
+            "scripts/backlog_verify.py",
+            "scripts/verify_backlog_wp_ledger.py",
+            "scripts/backlog_ledger_successor.py",
+            "scripts/backlog_ledger_contracts.py",
+            "scripts/extra_trusted.py",
+        )
+        for relative in control_paths:
+            self._write(trusted, relative, b"trusted bytes\n")
+            self._write(candidate, relative, b"trusted bytes\n")
+        self._write(candidate, "scripts/extra_trusted.py", b"candidate mutation\n")
+        items = [self.item("B-001", verify="python3 scripts/extra_trusted.py")]
+        with patch.object(backlog_verify, "STAGING_CUSTOM_DOMAIN_PREIMAGES", old_pins), patch.object(
+            backlog_verify, "STAGING_CUSTOM_DOMAIN_TARGETS", new_pins
+        ):
+            with self.assertRaisesRegex(RuntimeError, "scripts/extra_trusted.py"):
+                backlog_verify.check_candidate_controls(candidate, trusted, items)
+
+    def test_1700_staging_custom_domain_rejects_partial_mixed_extra_and_wrong_topology(self) -> None:
+        for mutation in ("partial", "mixed", "extra", "wrong-topology"):
+            with self.subTest(mutation=mutation):
+                trusted, candidate, old_pins, new_pins, _, _ = self._staging_transition_fixture()
+                if mutation == "partial":
+                    self._write(candidate, "tests/test_verify_staging_topology_contract.py", (trusted / "tests/test_verify_staging_topology_contract.py").read_bytes())
+                elif mutation == "mixed":
+                    self._write(candidate, "scripts/verify_b072_receiver.py", b"mixed preimage")
+                elif mutation == "extra":
+                    self._write(candidate, "unapproved.txt", b"extra")
+                else:
+                    self._write(candidate, "infra/staging/topology.json", b'{"deployment_state":"provisioned"}')
+                with patch.object(backlog_verify, "STAGING_CUSTOM_DOMAIN_PREIMAGES", old_pins), patch.object(
+                    backlog_verify, "STAGING_CUSTOM_DOMAIN_TARGETS", new_pins
+                ):
+                    self.assertFalse(backlog_verify._preauthorized_staging_custom_domain(candidate, trusted))
+
+    def test_1700_staging_custom_domain_rejects_downgrade_after_delivery(self) -> None:
+        trusted, candidate, old_pins, new_pins, _, _ = self._staging_transition_fixture(delivered=True)
+        with patch.object(backlog_verify, "STAGING_CUSTOM_DOMAIN_PREIMAGES", old_pins), patch.object(
+            backlog_verify, "STAGING_CUSTOM_DOMAIN_TARGETS", new_pins
+        ):
+            self.assertFalse(backlog_verify._preauthorized_staging_custom_domain(candidate, trusted))
+
+    def test_1700_staging_custom_domain_constants_bind_frozen_hashes(self) -> None:
+        self.assertEqual(backlog_verify.STAGING_CUSTOM_DOMAIN_PREIMAGES, {
+            "scripts/verify_b072_receiver.py": "8acce3d50dbe4ad9a3df24d33e56828203a51510eab3fcfa3bff2b46c0b27a69",
+            "scripts/verify_staging_topology_contract.py": "ba7abe9d5887269a69fcf2a8cfcec6d60d579ecd53f72a3ec6e9cc74250c677b",
+            "tests/test_verify_staging_topology_contract.py": "97d1f75eb3608dbf71cc0506922ddd7b88b92f7f8f0812f01d392ee535be8103",
+            "infra/staging/topology.json": "5156d6578d662020777a7e98cb1b91a181c6b4536afbd2c4a9498be06f57357e",
+        })
+
     def test_b057_c0_pins_the_fresh_preimage_and_target_bytes(self) -> None:
         self.assertEqual(
             backlog_verify.B057_C0_PREIMAGES,
