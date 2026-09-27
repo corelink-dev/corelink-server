@@ -140,6 +140,11 @@ pub mod email_hash;
 /// Native production GC sweep entrypoint adapters over the shared D1/R2
 /// clients. The pure `corelink-gc` crate remains network-free.
 pub mod gc_sweep;
+/// Private staging-only native gRPC transport diagnostic.
+///
+/// This module has no listener mount. The mount is owned by #2578's serial
+/// integration slot after #2708 and #2574 have landed.
+pub mod grpc_staging_probe;
 /// Native data-plane **PAT possession gate** (red-team finding #4): the
 /// [`native_pat_gate::NativePatGate`] that re-runs the full Argon2id Option-B
 /// verification (via [`adapter_pat::PatVerifier`]) at the container, so a leaked
@@ -227,6 +232,14 @@ pub mod sli_aggregate;
 /// present the real adapters are used; otherwise the InMemory fakes
 /// remain active for tests + local dev.
 pub mod storage;
+/// Generated types for the staging transport diagnostic protocol.
+///
+/// `prost` emits these public items without Rust documentation; keep the
+/// exception scoped to this generated module.
+#[allow(missing_docs)]
+pub mod staging_transport_probe {
+    tonic::include_proto!("corelink.staging.v1");
+}
 /// Per-tenant monthly $-ceiling middleware (WP-FOUND-2 / G1, ADR-0068):
 /// a fail-CLOSED cumulative-dollar cap, orthogonal to the existing
 /// per-tenant rate limit. Backed by the `tenant_quota` D1 table

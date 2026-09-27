@@ -41,36 +41,22 @@
 [build]
     execution_platforms = prelude//platforms:default
 
-[remote_cache]
-    # CoreLink CAS HTTP endpoint (REAPI v2).
-    # Override per-environment by setting CORELINK_REMOTE_CACHE_URL.
-    url = https://corelink-api.humangr.com/bazel/cache
-
-    # PAT injected from environment — never hardcode.
-    http_headers = Authorization: Bearer ${CORELINK_PAT}
-
-    # Enable both reads and writes by default.
-    read = true
-    write = true
-
-    # Retry transient errors (FM-150 pattern).
-    retry_timeout_secs = 60
-    max_retries = 3
-
-    # Compress uploads to minimise network usage.
-    http_header_prefix = x-corelink-client-version: buck2
-
-[buck2_re_client]
-    # REAPI v2 endpoint — same CAS backing store as [remote_cache].
-    remote_cache_address = https://corelink-api.humangr.com/bazel/cache
-
-    # Auth header injected from environment.
-    http_headers = Authorization: Bearer ${CORELINK_PAT}
-
-    # TLS — required for production.
-    tls_cert_path =
-    tls_key_path =
-    tls_ca_cert_path =
+# Staging remote-cache activation template — deliberately comments only. #2575
+# must record the protected runtime receipt before a separately reviewed change
+# activates it. Until then the starter has no effective remote endpoint, header,
+# read, or write configuration and cannot fall back to production.
+#
+# [remote_cache]
+# url = https://staging.corelink.humangr.com
+# http_headers = Authorization: Bearer ${CORELINK_STAGING_PAT}
+# read = true
+# write = true
+#
+# [buck2_re_client]
+# action_cache_address = grpcs://staging.corelink.humangr.com
+# cas_address = grpcs://staging.corelink.humangr.com
+# engine_address = grpcs://staging.corelink.humangr.com
+# http_headers = Authorization: Bearer ${CORELINK_STAGING_PAT}
 
 [client]
     # Enable BLAKE3 digest verification on every downloaded artifact.

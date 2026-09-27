@@ -4,6 +4,11 @@ on:
   pull_request:
     paths:
       - ".github/workflows/issue-2183-reapi-composition.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/corelink-container/build.rs"
+      - "crates/corelink-container/proto/staging_transport_probe.proto"
+      - "crates/corelink-container/src/grpc_staging_probe.rs"
       - "crates/corelink-container/src/lib.rs"
       - "crates/corelink-container/src/main.rs"
       - "crates/corelink-container/src/reapi_action_cache.rs"
@@ -12,6 +17,7 @@ on:
       - "crates/corelink-container/src/reapi_composition.rs"
       - "crates/corelink-container/src/reapi_ingress.rs"
       - "scripts/verify_i2183_reapi_composition.py"
+      - "examples/buck2-starter/.buckconfig"
 permissions:
   contents: read
 
@@ -45,3 +51,5 @@ jobs:
         run: python3 -S scripts/verify_i2183_reapi_composition.py --self-test --json
       - name: Compile and run the authenticated REAPI service behavior cases
         run: cargo test --locked -p corelink-server --lib reapi_ -- --nocapture
+      - name: Run the protected staging h2c transport diagnostic contract
+        run: cargo test --locked -p corelink-server --lib grpc_staging_probe -- --nocapture

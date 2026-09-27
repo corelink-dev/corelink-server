@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package corelink.staging.v1;
+
+// A staging-only native gRPC transport diagnostic. It intentionally has no
+// cache, resource, tenant, or customer fields.
+service TransportProbe {
+  rpc Unary(TransportProbeRequest) returns (TransportProbeResponse);
+  rpc Stream(TransportProbeRequest) returns (stream TransportProbeResponse);
+}
+
+message TransportProbeRequest {}
+
+message TransportProbeResponse {
+  uint32 sequence = 1;
+  bytes payload = 2;
+}

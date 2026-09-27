@@ -37,8 +37,10 @@ use corelink_billing_stripe_materializer::{
 };
 use corelink_server::billing_d1_http::D1HttpBillingWriter;
 use corelink_server::current_subscription_authority::StripeCurrentSubscriptionAuthority;
+use corelink_server::grpc_staging_probe::{StagingProbeConfig, StagingTransportProbe};
 use corelink_server::routes;
 use corelink_server::routes::audit_analytics::ShadowSinkFactory;
+use corelink_server::staging_transport_probe::transport_probe_server::TransportProbeServer;
 use corelink_server::webhook::{router as webhook_router, WebhookState};
 use tracing::{info, warn};
 
@@ -329,7 +331,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // carries larger build artifacts) sets its own larger per-route limit inside
     // `turbo_v8::router()` and is NOT constrained by this global default.
     const GLOBAL_BODY_LIMIT_BYTES: usize = 10 * 1024 * 1024; // 10 MiB
-    let mut app = routes::build_with_factory_and_byok(shadow_factory, byok_data_plane)
+    let composed =
+        routes::build_with_factory_and_byok_and_reapi_ingress(shadow_factory, byok_data_plane);
+    let reapi_ingress = composed.reapi_ingress;
+    let mut app = composed
+        .router
         // The failover heartbeat is deliberately a separate authenticated
         // internal route. Public `/_health` readiness probes never refresh
         // failover state and therefore cannot spoof liveness anonymously.
@@ -338,6 +344,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .layer(axum::extract::DefaultBodyLimit::max(
             GLOBAL_BODY_LIMIT_BYTES,
         ));
+
+    // The diagnostic is absent unless every protected staging binding is valid.
+    // `axum::serve` negotiates native HTTP/2 on this listener; tonic's Routes
+    // preserves the gRPC response status and trailers without an HTTP/1 or
+    // gRPC-Web translation. The service itself repeats Authorization validation
+    // on every RPC before producing a response.
+    if let Some(config) = StagingProbeConfig::from_environment_at(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "system clock before Unix epoch")?
+            .as_millis()
+            .try_into()
+            .map_err(|_| "system clock does not fit millisecond timestamp")?,
+    ) {
+        app = app.merge(
+            tonic::service::Routes::new(TransportProbeServer::new(StagingTransportProbe::new(
+                config,
+            )))
+            .into_axum_router(),
+        );
+        info!("staging transport probe mounted on native HTTP/2 listener");
+    } else {
+        info!("staging transport probe remains unmounted (protected binding invalid or absent)");
+    }
+
+    // The cache-only service set consumes the exact decorated handler bundle
+    // produced by the route factory. Missing authoritative PAT/quota/capacity
+    // dependencies leave every REAPI route unmounted. Edge authorization keeps
+    // these cache methods unreachable until its separately frozen policy admits
+    // them; this mount does not alter that policy or add a listener.
+    if let Some(cache_only_routes) =
+        corelink_server::reapi_composition::build_unmounted_cache_only_axum_router(reapi_ingress)
+    {
+        app = app.merge(cache_only_routes);
+        info!("authenticated cache-only REAPI services mounted on native HTTP/2 listener");
+    } else {
+        warn!("authenticated cache-only REAPI services remain unmounted (ingress factory unavailable)");
+    }
 
     // Stream-5: `POST /_internal/pat/mint` — gated by shared secret.
     // Mounted when CORELINK_INTERNAL_AUTH_KEY + PAT_SIGNING_KEY are both set.
@@ -973,7 +1017,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // durable D1 claims make restart and multi-container overlap safe.
     let _byok_background_tasks = start_byok_background_tasks(d1_client.as_ref());
 
-    // Single HTTP/1.1 listener on PORT (50051) — the DO's getTcpPort target.
+    // Single HTTP/1.1 + h2c listener on PORT (50051) — the DO's getTcpPort target.
     let listener = tokio::net::TcpListener::bind(serve_addr).await?;
     info!(%serve_addr, "CoreLink HTTP data-plane server starting");
     // F-017 (drain half): wire graceful shutdown so a Cloudflare containers

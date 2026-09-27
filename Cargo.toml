@@ -449,7 +449,7 @@ tonic-prost-build = "0.14"
 
 # HTTP server stack (R2-12: Stripe webhook route in apps/server)
 # axum 0.7 + tower + http 1.x align with tonic 0.12 (hyper 1 underneath).
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "tokio", "json"] }
 tower = { version = "0.5", default-features = false }
 http = "1"
 http-body-util = "0.1"

@@ -5,7 +5,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Health service (placeholder até REAPI protos serem vendados)
     // tonic-build 0.14 moved the prost proto codegen (incl. the free
     // `compile_protos` helper) into `tonic-prost-build`.
-    tonic_prost_build::compile_protos("proto/health.proto")?;
+    tonic_prost_build::configure().compile_protos(
+        &["proto/health.proto", "proto/staging_transport_probe.proto"],
+        &["proto"],
+    )?;
 
     // TODO semana 1: vendor REAPI protos oficiais de bazelbuild/remote-apis
     // Deve incluir: remote_execution.proto + deps (google/bytestream, google/rpc, build/bazel/semver)

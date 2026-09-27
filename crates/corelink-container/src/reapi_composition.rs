@@ -8,6 +8,7 @@
 use corelink_reapi::proto::bytestream::byte_stream_server::ByteStreamServer;
 use corelink_reapi::proto::reapi::action_cache_server::ActionCacheServer;
 use corelink_reapi::proto::reapi::capabilities_server::CapabilitiesServer;
+use tonic::service::Routes;
 use tonic::transport::{server::Router, Server};
 
 use crate::reapi_action_cache::{ReapiActionCacheService, ReapiCacheCapabilitiesService};
@@ -31,9 +32,17 @@ pub const REAPI_MAX_DECODING_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 /// Worker/DO/Container hop preserves native gRPC.
 #[must_use]
 pub fn build_unmounted_cache_only_router(ingress: Option<ReapiIngress>) -> Option<Router> {
+    Some(Server::builder().add_routes(build_unmounted_cache_only_routes(ingress)?))
+}
+
+/// Build the exact cache-only route set for a listener that already owns its
+/// socket. `None` preserves the authoritative-authentication fail-closed
+/// posture of [`build_unmounted_cache_only_router`].
+#[must_use]
+pub fn build_unmounted_cache_only_routes(ingress: Option<ReapiIngress>) -> Option<Routes> {
     let ingress = ingress?;
-    let server = Server::builder()
-        .add_service(
+    Some(
+        Routes::new(
             CasUnaryService::new(ingress.clone())
                 .into_server()
                 .max_decoding_message_size(REAPI_MAX_DECODING_MESSAGE_BYTES)
@@ -53,7 +62,15 @@ pub fn build_unmounted_cache_only_router(ingress: Option<ReapiIngress>) -> Optio
             CapabilitiesServer::new(ReapiCacheCapabilitiesService::new(ingress))
                 .max_decoding_message_size(REAPI_MAX_DECODING_MESSAGE_BYTES)
                 .max_encoding_message_size(REAPI_MAX_DECODING_MESSAGE_BYTES),
-        );
+        ),
+    )
+}
 
-    Some(server)
+/// Adapt the unchanged cache-only route set to the already-bound Axum
+/// listener. This creates neither a second listener nor another service set.
+#[must_use]
+pub fn build_unmounted_cache_only_axum_router(
+    ingress: Option<ReapiIngress>,
+) -> Option<axum::Router> {
+    Some(build_unmounted_cache_only_routes(ingress)?.into_axum_router())
 }
