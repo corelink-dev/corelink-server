@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-09-27T09:59:29Z",
+  "decision": {
+    "outcome": "remove_sigstore_row",
+    "scope": "Only the Sigstore recipient text in the four GDPR customer-data transfer tables.",
+    "reviewed_source_revision": "897efed958a36c3e1b34a5104c21906071ca44af"
+  },
+  "legal_reviewer": {
+    "identity": "gmhelmold",
+    "authority": "Legal Counsel",
+    "signature_reference": "https://github.com/HuGR-dev/corelink-server/issues/2601#issuecomment-5854794010",
+    "signer_relationship": "Same person and GitHub identity as the DPO reviewer; not an independent second signer."
+  },
+  "dpo_reviewer": {
+    "identity": "gmhelmold",
+    "authority": "DPO",
+    "signature_reference": "https://github.com/HuGR-dev/corelink-server/issues/2601#issuecomment-5854794010",
+    "signer_relationship": "Same person and GitHub identity as the Legal Counsel reviewer; not an independent second signer."
+  },
+  "notice_version": "B-314-prelaunch-2026-09-27",
+  "transfer_basis": null,
+  "recipient_scope": {
+    "table_scope": "Customer-data international-transfer disclosure only.",
+    "removed_recipient": "Sigstore",
+    "preserved_recipients": ["PagerDuty", "GitHub"],
+    "non_claim": "Sigstore continues in CoreLink-owned artifact signing/provenance flows; this decision does not assert those flows ceased or that Sigstore receives no operational metadata or personal data universally."
+  },
+  "data_category_scope": "This decision covers only the customer-data transfer-table row and makes no universal absence claim about operational metadata, transparency-log entries, or personal data in any Sigstore flow.",
+  "approved_notice_wording": "No individual notice or re-consent is required for this prelaunch correction because there are no customers and all four GDPR pages remain drafts not approved for publication.",
+  "published_diff": {
+    "reviewed_intent": "Remove only / Sigstore from the Recipient cell; preserve every other row field and all other table rows.",
+    "files": [
+      "apps/docs/docs/explanation/privacy/gdpr.mdx",
+      "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx",
+      "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx",
+      "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx"
+    ],
+    "before": "PagerDuty / GitHub / Sigstore | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII",
+    "after": "PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII",
+    "preserved_fields": ["Country: US", "Mechanism: DPF + SCC + sub-processor-specific posture", "What's transferred: Operational metadata; no end-user PII"]
+  },
+  "signed_artifact_sha256_or_reference": "https://github.com/HuGR-dev/corelink-server/issues/2601#issuecomment-5854794010",
+  "effective_timestamp": "2026-09-27T09:48:32Z"
+}

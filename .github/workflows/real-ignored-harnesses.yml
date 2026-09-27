@@ -16,13 +16,12 @@ on:
         description: "Real harness profile to execute"
         required: true
         type: choice
-        default: all
+        default: d1
         options:
           - d1
           - r2
           - stripe
           - neon
-          - all
 
 permissions:
   contents: read
@@ -36,9 +35,11 @@ jobs:
     name: real integration (${{ inputs.profile }})
     # Secrets are protected by this environment and are attached only to the
     # final executor step below. The contract/mutation step has no credentials.
-    environment: real-integration
+    # D1 has an isolated Cloudflare account and its own protected credential
+    # custody. Every other selectable profile retains the existing environment.
+    environment: ${{ inputs.profile == 'd1' && 'real-d1-2563' || 'real-integration' }}
     runs-on: ubuntu-24.04
-    if: github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected && inputs.profile != 'all'
     timeout-minutes: 90
     steps:
       - name: Checkout pinned main
@@ -93,12 +94,16 @@ jobs:
           STRIPE_AUTH_MODE: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && 'wallet-broker' || '' }}
           STRIPE_PRICE_ID_STARTER: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.STRIPE_PRICE_ID_STARTER || '' }}
           # Neon is separately selected and receives only its staging DSN.
-          NEON_TEST_DSN: ${{ secrets.NEON_TEST_DSN }}
+          NEON_TEST_DSN: ${{ (inputs.profile == 'neon' || inputs.profile == 'all') && secrets.NEON_TEST_DSN || '' }}
           # Pass the untrusted input as data, never by interpolating it into
           # the shell program. The runner's allow-list validates it again.
           REAL_HARNESS_PROFILE: ${{ inputs.profile }}
         run: |
           set -euo pipefail
+          if [[ "$REAL_HARNESS_PROFILE" == "d1" ]]; then
+            echo "::add-mask::${CF_API_TOKEN:-}"
+            python3 -S scripts/probe_i2563_d1_token_scope.py
+          fi
           for name in HUGR_WALLET_TOKEN NEON_TEST_DSN R2_S3_SECRET_ACCESS_KEY; do
             if [[ -n "${!name:-}" ]]; then
               echo "::add-mask::${!name}"
@@ -114,3 +119,15 @@ jobs:
           path: artifacts/real-ignored-harnesses/
           if-no-files-found: error
           retention-days: 30
+
+  reject-all:
+    name: reject shared D1 execution in all profile
+    if: github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected && inputs.profile == 'all'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Require an individual provider profile
+        run: |
+          echo 'The all profile would run D1 without its isolated account boundary. Select one provider profile.' >&2
+          exit 1

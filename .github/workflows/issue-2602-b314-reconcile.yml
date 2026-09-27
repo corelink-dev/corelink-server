@@ -1,0 +1,106 @@
+name: Issue 2602 B-314 reconciliation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/docs/docs/explanation/privacy/gdpr.mdx"
+      - "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx"
+      - "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx"
+      - "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx"
+      - "docs/handoff/2026-09-06-b314-gdpr-sigstore-transfer.json"
+      - "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json"
+      - "BACKLOG.md"
+      - "scripts/verify_b314_gdpr_sigstore.py"
+      - "tests/test_verify_b314_gdpr_sigstore.py"
+      - ".github/workflows/issue-2602-b314-reconcile.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact pull request head without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Admit exact head and scan changed content for accidental sensitive data
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          python3 - <<'PY'
+          import re
+          import subprocess
+
+          expected_paths = [
+              "apps/docs/docs/explanation/privacy/gdpr.mdx",
+              "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx",
+              "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx",
+              "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx",
+              "docs/handoff/2026-09-06-b314-gdpr-sigstore-transfer.json",
+              "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json",
+              "BACKLOG.md",
+              "scripts/verify_b314_gdpr_sigstore.py",
+              "tests/test_verify_b314_gdpr_sigstore.py",
+              ".github/workflows/issue-2602-b314-reconcile.yml",
+          ]
+          changed_paths = subprocess.check_output(
+              ["git", "diff", "--name-only", f"{__import__('os').environ['BASE_SHA']}...{__import__('os').environ['HEAD_SHA']}"], text=True
+          ).splitlines()
+          if sorted(changed_paths) != sorted(expected_paths):
+              raise SystemExit(f"changed-file admission failed: {changed_paths!r}")
+
+          additions = subprocess.check_output(
+              ["git", "diff", "--unified=0", f"{__import__('os').environ['BASE_SHA']}...{__import__('os').environ['HEAD_SHA']}", "--", *expected_paths], text=True
+          )
+          patterns = [
+              ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+              ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}")),
+              ("aws-access-key", re.compile(r"AKIA[0-9A-Z]{16}")),
+              ("email", re.compile(r"[A-Z0-9._%+-]+" + chr(64) + r"[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)),
+              ("us-ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
+          ]
+          email_pattern = dict(patterns)["email"]
+          lowercase_email_fixture = "person" + chr(64) + "example.com"
+          pytest_decorator_fixture = "@pytest.mark.parametrize"
+          if not email_pattern.search(lowercase_email_fixture) or email_pattern.search(pytest_decorator_fixture):
+              raise SystemExit("redaction scanner email-control self-test failed")
+          current_path = "<unknown>"
+          new_line_number = None
+          for line in additions.splitlines():
+              if line.startswith("+++ b/"):
+                  current_path = line.removeprefix("+++ b/")
+                  new_line_number = None
+                  continue
+              if line.startswith("@@"):
+                  hunk = re.search(r"\+(\d+)", line)
+                  new_line_number = int(hunk.group(1)) if hunk else None
+                  continue
+              if line.startswith("+") and not line.startswith("+++"):
+                  for category, pattern in patterns:
+                      if pattern.search(line[1:]):
+                          location = f"{current_path}:{new_line_number}" if new_line_number is not None else current_path
+                          raise SystemExit(f"redaction scan found category={category} at {location}")
+                  if new_line_number is not None:
+                      new_line_number += 1
+              elif line.startswith(" ") and new_line_number is not None:
+                  new_line_number += 1
+          PY
+
+      - name: Verify approved B-314 done state and mutation controls
+        run: |
+          python3 -S scripts/verify_b314_gdpr_sigstore.py --self-test
+
+      - name: Run focused verifier tests
+        run: |
+          python3 -m pip install --disable-pip-version-check pytest==8.4.2
+          python3 -m pytest -q tests/test_verify_b314_gdpr_sigstore.py
