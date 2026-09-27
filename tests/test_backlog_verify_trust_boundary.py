@@ -471,6 +471,12 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         )
         workflow = self.candidate / ".github" / "workflows" / "backlog-verify.yml"
         baseline = workflow.read_text(encoding="utf-8")
+        legacy_count = baseline.count(legacy_group)
+        pr_number_count = baseline.count(pr_number_group)
+        self.assertEqual(legacy_count + pr_number_count, 1)
+        if pr_number_count == 1:
+            baseline = baseline.replace(pr_number_group, legacy_group, 1)
+        workflow.write_text(baseline, encoding="utf-8")
         trusted = Path(self.temp.name) / "trusted"
         trusted_workflow = trusted / ".github" / "workflows" / "backlog-verify.yml"
         trusted_workflow.parent.mkdir(parents=True)
