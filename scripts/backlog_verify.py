@@ -1087,6 +1087,7 @@ def validate_candidate_workflow(candidate_root: Path, trusted_root: Path | None 
     )
     expected_data = {
         "runs-on": "ubuntu-24.04", "timeout-minutes": 10,
+        "env": {"PYTHONDONTWRITEBYTECODE": "1"},
         "steps": [
             checkout("Checkout candidate data (immutable event SHA)",
                      "${{ github.event.pull_request.head.sha || github.sha }}", "_candidate"),
