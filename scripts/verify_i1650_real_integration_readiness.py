@@ -24,7 +24,6 @@ REQUIRED_RESOURCES = {
     "d1": (
         ("Cloudflare account", "provider account", "dedicated test account; no production writes"),
         ("D1 database", "D1 database", "dedicated integration database"),
-        ("R2 test bucket", "R2 bucket", "dedicated disposable bucket; cleanup after receipt"),
     ),
     "r2": (
         ("Cloudflare account", "provider account", "dedicated test account; no production writes"),
