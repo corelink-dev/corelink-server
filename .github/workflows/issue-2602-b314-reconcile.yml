@@ -40,7 +40,6 @@ jobs:
           python3 - <<'PY'
           import re
           import subprocess
-          from pathlib import Path
 
           expected_paths = [
               "apps/docs/docs/explanation/privacy/gdpr.mdx",
@@ -64,16 +63,32 @@ jobs:
               ["git", "diff", "--unified=0", f"{__import__('os').environ['BASE_SHA']}...{__import__('os').environ['HEAD_SHA']}", "--", *expected_paths], text=True
           )
           patterns = [
-              re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-              re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
-              re.compile(r"AKIA[0-9A-Z]{16}"),
-              re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE),
-              re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+              ("private-key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+              ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}")),
+              ("aws-access-key", re.compile(r"AKIA[0-9A-Z]{16}")),
+              ("email", re.compile(r"[A-Z0-9._%+-]+" + chr(64) + r"[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)),
+              ("us-ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
           ]
+          current_path = "<unknown>"
+          new_line_number = None
           for line in additions.splitlines():
+              if line.startswith("+++ b/"):
+                  current_path = line.removeprefix("+++ b/")
+                  new_line_number = None
+                  continue
+              if line.startswith("@@"):
+                  hunk = re.search(r"\+(\d+)", line)
+                  new_line_number = int(hunk.group(1)) if hunk else None
+                  continue
               if line.startswith("+") and not line.startswith("+++"):
-                  if any(pattern.search(line) for pattern in patterns):
-                      raise SystemExit("redaction scan found a high-confidence secret or personal identifier")
+                  for category, pattern in patterns:
+                      if pattern.search(line):
+                          location = f"{current_path}:{new_line_number}" if new_line_number is not None else current_path
+                          raise SystemExit(f"redaction scan found category={category} at {location}")
+                  if new_line_number is not None:
+                      new_line_number += 1
+              elif line.startswith(" ") and new_line_number is not None:
+                  new_line_number += 1
           PY
 
       - name: Verify approved B-314 done state and mutation controls

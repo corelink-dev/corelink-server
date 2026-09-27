@@ -15,7 +15,7 @@ def _text(path: str) -> str:
 
 def test_done_baseline_and_mutations_pass() -> None:
     verify.verify()
-    assert verify.mutation_checks() == 22
+    assert verify.mutation_checks() == 23
 
 
 def test_wrapped_scoped_posture_is_not_a_false_negative() -> None:
@@ -66,7 +66,7 @@ def test_missing_target_and_unknown_override_fail_closed(tmp_path: Path) -> None
 
 def test_workflow_requires_exact_head_path_admission_and_redaction() -> None:
     source = _text(verify.WORKFLOW)
-    for needle in (verify.CHECKOUT_ACTION, "pull_request:", "github.event.pull_request.head.sha", "expected_paths = [", "PRIVATE KEY"):
+    for needle in (verify.CHECKOUT_ACTION, "pull_request:", "github.event.pull_request.head.sha", "expected_paths = [", "PRIVATE KEY", "chr(64)"):
         assert needle in source
     mutated = source.replace("github.event.pull_request.head.sha", "github.event.pull_request.base.sha", 1)
     with pytest.raises(verify.VerificationError):
