@@ -1067,6 +1067,7 @@ def test_v0010_ledger_derives_only_the_pinned_full_state_delta():
     ).replace(b"2026-09-24", b"2026-09-27").replace(
         b"done-count: 332", b"done-count: 333"
     ).replace(b"parked-count: 30", b"parked-count: 29")
+    expected = expected.replace(b"12 open, 332 done and 30 parked.", b"12 open, 333 done and 29 parked.")
     assert policy._v0010_ledger(prior, base) == expected
     for field in (b"observed-at: 2026-09-24", b"done-count: 332", b"parked-count: 30", b"The current population is 374 items: 12 open, 332 done and 30 parked."):
         with pytest.raises(LedgerError, match="v0010 derivation source drifted"):
