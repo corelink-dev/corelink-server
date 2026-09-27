@@ -852,7 +852,7 @@ def test_v0008_replays_only_the_pinned_delivered_b113_and_b098_prose(monkeypatch
 
 
 def _v0009_b057_transition(policy):
-    """Build the sole v0009 data delta from the pinned bad8506 source state."""
+    """Build the sole v0009 data delta from the C0-integrated source state."""
     root = ledger.REPO_ROOT
     pinned = successor.V0009_RECONCILIATION
     trusted_base = _git(root, "rev-parse", "HEAD")
@@ -908,10 +908,10 @@ def test_v0009_authorizes_only_the_pinned_b057_delta_and_keeps_v0008():
     old_items = ledger.backlog_verify.parse(prior["BACKLOG.md"].decode())
     new_items = ledger.backlog_verify.parse(current["BACKLOG.md"].decode())
     assert ledger.backlog_verify.validate_candidate_transitions(
-        new_items, old_items, dt.date(2026, 9, 25), successor_mode=True,
+        new_items, old_items, dt.date(2026, 9, 26), successor_mode=True,
     ) == ["B-057: verify-means may change only with a status transition"]
     assert ledger.backlog_verify.validate_candidate_transitions(
-        new_items, old_items, dt.date(2026, 9, 25),
+        new_items, old_items, dt.date(2026, 9, 26),
         allow_v0009_reconciliation=True, successor_mode=True,
     ) == []
 
@@ -919,9 +919,10 @@ def test_v0009_authorizes_only_the_pinned_b057_delta_and_keeps_v0008():
 @pytest.mark.parametrize("mutation", [
     "changed-base", "wrong-sequence", "wrong-previous", "changed-receipt",
     "changed-source", "extra-id", "extra-backlog-delta", "changed-ledger",
-    "changed-catalog", "incomplete-receipt",
+    "changed-catalog", "incomplete-receipt", "changed-anchor", "changed-history",
+    "changed-history-section", "changed-section-pin",
 ])
-def test_v0009_rejects_nearby_unauthorized_b057_transitions(mutation):
+def test_v0009_rejects_nearby_unauthorized_b057_transitions(monkeypatch, mutation):
     policy = ledger._successor_policy()
     previous, prior, current, receipt, trusted_base = _v0009_b057_transition(policy)
     previous, prior, current, receipt = (
@@ -948,6 +949,22 @@ def test_v0009_rejects_nearby_unauthorized_b057_transitions(mutation):
         current[ledger.LEDGER_RELATIVE.as_posix()] += b"unexpected state\n"
     elif mutation == "changed-catalog":
         current["docs/campaigns/remediation/work-packages/B001-B045.md"] += b"changed\n"
+    elif mutation == "changed-anchor":
+        monkeypatch.setitem(successor.V0009_RECONCILIATION, "anchor_base_commit", "0" * 40)
+    elif mutation == "changed-history":
+        history = list(successor.V0009_RECONCILIATION["history_transitions"])
+        history.pop()
+        monkeypatch.setitem(successor.V0009_RECONCILIATION, "history_transitions", tuple(history))
+    elif mutation == "changed-history-section":
+        history = list(successor.V0009_RECONCILIATION["history_transitions"])
+        row = list(history[0])
+        sections = dict(row[5])
+        sections["B-054"] = ("0" * 64, sections["B-054"][1])
+        row[5] = sections
+        history[0] = tuple(row)
+        monkeypatch.setitem(successor.V0009_RECONCILIATION, "history_transitions", tuple(history))
+    elif mutation == "changed-section-pin":
+        monkeypatch.setitem(successor.V0009_RECONCILIATION, "current_section_sha256", "0" * 64)
     else:
         del receipt["catalog_sha256"]
 

@@ -139,7 +139,7 @@ These are the 12 highest-frequency answer blocks. Lift them verbatim when the pr
 
 #### 5. GDPR compliance
 
-> **A:** GDPR-compliant as processor (joint controller for limited service-telemetry). DPA at `legal/dpa/v1.0.0` (EN-EU+UK, PT-BR, ES-LATAM locales, external counsel reviewed). Schrems II: SCC Modules 2/3 with supplementary measures (BYOK envelope encryption, EU-region pin). **EU data residency is live:** EU (`weur`) tenants are served via the London/`lhr` cluster with CAS/AC blobs in physically-EU R2 buckets (EEUR) — EU-origin data stays in the EU, so for those tenants there is no third-country transfer to assess. Breach notification 72h to supervisory authority (Art. 33) + without-undue-delay to high-risk affected data subjects (Art. 34). DSR rights (Arts. 15–22) supported with verifiable erasure (`INV-DATA-ERASURE-COMPLETE`, `INV-ERASURE-ATTESTATION-SIGNED`).
+> **A:** CoreLink's prelaunch materials distinguish tenant-pinned R2/DO state from a shared global D1 control plane. EU (`weur`) CAS/AC blobs use physically-EU R2 buckets through London/`lhr`; that statement does not cover D1. D1's primary is currently reported in ENAM with no D1 jurisdiction. Counsel has not yet approved effective customer-facing transfer terms for this D1 posture, so this template makes no executed SCC, BYOK, or crypto-erase claim.
 
 #### 6. HIPAA
 
@@ -155,11 +155,11 @@ These are the 12 highest-frequency answer blocks. Lift them verbatim when the pr
 
 #### 9. Tenant isolation
 
-> **A:** Cross-tenant blast radius is **zero**. Per-tenant R2 prefix, per-tenant D1 database, per-tenant DO instance, per-tenant Clerk namespace. `INV-TenantIsolation` is TLA+ model-checked and CI-gated. A request that reaches a region or tenant other than the binding is refused at the boundary — not load-balanced, not falling back.
+> **A:** Cross-tenant blast radius is **zero**. Tenant-scoped R2 prefixes, Durable Object instances, and Clerk namespaces isolate tenant access. The D1 control plane is one shared global database, not a per-tenant database; its primary is currently reported in ENAM with no D1 jurisdiction. `INV-TenantIsolation` is TLA+ model-checked and CI-gated. A request that reaches a region or tenant other than the binding is refused at the boundary — not load-balanced, not falling back.
 
 #### 10. Data residency
 
-> **A:** CoreLink serves tenants from a **US (ENAM) region** (default; US storage) and a **physically-EU (WEUR) region**. **EU residency is live:** EU (`weur`) tenants are served via the London/`lhr` cluster, whose CAS and AC blobs are stored in physically-EU Cloudflare R2 buckets (`corelink-cas-eu` / `corelink-ac-eu`, both EEUR) — EU-origin data physically stays in the EU. The residency guard maps `weur`→`lhr` and refuses cross-region access (`INV-REGION-NO-CROSS-LEAK`). Other jurisdictions (`sam` São Paulo, `oce` Sydney, `apc` Tokyo/Singapore, `mea` Dubai) are on the **roadmap**, available to Enterprise on request as we provision jurisdiction-local R2 buckets — not GA. Note: Cloudflare R2 has no South-America region today, so Brazilian-jurisdiction physical residency is not yet possible (`sam` data would reside in the US or EU under SCCs). Cross-border transfers where data is US-stored are governed by SCCs + supplementary measures in the DPA.
+> **A:** CoreLink serves tenant-pinned R2/DO state through a **US (ENAM)** default path and a **physically-EU (WEUR)** path. EU (`weur`) CAS and AC blobs are stored in physically-EU Cloudflare R2 buckets (`corelink-cas-eu` / `corelink-ac-eu`, both EEUR) via London/`lhr`; this is an R2 residency statement. The D1 control plane is one shared global database, with its primary currently reported in ENAM and no D1 jurisdiction. The prelaunch DPA/TIA text does not establish an approved transfer basis or executed customer terms for that D1 posture. Other jurisdictions (`sam` São Paulo, `oce` Sydney, `apc` Tokyo/Singapore, `mea` Dubai) are roadmap items, not GA.
 
 #### 11. Breach notification
 
@@ -254,7 +254,7 @@ Typical themes: GDPR Art. 28 sub-processor controls, Schrems II SCC, data reside
 **CoreLink response posture:**
 - Lead with GDPR + Schrems II (canonical phrasing #5).
 - Heavy attach: `legal/dpa/v1.0.0`, SCCs, GDPR-DPIA library.
-- For data-residency: **EU residency is live** — EU (`weur`) tenants' CAS/AC data is stored in physically-EU R2 buckets (EEUR) via the `lhr` cluster, so EU-origin data stays in the EU and there is no third-country transfer to assess for those tenants; lead with this for an EU tender. US (`enam`) is the default region. Brazil/`sam` and APAC physical residency are roadmap (Enterprise-on-request); do not claim a BR or APAC region pin today (Cloudflare R2 has no South-America region).
+- For data-residency: EU (`weur`) CAS/AC data uses physically-EU R2 buckets (EEUR) via `lhr`. The shared global D1 control plane is separately disclosed with a primary currently reported in ENAM and no D1 jurisdiction; do not claim EU-wide residency or an approved transfer basis for D1 before counsel signs off.
 - For portability (Art. 20): cite CAIQ IPY domain answers + REAPI v2 export.
 
 ### Pattern D — Fortune 500 procurement portal (~30–200 questions; vendor-specific)

@@ -15,20 +15,12 @@ class StagingBootstrapProviderTests(unittest.TestCase):
                 "pattern": "staging.corelink.humangr.com/*",
                 "script": "corelink-staging",
             },
-            {
-                "pattern": "staging.corelink.humangr.com/v1/webhooks/pagerduty",
-                "script": "corelink-synthetic-pager-staging",
-            },
             {"pattern": "other.humangr.com/*", "script": "other-worker"},
         ]
         self.assertEqual(
             provider.route_pairs(routes),
             {
                 ("staging.corelink.humangr.com/*", "corelink-staging"),
-                (
-                    "staging.corelink.humangr.com/v1/webhooks/pagerduty",
-                    "corelink-synthetic-pager-staging",
-                ),
             },
         )
 
@@ -46,7 +38,6 @@ class StagingBootstrapProviderTests(unittest.TestCase):
         topology = renderer.StagingTopologyAdapter.from_file()
         expected = {
             (f"{renderer.CANONICAL_HOST}/*", topology.workers[0]),
-            (f"{renderer.CANONICAL_HOST}/v1/webhooks/pagerduty", topology.workers[2]),
         }
         configured = {
             (route["pattern"], route["worker"])

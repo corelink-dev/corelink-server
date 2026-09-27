@@ -556,6 +556,24 @@ def test_workflow_ownership_is_closed_and_wp150_is_read_only():
         )
 
 
+def test_current_workflow_population_is_closed_and_deterministic():
+    root = Path(__file__).resolve().parents[1]
+    relative = sorted(
+        path for path in subprocess.check_output(
+            ["git", "ls-files", "--", ".github/workflows"],
+            cwd=root,
+            text=True,
+        ).splitlines()
+        if path.endswith((".yml", ".yaml"))
+    )
+    payload = ("\n".join(relative) + "\n").encode()
+    assert len(relative) == 260
+    assert hashlib.sha256(payload).hexdigest() == (
+        "5c1d78b2cfc4ebc0ccb2a4cb71239d5232bdcc7d8deddb5a5044c9430cb83ae3"
+    )
+    assert validate_workflow_population(root) == set(relative)
+
+
 def test_workflow_population_uses_only_git_tracked_paths(tmp_path):
     root = tmp_path
     workflow_dir = root / ".github" / "workflows"

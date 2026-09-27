@@ -69,6 +69,11 @@ def main(root: Path) -> None:
         for item in staging_bindings
     ):
         fail("staging receiver service binding is missing from desired-state contract")
+    root_vars = desired.get("cloudflare", {}).get("root_worker_settings", {}).get("vars", {})
+    if root_vars.get("SYNTHETIC_DRILL_ENABLED") != "false" or root_vars.get("SYNTHETIC_DRILL_PROVIDER_MODE") != "provider_deferred":
+        fail("root staging provider-deferred mode is missing or activated")
+    if root_vars.get("SENTRY_RELEASE") != {"source": "github_sha"}:
+        fail("root staging release must come from the exact dispatch SHA")
 
     for environment in ("prod", "prod-sam", "prod-lhr", "prod-nrt", "prod-syd"):
         env_data = root_data.get("env", {}).get(environment, {})
@@ -84,17 +89,18 @@ def main(root: Path) -> None:
         env_data = receiver_data.get("env", {}).get(environment, {})
         if env_data.get("vars", {}).get("SYNTHETIC_DRILL_ENABLED") != "false":
             fail(f"receiver {environment} activation is not disabled")
-    staging_routes = receiver_data.get("env", {}).get("staging", {}).get("routes", [])
-    if staging_routes != [{
-        "pattern": "staging.corelink.humangr.com/v1/webhooks/pagerduty",
-        "zone_name": "humangr.com",
-    }]:
-        fail("staging signed-webhook route is missing or over-broad")
+    staging = receiver_data.get("env", {}).get("staging", {})
+    if staging.get("vars", {}).get("SYNTHETIC_DRILL_PROVIDER_MODE") != "provider_deferred":
+        fail("staging receiver provider mode is not deferred")
+    if staging.get("routes", []) != []:
+        fail("staging provider-deferred receiver must remain service-binding-only")
+    if receiver_data.get("version_metadata", {}).get("binding") != "CF_VERSION_METADATA":
+        fail("receiver version metadata binding is missing")
     if receiver_data.get("env", {}).get("prod", {}).get("routes") != []:
         fail("receiver production routes are not explicitly disabled")
-    if receiver_data.get("triggers", {}).get("crons") != ["59 23 * * 0"]:
+    if receiver_data.get("triggers", {}).get("crons") != ["59 23 * * 1"]:
         fail("receiver deferred-delivery cron is missing")
-    if receiver_data.get("env", {}).get("staging", {}).get("triggers", {}).get("crons") != ["59 23 * * 0"]:
+    if receiver_data.get("env", {}).get("staging", {}).get("triggers", {}).get("crons") != ["59 23 * * 1"]:
         fail("staging deferred-delivery cron is missing")
     if receiver_data.get("env", {}).get("prod", {}).get("triggers", {}).get("crons") != []:
         fail("receiver production cron is not explicitly disabled")
@@ -128,7 +134,7 @@ def main(root: Path) -> None:
         "webhook D1 outcome update": "SET outcome = ?, engineer_slug = ?, ack_ts_ms = ?, mtta_ms = ?, ack_vector = ?",
         "webhook persisted outcome readback": "SELECT outcome FROM synthetic_page_drills_b072 WHERE drill_id = ?",
         "webhook production gate": "validateWebhookEnvironment",
-        "receiver unknown-cron gate": 'controller.cron !== "59 23 * * 0"',
+        "receiver unknown-cron gate": 'controller.cron !== "59 23 * * 1"',
         "receiver unknown-cron no-retry": "controller.noRetry()",
     }
     for label, fragment in required_fragments.items():
@@ -153,13 +159,12 @@ def main(root: Path) -> None:
     if "apps/synthetic-pager-worker" not in workspace_source:
         fail("receiver package is not in the pnpm workspace")
     desired_routes = desired.get("cloudflare", {}).get("routes", [])
-    if not any(
-        item.get("worker") == "corelink-synthetic-pager-staging"
-        and item.get("pattern") == "staging.corelink.humangr.com/v1/webhooks/pagerduty"
-        and item.get("zone_name") == "humangr.com"
-        for item in desired_routes
-    ):
-        fail("staging desired state is missing the exact signed-webhook route")
+    if desired_routes != [{
+        "worker": "corelink-staging",
+        "pattern": "staging.corelink.humangr.com/*",
+        "zone_name": "humangr.com",
+    }]:
+        fail("root must own the sole canonical staging wildcard route")
     if not re.search(r"(?m)^\s+workflow_dispatch:\s*$", deploy_source):
         fail("receiver deploy must be manually dispatched")
     if re.search(r"(?m)^\s+(push|pull_request|schedule):\s*$", deploy_source):

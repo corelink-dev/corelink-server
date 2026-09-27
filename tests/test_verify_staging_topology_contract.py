@@ -201,16 +201,12 @@ class StagingTopologyContractTests(unittest.TestCase):
                 'ENVIRONMENT = "staging"',
                 'ENVIRONMENT = "prod"',
             ),
-            "synthetic-receiver-staging-vars-url": (
-                'PAGERDUTY_EVENTS_URL = "https://events.pagerduty.com/v2/enqueue"',
-                'PAGERDUTY_EVENTS_URL = "https://example.invalid"',
-            ),
-            "synthetic-receiver-staging-vars-service": (
-                'PAGERDUTY_SERVICE = "synthetic-drill"',
-                'PAGERDUTY_SERVICE = "mutated"',
+            "synthetic-receiver-staging-vars-provider-mode": (
+                'SYNTHETIC_DRILL_PROVIDER_MODE = "provider_deferred"',
+                'SYNTHETIC_DRILL_PROVIDER_MODE = "pagerduty"',
             ),
             "synthetic-receiver-staging-crons": (
-                'crons = ["59 23 * * 0"]',
+                'crons = ["59 23 * * 1"]',
                 'crons = []',
             ),
         }
@@ -225,7 +221,7 @@ class StagingTopologyContractTests(unittest.TestCase):
                     path.write_text(text.replace(old, new))
                     gaps = verifier.assess(root)
                     expected = case.removesuffix("-compat")
-                    for suffix in ("-environment", "-url", "-service"):
+                    for suffix in ("-environment", "-provider-mode"):
                         expected = expected.removesuffix(suffix)
                     self.assertIn(expected, gaps)
 

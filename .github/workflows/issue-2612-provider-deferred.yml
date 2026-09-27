@@ -7,6 +7,14 @@ on:
       - "apps/synthetic-pager-worker/src/**"
       - "apps/synthetic-pager-worker/tests/**"
       - "apps/synthetic-pager-worker/wrangler.toml"
+      - "infra/staging/topology.json"
+      - "infra/staging/README.md"
+      - "scripts/render_staging_wrangler.py"
+      - "scripts/staging_bootstrap_provider.py"
+      - "scripts/verify_staging_provider_preflight.py"
+      - "scripts/verify_staging_target.py"
+      - "scripts/verify_staging_topology_contract.py"
+      - "scripts/verify_b035_tls_surfaces.py"
       - "worker/src/index_env.ts"
       - "worker/src/index_schedule.ts"
       - "worker/tests/scheduled_drills.test.ts"
@@ -22,6 +30,12 @@ on:
       - "scripts/verify_b072_scheduled_drills.py"
       - "scripts/test_b072_scheduled_drills_mutations.py"
       - "tests/fixtures/b072_provider_deferred_valid.json"
+      - "tests/test_render_staging_wrangler.py"
+      - "tests/test_staging_bootstrap_provider.py"
+      - "tests/test_staging_quarantine_apply_contract.py"
+      - "tests/test_verify_b035_tls_surfaces.py"
+      - "tests/test_verify_staging_topology_contract.py"
+      - "tests/test_validate_secrets_matrix.py"
       - "docs/knowledge/ops/scheduled-drills.md"
       - "docs/internal/b072-scheduled-drills-owner-packet.md"
       - "changelog.d/b072-scheduled-drills.md"
@@ -90,6 +104,19 @@ jobs:
           python3 scripts/verify_b072_scheduled_drills.py
           python3 scripts/test_b072_scheduled_drills_mutations.py
           python3 scripts/validate_secrets_matrix.py
+
+      - name: Run staging topology and renderer contract
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_staging_target.py
+          python3 scripts/verify_staging_topology_contract.py --expect ready
+          python3 -S -m unittest -v \
+            tests/test_render_staging_wrangler.py \
+            tests/test_staging_bootstrap_provider.py \
+            tests/test_staging_quarantine_apply_contract.py \
+            tests/test_verify_b035_tls_surfaces.py \
+            tests/test_verify_staging_topology_contract.py \
+            tests/test_validate_secrets_matrix.py
 
       - name: Lint workflow syntax
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -no-color .github/workflows/issue-2612-provider-deferred.yml

@@ -29,7 +29,7 @@ CoreLink's data surface is intentionally narrow:
 | Data class | What it is | Where it lives |
 | --- | --- | --- |
 | **Content-addressable blobs** | Build artefacts, action outputs, intermediate caches keyed by BLAKE3 / SHA-256 digest | Cloudflare R2 (per-tenant prefix) |
-| **Action cache metadata** | Action-result records, REAPI v2 metadata | Cloudflare D1 (per-tenant database) |
+| **Action cache metadata** | Action-result records, REAPI v2 metadata | Cloudflare D1 (one shared global control-plane database; primary reported in ENAM) |
 | **Hot path / counters** | Short-TTL counters, idempotency keys, rate-limit windows | Cloudflare KV |
 | **Per-tenant coordination state** | Tenant-scoped Durable Object instances | Cloudflare Durable Objects |
 | **Identity records** | User identities, MFA, session tokens | Clerk (per CoreLink tenant) |
@@ -41,20 +41,31 @@ We do **not** store: PHI, cardholder data (Stripe holds it), customer email
 beyond what's needed for billing notifications, or copies of customer code
 outside the CAS surface.
 
+### D1 control-plane boundary
+
+The five production Workers bind one shared Cloudflare D1 database. Cloudflare
+currently reports its primary as `ENAM`, no D1 jurisdiction, and automatic read
+replication. This control plane includes tenant, membership, PAT, quota,
+billing, and audit-outbox records. A tenant's `primary_region`, a Worker
+location, or an R2 jurisdiction does not change D1 placement. This is a
+technical disclosure, not an approved customer transfer term; prelaunch legal
+terms require the applicable counsel sign-off before publication.
+
 ## Residency
 
 > **Where data lives today (be precise):** CoreLink's region enum has six
 > macro codes; four are provisioned with a jurisdiction-correct storage
 > bucket, and tenants can only be pinned to a provisioned region — signup
 > rejects the other two.
-> - **`wnam` / `enam` tenants (North America):** all data — CAS blobs,
->   action-cache entries, metadata, audit chain — is physically stored in
->   the **United States**, served via our `iad` cluster.
+> - **`wnam` / `enam` tenants (North America):** CAS blobs, action-cache
+>   blobs, and tenant-pinned Durable Object state use the North American
+>   paths served via our `iad` cluster. The shared D1 control plane is
+>   separately disclosed above.
 > - **`weur` tenants (European Union):** CAS and action-cache blobs are
 >   stored in **physically-EU Cloudflare R2 buckets** (`corelink-cas-eu` /
 >   `corelink-ac-eu`), served via our **London / `lhr`** cluster —
->   **EU-origin data physically stays in the EU**. This is a **delivered**
->   capability, not roadmap.
+>   This is a **delivered** R2 residency capability. The shared D1 control
+>   plane is not tenant-pinned and is separately disclosed above.
 > - **`apac` tenants (Asia-Pacific):** CAS blobs are stored in the
 >   **Tokyo-located** Cloudflare R2 bucket `corelink-cas-apac`, served via
 >   our `nrt` cluster. Provisioned 2026-08-17 — **live**, not roadmap. This
@@ -67,9 +78,9 @@ outside the CAS surface.
 > no South America region, so Brazilian-jurisdiction *physical* residency is
 > not yet technically possible.
 
-Where data is stored under a US binding, cross-border transfers are
-governed by **SCCs + supplementary measures in the DPA** (see
-[Compliance](./compliance)).
+The current repository disclosure describes the shared D1 control plane under
+SCC/TIA safeguards. That wording does not establish an executed customer term
+or counsel approval; neither is implied by this prelaunch page.
 
 ### Region availability
 
@@ -80,7 +91,7 @@ six-value enum:
 | --- | --- | --- | --- |
 | `enam` | Eastern North America | United States (served via `iad`) | **Live (default)** |
 | `wnam` | Western North America | United States (served via `iad`) | **Live** |
-| `weur` | Western Europe | EU (physically-EU R2; served via `lhr` / London) | **Live — EU data stays in the EU** |
+| `weur` | Western Europe | EU (physically-EU R2; served via `lhr` / London) | **Live — EU R2 data stays in the EU; shared D1 is global** |
 | `apac` | Asia-Pacific | Japan-located R2 (`corelink-cas-apac`; served via `nrt` / Tokyo) | **Live since 2026-08-17** |
 | `sam` | South America | Brazil (São Paulo) | **Not provisioned** — no Cloudflare SA region; signup rejects this pin |
 | `afr` | Africa | — | **Not provisioned** — no colo mapping; signup rejects this pin |
@@ -94,8 +105,10 @@ What `primary_region` controls:
   refuses cross-region access (`INV-REGION-NO-CROSS-LEAK`). `sam` and `afr`
   have no bucket to route to, so signup rejects them rather than letting
   a tenant land in a region that is not provisioned.
-- **D1 placement.** Per-tenant D1 database created in-region.
-- **DO placement.** Durable Object instance colocated with D1.
+- **D1 placement.** One shared global control-plane database; its current
+  primary is reported in ENAM, with no D1 jurisdiction configured.
+- **DO placement.** Tenant-pinned Durable Object state; it is not a claim
+  about D1 placement.
 - **Failover semantics.** During a region outage, the failover path is always
   within the tenant's residency boundary and is documented per region in
   `specs/_runbooks/RB-DR-DRILL.md`, available on request from `trust@humangr.com`.
@@ -182,11 +195,11 @@ operational side; they are available on request from `trust@humangr.com`.
 
 ## Customer data flow (high-level)
 
-> The storage below is physically in the tenant's region: **US (`wnam` /
-> `enam`)** for North American tenants, **physically-EU (`weur`)** for EU
-> tenants (served via `lhr`), and **Japan-located (`apac`)** for
-> Asia-Pacific tenants (served via `nrt`, live since 2026-08-17). `sam`
-> and `afr` pins are not provisioned; signup rejects them.
+> Storage in the paths below does not all share one tenant-region location.
+> Region-specific R2 buckets and tenant-pinned Durable Object state are
+> described in the Residency section. D1 is one shared global control-plane
+> database; its primary is currently reported in ENAM, with no D1 jurisdiction
+> configured. `sam` and `afr` pins are not provisioned; signup rejects them.
 
 ```
                 ┌─────────────────┐
@@ -206,7 +219,7 @@ operational side; they are available on request from `trust@humangr.com`.
   └─────┬──────┘               └──────────────┘
         │
         ├──► R2 (per-tenant prefix; US, EU, or Japan-located buckets per region; BYOK envelope if enabled)
-        ├──► D1 (per-tenant DB, in tenant region)
+        ├──► D1 (shared global control plane; primary reported in ENAM)
         ├──► KV (per-tenant namespace, short-TTL only)
         └──► Audit chain (append-only, Merkle-linked)
 ```

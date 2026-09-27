@@ -10,13 +10,14 @@ from pathlib import Path
 WORKFLOW = Path(".github/workflows/staging-provider-preflight.yml")
 PROVIDER = Path("scripts/staging_bootstrap_provider.py")
 RENDERER = Path("scripts/render_staging_wrangler.py")
-# Exact source pins from canonical main@b295292f. Any provider/renderer source
-# drift must receive explicit preflight safety review and updated pins.
+# Exact source pins reviewed for the provider-deferred #1700 correction. Any
+# provider/renderer source drift must receive explicit preflight safety review
+# and updated pins.
 CANONICAL_PROVIDER_SOURCE_SHA256 = (
-    "9a64166a2ebeb5832c48a7ee8b62bb2356c5365d8412fbef8aa4f690b3bd5773"
+    "2dd45f62e87446074212beabebc2efb3d91cb71b9c469b4d1e0680db7761300a"
 )
 CANONICAL_RENDERER_SOURCE_SHA256 = (
-    "1cc4fcd4af0bcaa720a6b3f55d739091d77c117941d82bcc77332a3f3dff3b5e"
+    "2f18545971659e2c6826b4538653d0ee3533cb5409a4ed17663585da92c7e870"
 )
 # Exact source pin for get() in canonical main@b295292f. This binds request
 # construction, all intervening statements, and urlopen send behavior.

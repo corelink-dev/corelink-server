@@ -36,7 +36,7 @@ CoreLink's data surface is intentionally narrow:
 | Data class | What it is | Where it lives |
 | --- | --- | --- |
 | **Content-addressable blobs** | Build artefacts, action outputs, intermediate caches keyed by BLAKE3 / SHA-256 digest | Cloudflare R2 (per-tenant prefix) |
-| **Action cache metadata** | Action-result records, REAPI v2 metadata | Cloudflare D1 (per-tenant database) |
+| **Action cache metadata** | Action-result records, REAPI v2 metadata | Cloudflare D1 (plano de control global compartido; primario informado en ENAM) |
 | **Hot path / counters** | Short-TTL counters, idempotency keys, rate-limit windows | Cloudflare KV |
 | **Per-tenant coordination state** | Tenant-scoped Durable Object instances | Cloudflare Durable Objects |
 | **Identity records** | User identities, MFA, session tokens | Clerk (per CoreLink tenant) |
@@ -60,7 +60,7 @@ outside the CAS surface.
 | --- | --- | --- | --- |
 | `enam` | Norteamérica Oriental | Estados Unidos (servido vía `iad`) | **Activo (predeterminado)** |
 | `wnam` | Norteamérica Occidental | Estados Unidos (servido vía `iad`) | **Activo** |
-| `weur` | Europa Occidental | UE (R2 físicamente en la UE; servido vía `lhr` / Londres) | **Activo — los datos de la UE permanecen en la UE** |
+| `weur` | Europa Occidental | UE (R2 físicamente en la UE; servido vía `lhr` / Londres) | **Activo — los datos R2 de la UE permanecen en la UE; D1 compartido global** |
 | `apac` | Asia-Pacífico | R2 ubicado en Japón (`corelink-cas-apac`; servido vía `nrt` / Tokio) | **Activo desde 2026-08-17** |
 | `sam` | Sudamérica | Brasil (São Paulo) | **No aprovisionado** — no existe región de Cloudflare en Sudamérica; el registro rechaza este pin |
 | `afr` | África | — | **No aprovisionado** — sin mapeo de colo; el registro rechaza este pin |
@@ -74,10 +74,10 @@ Qué controla `primary_region`:
   de residencia mapea `weur`→`lhr` y `apac`→`nrt`, y rechaza el acceso
   entre regiones (`INV-REGION-NO-CROSS-LEAK`). `sam` y `afr` no tienen
   bucket al cual enrutar, así que el registro los rechaza.
-- **Ubicación de D1.** La base de datos D1 por tenant se crea en la
-  misma región.
-- **Ubicación de DO.** La instancia de Durable Object se coloca junto
-  al D1.
+- **Ubicación de D1.** Una base de datos compartida del plano de control
+  global; su primario se informa actualmente en ENAM sin jurisdicción D1.
+- **Ubicación de DO.** Estado de Durable Object fijado por tenant; esto no
+  afirma la ubicación de D1.
 - **Semántica de failover.** Durante una interrupción regional, la ruta
   de failover se documenta por región en
   `specs/_runbooks/RB-DR-DRILL.md`, disponible a solicitud a través de `trust@humangr.com`.
@@ -184,7 +184,7 @@ operational side; they are available on request from `trust@humangr.com`.
   └─────┬──────┘               └──────────────┘
         │
         ├──► R2 (per-tenant prefix, BYOK envelope if enabled)
-        ├──► D1 (per-tenant DB, region-pinned)
+        ├──► D1 (plano de control global compartido; principal reportada en ENAM)
         ├──► KV (per-tenant namespace, short-TTL only)
         └──► Audit chain (append-only, Merkle-linked)
 ```

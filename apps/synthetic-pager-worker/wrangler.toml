@@ -8,7 +8,7 @@ workers_dev = false
 # receiver remains activation-gated; production explicitly overrides this to
 # an empty list below.
 [triggers]
-crons = ["59 23 * * 0"]
+crons = ["59 23 * * 1"]
 
 # The corelink Worker owns the Monday emit schedule and reaches this receiver
 # through the staging service binding. This Worker owns only the deferred
@@ -26,15 +26,9 @@ database_name = "corelink-config-dev"
 database_id = "PLACEHOLDER_CONFIG_DB_DEV_ID"
 migrations_dir = "../../migrations/d1"
 
-# The routing key is a secret and is intentionally absent from committed vars.
-# Set it only in the non-production drill receiver after the explicit activation
-# review: `wrangler secret put PAGERDUTY_SYNTHETIC_ROUTING_KEY` and
-# `wrangler secret put PAGERDUTY_WEBHOOK_SECRET`.
-
 [env.staging]
 name = "corelink-synthetic-pager-staging"
-vars = { ENVIRONMENT = "staging", SYNTHETIC_DRILL_ENABLED = "false", PAGERDUTY_EVENTS_URL = "https://events.pagerduty.com/v2/enqueue", PAGERDUTY_SERVICE = "synthetic-drill" }
-routes = [{ pattern = "staging.corelink.humangr.com/v1/webhooks/pagerduty", zone_name = "humangr.com" }]
+vars = { ENVIRONMENT = "staging", SYNTHETIC_DRILL_ENABLED = "false", SYNTHETIC_DRILL_PROVIDER_MODE = "provider_deferred" }
 
 [[env.staging.d1_databases]]
 binding = "CONFIG_DB"
@@ -43,7 +37,7 @@ database_id = "d72a6b39-6a48-4338-bfda-1111dda98604"
 migrations_dir = "../../migrations/d1"
 
 [env.staging.triggers]
-crons = ["59 23 * * 0"]
+crons = ["59 23 * * 1"]
 
 # A production receiver deployment is intentionally inert and is rejected by
 # the handler even if an operator supplies a routing-key secret accidentally.

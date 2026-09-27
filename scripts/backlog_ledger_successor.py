@@ -392,18 +392,33 @@ V0008_RECONCILIATION = {
     },
 }
 
-# v0009 authorizes the exact B-057 evidence refresh against the protected-main
-# state at bad8506. Its BACKLOG.md also includes the later B-316 observation;
-# the transition itself changes only B-057. The policy is installed out-of-band
-# before a separate data receipt can use it.
+# v0009 authorizes the exact B-057 evidence refresh only after replaying every
+# first-parent BACKLOG transition delivered since v0008 through the C0-integrated
+# base. The policy is installed out-of-band before a separate data receipt can
+# use it.
 V0009_RECONCILIATION = {
     "sequence": 9,
     "previous_sequence": 8,
-    "anchor_base_commit": "bad85063bb78bd8e5b4e19b3ce4e235dc05746e0",
+    "anchor_base_commit": "4bb6cfcb9bc37caf4fdf59b3bf69e13af5a39191",
+    "base_commit": "4bb6cfcb9bc37caf4fdf59b3bf69e13af5a39191",
+    "history_start": "f56637f84f2366a8041d07d01e8657153a841030",
     "previous_source_sha256": "323b589d9e6a955409c9b701778736b1bf57e72998b030164c0a460cc498152b",
     "changed_ids": ("B-057",),
-    "prior_source_sha256": "78bce40c2ad03a259185bd884e024000ace29157f708dafbe002aea998044694",
-    "source_sha256": "079ed101ef92fc703ec1fa5f72a9233394f73fc23c87ccc2e57a0b50e4f09ca6",
+    "history_changed_ids": ("B-011", "B-054", "B-103", "B-113", "B-134", "B-138", "B-216", "B-250", "B-316"),
+    "history_transitions": (
+        ("3f17eae164ecb497bf552bda88228020cc14cde0", "c7788a0af1d87678a9fb2124fc111bcddb6736df", "323b589d9e6a955409c9b701778736b1bf57e72998b030164c0a460cc498152b", "b42299cbc4a9ac8bc600db8682bc945a439d36a906438bc93470941d747fe07f", ("B-054",), {"B-054": ("0d9f376ddb04b8c6c6874a4391710db4508814785c163922e39862318a7b0e3f", "d7b7c57231f7766ccb52457b9e3eb721d8bec819c49ad81ad4aae2ffefcb99cf")} ),
+        ("76e0bc6e66a5c9b24709a1a5ec655bbc9f3f1344", "9ed0baa2d8262d5325907ed9031b7009e154aca9", "b42299cbc4a9ac8bc600db8682bc945a439d36a906438bc93470941d747fe07f", "97ef93ff321a0710956b1db2394bf2a5559a53f49559f83f65fa0ee37a1ef695", ("B-054",), {"B-054": ("d7b7c57231f7766ccb52457b9e3eb721d8bec819c49ad81ad4aae2ffefcb99cf", "8d7cc1ba49e7b7ae3542605f45a1c5a7a298d38d4150c90f0c969fd8a87ef323")} ),
+        ("0480aa697101b9cef9abec9ccdf33266591b381f", "2343f6d0e85958a14f8670b62e47c8bfca82cd71", "97ef93ff321a0710956b1db2394bf2a5559a53f49559f83f65fa0ee37a1ef695", "118a73e07392e68953795f7b0a48ec55b9b3ab42408126124abbb041c4391271", ("B-250",), {"B-250": ("59fb4407ba16b1fc14801f116ecbfe6f1818edab0728d34146af324893d826c0", "349cb7c19244d25eccac7d95eafa3c9704da53c0dca5d2180b2e1902ecd69bb2")} ),
+        ("3d448980a84a604aea8eb1f28299ea2f605ad30a", "af79ca2f296f39b8149931de16441f8e4582b53c", "118a73e07392e68953795f7b0a48ec55b9b3ab42408126124abbb041c4391271", "78bce40c2ad03a259185bd884e024000ace29157f708dafbe002aea998044694", ("B-316",), {"B-316": ("96cdbda3f11d7d1b947b5510886496117cf75603a138b3a14fd48205bf3cecc3", "189d7601e276aaf9d428f2b3c008109b90fb32d9c20dd5d8a463ba0b26a74864")} ),
+        ("ef2c09b44b8ab1127aba6f1c2f352a314956840c", "fa5f154e69031a079bbb83110a584c1d7f77496c", "78bce40c2ad03a259185bd884e024000ace29157f708dafbe002aea998044694", "cb20e66a67c57b58eb3ff555a1cf000762ae83815220eb2f52bd115b13e25cce", ("B-134",), {"B-134": ("84e5f4aaa56a779f221b808208b6a4c31c4066b5336cde3625047cc3bcd989d9", "48845c7b35ffe072047fd1c2f542e232c3ed9926435d0eace96bc04e78a3a62f")} ),
+        ("bf217e7f6fe02df4ffbb1fc7d72126c59b066f7c", "5da576eee75d474f88076ca34f6d203747eb6a38", "cb20e66a67c57b58eb3ff555a1cf000762ae83815220eb2f52bd115b13e25cce", "9e7ff42bcee72eabc4c6c99e10d784b879b44546f325ddf507cd0fa567fd1317", ("B-113",), {"B-113": ("5b466d4d7574e8bb644640b5f117846c9d78ab7396c552683c8ee8f760880a6e", "ece7d0b8f8416ad4567e34f1abc77666c1d1ba334d079e6d9875e878318c0d1b")} ),
+        ("c9c0061904283bf92f6ba48c1b2e3d4dcd8811be", "5d46476e04a656b4186054d39c32689afb9e61e3", "9e7ff42bcee72eabc4c6c99e10d784b879b44546f325ddf507cd0fa567fd1317", "9ec2f061bc9a0cc290d5d9efe699c87f473de2a1e1b43a8ee4ab63b58fc65ddc", ("B-011", "B-138"), {"B-011": ("2d0f89dd7e21e7edc19cd7a468d20c63a41de1e4fc4097330a3cfbfc18d38dbb", "0f450287eb4914ce2644cf48699f95a5e45f235dfb6b8ba9daa7f7de28c1036d"), "B-138": ("0b5c80991690f76e0e00396dc1b53443b799b13b9a93b961f799731a0fec6210", "483b79c7347331edd443be0cfa1e72335bc74e2e059e4254c8088d9443d941aa")} ),
+        ("44f6c7e0a9d2cb044e2bd0ddeb2da398724ed603", "864a8be621471fea2a5e606a0a12dbe2c59488ce", "9ec2f061bc9a0cc290d5d9efe699c87f473de2a1e1b43a8ee4ab63b58fc65ddc", "e453068396a3c12b0c7215683838c1ed29ce7cea9f38db0eb3233d6e724d8899", ("B-113",), {"B-113": ("ece7d0b8f8416ad4567e34f1abc77666c1d1ba334d079e6d9875e878318c0d1b", "af57a9d19cfebd0435e95518aa4533e5b842efa86bdf5aac41e11d25d2e549e6")} ),
+        ("08213bde21436b16644500ff0b2983d29dd2fd17", "44f6c7e0a9d2cb044e2bd0ddeb2da398724ed603", "e453068396a3c12b0c7215683838c1ed29ce7cea9f38db0eb3233d6e724d8899", "f4898ea2cdbbe3ff511a3e8faa09f7ad9edbbc884c57eab763f1ef88118450e5", ("B-216",), {"B-216": ("915bf4a894b4d18097f26b54a24084a15aa6dc12484a2eeacc186179af077d03", "afc9b4b92bd9db714b928d56c893c00d7f7ddddc5cd0940ff51bfd2d5eaf87d5")} ),
+        ("f26858430cee9be93700cb08eecb128c540cc480", "08213bde21436b16644500ff0b2983d29dd2fd17", "f4898ea2cdbbe3ff511a3e8faa09f7ad9edbbc884c57eab763f1ef88118450e5", "00ac71310b31ca7dcc88e76e4805ffdae7d773007b4146ebb385b69452656fb9", ("B-103",), {"B-103": ("e52ca4a76a5241bb653088a7a6442499d391281c802d17f721465155d2631c34", "2c9e524bd3c1818cf1062540ec1cc82dfcb5b167bdff669d59d835df63bc8ae5")} ),
+    ),
+    "prior_source_sha256": "00ac71310b31ca7dcc88e76e4805ffdae7d773007b4146ebb385b69452656fb9",
+    "source_sha256": "159ef4473aecdd592315fd3e4909c13200c8251c1a1661efa52d1f586ec1d684",
     "prior_ledger_sha256": "fcc3a03cf4a2f82996212a24d7ae1947c874441635a6a680bb4caeb6c64e58fa",
     "prior_section_sha256": "4bd0d060401f0be30814308399bf1b6d02b7012d993ec20c10f0d4027a2f195d",
     "current_section_sha256": "907e5ad69e6e949b96d99d5e9977f5597bda45d3498610f6ba517f5f387ffbda",
@@ -928,6 +943,7 @@ def install(api):
         ).returncode == 0
         if (
             not anchor_is_ancestor
+            or not _v0009_history_authorized()
             or receipt.get("base_commit") != trusted_base
             or sequence != pinned["sequence"]
             or previous.get("sequence") != pinned["previous_sequence"]
@@ -964,6 +980,10 @@ def install(api):
             and receipt.get("prior_catalog_sha256") == catalogs
             and receipt.get("catalog_sha256") == catalogs
         )
+
+    def _v0009_history_authorized() -> bool:
+        """Replay every delivered BACKLOG transition from v0008 to the C0 base."""
+        return _history_authorized(V0009_RECONCILIATION)
 
     def _v0008_reconciliation_authorized(
         previous: dict[str, object], prior: dict[str, bytes], current: dict[str, bytes],
@@ -1211,7 +1231,8 @@ def install(api):
         if result.returncode or commits != [row[0] for row in expected]:
             return False
         reconstructed_ids: set[str] = set()
-        for commit, parent, prior_hash, current_hash, changed_ids in expected:
+        for row in expected:
+            commit, parent, prior_hash, current_hash, changed_ids, *section_hashes = row
             actual_parent = subprocess.run(
                 ["git", "rev-parse", f"{commit}^1"],
                 cwd=REPO_ROOT,
@@ -1234,6 +1255,14 @@ def install(api):
             ))
             if actual_changed != changed_ids:
                 return False
+            if section_hashes:
+                expected_sections = section_hashes[0]
+                if set(expected_sections) != set(changed_ids) or any(
+                    _sha256(prior_sections.get(item_id, b"")) != hashes[0]
+                    or _sha256(current_sections.get(item_id, b"")) != hashes[1]
+                    for item_id, hashes in expected_sections.items()
+                ):
+                    return False
             reconstructed_ids.update(actual_changed)
         return (
             tuple(sorted(reconstructed_ids))

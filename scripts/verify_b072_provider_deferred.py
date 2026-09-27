@@ -49,8 +49,14 @@ def verify(contract: str, receiver: str, scheduler: str, migration: str, config:
     ):
         if fragment not in migration:
             raise AssertionError(f"migration missing constrained field: {fragment}")
-    if "workers_dev = false" not in config or 'pattern = "staging.corelink.humangr.com/v1/webhooks/pagerduty"' not in config:
-        raise AssertionError("receiver must stay non-public with only the signed webhook route")
+    if "workers_dev = false" not in config:
+        raise AssertionError("receiver must disable workers.dev")
+    if 'version_metadata = { binding = "CF_VERSION_METADATA" }' not in config:
+        raise AssertionError("receiver must bind CF_VERSION_METADATA")
+    if '[env.staging]' not in config or 'SYNTHETIC_DRILL_PROVIDER_MODE = "provider_deferred"' not in config:
+        raise AssertionError("staging receiver must declare provider_deferred mode")
+    if 'routes = [{ pattern = "staging.corelink.humangr.com/v1/webhooks/pagerduty"' in config:
+        raise AssertionError("provider-deferred staging receiver must remain service-binding-only")
 
 
 def main() -> None:
