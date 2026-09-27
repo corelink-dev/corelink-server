@@ -9,7 +9,7 @@ the single source of truth for item status. This ledger derives work ownership,
 dependency order and completion contracts from that source; it never overrides
 the backlog.
 
-The current population is 374 items: 12 open, 332 done and 30 parked. The 12
+The current population is 374 items: 12 open, 333 done and 29 parked. The 12
 open items are partitioned exactly once across four contract catalogs:
 
 The historical candidate snapshot remains pinned in
@@ -24,8 +24,8 @@ and ledger rewrite therefore remains indeterminate rather than becoming a false
 closure. Every new BACKLOG/status observation must version a snapshot manifest and transition the ledger base in the same reviewed change. WP-150 workflow population and ownership updates are maintained in the dedicated tracked manifest; they do not require ledger successors.
 
 ```ledger-state
-base-ref: 2e45e35ad9c68d9193bb35a8a7ad604377fd8391
-base-sha: 2e45e35ad9c68d9193bb35a8a7ad604377fd8391
+base-ref: 13a32c356110bc95210dd3724840626c342c9f42
+base-sha: 13a32c356110bc95210dd3724840626c342c9f42
 observed-at: 2026-09-27
 item-count: 374
 open-count: 12
