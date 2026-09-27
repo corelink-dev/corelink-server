@@ -105,5 +105,6 @@ export function verifyStagingGrpcDiagnosticBinding(
     !constantTimeSecretEqual(expectedToken, token)
   ) return null;
 
-  return Object.freeze({ path, [bindingBrand]: true });
+  const binding: VerifiedStagingGrpcBinding = { path, [bindingBrand]: true };
+  return Object.freeze(binding);
 }

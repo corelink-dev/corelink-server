@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
+from types import ModuleType
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -17,6 +18,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PhaseGateTests(unittest.TestCase):
+    def test_trusted_loader_leaves_base_clean_and_rejects_candidate_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base, candidate = Path(directory) / "base", Path(directory) / "candidate"
+            ignore = shutil.ignore_patterns(".git", "node_modules", ".pnpm-store", "__pycache__")
+            shutil.copytree(ROOT, base, ignore=ignore, symlinks=True)
+            shutil.copytree(ROOT, candidate, ignore=ignore, symlinks=True)
+            shutil.copytree(ROOT / "tests/fixtures/i2574_delivery_bytes", candidate, dirs_exist_ok=True)
+
+            # Execute the trusted gate source directly so this test itself does
+            # not create a cache before exercising its sibling policy loader.
+            module = ModuleType("copied_trusted_gate")
+            source = base / "scripts/verify_i2176_grpc_deny_gate.py"
+            module.__file__ = str(source)
+            exec(compile(source.read_text(), str(source), "exec"), module.__dict__)
+            module.validate(candidate, base)
+            self.assertFalse((base / "scripts/__pycache__").exists())
+
+            cache = candidate / "scripts/__pycache__"
+            cache.mkdir()
+            (cache / "candidate.pyc").write_bytes(b"cache")
+            with self.assertRaises(module.ContractError): module.validate(candidate, base)
+
     def test_public_mount_phases_and_negatives(self) -> None:
         original = gate.MOUNT
         try:

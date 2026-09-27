@@ -42,8 +42,10 @@ The dedicated DO rechecks the protected binding before tenant resolution,
 durable rate limiting, cache routing, or normal response transforms. It uses
 only `container.getTcpPort(50051)`. The single localhost Request reconstruction
 preserves the original body, headers, `Authorization`, cancellation signal, and
-uses `redirect: manual`; the upstream native gRPC Response is returned
-unchanged. The Container independently authenticates before its probe service
+uses `redirect: manual`; every upstream response other than HTTP status `200`,
+or any response carrying `Location`, fails closed, while a status-`200`
+nonredirect native gRPC Response is returned unchanged. The
+Container independently authenticates before its probe service
 executes.
 
 No REST, HTTP/1 substitute, gRPC-Web, cache write, customer lookup, request

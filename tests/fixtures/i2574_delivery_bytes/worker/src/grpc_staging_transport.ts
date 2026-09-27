@@ -18,7 +18,10 @@ function unavailable(): Response {
   });
 }
 
-function hasNativeGrpcMediaType(headers: Headers): boolean {
+export function isNonRedirectNativeGrpcResponse(response: Response): boolean {
+  if (response.status !== 200) return false;
+  if (response.headers.has("location")) return false;
+  const headers = response.headers;
   const mediaType = headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   return mediaType === "application/grpc" || mediaType === "application/grpc+proto";
 }
@@ -39,7 +42,7 @@ export async function forwardStagingGrpcDiagnostic(
   try {
     const id = env.CORELINK_SERVER.idFromName(STAGING_GRPC_PROBE_DO);
     const response = await env.CORELINK_SERVER.get(id).fetch(request);
-    return hasNativeGrpcMediaType(response.headers) ? response : unavailable();
+    return isNonRedirectNativeGrpcResponse(response) ? response : unavailable();
   } catch {
     return unavailable();
   }
