@@ -117,7 +117,7 @@ class Instrument:
 INSTRUMENTS = (
     Instrument(
         "legal/dpa/v1.0.0.en-US.md",
-        "TLS 1.2 minimum; TLS 1.3 negotiated where supported",
+        "TLS 1.2 is the minimum; TLS 1.3 is negotiated where supported",
     ),
     Instrument(
         "legal/dpa/v1.0.0.pt-BR.md",
@@ -133,7 +133,7 @@ INSTRUMENTS = (
     ),
     Instrument(
         "legal/dpa/SUB-PROCESSOR-COMMITMENTS.md",
-        "TLS 1.2 minimum; TLS 1.3 negotiated where supported",
+        "TLS 1.2 as the minimum; TLS 1.3 is negotiated where supported",
     ),
     Instrument(
         "legal/privacy-notice/v1.0.0/en-US.md",
@@ -263,7 +263,8 @@ def inventory(
         text = instrument_overrides.get(instrument.path)
         if text is None:
             text = _read(root, instrument.path)
-        matches = list(re.finditer(re.escape(instrument.claim), text))
+        claim_pattern = re.compile(r"\s+".join(re.escape(part) for part in instrument.claim.split()))
+        matches = list(claim_pattern.finditer(text))
         protocol_mentions = list(PROTOCOL_1_3_RE.finditer(text))
         lines = [_line_number(text, match) for match in matches]
         rows.append(
