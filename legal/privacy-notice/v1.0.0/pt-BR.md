@@ -106,7 +106,7 @@ Prazo de resposta: até 15 dias úteis (acesso/portabilidade); 5 dias úteis (co
 
 Implementamos as seguintes medidas de segurança:
 
-- Criptografia em trânsito (TLS 1.3).
+- Criptografia em trânsito (TLS 1.2 mínimo; TLS 1.3 negociado quando houver suporte).
 - Criptografia em repouso (R2 + Neon encryption at rest).
 - Controle de acesso com autenticação multifator (WebAuthn FIDO2).
 - Auditoria append-only com cadeia de hash (BLAKE3).
