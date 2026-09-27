@@ -94,6 +94,8 @@ jobs:
           MODE: ${{ inputs.mode }}
           CONFIRM: ${{ inputs.confirm }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          STAGING_CF_ACCOUNT_ID: ${{ secrets.STAGING_CF_ACCOUNT_ID }}
+          CF_ZONE_ID: ${{ vars.CF_ZONE_ID }}
           K6_TARGET_HOST: ${{ secrets.K6_TARGET_HOST }}
           K6_TARGET_IDENTITY_RECEIPT: ${{ secrets.K6_TARGET_IDENTITY_RECEIPT }}
           K6_STAGING_PAT: ${{ secrets.K6_STAGING_PAT }}

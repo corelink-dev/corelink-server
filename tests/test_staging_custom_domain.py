@@ -88,6 +88,22 @@ def exact_dns(*, proxied: bool = True) -> dict:
     }
 
 
+def require_provider_guard_bindings(workflow: str) -> None:
+    start = workflow.index(
+        "      - name: Confirm exact protected target and operation"
+    )
+    end = workflow.find("\n      - name:", start + 1)
+    step = workflow[start:] if end == -1 else workflow[start:end]
+    env = step.split("\n        run:", 1)[0]
+    expected = (
+        "          STAGING_CF_ACCOUNT_ID: ${{ secrets.STAGING_CF_ACCOUNT_ID }}",
+        "          CF_ZONE_ID: ${{ vars.CF_ZONE_ID }}",
+    )
+    missing = [binding for binding in expected if binding not in env]
+    if missing:
+        raise AssertionError(f"protected provider guard lacks exact bindings: {missing}")
+
+
 def subdomain(enabled: bool = False) -> dict:
     return {
         "success": True,
@@ -382,6 +398,21 @@ class StagingCustomDomainTests(unittest.TestCase):
         self.assertIn("secrets.K6_TARGET_IDENTITY_RECEIPT", workflow)
         self.assertIn('test -n "${!name:-}"', workflow)
         self.assertIn("publish-custom-domain-staging-1700", workflow)
+        require_provider_guard_bindings(workflow)
+        for binding, replacement in (
+            (
+                "          STAGING_CF_ACCOUNT_ID: ${{ secrets.STAGING_CF_ACCOUNT_ID }}",
+                "          STAGING_CF_ACCOUNT_ID: ${{ secrets.OTHER_ACCOUNT_ID }}",
+            ),
+            (
+                "          CF_ZONE_ID: ${{ vars.CF_ZONE_ID }}",
+                "          CF_ZONE_ID: ${{ vars.OTHER_ZONE_ID }}",
+            ),
+        ):
+            with self.subTest(binding=binding):
+                missing = workflow.replace(binding, replacement, 1)
+                with self.assertRaisesRegex(AssertionError, "lacks exact bindings"):
+                    require_provider_guard_bindings(missing)
         pull_request = workflow.split("  workflow_dispatch:", 1)[0]
         self.assertNotIn("CF_API_TOKEN", pull_request)
         self.assertNotIn("STAGING_CF_ACCOUNT_ID", pull_request)
