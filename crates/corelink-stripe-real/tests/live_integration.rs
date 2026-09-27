@@ -227,7 +227,7 @@ mod cleanup_fault_injection {
             .build()
             .expect("mock client");
         let req = CheckoutSessionRequest::new(
-            TenantId::new("tenant_checkout_failure".into()),
+            TenantId::new("tenant_checkout_failure"),
             TierKind::Starter,
             "failure@example.test",
             "https://example.test/ok",
@@ -364,7 +364,7 @@ mod cleanup_fault_injection {
             .build()
             .expect("mock client");
         let req = CheckoutSessionRequest::new(
-            TenantId::new("tenant_missing_url".into()),
+            TenantId::new("tenant_missing_url"),
             TierKind::Starter,
             "missing-url@example.test",
             "https://example.test/ok",

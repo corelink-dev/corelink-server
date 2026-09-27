@@ -86,7 +86,7 @@ SOURCE_SHA256 = {
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "2148abe19ae9b119dc17eca0f242e983b47f8f6100d8d6fbba0536aafcc88af7",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "1589c0bf78b5ecee786f39e71e66feb3bcd387ba1465d4ad5f22133cdcf14b4e",
-    "crates/corelink-stripe-real/tests/live_integration.rs": "bca5bae77a59723ce4a673a9d68b80821f5fec8570eae7fc4aff047791d563f5",
+    "crates/corelink-stripe-real/tests/live_integration.rs": "6ad4e56e49bc8ec791cbdaf0fec9b333e3430de68046236f14151a4b3cd7e4c7",
     "crates/corelink-audit-chain/tests/neon_shadow_real.rs": "dfd22738e96d82695b40addf64b3dbaf611fbd8026346f0b4e33b28f10fe79eb",
 }
 
