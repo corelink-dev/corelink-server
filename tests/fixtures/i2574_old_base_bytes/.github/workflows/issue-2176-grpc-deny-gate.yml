@@ -1,4 +1,4 @@
-name: issue 2176 trusted gRPC transport policy
+name: issue 2176 trusted gRPC deny gate
 
 # This workflow definition is evaluated from the protected base branch by
 # pull_request_target. Candidate files are data only: this workflow never runs
@@ -17,15 +17,6 @@ on:
       - "worker/src/index.ts"
       - "worker/src/index_common.ts"
       - "worker/src/index_fetch.ts"
-      - "worker/src/index_env.ts"
-      - "worker/src/index_env_contract.ts"
-      - "worker/src/durable_object.ts"
-      - "worker/src/durable_object_probes.ts"
-      - "worker/src/durable_object_start.ts"
-      - "worker/src/lib/internal_auth.ts"
-      - "worker/src/grpc_staging_authorization.ts"
-      - "worker/src/grpc_staging_transport.ts"
-      - "worker/tests/grpc_staging_transport.test.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/corelink-worker.yml"
@@ -41,13 +32,7 @@ on:
       - "specs/03_architecture/issue-2176-grpc-transport-contract.md"
       - "scripts/verify_i2176_grpc_deny_gate.py"
       - "tests/test_verify_i2176_grpc_deny_gate.py"
-      - "scripts/verify_i2574_grpc_diagnostic_policy.py"
-      - "tests/test_verify_i2574_grpc_diagnostic_policy.py"
-      - "tests/test_i2574_p0_transition_fixture.py"
-      - "tests/fixtures/i2574_old_base_bytes/**"
-      - "tests/fixtures/i2574_delivery_bytes/**"
       - ".github/workflows/issue-2176-grpc-deny-gate.yml"
-      - ".github/workflows/issue-2574-staging-grpc-diagnostic.yml"
 
 permissions:
   contents: read
@@ -57,8 +42,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  transport-policy:
-    name: trusted exact-head gRPC transport policy
+  deny-contract:
+    name: trusted exact-head gRPC deny contract
     if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -82,12 +67,10 @@ jobs:
 
       - name: Validate candidate with the protected-base verifier
         run: >-
-          python3 -S trusted-base/scripts/verify_i2574_grpc_diagnostic_policy.py
+          python3 -S trusted-base/scripts/verify_i2176_grpc_deny_gate.py
           --trusted-base trusted-base
           --candidate candidate
+          --expected-head ${{ github.event.pull_request.head.sha }}
 
       - name: Run protected-base adversarial fixtures
-        run: >-
-          python3 -S -m unittest -v
-          trusted-base/tests/test_verify_i2176_grpc_deny_gate.py
-          trusted-base/tests/test_verify_i2574_grpc_diagnostic_policy.py
+        run: python3 -S -m unittest -v trusted-base/tests/test_verify_i2176_grpc_deny_gate.py
