@@ -65,7 +65,14 @@ jobs:
           zones=get('zones?name=humangr.com')
           if len(zones)!=1: raise SystemExit('canonical staging zone is not unique')
           routes=get('zones/'+zones[0]['id']+'/workers/routes')
-          found=[r for r in routes if r.get('script')=='corelink-staging' or r.get('pattern')=='staging.corelink.humangr.com/*']
+          # Truth table: canonical wildcard, canonical path, and canonical routes
+          # for any Worker reject; unrelated hosts pass; malformed entries reject.
+          def canonical(route):
+            if not isinstance(route,dict) or not isinstance(route.get('pattern'),str):
+              raise SystemExit('malformed Cloudflare route entry')
+            host=route['pattern'].split('/',1)[0].lower().rstrip('.')
+            return host == 'staging.corelink.humangr.com'
+          found=[r for r in routes if canonical(r)]
           print(json.dumps({'canonical_staging_route_count':len(found)}))
           if found: raise SystemExit('canonical staging route exists; refusing deploy')
           PY
@@ -99,7 +106,12 @@ jobs:
             if not b.get('success'): raise SystemExit('Cloudflare route readback denied')
             return b['result']
           z=get('zones?name=humangr.com'); routes=get('zones/'+z[0]['id']+'/workers/routes')
-          found=[r for r in routes if r.get('script')=='corelink-staging' or r.get('pattern')=='staging.corelink.humangr.com/*']
+          def canonical(route):
+            if not isinstance(route,dict) or not isinstance(route.get('pattern'),str):
+              raise SystemExit('malformed Cloudflare route entry')
+            host=route['pattern'].split('/',1)[0].lower().rstrip('.')
+            return host == 'staging.corelink.humangr.com'
+          found=[r for r in routes if canonical(r)]
           print(json.dumps({'canonical_staging_route_count':len(found)}))
           if found: raise SystemExit('post-deploy canonical staging route exists')
           PY
