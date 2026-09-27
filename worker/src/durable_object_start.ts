@@ -395,6 +395,17 @@ export async function startContainer(
           CORELINK_ENVIRONMENT: ctx.env.CORELINK_ENVIRONMENT ?? "",
           CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY:
             ctx.env.CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY ?? "",
+          // #2574/#2578 staging native-gRPC diagnostic: these bindings reach
+          // the Container so it can independently authenticate the original
+          // Authorization before executing either probe method.
+          ENVIRONMENT: ctx.env.ENVIRONMENT ?? "",
+          CORELINK_STAGING_GRPC_PROBE_TOKEN: ctx.env.CORELINK_STAGING_GRPC_PROBE_TOKEN ?? "",
+          CORELINK_STAGING_GRPC_PROBE_EXPIRES_AT_MS:
+            ctx.env.CORELINK_STAGING_GRPC_PROBE_EXPIRES_AT_MS ?? "",
+          CORELINK_STAGING_GRPC_PROBE_DEPLOYMENT_SHA:
+            ctx.env.CORELINK_STAGING_GRPC_PROBE_DEPLOYMENT_SHA ?? "",
+          CORELINK_STAGING_GRPC_PROBE_WORKER_NAME:
+            ctx.env.CORELINK_STAGING_GRPC_PROBE_WORKER_NAME ?? "",
         },
       });
 

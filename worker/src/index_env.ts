@@ -45,6 +45,11 @@ export interface Env {
   // forwarding behavior in durable_object_start.ts.
   CORELINK_ENVIRONMENT?: string;
   CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY?: string;
+  // #2574 protected, short-lived staging-native-gRPC diagnostic binding.
+  CORELINK_STAGING_GRPC_PROBE_TOKEN?: string;
+  CORELINK_STAGING_GRPC_PROBE_EXPIRES_AT_MS?: string;
+  CORELINK_STAGING_GRPC_PROBE_DEPLOYMENT_SHA?: string;
+  CORELINK_STAGING_GRPC_PROBE_WORKER_NAME?: string;
   // P3 edge-local request-metering DOs (ACCEPTED, docs/design/2026-08-19-adr-edge-
   // local-do-request-metering.md). RequestMeterCoordinatorDO — 1/tenant, the
   // monthly-cap token-lease authority; RequestMeterShardDO — 1/(tenant,region),

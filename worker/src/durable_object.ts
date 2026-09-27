@@ -56,6 +56,11 @@ import {
   PAT_ISSUE_AUTHORIZED_HEADER,
 } from "./pat_issue_rate_limit.js";
 import { isPilotSignupPath } from "./route_match.js";
+import {
+  isStagingGrpcDiagnosticPath,
+  verifyStagingGrpcDiagnosticBinding,
+} from "./grpc_staging_authorization.js";
+import { isNonRedirectNativeGrpcResponse } from "./grpc_staging_transport.js";
 import { handleRunnerPrepare } from "./lib/runner_credential_routes.js";
 import {
   drainCredentialCleanupObligations,
@@ -98,6 +103,16 @@ type ContainerStatus = "stopped" | "starting" | "running" | "degraded";
 // ──────────────────────────────────────────────────────────────────────────────
 
 const CONTAINER_PORT = 50051;
+
+function grpcDiagnosticUnavailable(): Response {
+  return new Response(JSON.stringify({ error: "GRPC_TRANSPORT_UNAVAILABLE" }), {
+    status: 503,
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "application/json; charset=utf-8",
+    },
+  });
+}
 /** Timed samples taken per D1 read path on `/_do/health`. */
 const D1_PROBE_SAMPLES = 3;
 /** Per-sample ceiling (ms). A hung D1 must not hang the health probe. */
@@ -261,6 +276,13 @@ export class CoreLinkServer implements DurableObject {
     const requestId = request.headers.get("x-request-id") ?? crypto.randomUUID();
     const url = new URL(request.url);
 
+    // The staging transport probe must never enter tenant resolution, durable
+    // rate limiting, cache routing, or normal response transforms. Its service
+    // authenticates the original Authorization again inside the container.
+    if (isStagingGrpcDiagnosticPath(request)) {
+      return this.forwardStagingGrpcDiagnostic(request);
+    }
+
     // Internal DO management paths
     if (url.pathname === "/_do/health") {
       // `?colo=1` additionally resolves this DO's serving colo (one best-effort
@@ -393,6 +415,28 @@ export class CoreLinkServer implements DurableObject {
           headers: { "Content-Type": "application/json", "X-Request-Id": requestId },
         },
       );
+    }
+  }
+
+  private async forwardStagingGrpcDiagnostic(request: Request): Promise<Response> {
+    if (verifyStagingGrpcDiagnosticBinding(request, this.env, this.now()) === null) {
+      return grpcDiagnosticUnavailable();
+    }
+
+    const started = await this.ensureContainerRunning("staging-grpc-probe");
+    if (!started.ok) return grpcDiagnosticUnavailable();
+
+    const container = this.state.container;
+    if (container === undefined || !container.running) return grpcDiagnosticUnavailable();
+
+    try {
+      const response = await proxyToContainer(request, container.getTcpPort(CONTAINER_PORT), {
+        signal: request.signal,
+        redirect: "manual",
+      });
+      return isNonRedirectNativeGrpcResponse(response) ? response : grpcDiagnosticUnavailable();
+    } catch {
+      return grpcDiagnosticUnavailable();
     }
   }
 

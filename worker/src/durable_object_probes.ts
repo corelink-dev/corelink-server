@@ -222,7 +222,13 @@ export async function emitLifecycleEvent(
  *
  * INV-NO-BODY-IN-LOGS: we never read or log the body.
  */
-export async function proxyToContainer(request: Request, fetcher: Fetcher): Promise<Response> {
+export type ContainerProxyOptions = Readonly<Pick<RequestInit, "signal" | "redirect">>;
+
+export async function proxyToContainer(
+  request: Request,
+  fetcher: Fetcher,
+  options: ContainerProxyOptions = {},
+): Promise<Response> {
   const url = new URL(request.url);
   const containerUrl = `http://localhost:${CONTAINER_PORT}${url.pathname}${url.search}`;
 
@@ -230,6 +236,8 @@ export async function proxyToContainer(request: Request, fetcher: Fetcher): Prom
     method: request.method,
     headers: request.headers,
     body: request.method !== "GET" && request.method !== "HEAD" ? request.body : null,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.redirect === undefined ? {} : { redirect: options.redirect }),
     // @ts-expect-error duplex is required for streaming request bodies
     duplex: request.method !== "GET" && request.method !== "HEAD" ? "half" : undefined,
   });

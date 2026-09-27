@@ -41,7 +41,12 @@ def load_trusted_delivery_policy() -> object:
     if spec is None or spec.loader is None:
         raise ContractError("trusted delivery policy is unavailable")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    original_dont_write_bytecode = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = original_dont_write_bytecode
     return module
 
 

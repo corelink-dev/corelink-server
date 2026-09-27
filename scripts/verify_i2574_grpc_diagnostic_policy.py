@@ -20,17 +20,17 @@ class ContractError(RuntimeError):
 
 
 EXPECTED = {
-    "specs/03_architecture/issue-2176-grpc-transport-contract.md": "a9d66d36a0bb4cf33a3a3d271b1744513a72ff244920125a392b9f45de74552f",
+    "specs/03_architecture/issue-2176-grpc-transport-contract.md": "351aa666c129c7dbc87db4f69f476f8bcdf522d0ba35223dca7eb507c8a926b3",
     "worker/src/grpc_transport_gate.ts": "68b14c5537100733ff467d8beb80f3cadce07f9b3b5f43339ab323e8ca1cfcfd",
-    "worker/src/grpc_staging_authorization.ts": "d9ed7b48ba291aadd66cf9bcef65a4481926c1cceae80884c3abafea5039835c",
-    "worker/src/grpc_staging_transport.ts": "d94bdd39789794c2b25d2bc12e371497030d1ce1677bfaf5c26da638137ecdeb",
+    "worker/src/grpc_staging_authorization.ts": "6b8e2f6eb6cc42d0b0d7404950d068bab9da47c4bb1bb4c4fa0a0073c3f48400",
+    "worker/src/grpc_staging_transport.ts": "b3c0b471790ed7fd64138d99c0976b63c4fb620b0ce588f8c9852ea2de900f72",
     "worker/src/index_fetch.ts": "d8619985ea28485792198c8f0e8607c108d82af66a76c0fbfc5253f2e2c3ab07",
     "worker/src/index_env.ts": "ae733fad5467d839b0983f5b0df306fe8ad4c7bee68822e66e1d5b4f028886cf",
     "worker/src/index_env_contract.ts": "ec259cf4d4f4c6bab582375b88a449c3d5a3d8d53c7680afdcb8e7728710eb9d",
-    "worker/src/durable_object.ts": "96f3f6e395d9f09feda2cc7d4e8616b27ff0b5afdbded5e0344085063146f410",
+    "worker/src/durable_object.ts": "5be00eb88931adf4b2789c15ff3e715407dcd3e67e176de370c0922b175356a7",
     "worker/src/durable_object_probes.ts": "3b1a67b3c6883d23dfd29bd0a8cf18de9e9c3848b4e79e1d3d04539944081f78",
     "worker/src/durable_object_start.ts": "26d78fadfb89ca7327f698696ec15c53c455823f3f2c1ae3c282af16b4cab244",
-    "worker/tests/grpc_staging_transport.test.ts": "316b538eb01676e71db8b023550c314b1e37fadd6b1c3974acdb28565e312b8d",
+    "worker/tests/grpc_staging_transport.test.ts": "ab3748063dda62d241c4c0cfdd482261514a2b8fd8a6f427d5ef4023c7fe4f96",
     "worker/src/lib/internal_auth.ts": "e773fa80db1ffd97ccdd20ae08e60e662482eea7e55bef6f19a3d61644b43acf",
 }
 POLICY = {
