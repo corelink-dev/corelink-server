@@ -16,8 +16,19 @@ on:
       - 'tests/test_staging_quarantine_apply_contract.py'
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'Choose the protected #1700 operation'
+        required: true
+        type: choice
+        options:
+          - scope-probe
+          - quarantine-apply
+      expected_sha:
+        description: 'Exact protected main commit SHA to operate on'
+        required: true
+        type: string
       confirm:
-        description: 'Type "quarantine-apply-staging-1700" to deploy isolated route-free Workers'
+        description: 'Type the mode-specific confirmation phrase'
         required: true
         type: string
 
@@ -47,11 +58,96 @@ jobs:
             tests/test_staging_bootstrap_provider.py \
             tests/test_staging_quarantine_apply_contract.py
 
+  scope-probe:
+    name: protected staging token-scope probe
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.mode == 'scope-probe' &&
+      github.ref == 'refs/heads/main' && github.ref_protected
+    needs: contract
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 10
+    env:
+      CF_BOOTSTRAP_ADMIN_TOKEN: ${{ secrets.CF_API_TOKEN }}
+    steps:
+      - name: Confirm exact protected scope probe
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = 'scope-probe-staging-1700'
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+
+      - name: Checkout the exact protected dispatch commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Read token capabilities without creating a token
+        run: |
+          set -euo pipefail
+          test -n "$CF_BOOTSTRAP_ADMIN_TOKEN"
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          token = os.environ["CF_BOOTSTRAP_ADMIN_TOKEN"]
+
+          def request(path: str, method: str = "GET", body: bytes | None = None) -> tuple[int, object]:
+              request = urllib.request.Request(
+                  f"https://api.cloudflare.com/client/v4/{path}",
+                  data=body,
+                  method=method,
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      return response.status, json.load(response)
+              except urllib.error.HTTPError as error:
+                  return error.code, None
+
+          groups_status, groups_payload = request("user/tokens/permission_groups")
+          # Deliberately malformed JSON cannot create a token. A 400 response
+          # is recorded as the provider's accepted write-endpoint probe; 401
+          # and 403 remain an explicit denial.
+          write_status, _ = request("user/tokens", "POST", b"{")
+          groups = groups_payload.get("result", []) if isinstance(groups_payload, dict) else []
+          wanted = {"Workers Scripts Edit", "Workers KV Storage Edit", "Workers R2 Storage Edit", "D1 Edit", "Queues Edit", "Workers Routes Read", "Zone Read", "Account API Tokens Edit"}
+          selected = sorted(
+              (
+                  {"id": item.get("id"), "name": item.get("name")}
+                  for item in groups
+                  if isinstance(item, dict) and item.get("name") in wanted
+              ),
+              key=lambda item: str(item["name"]),
+          )
+          print(json.dumps({
+              "cf_permission_groups_readable": groups_status == 200,
+              "cf_api_tokens_write_endpoint_authorized": write_status == 400,
+              "cf_permission_groups": selected,
+              "github_environment_write_probe": "next-mode-required",
+          }, sort_keys=True))
+          if groups_status != 200 or write_status != 400:
+              raise SystemExit("scope probe denied; no token was created")
+          PY
+          unset CF_BOOTSTRAP_ADMIN_TOKEN
+
   quarantine-apply:
     name: protected staging quarantine apply
     if: >-
       github.repository == 'HuGR-dev/corelink-server' &&
       github.event_name == 'workflow_dispatch' &&
+      inputs.mode == 'quarantine-apply' &&
       github.ref == 'refs/heads/main' && github.ref_protected
     needs: contract
     runs-on: ubuntu-latest
@@ -76,15 +172,23 @@ jobs:
       - name: Confirm the quarantined operation
         env:
           CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
           test "$CONFIRM" = 'quarantine-apply-staging-1700'
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
 
       - name: Checkout the protected dispatch commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Recheck exact protected checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - name: Verify the staging boundary and required input names
         run: |
