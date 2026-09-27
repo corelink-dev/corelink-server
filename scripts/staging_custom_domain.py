@@ -62,7 +62,12 @@ def _success_list(payload: Any, label: str) -> tuple[list[Any], dict[str, Any]]:
 
 
 def _validate_page(
-    payload: dict[str, Any], rows: list[Any], per_page: int, label: str
+    payload: dict[str, Any],
+    rows: list[Any],
+    per_page: int,
+    label: str,
+    *,
+    allow_missing_total_pages: bool = False,
 ) -> None:
     info = payload.get("result_info")
     if not isinstance(info, dict):
@@ -80,8 +85,8 @@ def _validate_page(
         or page != 1
         or type(size) is not int
         or size != per_page
-        or type(pages) is not int
-        or pages != 1
+        or ("total_pages" not in info and not allow_missing_total_pages)
+        or ("total_pages" in info and (type(pages) is not int or pages != 1))
         or type(total) is not int
         or total < count
         or len(rows) >= per_page
@@ -117,7 +122,13 @@ def validate_zone(
 
 def validate_dns(payload: Any) -> list[dict[str, Any]]:
     rows, envelope = _success_list(payload, "DNS")
-    _validate_page(envelope, rows, DNS_PAGE_SIZE, "DNS")
+    _validate_page(
+        envelope,
+        rows,
+        DNS_PAGE_SIZE,
+        "DNS",
+        allow_missing_total_pages=True,
+    )
     checked: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -140,7 +151,13 @@ def validate_dns(payload: Any) -> list[dict[str, Any]]:
 
 def validate_domains(payload: Any) -> list[dict[str, Any]]:
     rows, envelope = _success_list(payload, "Worker Custom Domain")
-    _validate_page(envelope, rows, DOMAIN_PAGE_SIZE, "Worker Custom Domain")
+    _validate_page(
+        envelope,
+        rows,
+        DOMAIN_PAGE_SIZE,
+        "Worker Custom Domain",
+        allow_missing_total_pages=True,
+    )
     checked: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
