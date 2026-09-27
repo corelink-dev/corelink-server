@@ -1796,23 +1796,29 @@ last-verified: 2026-09-06
 id: B-314
 repo: corelink-server
 owner: owner
-status: open
+status: done
 source-document: "PR containment audit #1490/#1506 addendum"
 source-locator: "apps/docs/docs/explanation/privacy/gdpr.mdx:191-200; four published locale copies"
 finding-title: "GDPR international-transfer table has an unowned Sigstore recipient row"
-problem: "The four published GDPR locale tables retain a combined PagerDuty / GitHub / Sigstore US row, while the Trust Center and generated source describe current release-SLSA, CAS, and TSA paths as sending only CoreLink-owned artifact/signing metadata, say no customer-data path is wired, and identify Sigstore as not a customer-data sub-processor in the current register. The separate transparency-log seam is not a live transport, and any future pseudonymous-tenant use requires new Legal/DPO review. The disposition for this exact table residue is not recorded."
+problem: "The four draft GDPR locale tables had a combined PagerDuty / GitHub / Sigstore US recipient cell despite no evidenced customer-data path to Sigstore; the exact table disposition required Legal/DPO authorization."
 evidence: "Four-locale census plus posture markers in apps/docs/docs/trust/subprocessors.mdx and scripts/gen-public-subprocessors.py; no transfer or legal approval is inferred."
-acceptance: "A signed Legal/DPO disposition covers all four locale copies and chooses remove_sigstore_row or retain_and_document_transfer; only then may the table and this item transition."
+acceptance: "A signed Legal/DPO disposition covers all four locale copies; the approved remove_sigstore_row outcome is applied without changing other recipients, fields, flows, or legal decisions."
 action-packet: docs/handoff/2026-09-06-b314-gdpr-sigstore-transfer.json
 verify: python3 -S scripts/verify_b314_gdpr_sigstore.py
 verify-means: |
-  open — the fail-closed guard exits 0 only while exactly one combined Sigstore row
-  remains in each of the four published locale tables, the Trust Center/generator retain
-  their measured non-processor posture, and the packet's Legal/DPO decision is pending.
-  Removing, duplicating, weakening, or silently restoring any row turns the check red and
-  requires an explicit status transition. The packet's population and action boundary are
-  checked as well; it does not decide B-005/B-112/B-118 or delete/repair cosign-sign.yml.
-last-verified: 2026-09-06
+  done — one signed GitHub issue receipt records remove_sigstore_row at
+  https://github.com/HuGR-dev/corelink-server/issues/2601#issuecomment-5854794010,
+  effective 2026-09-27T09:48:32Z, notice B-314-prelaunch-2026-09-27, and the same gmhelmold
+  identity exercising Counsel and DPO functions (not two independent signers).
+  All four draft tables remove only “ / Sigstore” from the Recipient cell; preserve
+  PagerDuty and GitHub, country, mechanism, transfer description, and all other rows.
+  no individual notice or re-consent is required for this prelaunch correction. This
+  does not assert Sigstore has no operational metadata/personal data or that release-signing flows ceased,
+  and it invents no Sigstore transfer basis. Evidence is recorded
+  at evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json. The verifier
+  rejects a missing locale, restored Sigstore row, changed mechanism, decision/reference
+  drift, or posture/wiring drift; B-005/B-112/B-118 and cosign-sign.yml remain out of scope.
+last-verified: 2026-09-27
 ```
 
 ### B-315 — concurrent merges can allocate the same dense BACKLOG id from one stale snapshot
