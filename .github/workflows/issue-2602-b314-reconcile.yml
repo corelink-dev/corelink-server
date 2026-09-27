@@ -97,7 +97,8 @@ jobs:
           PY
 
       - name: Verify approved B-314 done state and mutation controls
-        run: python3 -S scripts/verify_b314_gdpr_sigstore.py --self-test
+        run: |
+          python3 -S scripts/verify_b314_gdpr_sigstore.py --self-test
 
       - name: Run focused verifier tests
         run: |
