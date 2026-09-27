@@ -76,8 +76,15 @@ jobs:
           tests/test_backlog_verify_trust_boundary.py::BacklogVerifyTrustBoundaryTests::test_b057_c0_rejects_added_deleted_and_mutated_symlinks
           tests/test_backlog_verify_trust_boundary.py::BacklogVerifyTrustBoundaryTests::test_b057_c0_rejects_symlinks_at_every_pinned_target
           tests/test_backlog_verify_trust_boundary.py::BacklogVerifyTrustBoundaryTests::test_b057_c0_rejects_an_added_symlink_directory_without_traversing_it
+      - name: Prove byte-pinned v0008 historical admission
+        if: github.head_ref == 'codex/issue-2649-v0008-history-policy-20260926' || github.ref_name == 'codex/issue-2649-v0008-history-policy-20260926'
+        run: >-
+          python -m pytest -vv
+          tests/test_backlog_ledger_successor.py::test_v0008_replays_only_the_pinned_delivered_b113_and_b098_prose
+          tests/test_backlog_ledger_successor.py::test_successor_chain_rejects_unreceipted_post_v0008_drift
+          tests/test_backlog_ledger_successor.py::test_v0008_historical_admission_is_byte_and_merge_pinned
       - name: Prove derived policy through v0009 and mutation rejection
-        if: github.head_ref != 'codex/issue-2414-c0-policy' && github.ref_name != 'codex/issue-2414-c0-policy'
+        if: github.head_ref != 'codex/issue-2414-c0-policy' && github.ref_name != 'codex/issue-2414-c0-policy' && github.head_ref != 'codex/issue-2649-v0008-history-policy-20260926' && github.ref_name != 'codex/issue-2649-v0008-history-policy-20260926'
         run: >-
           python -m pytest -vv
           tests/test_backlog_ledger_successor.py::test_v0004_policy_derives_only_b012_retirement_from_pr_base
