@@ -8,6 +8,8 @@ on:
         type: string
   pull_request:
     paths:
+      - docs/campaigns/remediation/B-114-corelink-runners-receipt.md
+      - scripts/backlog_verify.py
       - scripts/check_b114_cross_repo.py
       - scripts/backlog_ledger_successor.py
       - tests/test_backlog_ledger_successor.py
@@ -31,6 +33,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: test "$GITHUB_SHA" = "$EXPECTED_SHA"
       - run: python3 scripts/check_b114_cross_repo.py --self-test
+      - run: python3 scripts/check_b114_cross_repo.py --receipt
       - if: github.event_name == 'workflow_dispatch' && github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main'
         run: |
           python3 -m venv .venv
