@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import shutil
+import os
 import sys
 import tempfile
 import unittest
@@ -72,6 +73,19 @@ class P0TransitionFixtureTests(unittest.TestCase):
                 original = target.read_bytes(); target.write_bytes(original + b"\nmutation\n")
                 with self.assertRaises(policy.ContractError): policy.validate(p0, delivery)
                 target.write_bytes(original)
+
+            pinned = delivery / "worker/src/grpc_transport_gate.ts"
+            pinned_bytes = pinned.read_bytes()
+            external = Path(directory) / "same-bytes.ts"; external.write_bytes(pinned_bytes)
+            pinned.unlink(); os.symlink(external, pinned)
+            with self.assertRaises(policy.ContractError): policy.validate(p0, delivery)
+            pinned.unlink(); pinned.write_bytes(pinned_bytes)
+            pinned.chmod(0o755)
+            with self.assertRaises(policy.ContractError): policy.validate(p0, delivery)
+            pinned.chmod(0o644)
+            dangling = delivery / "worker/src/dangling.ts"
+            os.symlink(Path(directory) / "missing.ts", dangling)
+            with self.assertRaises(policy.ContractError): policy.validate(p0, delivery)
             for name in policy.POLICY:
                 target = delivery / name
                 original = target.read_bytes(); target.write_bytes(original + b"\nmutation\n")

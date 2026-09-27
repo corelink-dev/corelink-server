@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -71,7 +72,23 @@ def digest(path: Path) -> str:
 
 
 def files(root: Path) -> set[str]:
-    return {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and ".git" not in p.parts}
+    return {
+        str(p.relative_to(root)) for p in root.rglob("*")
+        if stat.S_ISREG(p.lstat().st_mode) and ".git" not in p.parts
+    }
+
+
+def require_regular_tree(root: Path) -> None:
+    for path in root.rglob("*"):
+        if ".git" in path.parts:
+            continue
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            raise ContractError(f"symlink forbidden: {path.relative_to(root)}")
+        if not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
+            raise ContractError(f"non-regular path forbidden: {path.relative_to(root)}")
+        if stat.S_ISREG(mode) and stat.S_IMODE(mode) != 0o644:
+            raise ContractError(f"unexpected file mode: {path.relative_to(root)}")
 
 
 def changed(base: Path, candidate: Path) -> set[str]:
@@ -80,6 +97,8 @@ def changed(base: Path, candidate: Path) -> set[str]:
 
 
 def validate(base: Path, candidate: Path) -> None:
+    require_regular_tree(base)
+    require_regular_tree(candidate)
     differences = changed(base, candidate)
     allowed = set(EXPECTED) - {"worker/src/lib/internal_auth.ts"}
     if differences - allowed:
