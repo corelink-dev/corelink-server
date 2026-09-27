@@ -88,35 +88,101 @@ jobs:
           cat > "$RUNNER_TEMP/cf-handoff/encrypt.js" <<'JS'
           const fs = require("fs");
           const crypto = require("crypto");
+          const validateEnvelope = () => {
+            try {
+              const outputPath = process.argv[3];
+              const publicKey = fs.readFileSync(process.argv[4]);
+              const expectedMode = process.argv[5];
+              const expectedSha = process.argv[6];
+              const expectedRunId = process.argv[7];
+              const envelope = JSON.parse(fs.readFileSync(outputPath, "utf8"));
+              const expectedKeyHash = crypto.createHash("sha256")
+                .update(crypto.createPublicKey(publicKey).export({type:"spki", format:"der"}))
+                .digest("hex");
+              const required = ["wrapped_key_b64", "nonce_b64", "tag_b64", "ciphertext_b64"];
+              if (envelope.schema !== "corelink-cloudflare-token-handoff-envelope-v1" ||
+                  envelope.algorithm !== "RSA-OAEP-SHA256+A256GCM" ||
+                  envelope.mode !== expectedMode || envelope.github_sha !== expectedSha ||
+                  envelope.github_run_id !== expectedRunId ||
+                  envelope.recipient_key_sha256 !== expectedKeyHash ||
+                  required.some((field) => typeof envelope[field] !== "string" ||
+                    !/^[A-Za-z0-9+/]+={0,2}$/.test(envelope[field]) ||
+                    Buffer.from(envelope[field], "base64").length === 0) ||
+                  Buffer.from(envelope.nonce_b64, "base64").length !== 12 ||
+                  Buffer.from(envelope.tag_b64, "base64").length !== 16 ||
+                  Buffer.from(envelope.wrapped_key_b64, "base64").length !== 384) {
+                throw new Error("invalid envelope");
+              }
+              process.exit(0);
+            } catch (_) {
+              process.stderr.write("encrypted handoff validation failed\n");
+              process.exit(1);
+            }
+          };
+          if (process.argv[2] === "--validate") {
+            validateEnvelope();
+          }
           const publicKey = fs.readFileSync(process.argv[2]);
           const outputPath = process.argv[3];
+          const expectedMode = process.argv[4];
+          const expectedSha = process.argv[5];
+          const expectedRunId = process.argv[6];
           const chunks = [];
           process.stdin.on("data", (chunk) => chunks.push(chunk));
           process.stdin.on("end", () => {
-            const plaintext = Buffer.concat(chunks);
-            const key = crypto.randomBytes(32);
-            const nonce = crypto.randomBytes(12);
-            const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
-            const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-            const wrappedKey = crypto.publicEncrypt({
-              key: publicKey,
-              padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
-              oaepHash: "sha256",
-            }, key);
-            const envelope = {
-              algorithm: "RSA-OAEP-SHA256+A256GCM",
-              recipient_key_sha256: crypto.createHash("sha256").update(crypto.createPublicKey(publicKey).export({type:"spki", format:"der"})).digest("hex"),
-              wrapped_key_b64: wrappedKey.toString("base64"),
-              nonce_b64: nonce.toString("base64"),
-              tag_b64: cipher.getAuthTag().toString("base64"),
-              ciphertext_b64: ciphertext.toString("base64"),
-            };
-            fs.writeFileSync(outputPath, JSON.stringify(envelope), {mode: 0o600, flag: "wx"});
-            key.fill(0);
-            plaintext.fill(0);
+            let plaintext;
+            let key;
+            try {
+              plaintext = Buffer.concat(chunks);
+              if (plaintext.length === 0) throw new Error("empty payload");
+              const payload = JSON.parse(plaintext.toString("utf8"));
+              const expectedSecretKeys = expectedMode === "r2-2564-mint"
+                ? ["R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY"]
+                : expectedMode === "worker-1700-mint"
+                  ? ["STAGING_CF_WORKER_API_TOKEN"]
+                  : [];
+              if (expectedSecretKeys.length === 0 ||
+                  payload.schema !== "corelink-cloudflare-token-handoff-v1" ||
+                  payload.mode !== expectedMode || payload.github_sha !== expectedSha ||
+                  payload.github_run_id !== expectedRunId ||
+                  typeof payload.token_id !== "string" || payload.token_id.length === 0 ||
+                  !payload.secret_values || typeof payload.secret_values !== "object" ||
+                  expectedSecretKeys.some((field) => typeof payload.secret_values[field] !== "string" ||
+                    payload.secret_values[field].length === 0)) {
+                throw new Error("invalid payload");
+              }
+              key = crypto.randomBytes(32);
+              const nonce = crypto.randomBytes(12);
+              const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
+              const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+              const wrappedKey = crypto.publicEncrypt({
+                key: publicKey,
+                padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+                oaepHash: "sha256",
+              }, key);
+              const envelope = {
+                schema: "corelink-cloudflare-token-handoff-envelope-v1",
+                algorithm: "RSA-OAEP-SHA256+A256GCM",
+                mode: expectedMode,
+                github_sha: expectedSha,
+                github_run_id: expectedRunId,
+                recipient_key_sha256: crypto.createHash("sha256").update(crypto.createPublicKey(publicKey).export({type:"spki", format:"der"})).digest("hex"),
+                wrapped_key_b64: wrappedKey.toString("base64"),
+                nonce_b64: nonce.toString("base64"),
+                tag_b64: cipher.getAuthTag().toString("base64"),
+                ciphertext_b64: ciphertext.toString("base64"),
+              };
+              fs.writeFileSync(outputPath, JSON.stringify(envelope), {mode: 0o600, flag: "wx"});
+            } catch (_) {
+              process.stderr.write("handoff payload encryption failed\n");
+              process.exitCode = 1;
+            } finally {
+              if (key) key.fill(0);
+              if (plaintext) plaintext.fill(0);
+            }
           });
           JS
-          python3 - <<'PY' | env -u CF_BOOTSTRAP_ADMIN_TOKEN node "$RUNNER_TEMP/cf-handoff/encrypt.js" "$RUNNER_TEMP/cf-handoff/recipient.pem" "$RUNNER_TEMP/cf-handoff/handoff.enc.json"
+          python3 - <<'PY' | env -u CF_BOOTSTRAP_ADMIN_TOKEN node "$RUNNER_TEMP/cf-handoff/encrypt.js" "$RUNNER_TEMP/cf-handoff/recipient.pem" "$RUNNER_TEMP/cf-handoff/handoff.enc.json" "$MODE" "$GITHUB_SHA" "$GH_RUN_ID"
           import datetime
           import hashlib
           import json
@@ -209,10 +275,29 @@ jobs:
           PY
           unset CF_BOOTSTRAP_ADMIN_TOKEN
           test -s "$RUNNER_TEMP/cf-handoff/handoff.enc.json"
-          rm -f "$RUNNER_TEMP/cf-handoff/recipient.pem"
+
+      - name: Validate encrypted handoff before either upload
+        id: validate_handoff
+        if: always()
+        env:
+          MODE: ${{ inputs.mode }}
+          EXPECTED_SHA: ${{ github.sha }}
+          GH_RUN_ID: ${{ github.run_id }}
+          MINT_OUTCOME: ${{ steps.mint_token.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          valid=false
+          if [[ "$MINT_OUTCOME" == success && -s "$RUNNER_TEMP/cf-handoff/handoff.enc.json" && -s "$RUNNER_TEMP/cf-handoff/recipient.pem" && -s "$RUNNER_TEMP/cf-handoff/encrypt.js" ]]; then
+            if node "$RUNNER_TEMP/cf-handoff/encrypt.js" --validate "$RUNNER_TEMP/cf-handoff/handoff.enc.json" "$RUNNER_TEMP/cf-handoff/recipient.pem" "$MODE" "$EXPECTED_SHA" "$GH_RUN_ID"; then
+              valid=true
+            fi
+          fi
+          echo "valid=$valid" >> "$GITHUB_OUTPUT"
 
       - name: Upload ciphertext only
         id: upload_ciphertext
+        if: success() && steps.validate_handoff.outputs.valid == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cloudflare-${{ inputs.mode }}-handoff-${{ github.run_id }}
@@ -223,9 +308,11 @@ jobs:
       - name: Check for the encrypted handoff after any prior failure
         id: check_handoff
         if: always()
+        env:
+          VALID_HANDOFF: ${{ steps.validate_handoff.outputs.valid }}
         shell: bash
         run: |
-          if [[ -s "$RUNNER_TEMP/cf-handoff/handoff.enc.json" ]]; then
+          if [[ "$VALID_HANDOFF" == true && -s "$RUNNER_TEMP/cf-handoff/handoff.enc.json" ]]; then
             echo 'exists=true' >> "$GITHUB_OUTPUT"
           else
             echo 'exists=false' >> "$GITHUB_OUTPUT"
@@ -233,7 +320,7 @@ jobs:
 
       - name: Retry ciphertext upload once after a transient artifact error
         id: upload_recovery
-        if: failure() && steps.check_handoff.outputs.exists == 'true'
+        if: failure() && steps.check_handoff.outputs.exists == 'true' && steps.validate_handoff.outputs.valid == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cloudflare-${{ inputs.mode }}-handoff-${{ github.run_id }}-recovery
