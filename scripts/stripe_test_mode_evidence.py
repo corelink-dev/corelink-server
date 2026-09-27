@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Bounded Stripe test-mode evidence probe for issue #1649.
+"""Bounded Stripe test-mode evidence probes for issues #1649 and #2565.
 
-The probe uses only the Stripe API test key supplied by the workflow. It creates
-one disposable Customer, replays the exact create request with one stable
-idempotency key, verifies test mode and ordering, then deletes the Customer.
-Only a redacted receipt is written; response bodies and credentials are never
-printed.
+The #2565 identity-only mode makes one read-only Account GET. The #1649
+customer-lifecycle mode creates one disposable Customer, replays the exact
+create request with one stable idempotency key, verifies test mode and ordering,
+then deletes the Customer. Both modes write only redacted receipts; response
+bodies and credentials are never printed.
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from typing import Any
 API_BASE = "https://api.stripe.com"
 TIMEOUT_SECONDS = 20
 CONFIRMATION = "run-i1649-stripe-test-mode"
+IDENTITY_CONFIRMATION = "run-i2565-stripe-identity-only"
 REQUIRED_WORKFLOW_MARKERS = (
     "github.repository == 'HuGR-dev/corelink-server'",
     "runs-on: ubuntu-latest",
@@ -33,6 +34,9 @@ REQUIRED_WORKFLOW_MARKERS = (
     "livemode",
     "idempotency",
     "cleanup",
+    "identity-only",
+    "STRIPE_TEST_ACCOUNT_ID",
+    "Run read-only Stripe account identity probe",
     "persist-credentials: false",
 )
 FORBIDDEN_WORKFLOW_MARKERS = (
@@ -198,6 +202,41 @@ def run_probe(key: str, run_id: str, output: Path) -> int:
     return 0
 
 
+def run_identity_probe(key: str, run_id: str, expected_account_id: str, output: Path) -> int:
+    """Read Stripe account identity once; never creates or changes provider data."""
+    require_restricted_test_key(key)
+    if not run_id or not run_id.isascii() or not run_id.replace("-", "").isalnum():
+        raise ProbeError("GITHUB_RUN_ID is missing or malformed")
+    if not expected_account_id.startswith("acct_"):
+        raise ProbeError("STRIPE_TEST_ACCOUNT_ID is missing or malformed")
+
+    status, account = request_json(key, "GET", "/v1/account")
+    if status != 200:
+        raise ProbeError("Stripe account read failed")
+    assert_account_identity(account)
+    matches = account["id"] == expected_account_id
+
+    receipt = {
+        "schema": "corelink.stripe-test-mode-identity.v1",
+        "issue": 2565,
+        "run_id": run_id,
+        "mode": "test",
+        # Stripe Account has no livemode field. The restricted rk_test_ prefix
+        # is checked before the sole GET, so this is evidence about key mode.
+        "livemode": False,
+        "account_matches_expected": matches,
+        "requests": ["GET /v1/account"],
+        "provider_mutations": 0,
+        "redacted": True,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if not matches:
+        raise ProbeError("Stripe account did not match the configured test account")
+    return 0
+
+
 def contract_check(workflow: Path) -> int:
     text = workflow.read_text(encoding="utf-8")
     missing = [marker for marker in REQUIRED_WORKFLOW_MARKERS if marker not in text]
@@ -217,10 +256,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--contract", action="store_true")
     parser.add_argument("--workflow", type=Path, default=Path(".github/workflows/issue-1649-stripe-test-mode.yml"))
     parser.add_argument("--output", type=Path, default=Path("artifacts/issue-1649-stripe-test-mode-receipt.json"))
+    parser.add_argument("--identity-only", action="store_true")
     args = parser.parse_args(argv)
     if args.contract:
         return contract_check(args.workflow)
     try:
+        if args.identity_only:
+            if os.environ.get("I2565_CONFIRM") != IDENTITY_CONFIRMATION:
+                raise ProbeError("identity-only dispatch confirmation is missing or incorrect")
+            return run_identity_probe(
+                os.environ.get("STRIPE_SECRET_KEY", ""),
+                os.environ.get("GITHUB_RUN_ID", ""),
+                os.environ.get("STRIPE_TEST_ACCOUNT_ID", ""),
+                args.output,
+            )
         if os.environ.get("I1649_CONFIRM") != CONFIRMATION:
             raise ProbeError("dispatch confirmation is missing or incorrect")
         return run_probe(
