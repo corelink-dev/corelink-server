@@ -14,10 +14,10 @@ RENDERER = Path("scripts/render_staging_wrangler.py")
 # provider/renderer source drift must receive explicit preflight safety review
 # and updated pins.
 CANONICAL_PROVIDER_SOURCE_SHA256 = (
-    "2dd45f62e87446074212beabebc2efb3d91cb71b9c469b4d1e0680db7761300a"
+    "77be0f999b0c9b97b6fe731afdd3d2db6fc8f9634315c9e49c4b5e6fa66d68e4"
 )
 CANONICAL_RENDERER_SOURCE_SHA256 = (
-    "2f18545971659e2c6826b4538653d0ee3533cb5409a4ed17663585da92c7e870"
+    "4dc4f24bf2e3d62f6ebd386567ec92490d90701f04fcfd4ecb752568f1ec8e9f"
 )
 # Exact source pin for get() in canonical main@b295292f. This binds request
 # construction, all intervening statements, and urlopen send behavior.

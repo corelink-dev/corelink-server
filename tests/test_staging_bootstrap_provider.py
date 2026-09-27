@@ -4,14 +4,44 @@ from __future__ import annotations
 
 import unittest
 import json
+import hashlib
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts import render_staging_wrangler as renderer
 from scripts import staging_bootstrap_provider as provider
 from scripts import staging_custom_domain as custom_domain
+from scripts import verify_staging_provider_preflight as preflight
 
 
 class StagingBootstrapProviderTests(unittest.TestCase):
+    def test_provider_preflight_pins_reject_provider_and_renderer_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workflow = root / "workflow.yml"
+            provider = root / "provider.py"
+            renderer_path = root / "renderer.py"
+            workflow.write_text("", encoding="utf-8")
+            baselines = {
+                provider: b"reviewed provider bytes\n",
+                renderer_path: b"reviewed renderer bytes\n",
+            }
+            for mutated_path in baselines:
+                with self.subTest(mutated=str(mutated_path)):
+                    for path, contents in baselines.items():
+                        path.write_bytes(b"changed source bytes\n" if path == mutated_path else contents)
+                    provider_pin = hashlib.sha256(baselines[provider]).hexdigest()
+                    renderer_pin = hashlib.sha256(baselines[renderer_path]).hexdigest()
+                    with patch.object(preflight, "WORKFLOW", workflow), patch.object(
+                        preflight, "PROVIDER", provider
+                    ), patch.object(preflight, "RENDERER", renderer_path), patch.object(
+                        preflight, "CANONICAL_PROVIDER_SOURCE_SHA256", provider_pin
+                    ), patch.object(
+                        preflight, "CANONICAL_RENDERER_SOURCE_SHA256", renderer_pin
+                    ), self.assertRaisesRegex(SystemExit, str(mutated_path.name)):
+                        preflight.main()
+
     def test_route_pairs_include_any_canonical_matching_pattern(self) -> None:
         routes = [
             {
