@@ -984,7 +984,7 @@ def test_v0009_authorizes_only_the_pinned_b057_delta_and_keeps_v0008():
     "changed-base", "wrong-sequence", "wrong-previous", "changed-receipt",
     "changed-source", "extra-id", "extra-backlog-delta", "changed-ledger",
     "changed-catalog", "incomplete-receipt", "changed-anchor", "changed-history",
-    "changed-history-section", "changed-section-pin",
+    "changed-history-section", "changed-b086-history-section", "changed-section-pin",
 ])
 def test_v0009_rejects_nearby_unauthorized_b057_transitions(monkeypatch, mutation):
     policy = ledger._successor_policy()
@@ -1026,6 +1026,14 @@ def test_v0009_rejects_nearby_unauthorized_b057_transitions(monkeypatch, mutatio
         sections["B-054"] = ("0" * 64, sections["B-054"][1])
         row[5] = sections
         history[0] = tuple(row)
+        monkeypatch.setitem(successor.V0009_RECONCILIATION, "history_transitions", tuple(history))
+    elif mutation == "changed-b086-history-section":
+        history = list(successor.V0009_RECONCILIATION["history_transitions"])
+        row = list(history[-1])
+        sections = dict(row[5])
+        sections["B-086"] = ("0" * 64, sections["B-086"][1])
+        row[5] = sections
+        history[-1] = tuple(row)
         monkeypatch.setitem(successor.V0009_RECONCILIATION, "history_transitions", tuple(history))
     elif mutation == "changed-section-pin":
         monkeypatch.setitem(successor.V0009_RECONCILIATION, "current_section_sha256", "0" * 64)
