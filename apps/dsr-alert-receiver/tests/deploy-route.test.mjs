@@ -352,7 +352,13 @@ describe("B-216 protected receiver route admission", () => {
   it("admits only manual protected main dispatch with no target, command, or ref inputs", async () => {
     const workflow = await readFile(new URL("../../../.github/workflows/b216-receiver-deploy-nonprod.yml", import.meta.url), "utf8");
     const route = await readFile(new URL("../scripts/deploy-route.mjs", import.meta.url), "utf8");
-    expect(workflow).toContain("workflow_dispatch: {}");
+    expect(workflow).toContain("workflow_dispatch:");
+    expect(workflow).toContain("readback_only:");
+    expect(workflow).toContain("default: false");
+    expect(workflow).toContain("type: boolean");
+    expect(workflow).not.toContain("inputs.target");
+    expect(workflow).not.toContain("inputs.command");
+    expect(workflow).not.toContain("inputs.ref");
     expect(workflow).toContain("runs-on: ubuntu-24.04");
     expect(workflow).toContain("environment:\n      name: b216-receiver-nonprod");
     expect(workflow).toContain("one independent approval from either named reviewer");
@@ -361,8 +367,10 @@ describe("B-216 protected receiver route admission", () => {
     expect(workflow).toContain("github.ref == 'refs/heads/main'");
     expect(workflow).toContain("secrets.B216_CF_RECEIVER_WRITE_TOKEN");
     expect(workflow).toContain("secrets.B216_DSR_ALERT_RECEIVER_TOKEN");
-    expect(workflow).not.toMatch(/^\s*(inputs|push|pull_request|schedule):/m);
-    expect(workflow).not.toContain("${{ inputs.");
+    expect(workflow).not.toMatch(/^  (push|pull_request|schedule):/m);
+    const inputReferences = [...workflow.matchAll(/\$\{\{\s*!?inputs\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g)].map((match) => match[1]);
+    expect(inputReferences.length).toBeGreaterThan(0);
+    expect(new Set(inputReferences)).toEqual(new Set(["readback_only"]));
     expect(workflow).not.toContain("secrets." + "CF_API_TOKEN");
     expect(workflow).not.toContain("secrets." + "CLOUDFLARE_API_TOKEN");
     expect(workflow).not.toContain("env.CLOUDFLARE_API_TOKEN");

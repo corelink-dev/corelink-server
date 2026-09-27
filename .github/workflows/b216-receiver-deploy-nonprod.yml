@@ -1,7 +1,13 @@
 name: B-216 receiver nonprod provision and deploy
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      readback_only:
+        description: Read-only inventory of the fixed B-216 Worker target
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -54,6 +60,7 @@ jobs:
           test "$(sha256sum "$migration" | cut -d ' ' -f 1)" = "$EXPECTED_MIGRATION_SHA256"
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v4.0.0
+        if: ${{ !inputs.readback_only }}
         with:
           version: 10.32.1
 
@@ -62,9 +69,18 @@ jobs:
           node-version: 22
 
       - name: Install frozen receiver dependencies without lifecycle scripts
+        if: ${{ !inputs.readback_only }}
         run: pnpm --dir apps/dsr-alert-receiver install --frozen-lockfile --ignore-workspace --ignore-scripts
 
+      - name: Read fixed Worker inventory without mutation
+        if: ${{ inputs.readback_only }}
+        shell: bash
+        env:
+          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}
+        run: node apps/dsr-alert-receiver/scripts/run-readback-route.mjs
+
       - name: Provision exact receiver target and verify redacted readback
+        if: ${{ !inputs.readback_only }}
         shell: bash
         env:
           B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}
@@ -72,10 +88,19 @@ jobs:
         run: node apps/dsr-alert-receiver/scripts/run-deploy-route.mjs
 
       - name: Preserve redacted route receipt
-        if: always()
+        if: ${{ always() && !inputs.readback_only }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: b216-receiver-route-${{ github.run_id }}
           path: ${{ runner.temp }}/b216-receiver-route-receipt.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Preserve redacted read-only inventory
+        if: ${{ always() && inputs.readback_only }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: b216-receiver-readback-${{ github.run_id }}
+          path: ${{ runner.temp }}/b216-receiver-readback-receipt.json
           if-no-files-found: ignore
           retention-days: 30
