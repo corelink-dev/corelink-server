@@ -14,7 +14,9 @@
       "workers_dev": false,
       "compatibility_date": "2026-04-01",
       "compatibility_flags": [
-        "nodejs_compat"
+        "nodejs_compat",
+        "enable_request_signal",
+        "request_signal_passthrough"
       ],
       "crons": [],
       "observability": {
@@ -83,7 +85,8 @@
     "routes": [
       {
         "worker": "corelink-staging",
-        "pattern": "staging.corelink.humangr.com/*",
+        "pattern": "staging.corelink.humangr.com",
+        "custom_domain": true,
         "zone_name": "humangr.com"
       }
     ],
@@ -220,7 +223,7 @@
         "service": "corelink-staging"
       }
     ],
-    "route": "staging.corelink.humangr.com/*"
+    "route": "staging.corelink.humangr.com"
   },
   "provider_readback": {
     "resources_captured_at": "2026-09-09T08:57:51Z",

@@ -3,24 +3,28 @@
 from __future__ import annotations
 
 import unittest
+import json
+from pathlib import Path
 
 from scripts import render_staging_wrangler as renderer
 from scripts import staging_bootstrap_provider as provider
+from scripts import staging_custom_domain as custom_domain
 
 
 class StagingBootstrapProviderTests(unittest.TestCase):
-    def test_route_pairs_include_only_the_canonical_host(self) -> None:
+    def test_route_pairs_include_any_canonical_matching_pattern(self) -> None:
         routes = [
             {
-                "pattern": "staging.corelink.humangr.com/*",
+                "id": "route-1",
+                "pattern": "staging.corelink.humangr.com/api/*",
                 "script": "corelink-staging",
             },
-            {"pattern": "other.humangr.com/*", "script": "other-worker"},
+            {"id": "route-2", "pattern": "other.humangr.com/*", "script": "other-worker"},
         ]
         self.assertEqual(
             provider.route_pairs(routes),
             {
-                ("staging.corelink.humangr.com/*", "corelink-staging"),
+                ("staging.corelink.humangr.com/api/*", "corelink-staging"),
             },
         )
 
@@ -29,6 +33,7 @@ class StagingBootstrapProviderTests(unittest.TestCase):
             with self.subTest(script=script), self.assertRaises(RuntimeError):
                 provider.route_pairs(
                     [{
+                        "id": "route-1",
                         "pattern": f"{renderer.CANONICAL_HOST}/*",
                         "script": script,
                     }]
@@ -37,13 +42,130 @@ class StagingBootstrapProviderTests(unittest.TestCase):
     def test_typed_renderer_owns_exact_route_contract(self) -> None:
         topology = renderer.StagingTopologyAdapter.from_file()
         expected = {
-            (f"{renderer.CANONICAL_HOST}/*", topology.workers[0]),
+            (renderer.CANONICAL_HOST, topology.workers[0]),
         }
         configured = {
             (route["pattern"], route["worker"])
             for route in topology.cloudflare["routes"]
         }
         self.assertEqual(configured, expected)
+        self.assertTrue(topology.cloudflare["routes"][0]["custom_domain"])
+
+    def test_postflight_requires_exact_readback_flags_and_domain(self) -> None:
+        required = json.loads(
+            Path("infra/staging/topology.json").read_text(encoding="utf-8")
+        )["required_secret_names"]
+        def settings(flags: list[str], worker: str) -> dict:
+            return {
+                "success": True,
+                "errors": [],
+                "messages": [],
+                "result": {
+                    "compatibility_flags": flags,
+                    "bindings": [
+                        {"name": name, "type": "secret_text"}
+                        for name in required[worker]
+                    ],
+                },
+            }
+        root_settings = settings(
+            ["nodejs_compat", "enable_request_signal", "request_signal_passthrough"],
+            "corelink-staging",
+        )
+        signup_settings = settings([], "corelink-signup-staging")
+        domain_id = "a" * 32
+        cert_id = "11111111-2222-4333-8444-555555555555"
+        inventory = (
+            {
+                "success": True,
+                "errors": [],
+                "messages": [],
+                "result": {
+                    "id": custom_domain.ZONE_ID,
+                    "name": custom_domain.ZONE_NAME,
+                    "account": {"id": custom_domain.ACCOUNT_ID},
+                },
+            },
+            {"success": True, "errors": [], "messages": [], "result": []},
+            {
+                "success": True,
+                "errors": [],
+                "messages": [],
+                "result": [
+                    {
+                        "id": domain_id,
+                        "cert_id": cert_id,
+                        "hostname": custom_domain.HOSTNAME,
+                        "service": custom_domain.WORKER,
+                        "zone_id": custom_domain.ZONE_ID,
+                        "zone_name": custom_domain.ZONE_NAME,
+                    }
+                ],
+                "result_info": {
+                    "count": 1,
+                    "page": 1,
+                    "per_page": custom_domain.DOMAIN_PAGE_SIZE,
+                    "total_count": 2,
+                    "total_pages": 1,
+                },
+            },
+            {
+                "success": True,
+                "errors": [],
+                "messages": [],
+                "result": [
+                    {
+                        "id": "b" * 32,
+                        "name": custom_domain.HOSTNAME,
+                        "type": "CNAME",
+                        "content": "worker-managed.invalid",
+                        "proxied": True,
+                    }
+                ],
+                "result_info": {
+                    "count": 1,
+                    "page": 1,
+                    "per_page": custom_domain.DNS_PAGE_SIZE,
+                    "total_count": 2,
+                    "total_pages": 1,
+                },
+            },
+            {
+                "success": True,
+                "errors": [],
+                "messages": [],
+                "result": {"enabled": False, "previews_enabled": False},
+            },
+            root_settings,
+            signup_settings,
+        )
+        self.assertEqual(
+            provider.validate_postflight_custom_domain(
+                inventory, custom_domain.ACCOUNT_ID, custom_domain.ZONE_ID
+            )["action"],
+            "already-exact",
+        )
+
+        bad_flag_sets = (
+            [],
+            ["nodejs_compat", "request_signal_passthrough"],
+            ["nodejs_compat", "enable_request_signal", "wrong_flag"],
+            [
+                "nodejs_compat",
+                "enable_request_signal",
+                "request_signal_passthrough",
+                "extra_flag",
+            ],
+        )
+        for flags in bad_flag_sets:
+            with self.subTest(flags=flags):
+                invalid_inventory = (*inventory[:5], settings(flags, "corelink-staging"), signup_settings)
+                with self.assertRaisesRegex(ValueError, "request-signal"):
+                    provider.validate_postflight_custom_domain(
+                        invalid_inventory,
+                        custom_domain.ACCOUNT_ID,
+                        custom_domain.ZONE_ID,
+                    )
 
 
 if __name__ == "__main__":

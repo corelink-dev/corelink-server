@@ -80,7 +80,7 @@ EXPECTED_ROOT_SETTINGS = {
     "main": "worker/src/index.ts",
     "workers_dev": False,
     "compatibility_date": "2026-04-01",
-    "compatibility_flags": ["nodejs_compat"],
+    "compatibility_flags": ["nodejs_compat", "enable_request_signal", "request_signal_passthrough"],
     "crons": [],
     "observability": {"enabled": True, "head_sampling_rate": 1},
     "vars": {
@@ -203,9 +203,9 @@ def assess(root: Path = Path(".")) -> list[str]:
     if cloudflare.get("synthetic_receiver_worker_settings") != EXPECTED_RECEIVER_SETTINGS:
         gaps.append("synthetic-receiver-worker-settings")
     if cloudflare.get("routes") != [
-        {"worker": "corelink-staging", "pattern": "staging.corelink.humangr.com/*", "zone_name": "humangr.com"},
+        {"worker": "corelink-staging", "pattern": "staging.corelink.humangr.com", "custom_domain": True, "zone_name": "humangr.com"},
     ]:
-        gaps.append("canonical-route")
+        gaps.append("canonical-custom-domain")
     if cloudflare.get("container") != {
         "worker": "corelink-staging", "class_name": "CoreLinkServer", "source": "./Dockerfile",
         "instance_type": "basic", "max_instances": 5,

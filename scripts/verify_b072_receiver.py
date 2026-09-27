@@ -161,10 +161,11 @@ def main(root: Path) -> None:
     desired_routes = desired.get("cloudflare", {}).get("routes", [])
     if desired_routes != [{
         "worker": "corelink-staging",
-        "pattern": "staging.corelink.humangr.com/*",
+        "pattern": "staging.corelink.humangr.com",
+        "custom_domain": True,
         "zone_name": "humangr.com",
     }]:
-        fail("root must own the sole canonical staging wildcard route")
+        fail("root must own the sole exact canonical staging Custom Domain")
     if not re.search(r"(?m)^\s+workflow_dispatch:\s*$", deploy_source):
         fail("receiver deploy must be manually dispatched")
     if re.search(r"(?m)^\s+(push|pull_request|schedule):\s*$", deploy_source):

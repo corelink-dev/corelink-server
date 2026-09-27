@@ -172,19 +172,18 @@ class StagingTopologyAdapter:
 
         zone_name = _string(cloudflare.get("zone_name"), "cloudflare.zone_name")
         routes = _list(cloudflare.get("routes"), "cloudflare.routes")
-        expected_routes = {(workers[0], f"{CANONICAL_HOST}/*", zone_name)}
+        expected_routes = {(workers[0], CANONICAL_HOST, zone_name)}
         actual_routes: set[tuple[str, str, str]] = set()
         for raw_route in routes:
             route = _mapping(raw_route, "cloudflare.routes entry")
             if route.get("worker") not in workers or route.get("zone_name") != zone_name:
                 raise ContractError("route references an unexpected Worker or zone")
             pattern = _string(route.get("pattern"), "route.pattern")
-            pattern_host = pattern.split("/", 1)[0].rstrip(".").lower()
-            if pattern_host != CANONICAL_HOST or PRODUCTION_NAME.search(pattern):
-                raise ContractError("route escapes the canonical staging host")
+            if route.get("custom_domain") is not True or pattern != CANONICAL_HOST or PRODUCTION_NAME.search(pattern):
+                raise ContractError("route must be the exact canonical staging Custom Domain")
             actual_routes.add((route["worker"], pattern, zone_name))
         if actual_routes != expected_routes or len(routes) != len(expected_routes):
-            raise ContractError("routes must contain exactly the root staging route")
+            raise ContractError("routes must contain exactly the root staging Custom Domain")
 
         secret_names = {
             name
@@ -358,7 +357,7 @@ def render_worker(
     for route in topology.routes_for(worker, phase):
         lines.extend(["", *array_table("routes", {
             "pattern": _string(route.get("pattern"), "route.pattern"),
-            "zone_name": _string(route.get("zone_name"), "route.zone_name"),
+            "custom_domain": route.get("custom_domain") is True,
         })])
 
     cloudflare = topology.cloudflare
