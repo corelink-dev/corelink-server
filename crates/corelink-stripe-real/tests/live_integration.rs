@@ -223,21 +223,14 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
         });
-        let client = StripeRealClient::builder()
-            .config(StripeClientConfig::wallet_broker(
-                server.uri(),
-                SecretString::from("hugrw_fake_test_token"),
-                "stripe-prod-test",
-            ))
-            .build()
-            .expect("mock client");
         let constructor = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            HarnessCleanup::new(client.clone())
+            HarnessCleanup::new(mock_client(server.uri()))
         }));
         assert!(
             constructor.is_err(),
             "run id alone cannot arm the cleanup harness"
         );
+        let client = mock_client(server.uri());
         let req = CheckoutSessionRequest::new(
             TenantId::new("tenant_outside_profile"),
             TierKind::Starter,
@@ -259,18 +252,72 @@ mod cleanup_fault_injection {
         }
     }
 
+    fn mock_client(base_url: String) -> StripeRealClient {
+        StripeRealClient::builder()
+            .config(StripeClientConfig::wallet_broker(
+                base_url,
+                SecretString::from("hugrw_fake_test_token"),
+                "stripe-prod-test",
+            ))
+            .build()
+            .expect("mock client")
+    }
+
     #[test]
-    fn retry_attempts_share_run_identity_without_broadening_cleanup() {
+    fn repeated_run_identity_marks_only_exact_requests() {
         let _env_lock = ENV_LOCK.lock().expect("env lock");
         let _context = protected_stripe_context("424246");
-        let _attempt = RestoreEnv::set("GITHUB_RUN_ATTEMPT", "1");
-        let first = live_harness_run_id();
-        env::set_var("GITHUB_RUN_ATTEMPT", "2");
-        let retry = live_harness_run_id();
-        assert_eq!(first.as_deref(), Some("424246"));
-        assert_eq!(retry, first);
-        // The marker is only an exact metadata label. Cleanup APIs still need
-        // the individual in-memory customer/session IDs and never scan by run.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        let customer_id = "cus_retry_fixture";
+        let session_id = "cs_retry_fixture";
+        let proxy = "/_wallet/proxy/stripe-prod-test";
+        runtime.block_on(async {
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/customers")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id,
+                    "email": null
+                })))
+                .expect(2)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": session_id,
+                    "customer": customer_id,
+                    "url": "https://example.test/session"
+                })))
+                .expect(2)
+                .mount(&server)
+                .await;
+        });
+        let client = mock_client(server.uri());
+        let req = CheckoutSessionRequest::new(
+            TenantId::new("tenant_retry_fixture"),
+            TierKind::Starter,
+            "retry@example.test",
+            "https://example.test/ok",
+            "https://example.test/cancel",
+        );
+        let first = client.create_checkout_session(&req).expect("first request");
+        let retry = client.create_checkout_session(&req).expect("retry request");
+        assert_eq!(first.session_id, session_id);
+        assert_eq!(retry.session_id, first.session_id);
+        let requests = runtime
+            .block_on(server.received_requests())
+            .expect("captured mock requests");
+        assert_eq!(requests.len(), 4);
+        for request in requests {
+            let body = String::from_utf8_lossy(&request.body);
+            assert!(body.contains("metadata%5Btest_run_id%5D=424246"));
+        }
+        // Retry labels repeat the same run identity; cleanup still operates
+        // only on exact IDs registered in the in-memory guard.
     }
 
     #[test]
