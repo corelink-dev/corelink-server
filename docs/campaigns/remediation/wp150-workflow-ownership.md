@@ -4,8 +4,8 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 268
-workflow-paths-sha256: 63b76d943193e4ff5b778d2455f88214eebdb1d4b0a897fc2bcc03c222ee33fd
+workflow-count: 269
+workflow-paths-sha256: c1c60b9c725ef619bf5d787dbb981786983f08a00b790f679b49de47bb27d66c
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -148,6 +148,7 @@ workflow-paths-sha256: 63b76d943193e4ff5b778d2455f88214eebdb1d4b0a897fc2bcc03c22
 .github/workflows/issue-1690-p12-p14-verifier.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1699-ownership-preparation.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1700-container-staging-deploy.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1700-staging-custom-domain.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1700-route-inventory-ci.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1720-cloudflare-drift-audit.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1720-cloudflare-drift-contract.yml | LEAD-BLOCKED | blocked
