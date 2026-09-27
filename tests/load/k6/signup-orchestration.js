@@ -25,7 +25,6 @@
 // USAGE
 // -----
 //   K6_TARGET_HOST=https://staging.corelink.humangr.com \
-//   K6_AUTH_BEARER=$STAGING_PAT \
 //   k6 run tests/load/k6/signup-orchestration.js
 //
 // DO NOT run against production. The script aborts if it detects a
@@ -35,12 +34,12 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Counter, Trend } from 'k6/metrics';
 import { randomString } from 'https://jslib.k6.io/k6-utils/1.4.0/index.js';
+import { admissionHeaders, requireAdmissionConfig } from './lib/staging_load_admission.js';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Target host + auth resolution.
 // ─────────────────────────────────────────────────────────────────────────
 const TARGET_HOST = __ENV.K6_TARGET_HOST || 'https://staging.corelink.humangr.com';
-const AUTH_BEARER = __ENV.K6_AUTH_BEARER || '';
 
 // Extract hostname without using the WHATWG URL global (k6/goja lacks it).
 function extractHostname(u) {
@@ -89,6 +88,11 @@ export const options = {
   summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
 };
 
+export function setup() {
+  requireAdmissionConfig();
+  return {};
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // VU helpers.
 // ─────────────────────────────────────────────────────────────────────────
@@ -104,13 +108,11 @@ function buildSignupPayload(suffix) {
 }
 
 function signupHeaders(idemKey) {
-  const h = {
+  return admissionHeaders({
     'content-type': 'application/json',
     'idempotency-key': idemKey,
     'x-corelink-load-test': 'r3-prep',
-  };
-  if (AUTH_BEARER) h.authorization = `Bearer ${AUTH_BEARER}`;
-  return h;
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -121,9 +123,7 @@ export default function main() {
   const idemKey = `load-${suffix}`;
   const url = `${TARGET_HOST}/v1/signup`;
   const body = buildSignupPayload(suffix);
-  const headers = signupHeaders(idemKey);
-
-  const first = http.post(url, body, { headers, tags: { endpoint: 'signup' } });
+  const first = http.post(url, body, { headers: signupHeaders(idemKey), tags: { endpoint: 'signup' } });
   signupBodyLatency.add(first.timings.duration);
 
   const firstOk = check(first, {
@@ -145,7 +145,7 @@ export default function main() {
   if (Math.random() < 0.1) {
     sleep(0.05);
     const replay = http.post(url, body, {
-      headers,
+      headers: signupHeaders(idemKey),
       tags: { endpoint: 'signup', replay: 'true' },
     });
     const replayOk = check(replay, {

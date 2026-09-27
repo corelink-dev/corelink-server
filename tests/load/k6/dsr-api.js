@@ -32,17 +32,18 @@ import http from 'k6/http';
 import { check } from 'k6';
 import { Counter, Trend } from 'k6/metrics';
 import { randomString } from 'https://jslib.k6.io/k6-utils/1.4.0/index.js';
+import { admissionHeaders, requireAdmissionConfig } from './lib/staging_load_admission.js';
 
 const TARGET_HOST = __ENV.K6_TARGET_HOST || 'https://staging.corelink.humangr.com';
-const AUTH_BEARER = __ENV.K6_AUTH_BEARER || '';
 const MFA_STUB    = __ENV.K6_MFA_STUB_TOKEN || '';
 
 // Defer env-required gate to setup() so `k6 inspect` (syntax check) works
 // in CI without secrets.
 export function setup() {
-  if (!AUTH_BEARER || !MFA_STUB) {
-    throw new Error('K6_AUTH_BEARER and K6_MFA_STUB_TOKEN env required');
+  if (!MFA_STUB) {
+    throw new Error('K6_MFA_STUB_TOKEN env required');
   }
+  requireAdmissionConfig();
   return {};
 }
 
@@ -83,12 +84,11 @@ function buildBody(verb, clientReqId) {
 }
 
 function dsrHeaders() {
-  return {
+  return admissionHeaders({
     'content-type': 'application/json',
-    'authorization': `Bearer ${AUTH_BEARER}`,
     'x-corelink-mfa-test-token': MFA_STUB,
     'x-corelink-load-test': 'r3-prep',
-  };
+  });
 }
 
 // Receipt JWT shape: header.payload.signature (base64url). We only assert
@@ -106,10 +106,9 @@ export default function main() {
   const verb = DSR_VERBS[Math.floor(Math.random() * DSR_VERBS.length)];
   const clientReqId = `load-${verb}-${randomString(12)}`;
   const url = `${TARGET_HOST}/v1/privacy/dsr/${verb}`;
-  const headers = dsrHeaders();
   const body = buildBody(verb, clientReqId);
 
-  const first = http.post(url, body, { headers, tags: { endpoint: 'dsr' } });
+  const first = http.post(url, body, { headers: dsrHeaders(), tags: { endpoint: 'dsr' } });
   receiptLatency.add(first.timings.duration);
 
   const ok = check(first, {
@@ -131,7 +130,7 @@ export default function main() {
   // 20% of iterations resubmit the same `client_request_id` to exercise
   // idempotency — store must return the identical receipt JWT.
   if (Math.random() < 0.2) {
-    const replay = http.post(url, body, { headers, tags: { endpoint: 'dsr', replay: 'true' } });
+    const replay = http.post(url, body, { headers: dsrHeaders(), tags: { endpoint: 'dsr', replay: 'true' } });
     const sameReceipt = check(replay, {
       'replay dsr 2xx': (r) => r.status >= 200 && r.status < 300,
       'replay returns same receipt': (r) => r.json('receipt_jwt') === firstReceipt,
