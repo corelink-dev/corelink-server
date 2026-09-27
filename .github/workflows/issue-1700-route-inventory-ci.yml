@@ -6,7 +6,9 @@ on:
       - '.github/workflows/issue-1700-container-staging-deploy.yml'
       - '.github/workflows/issue-1700-route-inventory-ci.yml'
       - 'scripts/verify_issue_1700_route_inventory.py'
+      - 'scripts/staging_deployment_guard.py'
       - 'tests/test_issue_1700_route_inventory.py'
+      - 'tests/test_staging_deployment_guard.py'
   workflow_dispatch:
 
 permissions:
@@ -29,4 +31,6 @@ jobs:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Run frozen route inventory acceptance cases
-        run: python3 -m unittest discover -s tests -p 'test_issue_1700_route_inventory.py' -v
+        run: |
+          python3 -m unittest discover -s tests -p 'test_issue_1700_route_inventory.py' -v
+          python3 -m unittest discover -s tests -p 'test_staging_deployment_guard.py' -v

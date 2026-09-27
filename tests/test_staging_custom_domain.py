@@ -89,9 +89,7 @@ def exact_dns(*, proxied: bool = True) -> dict:
 
 
 def require_provider_guard_bindings(workflow: str) -> None:
-    start = workflow.index(
-        "      - name: Confirm exact protected target and operation"
-    )
+    start = workflow.index("      - name: Confirm exact protected target and operation")
     end = workflow.find("\n      - name:", start + 1)
     step = workflow[start:] if end == -1 else workflow[start:end]
     env = step.split("\n        run:", 1)[0]
@@ -101,7 +99,9 @@ def require_provider_guard_bindings(workflow: str) -> None:
     )
     missing = [binding for binding in expected if binding not in env]
     if missing:
-        raise AssertionError(f"protected provider guard lacks exact bindings: {missing}")
+        raise AssertionError(
+            f"protected provider guard lacks exact bindings: {missing}"
+        )
 
 
 def subdomain(enabled: bool = False) -> dict:
@@ -145,6 +145,108 @@ class StagingCustomDomainTests(unittest.TestCase):
         self.assertEqual(plan["action"], "already-exact")
         self.assertEqual(plan["custom_domain_id"], "a" * 32)
         self.assertEqual(plan["dns_record_count"], 1)
+
+    def test_worker_domain_filtered_response_allows_optional_total_pages(self) -> None:
+        empty = domain_rows()
+        del empty["result_info"]["total_pages"]
+        self.assertEqual(domain.validate_domains(empty), [])
+
+        one_filtered_result = domain_rows([exact_domain()])
+        del one_filtered_result["result_info"]["total_pages"]
+        one_filtered_result["result_info"]["total_count"] = 29
+        self.assertEqual(domain.validate_domains(one_filtered_result), [exact_domain()])
+
+    def test_worker_domain_optional_page_count_still_fails_closed_on_bad_bounds(
+        self,
+    ) -> None:
+        missing_count = domain_rows()
+        del missing_count["result_info"]["count"]
+        with self.assertRaisesRegex(domain.DomainError, "incomplete"):
+            domain.validate_domains(missing_count)
+
+        multipage = domain_rows()
+        multipage["result_info"]["total_pages"] = 2
+        with self.assertRaisesRegex(domain.DomainError, "incomplete"):
+            domain.validate_domains(multipage)
+
+        count_mismatch = domain_rows([exact_domain()])
+        del count_mismatch["result_info"]["total_pages"]
+        count_mismatch["result_info"]["count"] = 0
+        with self.assertRaisesRegex(domain.DomainError, "incomplete"):
+            domain.validate_domains(count_mismatch)
+
+    def test_dns_and_worker_domain_filtered_responses_allow_optional_total_pages(
+        self,
+    ) -> None:
+        domain_payload = domain_rows()
+        del domain_payload["result_info"]["total_pages"]
+        self.assertEqual(domain.validate_domains(domain_payload), [])
+
+        matching_domain = domain_rows([exact_domain()])
+        del matching_domain["result_info"]["total_pages"]
+        matching_domain["result_info"]["total_count"] = 29
+        self.assertEqual(domain.validate_domains(matching_domain), [exact_domain()])
+
+        dns_payload = dns_rows([exact_dns()])
+        del dns_payload["result_info"]["total_pages"]
+        self.assertEqual(domain.validate_dns(dns_payload), [exact_dns()])
+
+        empty_dns = dns_rows()
+        del empty_dns["result_info"]["total_pages"]
+        self.assertEqual(domain.validate_dns(empty_dns), [])
+
+    def test_optional_total_pages_still_fails_closed_for_incomplete_or_full_pages(
+        self,
+    ) -> None:
+        for validator, payload in (
+            (domain.validate_domains, domain_rows()),
+            (domain.validate_dns, dns_rows()),
+        ):
+            with self.subTest(case="missing count"):
+                broken = copy.deepcopy(payload)
+                del broken["result_info"]["total_pages"]
+                del broken["result_info"]["count"]
+                with self.assertRaisesRegex(domain.DomainError, "incomplete"):
+                    validator(broken)
+
+            with self.subTest(case="multipage"):
+                broken = copy.deepcopy(payload)
+                broken["result_info"]["total_pages"] = 2
+                with self.assertRaisesRegex(domain.DomainError, "incomplete"):
+                    validator(broken)
+
+            with self.subTest(case="null total_pages"):
+                broken = copy.deepcopy(payload)
+                broken["result_info"]["total_pages"] = None
+                with self.assertRaisesRegex(domain.DomainError, "incomplete"):
+                    validator(broken)
+
+            with self.subTest(case="count mismatch"):
+                broken = copy.deepcopy(payload)
+                broken["result_info"].pop("total_pages", None)
+                broken["result"].append({})
+                with self.assertRaisesRegex(domain.DomainError, "incomplete"):
+                    validator(broken)
+
+            with self.subTest(case="total below filtered count"):
+                broken = copy.deepcopy(payload)
+                broken["result_info"].update({"count": 1, "total_count": 0})
+                broken["result"].append({})
+                with self.assertRaisesRegex(domain.DomainError, "incomplete"):
+                    validator(broken)
+
+        for validator, payload, per_page in (
+            (domain.validate_domains, domain_rows(), domain.DOMAIN_PAGE_SIZE),
+            (domain.validate_dns, dns_rows(), domain.DNS_PAGE_SIZE),
+        ):
+            full_page = copy.deepcopy(payload)
+            full_page["result"] = [object() for _ in range(per_page)]
+            full_page["result_info"].update(
+                {"count": per_page, "total_count": per_page}
+            )
+            full_page["result_info"].pop("total_pages", None)
+            with self.assertRaisesRegex(domain.DomainError, "incomplete"):
+                validator(full_page)
 
     def test_filtered_total_count_can_exceed_filtered_count(self) -> None:
         payload = dns_rows([exact_dns()])
@@ -197,7 +299,7 @@ class StagingCustomDomainTests(unittest.TestCase):
                 route_list=routes([{"id": "route-1", "pattern": "https://bad host/"}])
             )
         broken = copy.deepcopy(dns_rows([exact_dns()]))
-        del broken["result_info"]["total_pages"]
+        del broken["result_info"]["count"]
         with self.assertRaisesRegex(domain.DomainError, "incomplete"):
             domain.validate_dns(broken)
 

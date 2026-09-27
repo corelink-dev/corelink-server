@@ -144,6 +144,7 @@ CONTRACT_TRIGGER_INPUTS = (
     "scripts/run-real-ignored-harnesses.sh",
     "scripts/real-ignored-harness-manifest.json",
     "scripts/verify_real_ignored_harnesses.py",
+    "scripts/probe_i2563_d1_token_scope.py",
     "scripts/verify_i1650_real_integration_readiness.py",
     "docs/handoff/2026-09-22-i1650-real-integration-readiness.json",
     "crates/corelink-pat/tests/emit_e2e_seed.rs",
@@ -496,7 +497,8 @@ def assert_contract(workflow: str, runner: str) -> None:
     verify_stripe_cleanup_contract()
     wf = code_text(workflow)
     sh = code_text(runner)
-    runs = workflow_run_lines(workflow)
+    real_job = workflow_job(workflow, "real-integration")
+    runs = workflow_run_lines(real_job)
 
     # The only event that may inject credentials is a deliberate operator
     # dispatch.  Anchoring to YAML keys keeps prose/comment bait irrelevant.
@@ -515,17 +517,25 @@ def assert_contract(workflow: str, runner: str) -> None:
         fail("executor is not scoped to the canonical server repository")
     if "github.repository_id == '1232040291'" not in wf or 'test "$GITHUB_REPOSITORY_ID" = "1232040291"' not in wf:
         fail("executor is not scoped to the stable server repository ID")
-    if "if: github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected" not in wf:
+    if "if: github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected && inputs.profile != 'all'" not in wf:
         fail("real executor job lacks canonical repository, stable-ID, protected-main dispatch guard")
-    if not re.search(r"(?m)^\s{4}runs-on:\s*ubuntu-24\.04\s*$", workflow):
+    reject_job = workflow_job(workflow, "reject-all")
+    if "inputs.profile == 'all'" not in reject_job or "exit 1" not in workflow_run_lines(reject_job):
+        fail("all profile is not explicitly rejected without D1 credentials")
+    if re.search(r"\b(?:secrets|vars)\.", code_text(reject_job)) or re.search(r"(?m)^\s*environment:\s*", code_text(reject_job)):
+        fail("all-profile refusal job accesses a protected environment or secret")
+    if not re.search(r"(?m)^\s{4}runs-on:\s*ubuntu-24\.04\s*$", real_job):
         fail("real executor must use a GitHub-hosted runner")
 
     # The workflow must have a selectable, bounded profile set.
-    for profile in ("d1", "r2", "stripe", "neon", "all"):
+    for profile in ("d1", "r2", "stripe", "neon"):
         if not re.search(rf"(?m)^\s+-\s+{profile}\s*$", wf):
             fail(f"workflow profile option is missing: {profile}")
-    if "environment: real-integration" not in wf:
-        fail("real integration environment approval boundary is missing")
+    if re.search(r"(?m)^\s+-\s+all\s*$", wf) or "default: all" in wf:
+        fail("unsafe multi-provider all profile remains selectable")
+    expected_environment = "environment: ${{ inputs.profile == 'd1' && 'real-d1-2563' || 'real-integration' }}"
+    if expected_environment not in wf:
+        fail("D1 isolated environment routing is missing")
     if "persist-credentials: false" not in wf:
         fail("checkout credential persistence is not disabled")
     if "python3 scripts/verify_real_ignored_harnesses.py" not in wf:
@@ -543,6 +553,33 @@ def assert_contract(workflow: str, runner: str) -> None:
     expected_bucket = "R2_TEST_BUCKET: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && vars.R2_TEST_BUCKET || '' }}"
     if expected_bucket not in wf:
         fail("R2 test bucket is not restricted to the R2/all profile")
+    expected_neon = "NEON_TEST_DSN: ${{ (inputs.profile == 'neon' || inputs.profile == 'all') && secrets.NEON_TEST_DSN || '' }}"
+    if expected_neon not in wf:
+        fail("Neon credential is not restricted to the Neon/all profile")
+    expected_probe = (
+        'if [[ "$REAL_HARNESS_PROFILE" == "d1" ]]; then',
+        'python3 -S scripts/probe_i2563_d1_token_scope.py',
+        'fi',
+    )
+    if not all(line in runs for line in expected_probe):
+        fail("D1 token scope preflight is missing")
+    probe_start = runs.index(expected_probe[0])
+    probe_end = runs.index(expected_probe[2], probe_start + 1)
+    if runs[probe_start + 1:probe_end] != [
+        'echo "::add-mask::${CF_API_TOKEN:-}"',
+        expected_probe[1],
+    ] or probe_end >= runs.index('bash scripts/run-real-ignored-harnesses.sh "$REAL_HARNESS_PROFILE"'):
+        fail("D1 token scope preflight is not isolated before the real executor")
+    probe_source = (ROOT / "scripts/probe_i2563_d1_token_scope.py").read_text(encoding="utf-8")
+    for required in (
+        'ACCOUNT = "51284495e71acdb5a7677e7383ab026b"',
+        'OLD_ACCOUNT = "6a1fc1c626fc2628823e60b9db01f5cd"',
+        'DB_NAME_PREFIX = "corelink-issue-2563-d1-"',
+        'old_status != 403',
+        'target_status != 200',
+    ):
+        if required not in probe_source:
+            fail("D1 token scope probe target or denial contract changed")
     if runs.count("python3 scripts/verify_real_ignored_harnesses.py") != 1:
         fail("semantic executor guard is missing or only comment bait")
     if runs.count('bash scripts/run-real-ignored-harnesses.sh "$REAL_HARNESS_PROFILE"') != 1:
@@ -727,6 +764,8 @@ def assert_hosted_contract_workflow(workflow: str) -> None:
         fail("credentialless contract does not run the static/mutation verifier")
     if "python3 -S scripts/verify_i1650_real_integration_readiness.py" not in active:
         fail("credentialless contract does not run the readiness verifier")
+    if "python3 -S scripts/probe_i2563_d1_token_scope.py --self-test" not in active:
+        fail("credentialless contract does not run D1 scope negative fixtures")
     triggered_paths = set(re.findall(r'(?m)^\s{6}- "([^\"]+)"\s*$', active))
     missing = [path for path in CONTRACT_TRIGGER_INPUTS if path not in triggered_paths]
     if missing:
@@ -819,6 +858,31 @@ def expect_rejected(label: str, workflow: str, runner: str) -> None:
 
 
 def mutation_checks(workflow: str, runner: str, contract_workflow: str) -> None:
+    expect_rejected(
+        "D1 routed to shared environment",
+        workflow.replace("environment: ${{ inputs.profile == 'd1' && 'real-d1-2563' || 'real-integration' }}", "environment: real-integration", 1),
+        runner,
+    )
+    expect_rejected(
+        "all profile routed to D1 environment",
+        workflow.replace("inputs.profile == 'd1' && 'real-d1-2563'", "inputs.profile == 'all' && 'real-d1-2563'", 1),
+        runner,
+    )
+    expect_rejected(
+        "all profile allowed in credentialed job",
+        workflow.replace(" && inputs.profile != 'all'", "", 1),
+        runner,
+    )
+    expect_rejected(
+        "all profile selectable",
+        workflow.replace("          - neon\n", "          - neon\n          - all\n", 1),
+        runner,
+    )
+    expect_rejected(
+        "D1 scope probe removed",
+        workflow.replace("python3 -S scripts/probe_i2563_d1_token_scope.py", "echo D1-scope-probe-removed", 1),
+        runner,
+    )
     # Missing trigger: a manually documented lane is not an executor.
     expect_rejected(
         "missing workflow_dispatch",

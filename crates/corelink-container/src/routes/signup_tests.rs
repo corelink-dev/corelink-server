@@ -169,6 +169,35 @@ fn router_builds() {
     let _r = router(build_state());
 }
 
+#[tokio::test]
+async fn forged_staging_admission_is_rejected_before_signup_write() {
+    let store = Arc::new(InMemorySignupStore::new());
+    let mut state = build_state_with_key(TEST_KEY.to_vec());
+    state.store = store.clone();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        crate::storage::staging_load_test_admission::STAGING_LOAD_TEST_ADMISSION_HEADER,
+        "forged".parse().unwrap(),
+    );
+    let body = PilotSignupBody {
+        email: "pilot@example.com".to_owned(),
+        company_name: "Example".to_owned(),
+        tier_hint: "free".to_owned(),
+        expected_use_case: "staging admission regression".to_owned(),
+    };
+
+    let response = handle_pilot_signup(
+        State(state),
+        Path("not-a-valid-pilot-token".to_owned()),
+        headers,
+        Json(body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(store.snapshot().unwrap().is_empty());
+}
+
 // ── F1 regressions: extract_client_ip ─────────────────────────────────────
 
 /// F1: `x-corelink-client-ip` is read as the trusted rate-limit key.

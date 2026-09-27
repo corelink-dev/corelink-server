@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "finding": "B-314",
-  "status": "owner-action-pending",
-  "owner": "owner",
-  "non_claim": "This packet records the repository census and an action boundary only. It does not assert that Sigstore receives a transfer, is a processor, has a DPF/SCC basis, has Legal/DPO approval, or that cosign-sign.yml should be retained or retired.",
+  "status": "decision-applied",
+  "owner": "gmhelmold",
+  "non_claim": "This record applies one signed prelaunch decision to the four customer-data transfer-table copies. It does not claim Sigstore receives no operational metadata or personal data universally, does not claim release-signing flows ceased, and does not infer a Sigstore transfer basis, DPA, TIA, DPF, or SCC.",
   "scope": {
-    "question": "Decide whether the published GDPR transfer table should name Sigstore at all, given the current-flow posture that release-SLSA, CAS, and TSA paths send only CoreLink-owned artifact/signing metadata, no customer-data path is wired, and Sigstore is not a customer-data sub-processor in the current register.",
+    "question": "Apply the signed remove_sigstore_row decision only to the Sigstore recipient text in the four GDPR customer-data transfer tables.",
     "population": [
       "apps/docs/docs/explanation/privacy/gdpr.mdx",
       "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx",
@@ -15,14 +15,17 @@
     "out_of_scope": [
       "B-005 hosted-lane policy",
       "B-112 release-root contract",
-      "B-118 cosign-sign lane decision",
+      "B-118 cosign-sign.yml decision",
       "cosign-sign.yml deletion or repair",
-      "deciding whether image signing is keep or retire"
+      "deciding whether image signing is keep or retire",
+      "altering release-SLSA, CAS, TSA, or transparency-log flows",
+      "asserting no operational metadata or personal data exists in any Sigstore flow"
     ]
   },
   "baseline": {
     "row_count_per_locale": 1,
     "row_identity": "PagerDuty / GitHub / Sigstore",
+    "reviewed_source_revision": "897efed958a36c3e1b34a5104c21906071ca44af",
     "posture_sources": [
       "apps/docs/docs/trust/subprocessors.mdx",
       "scripts/gen-public-subprocessors.py",
@@ -31,30 +34,60 @@
     ]
   },
   "decision": {
-    "state": "pending",
+    "state": "complete",
     "allowed_outcomes": ["remove_sigstore_row", "retain_and_document_transfer"],
-    "required_reviewers": ["Legal Counsel", "DPO"]
+    "selected_outcome": "remove_sigstore_row",
+    "reviewers": [
+      {
+        "identity": "gmhelmold",
+        "authority": "Legal Counsel"
+      },
+      {
+        "identity": "gmhelmold",
+        "authority": "DPO"
+      }
+    ],
+    "reviewer_model": "One person exercising both functions; not two independent signers.",
+    "receipt_reference": "https://github.com/HuGR-dev/corelink-server/issues/2601#issuecomment-5854794010",
+    "effective_timestamp": "2026-09-27T09:48:32Z",
+    "notice_version": "B-314-prelaunch-2026-09-27",
+    "notice_determination": "No individual notice or re-consent is required for this prelaunch correction: there are no customers and all four pages remain drafts not approved for publication."
   },
   "owner_action": [
-    "UI: Have Legal Counsel and the DPO review the measured row in all four locales together with the Trust Center and generator posture; record a signed disposition without inferring from the workflow's existence or claiming that Sigstore receives no customer data without evidence.",
-    "RUN: If the disposition is remove_sigstore_row, update all four locale tables in one reviewed change, retaining the PagerDuty and GitHub recipients and recording the exact diff.",
-    "UI: If the disposition is retain_and_document_transfer, provide the legal transfer basis, recipient/service scope, data categories, and effective notice wording; do not reuse this packet as approval.",
-    "RUN: Write evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json with the four-locale scope, Legal reviewer, DPO reviewer, row disposition, effective date, and source references; then transition B-314 and invert its verifier."
+    "RECEIPT: Apply the one-person dual-role Legal Counsel/DPO decision recorded in the signed issue comment; do not represent it as two independent signers.",
+    "RUN: Remove only / Sigstore from the Recipient cell in each of the four named GDPR transfer tables; preserve PagerDuty, GitHub, Country, Mechanism, and What's transferred.",
+    "NOTICE: Record notice version B-314-prelaunch-2026-09-27 and the explicit no-individual-notice/no-re-consent determination for the prelaunch state.",
+    "VERIFY: Record the exact signed-comment reference, effective timestamp, four-file diff intent, and non-claims in the decision evidence; keep release/provider/legal decisions out of scope."
   ],
   "evidence": {
     "path": "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json",
     "format": "json",
-    "required_fields": ["schema_version", "captured_at", "decision", "legal_reviewer", "dpo_reviewer", "notice_version", "transfer_basis", "recipient_scope", "data_category_scope", "approved_notice_wording", "published_diff", "signed_artifact_sha256_or_reference", "effective_timestamp"],
-    "completion_rule": "A signed-artifact hash/reference and signed Legal/DPO disposition covering the four published locale copies, notice version, transfer basis, recipient/data-category scope, approved notice wording, exact published diff, and effective timestamp are required before the row is removed or retained as a transfer claim."
+    "required_fields": [
+      "schema_version",
+      "captured_at",
+      "decision",
+      "legal_reviewer",
+      "dpo_reviewer",
+      "notice_version",
+      "transfer_basis",
+      "recipient_scope",
+      "data_category_scope",
+      "approved_notice_wording",
+      "published_diff",
+      "signed_artifact_sha256_or_reference",
+      "effective_timestamp"
+    ],
+    "completion_rule": "The four exact customer-data transfer rows match the signed remove_sigstore_row intent, preserve PagerDuty and GitHub plus every other field, link the one-person dual-role decision, record the approved prelaunch notice determination and effective timestamp, and make no broader Sigstore flow or transfer-basis claim."
   },
-  "retry_and_rollback": "Retry only against the same notice version and retain the measured diff. An unexecuted draft may be abandoned. A signed legal disposition or published notice requires a superseding review; do not use an unreviewed git revert as rollback.",
+  "retry_and_rollback": "Do not silently restore Sigstore or alter the decision. Any later transfer-table change requires a superseding Legal/DPO decision and exact four-locale review.",
   "references": [
     "BACKLOG.md#B-314",
+    "https://github.com/HuGR-dev/corelink-server/issues/2601#issuecomment-5854794010",
+    "https://github.com/HuGR-dev/corelink-server/issues/2601",
     "apps/docs/docs/trust/subprocessors.mdx",
     "scripts/gen-public-subprocessors.py",
     "legal/sub-processors.md",
     "specs/_compliance/VENDOR-RISK-REGISTER.md",
-    "docs/internal/legal-review-process.md",
-    "PR containment audit #1490/#1506 addendum"
+    "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json"
   ]
 }
