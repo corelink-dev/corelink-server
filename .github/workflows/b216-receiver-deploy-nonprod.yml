@@ -1,0 +1,81 @@
+name: B-216 receiver nonprod provision and deploy
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: b216-receiver-nonprod
+  cancel-in-progress: false
+
+jobs:
+  receiver:
+    if: github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # GitHub requires one independent approval from either named reviewer;
+    # its environment rule here is not a two-approval quorum.
+    environment:
+      name: b216-receiver-nonprod
+    steps:
+      - name: Check out the exact dispatched main SHA
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify canonical repository, main ref, exact SHA, fixed target, and frozen source
+        shell: bash
+        env:
+          EXPECTED_REPOSITORY: HuGR-dev/corelink-server
+          EXPECTED_REF: refs/heads/main
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_ACCOUNT: 51284495e71acdb5a7677e7383ab026b
+          EXPECTED_WORKER: corelink-dsr-b216-alert-receiver-20260927
+          EXPECTED_DATABASE: corelink-dsr-b216-alert-receipts-20260927
+          EXPECTED_MIGRATION_SHA256: 7b9819d1f155645d84b1037e8376063e46ff117dd4d57553b66e22c2d2822bb2
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          test "$GITHUB_REF" = "$EXPECTED_REF"
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          config=apps/dsr-alert-receiver/wrangler.toml
+          migration=apps/dsr-alert-receiver/migrations/0001_alert_receipts.sql
+          grep -Fqx "account_id = \"$EXPECTED_ACCOUNT\"" "$config"
+          grep -Fqx "name = \"$EXPECTED_WORKER\"" "$config"
+          grep -Fqx 'binding = "ALERT_RECEIPTS_DB"' "$config"
+          grep -Fqx "database_name = \"$EXPECTED_DATABASE\"" "$config"
+          grep -Fqx 'database_id = "00000000-0000-0000-0000-000000000000"' "$config"
+          test "$(find apps/dsr-alert-receiver/migrations -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')" = 1
+          test "$(sha256sum "$migration" | cut -d ' ' -f 1)" = "$EXPECTED_MIGRATION_SHA256"
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v4.0.0
+        with:
+          version: 10.32.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Install frozen receiver dependencies without lifecycle scripts
+        run: pnpm --dir apps/dsr-alert-receiver install --frozen-lockfile --ignore-workspace --ignore-scripts
+
+      - name: Provision exact receiver target and verify redacted readback
+        shell: bash
+        env:
+          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}
+          B216_DSR_ALERT_RECEIVER_TOKEN: ${{ secrets.B216_DSR_ALERT_RECEIVER_TOKEN }}
+        run: node apps/dsr-alert-receiver/scripts/run-deploy-route.mjs
+
+      - name: Preserve redacted route receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: b216-receiver-route-${{ github.run_id }}
+          path: ${{ runner.temp }}/b216-receiver-route-receipt.json
+          if-no-files-found: ignore
+          retention-days: 30
