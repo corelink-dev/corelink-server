@@ -84,11 +84,54 @@ def check_draft(text: str) -> None:
         fail("v1.1.0 draft contains an active automatic-credit promise")
     if "no credit formula is defined" not in visible.lower() or "synthetic-page or byok" not in visible.lower():
         fail("v1.1.0 draft must keep synthetic-page and BYOK credits excluded")
+    check_credit_tables(text)
 
 
 def check_historical(raw: bytes) -> None:
     if hashlib.sha256(raw).hexdigest() != HISTORICAL_V1_SHA256:
         fail("historical v1.0.0 SHA-256 differs from the approved base bytes")
+
+
+def check_credit_tables(text: str) -> None:
+    def require_table(start: str, end: str, header: str, separator: str, expected: tuple[str, ...]) -> None:
+        section = text.split(start, 1)
+        if len(section) != 2:
+            fail(f"v1.1.0 schedule section missing: {start}")
+        table = section[1].split(end, 1)[0]
+        rows = [line.strip() for line in table.splitlines() if line.strip().startswith("|")]
+        if rows[:2] != [header, separator] or rows[2:] != list(expected):
+            fail(f"v1.1.0 exact schedule rows drifted: {start}")
+
+    require_table(
+        "### 2.1 Uptime / availability", "### 2.2 p99 GET latency",
+        "| Measured result | Credit as % of Monthly Service Fee |", "|---|---:|",
+        (
+            "| Target met or exceeded | 0% |",
+            "| `0 < shortfall < 0.5 pp` | 5% |",
+            "| `0.5 pp ≤ shortfall < 1.0 pp` | 10% |",
+            "| `1.0 pp ≤ shortfall < 2.5 pp` | 25% |",
+            "| `2.5 pp ≤ shortfall ≤ 5.0 pp` | 50% |",
+            "| `shortfall > 5.0 pp` or absolute uptime `< 95%` | 100% plus the §4 termination right |",
+        ),
+    )
+    require_table(
+        "### 2.2 p99 GET latency", "### 2.3 Freshness",
+        "| Excess over target | Credit as % of Monthly Service Fee |", "|---|---:|",
+        (
+            "| `0 < excess ≤ 25%` | 5% |",
+            "| `25% < excess ≤ 50%` | 10% |",
+            "| `excess > 50%` | 25% |",
+        ),
+    )
+    require_table(
+        "### 2.3 Freshness", "## 3. Stacking, cap, and remedy",
+        "| Breach | Credit |", "|---|---|",
+        (
+            "| DSR erasure `30 days ≤ duration < 45 days` | 5% |",
+            "| DSR erasure `duration ≥ 45 days` | 25% plus DPO incident review |",
+            "| Billing reconciliation drift `≥ 0.1%` sustained for `> 24 hours` | 10% |",
+        ),
+    )
 
 
 def check_tree() -> None:

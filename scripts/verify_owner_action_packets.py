@@ -773,6 +773,46 @@ def _check_b089_surface_contract(item: dict[str, object], root: Path = ROOT) -> 
         if tier == "Enterprise" and any("proposed" not in value.lower() for value in values):
             raise PacketError("B-089 Enterprise eligibility must remain proposed")
 
+    def require_credit_table(start: str, end: str, header: str, separator: str, expected: tuple[str, ...]) -> None:
+        section = draft_raw.split(start, 1)
+        if len(section) != 2:
+            raise PacketError(f"B-089 v1.1.0 schedule section missing: {start}")
+        table = section[1].split(end, 1)[0]
+        rows = [line.strip() for line in table.splitlines() if line.strip().startswith("|")]
+        if rows[:2] != [header, separator] or rows[2:] != list(expected):
+            raise PacketError(f"B-089 v1.1.0 exact schedule rows drifted: {start}")
+
+    require_credit_table(
+        "### 2.1 Uptime / availability", "### 2.2 p99 GET latency",
+        "| Measured result | Credit as % of Monthly Service Fee |", "|---|---:|",
+        (
+            "| Target met or exceeded | 0% |",
+            "| `0 < shortfall < 0.5 pp` | 5% |",
+            "| `0.5 pp ≤ shortfall < 1.0 pp` | 10% |",
+            "| `1.0 pp ≤ shortfall < 2.5 pp` | 25% |",
+            "| `2.5 pp ≤ shortfall ≤ 5.0 pp` | 50% |",
+            "| `shortfall > 5.0 pp` or absolute uptime `< 95%` | 100% plus the §4 termination right |",
+        ),
+    )
+    require_credit_table(
+        "### 2.2 p99 GET latency", "### 2.3 Freshness",
+        "| Excess over target | Credit as % of Monthly Service Fee |", "|---|---:|",
+        (
+            "| `0 < excess ≤ 25%` | 5% |",
+            "| `25% < excess ≤ 50%` | 10% |",
+            "| `excess > 50%` | 25% |",
+        ),
+    )
+    require_credit_table(
+        "### 2.3 Freshness", "## 3. Stacking, cap, and remedy",
+        "| Breach | Credit |", "|---|---|",
+        (
+            "| DSR erasure `30 days ≤ duration < 45 days` | 5% |",
+            "| DSR erasure `duration ≥ 45 days` | 25% plus DPO incident review |",
+            "| Billing reconciliation drift `≥ 0.1%` sustained for `> 24 hours` | 10% |",
+        ),
+    )
+
     pricing = sources[B089_SURFACES[2]]
     canonical = re.search(r"CANONICAL_TIERS:\s*readonly TierId\[\]\s*=\s*\[([^]]+)\]", pricing, re.S)
     if canonical is None:
