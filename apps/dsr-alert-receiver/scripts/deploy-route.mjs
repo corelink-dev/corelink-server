@@ -105,8 +105,18 @@ export function selectPriorRevision(deployments) {
   return versions[0].version_id;
 }
 
+export function normalizeDeploymentList(response) {
+  if (!response || typeof response !== "object" || Array.isArray(response) || !Array.isArray(response.deployments)) fail("worker_preimage_ambiguous");
+  return response.deployments;
+}
+
+export function normalizeVersionList(response) {
+  if (!response || typeof response !== "object" || Array.isArray(response) || !Array.isArray(response.items)) fail("worker_version_inventory_ambiguous");
+  return response.items;
+}
+
 export function validateRollbackReadback(deployments, exactVersionId) {
-  if (selectPriorRevision(deployments) !== exactVersionId) fail("rollback_readback_mismatch");
+  if (selectPriorRevision(normalizeDeploymentList(deployments)) !== exactVersionId) fail("rollback_readback_mismatch");
   return true;
 }
 
@@ -121,6 +131,21 @@ export function validateCandidateVersion(version, expectedDatabaseId, expectedTa
   if (bindings?.some((binding) => binding?.type === "d1" && binding.name === TARGET.databaseBinding && (binding.database_id ?? binding.id) === expectedDatabaseId) !== true) fail("worker_database_binding_mismatch");
   if (bindings?.some((binding) => binding?.type === "secret_text" && binding.name === TARGET.workerSecret) !== true) fail("worker_secret_readback_missing");
   return true;
+}
+
+export function validateInventoryPage(rows, kind, { requireTotalCount = false } = {}) {
+  if (!Array.isArray(rows)) fail(`${kind}_inventory_ambiguous`);
+  const info = rows.result_info;
+  if (!info) {
+    if (requireTotalCount) fail(`${kind}_inventory_ambiguous`);
+    return rows;
+  }
+  if (info.page !== undefined && info.page !== 1) fail(`${kind}_inventory_truncated`);
+  if (info.count !== undefined && info.count !== rows.length) fail(`${kind}_inventory_ambiguous`);
+  if (info.total_count !== undefined && (!Number.isInteger(info.total_count) || info.total_count > rows.length)) fail(`${kind}_inventory_truncated`);
+  if (requireTotalCount && (!Number.isInteger(info.total_count) || info.total_count !== rows.length || info.count !== rows.length)) fail(`${kind}_inventory_ambiguous`);
+  if (info.total_pages !== undefined && info.total_pages !== 1) fail(`${kind}_inventory_truncated`);
+  return rows;
 }
 
 export function validatePostflight({ versionId, deployment, bindings, secrets }, expectedDatabaseId, expectedTag) {
@@ -211,11 +236,12 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       api(`/accounts/${TARGET.accountId}/d1/database?per_page=100`),
       api(`/accounts/${TARGET.accountId}/workers/scripts?per_page=100`),
     ]);
-    if (databasePage?.result_info?.total_pages > 1 || workerPage?.result_info?.total_pages > 1) fail("provider_inventory_truncated");
+    validateInventoryPage(databasePage, "database", { requireTotalCount: true });
+    validateInventoryPage(workerPage, "worker", { requireTotalCount: true });
     const priorDatabase = selectNamedResource(databasePage, TARGET.databaseName, "database");
     const priorWorker = selectNamedResource(workerPage, TARGET.workerName, "worker");
     if (priorWorker) {
-      const deployments = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`);
+      const deployments = normalizeDeploymentList(await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`));
       priorWorkerVersion = selectPriorRevision(deployments);
       if (!priorWorkerVersion) fail("worker_preimage_ambiguous");
     }
@@ -237,7 +263,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       receipt.database_id = validateDatabaseIdentity(created);
       databaseCreated = true;
       const reread = await api(`/accounts/${TARGET.accountId}/d1/database?per_page=100`);
-      if (reread?.result_info?.total_pages > 1) fail("provider_inventory_truncated");
+      validateInventoryPage(reread, "database", { requireTotalCount: true });
       const confirmed = selectNamedResource(reread, TARGET.databaseName, "database");
       if (!confirmed || validateDatabaseIdentity(confirmed) !== receipt.database_id) fail("database_create_readback_mismatch");
     }
@@ -270,11 +296,11 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
 
     stage = "worker_preimage_recheck";
     const currentWorkers = await api(`/accounts/${TARGET.accountId}/workers/scripts?per_page=100`);
-    if (currentWorkers?.result_info?.total_pages > 1) fail("provider_inventory_truncated");
+    validateInventoryPage(currentWorkers, "worker", { requireTotalCount: true });
     const currentWorker = selectNamedResource(currentWorkers, TARGET.workerName, "worker");
     let currentWorkerVersion = null;
     if (currentWorker) {
-      const currentDeployments = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`);
+      const currentDeployments = normalizeDeploymentList(await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`));
       currentWorkerVersion = selectPriorRevision(currentDeployments);
     }
     if (currentWorkerVersion !== priorWorkerVersion) fail("worker_preimage_changed");
@@ -295,9 +321,8 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       apiToken: context.apiToken,
       input: context.receiverToken,
     });
-    const versionList = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions?per_page=100`);
-    if (versionList?.result_info?.total_pages > 1) fail("worker_version_inventory_truncated");
-    const tagged = (Array.isArray(versionList) ? versionList : []).filter((version) => version?.metadata?.annotations?.["workers/tag"] === versionTag);
+    const versionList = normalizeVersionList(await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions?per_page=100&deployable=true`));
+    const tagged = versionList.filter((version) => version?.metadata?.annotations?.["workers/tag"] === versionTag);
     if (tagged.length !== 1 || !isUuid(tagged[0]?.id)) fail("worker_uploaded_revision_ambiguous");
     const candidateVersion = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${tagged[0].id}`);
     validateCandidateVersion(candidateVersion, receipt.database_id, versionTag);
@@ -305,11 +330,12 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     stage = "worker_deploy";
     command(["versions", "deploy", `${tagged[0].id}@100%`, "--yes", "--config", tempConfig], { cwd: appDir, home: wranglerHome, apiToken: context.apiToken });
     stage = "worker_readback";
-    const [deployments, version, secrets] = await Promise.all([
+    const [deploymentResponse, version, secrets] = await Promise.all([
       api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`),
       api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${tagged[0].id}`),
       api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/secrets`),
     ]);
+    const deployments = normalizeDeploymentList(deploymentResponse);
     const activeVersion = selectPriorRevision(deployments);
     if (activeVersion !== tagged[0].id) fail("worker_revision_readback_mismatch");
     const bindings = version?.resources?.bindings ?? [];

@@ -4,12 +4,15 @@ import {
   RouteError,
   TARGET,
   makeCloudflareApi,
+  normalizeDeploymentList,
+  normalizeVersionList,
   runRoute,
   selectNamedResource,
   selectPriorRevision,
   validateDatabaseIdentity,
   validateCandidateVersion,
   validateIntakeDisabled,
+  validateInventoryPage,
   validateDispatch,
   validateMigrationLedger,
   validatePostflight,
@@ -66,6 +69,13 @@ describe("B-216 protected receiver route admission", () => {
     ], TARGET.databaseName, "database"), "database_duplicate_name");
   });
 
+  it("rejects truncated or inconsistent provider inventories instead of assuming a unique target", () => {
+    expect(validateInventoryPage(Object.assign([{ name: "only-db" }], { result_info: { count: 1, page: 1, per_page: 100, total_count: 1 } }), "database", { requireTotalCount: true })).toHaveLength(1);
+    errorCode(() => validateInventoryPage(Object.assign([{ name: "first-page-db" }], { result_info: { count: 1, page: 1, per_page: 100, total_count: 101 } }), "database", { requireTotalCount: true }), "database_inventory_truncated");
+    errorCode(() => validateInventoryPage(Object.assign([{ name: "only-db" }], { result_info: { count: 2, page: 1, per_page: 100, total_count: 1 } }), "database", { requireTotalCount: true }), "database_inventory_ambiguous");
+    errorCode(() => validateInventoryPage([], "database", { requireTotalCount: true }), "database_inventory_ambiguous");
+  });
+
   it("accepts only the exact empty or migrated schema and rejects unknown/partial state", async () => {
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
     expect(validateReceiptSchema([], migration)).toBe("empty");
@@ -85,8 +95,13 @@ describe("B-216 protected receiver route admission", () => {
     expect(selectPriorRevision([{ versions: [{ version_id: version, percentage: 100 }] }])).toBe(version);
     errorCode(() => selectPriorRevision([{ versions: [{ version_id: version, percentage: 50 }, { version_id: version, percentage: 50 }] }]), "worker_preimage_ambiguous");
     errorCode(() => selectPriorRevision([{ versions: [{ version_id: version, percentage: 90 }] }]), "worker_preimage_ambiguous");
-    expect(validateRollbackReadback([{ versions: [{ version_id: version, percentage: 100 }] }], version)).toBe(true);
-    errorCode(() => validateRollbackReadback([{ versions: [{ version_id: "123e4567-e89b-42d3-a456-426614174001", percentage: 100 }] }], version), "rollback_readback_mismatch");
+    const deploymentResponse = { deployments: [{ versions: [{ version_id: version, percentage: 100 }] }] };
+    expect(normalizeDeploymentList(deploymentResponse)).toEqual(deploymentResponse.deployments);
+    expect(normalizeVersionList({ items: [{ id: version }] })).toEqual([{ id: version }]);
+    expect(validateRollbackReadback(deploymentResponse, version)).toBe(true);
+    errorCode(() => normalizeDeploymentList([{ versions: [{ version_id: version, percentage: 100 }] }]), "worker_preimage_ambiguous");
+    errorCode(() => normalizeVersionList([{ id: version }]), "worker_version_inventory_ambiguous");
+    errorCode(() => validateRollbackReadback({ deployments: [{ versions: [{ version_id: "123e4567-e89b-42d3-a456-426614174001", percentage: 100 }] }] }, version), "rollback_readback_mismatch");
     expect(validateIntakeDisabled({ enabled: false, previews_enabled: false })).toBe(true);
     errorCode(() => validateIntakeDisabled({ enabled: true, previews_enabled: false }), "rollback_readback_mismatch");
     const deployment = { versions: [{ version_id: version, percentage: 100 }] };
@@ -122,7 +137,7 @@ describe("B-216 protected receiver route admission", () => {
     let creates = 0;
     const fetchImpl = async (url, options) => {
       if (url.endsWith(`/accounts/${TARGET.accountId}`)) return Response.json({ success: true, result: { id: TARGET.accountId } });
-      if (url.includes("/d1/database?") || url.includes("/workers/scripts?")) return Response.json({ success: true, result: [], result_info: { total_pages: 1 } });
+      if (url.includes("/d1/database?") || url.includes("/workers/scripts?")) return Response.json({ success: true, result: [], result_info: { count: 0, page: 1, per_page: 100, total_count: 0 } });
       if (url.endsWith("/d1/database")) {
         creates += 1;
         expect(options.method).toBe("POST");
