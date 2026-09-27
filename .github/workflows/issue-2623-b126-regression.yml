@@ -1,0 +1,64 @@
+name: Issue 2623 B-126 signup regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/issue-2623-b126-regression.yml
+      - crates/corelink-container/src/routes/signup.rs
+      - crates/corelink-container/src/routes/signup_store.rs
+      - crates/corelink-container/src/routes/signup_tests.rs
+      - crates/corelink-container/src/main_tests.rs
+      - scripts/verify_b126_t1_refactor.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-2623-b126-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  signup-b126:
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact candidate and protected base
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git merge-base "$EXPECTED_BASE" "$EXPECTED_HEAD")" = "$EXPECTED_BASE"
+
+      - name: Check source ceilings and structural negative controls
+        run: |
+          python3 -I scripts/verify_b126_t1_refactor.py
+          python3 -I scripts/verify_b126_t1_refactor.py --self-test
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable toolchain action
+        with:
+          toolchain: 1.91.1
+
+      - name: Install pinned Protobuf compiler
+        uses: arduino/setup-protoc@f4d5893b897028ff5739576ea0409746887fa536 # v3.0.0
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run focused B-126 and signup admission tests
+        run: |
+          cargo test --locked -p corelink-server b126_t1_files_remain_below_the_1000_line_ceiling
+          cargo test --locked -p corelink-server forged_staging_admission_is_rejected_before_signup_write
