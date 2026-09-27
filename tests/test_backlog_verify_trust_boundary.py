@@ -709,6 +709,16 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         backlog_verify.validate_candidate_workflow(self.candidate)
         b314_marker = "      - name: Prove BASE B-314 owner-gate mutation teeth"
         mutations = {
+            "job-bytecode-env-removed": baseline.replace(
+                '      PYTHONDONTWRITEBYTECODE: "1"\n', "", 1,
+            ),
+            "job-bytecode-env-wrong": baseline.replace(
+                'PYTHONDONTWRITEBYTECODE: "1"', 'PYTHONDONTWRITEBYTECODE: "0"', 1,
+            ),
+            "job-bytecode-env-extra": baseline.replace(
+                '      PYTHONDONTWRITEBYTECODE: "1"\n',
+                '      PYTHONDONTWRITEBYTECODE: "1"\n      BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n', 1,
+            ),
             "root-env-bash-env": baseline.replace(
                 "name: backlog-verify\n",
                 "name: backlog-verify\nenv:\n  BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n", 1,
@@ -718,8 +728,8 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
                 "name: backlog-verify\ndefaults:\n  run:\n    shell: bash\n", 1,
             ),
             "job-env-bash-env": baseline.replace(
-                "    timeout-minutes: 10\n",
-                "    timeout-minutes: 10\n    env:\n      BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n", 1,
+                '      PYTHONDONTWRITEBYTECODE: "1"\n',
+                '      PYTHONDONTWRITEBYTECODE: "1"\n      BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n', 1,
             ),
             "job-defaults": baseline.replace(
                 "    timeout-minutes: 10\n",

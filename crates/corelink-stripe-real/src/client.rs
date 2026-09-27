@@ -571,6 +571,10 @@ impl StripeRealClient {
         // (`Invalid email address: `). A customer with no email is valid; the
         // hosted Checkout page collects + saves the buyer's email onto it.
         let mut form = vec![("metadata[tenant_id]", tenant_id.to_string())];
+        #[cfg(feature = "live-integration")]
+        if let Some(run_id) = live_harness_run_id() {
+            form.push(("metadata[test_run_id]", run_id));
+        }
         let email = email.trim();
         if !email.is_empty() {
             form.push(("email", email.to_string()));
@@ -743,6 +747,112 @@ impl StripeRealClient {
         Ok(())
     }
 
+    /// Clean up one exact run-owned Checkout Session through the configured
+    /// transport. This deliberately exists only in the explicitly enabled
+    /// live harness feature; it is not a production customer/session API.
+    #[cfg(feature = "live-integration")]
+    pub fn cleanup_harness_checkout(
+        &self,
+        id: &str,
+        expected_customer_id: &str,
+        run_id: &str,
+    ) -> Result<(), StripeError> {
+        let before: serde_json::Value = self.get(&format!("/v1/checkout/sessions/{id}"))?;
+        let metadata_run = before
+            .pointer("/metadata/test_run_id")
+            .and_then(|v| v.as_str());
+        if before.get("id").and_then(|v| v.as_str()) != Some(id)
+            || before.get("customer").and_then(|v| v.as_str()) != Some(expected_customer_id)
+            || metadata_run != Some(run_id)
+            || before.get("status").and_then(|v| v.as_str()) != Some("open")
+            || before.get("payment_status").and_then(|v| v.as_str()) != Some("unpaid")
+            || before.get("payment_intent") != Some(&serde_json::Value::Null)
+            || before.get("subscription") != Some(&serde_json::Value::Null)
+        {
+            return Err(StripeError::InvalidRequest(
+                "harness checkout is not exact-run-owned and unpaid/open".into(),
+            ));
+        }
+        self.expire_checkout_session(id)?;
+        let after: serde_json::Value = self.get(&format!("/v1/checkout/sessions/{id}"))?;
+        if after.get("id").and_then(|v| v.as_str()) != Some(id)
+            || after.get("customer").and_then(|v| v.as_str()) != Some(expected_customer_id)
+            || after.get("status").and_then(|v| v.as_str()) != Some("expired")
+            || after
+                .pointer("/metadata/test_run_id")
+                .and_then(|v| v.as_str())
+                != Some(run_id)
+        {
+            return Err(StripeError::InvalidRequest(
+                "harness checkout expiry readback did not match".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Delete one exact run-owned customer only after readback proves it has
+    /// no subscription or PaymentIntent. Kept behind the live-harness feature
+    /// because normal DSR flows intentionally retain Stripe customer records.
+    #[cfg(feature = "live-integration")]
+    pub fn cleanup_harness_customer(&self, id: &str, run_id: &str) -> Result<(), StripeError> {
+        let customer: serde_json::Value = self.get(&format!("/v1/customers/{id}"))?;
+        if customer
+            .pointer("/metadata/test_run_id")
+            .and_then(|v| v.as_str())
+            != Some(run_id)
+        {
+            return Err(StripeError::InvalidRequest(
+                "harness customer is not exact-run-owned".into(),
+            ));
+        }
+        for path in [
+            format!("/v1/subscriptions?customer={id}&status=all&limit=100"),
+            format!("/v1/payment_intents?customer={id}&limit=100"),
+        ] {
+            let list: serde_json::Value = self.get(&path)?;
+            if list
+                .pointer("/data")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(|v| !v.is_empty())
+                || list.get("has_more") != Some(&serde_json::Value::Bool(false))
+            {
+                return Err(StripeError::InvalidRequest(
+                    "harness customer has payment/subscription state or incomplete readback".into(),
+                ));
+            }
+        }
+        let url = format!("{}/v1/customers/{id}", self.base_url);
+        let response = self
+            .http
+            .delete(&url)
+            .bearer_auth(self.config.bearer_token().expose_secret())
+            .header("Stripe-Version", "2024-06-20")
+            .send()
+            .map_err(|e| StripeError::ApiConnection(e.to_string()))?;
+        let status = response.status().as_u16();
+        let body = response.text().unwrap_or_default();
+        if !(200..300).contains(&status) {
+            return Err(map_api_error(status, &body, None));
+        }
+        let deleted: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| StripeError::ApiConnection(format!("json decode: {e}")))?;
+        if deleted.get("deleted").and_then(serde_json::Value::as_bool) != Some(true)
+            || deleted.get("id").and_then(serde_json::Value::as_str) != Some(id)
+        {
+            return Err(StripeError::InvalidRequest(
+                "customer delete readback did not match".into(),
+            ));
+        }
+        match self.get::<serde_json::Value>(&format!("/v1/customers/{id}")) {
+            Err(StripeError::Generic {
+                http_status: 404, ..
+            }) => Ok(()),
+            _ => Err(StripeError::InvalidRequest(
+                "customer delete follow-up readback did not return 404".into(),
+            )),
+        }
+    }
+
     /// `POST /v1/checkout/sessions` — typed Stripe Checkout creation
     /// (returns the raw Stripe object).
     ///
@@ -840,6 +950,10 @@ fn build_checkout_form(
         ("metadata[tenant_id]", req.tenant_id.as_str().to_string()),
         ("metadata[tier]", req.tier.as_str().to_string()),
     ];
+    #[cfg(feature = "live-integration")]
+    if let Some(run_id) = live_harness_run_id() {
+        form.push(("metadata[test_run_id]", run_id));
+    }
     match promo {
         // Hosted promo-code field (mutually exclusive with `discounts`).
         CheckoutPromo::AllowCodes => {
@@ -851,6 +965,39 @@ fn build_checkout_form(
         }
     }
     form
+}
+
+#[cfg(feature = "live-integration")]
+fn live_harness_run_id() -> Option<String> {
+    // A GitHub run id alone is not authority to mark provider objects for
+    // cleanup. Require the canonical, protected manual Stripe profile context;
+    // the executor workflow exposes the Stripe settings only for stripe/all.
+    let required_context = [
+        ("GITHUB_EVENT_NAME", "workflow_dispatch"),
+        ("GITHUB_REPOSITORY", "HuGR-dev/corelink-server"),
+        ("GITHUB_REF", "refs/heads/main"),
+        (
+            "GITHUB_WORKFLOW",
+            "real ignored integration harnesses (B-068)",
+        ),
+        ("HUGR_STRIPE_REF", "stripe-prod-test"),
+        ("STRIPE_AUTH_MODE", "wallet-broker"),
+    ];
+    if required_context
+        .iter()
+        .any(|(name, value)| env::var(name).ok().as_deref() != Some(*value))
+    {
+        return None;
+    }
+    let value = env::var("GITHUB_RUN_ID").ok()?;
+    if value.is_empty()
+        || value.len() > 20
+        || !value.chars().all(|c| c.is_ascii_digit())
+        || value.bytes().all(|b| b == b'0')
+    {
+        return None;
+    }
+    Some(value)
 }
 
 /// Stable Stripe idempotency identity for one tenant/entitlement axis.
@@ -909,17 +1056,92 @@ impl StripeClient for StripeRealClient {
             .create_customer("", req.tenant_id.as_str(), &customer_idem)
             .map_err(|e| TierError::Stripe(e.to_string()))?;
 
-        let raw = self
-            .create_checkout_session_raw(req, &idem, &price_id, &promo, &created_customer.id)
-            .map_err(|e| TierError::Stripe(e.to_string()))?;
+        let raw = match self.create_checkout_session_raw(
+            req,
+            &idem,
+            &price_id,
+            &promo,
+            &created_customer.id,
+        ) {
+            Ok(raw) => raw,
+            Err(error) => {
+                // The live harness marks the customer with its run id. If
+                // session creation is rejected before returning a session id,
+                // perform the exact-run customer cleanup here: the caller has
+                // not received a response yet and cannot register the id in
+                // its Drop guard. Normal production calls have no run marker
+                // and retain their existing behavior.
+                #[cfg(feature = "live-integration")]
+                let cleanup = live_harness_run_id().map(|run_id| {
+                    if matches!(
+                        &error,
+                        StripeError::InvalidRequest(_) | StripeError::Authentication(_)
+                    ) {
+                        self.cleanup_harness_customer(&created_customer.id, &run_id)
+                    } else {
+                        Err(StripeError::InvalidRequest(
+                            "checkout outcome is ambiguous; customer retained for recovery".into(),
+                        ))
+                    }
+                });
+                #[cfg(feature = "live-integration")]
+                let suffix = match cleanup {
+                    Some(Ok(())) => "; run-owned customer cleanup passed",
+                    Some(Err(_))
+                        if matches!(
+                            &error,
+                            StripeError::InvalidRequest(_) | StripeError::Authentication(_)
+                        ) =>
+                    {
+                        "; run-owned customer cleanup failed"
+                    }
+                    Some(Err(_)) => {
+                        "; run-owned customer retained because Checkout outcome is ambiguous"
+                    }
+                    None => "",
+                };
+                #[cfg(not(feature = "live-integration"))]
+                let suffix = "";
+                return Err(TierError::Stripe(format!("{error}{suffix}")));
+            }
+        };
 
         // Stripe echoes the attached customer; fall back to the one we created
         // (belt-and-suspenders — the field is present because we passed it).
-        let customer = raw.customer.unwrap_or(created_customer.id);
+        let customer = raw.customer.unwrap_or_else(|| created_customer.id.clone());
 
-        let url = raw
-            .url
-            .ok_or_else(|| TierError::Stripe("missing url on checkout session".to_string()))?;
+        let url = match raw.url {
+            Some(url) => url,
+            None => {
+                // Here Stripe did return an exact session id. Expire and
+                // read it back before deleting its customer; if expiry fails,
+                // leave the customer for bounded recovery rather than deleting
+                // a still-open Checkout dependency.
+                #[cfg(feature = "live-integration")]
+                let cleanup = live_harness_run_id().map(|run_id| {
+                    if customer == created_customer.id
+                        && self
+                            .cleanup_harness_checkout(&raw.id, &customer, &run_id)
+                            .is_ok()
+                    {
+                        self.cleanup_harness_customer(&customer, &run_id).is_ok()
+                    } else {
+                        false
+                    }
+                });
+                #[cfg(feature = "live-integration")]
+                let suffix = match cleanup {
+                    Some(true) => "; run-owned checkout/customer cleanup passed",
+                    Some(false) => "; run-owned checkout/customer cleanup failed",
+                    None => "",
+                };
+                #[cfg(not(feature = "live-integration"))]
+                let suffix = "";
+                return Err(TierError::Stripe(format!(
+                    "missing url on checkout session{suffix}"
+                )));
+            }
+        };
         Ok(CheckoutSessionResponse::new(
             raw.id,
             StripeCustomerId::new(customer),

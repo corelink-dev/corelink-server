@@ -10,6 +10,7 @@ bodies and credentials are never printed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -24,6 +25,7 @@ API_BASE = "https://api.stripe.com"
 TIMEOUT_SECONDS = 20
 CONFIRMATION = "run-i1649-stripe-test-mode"
 IDENTITY_CONFIRMATION = "run-i2565-stripe-identity-only"
+STARTER_PRICE_CONFIRMATION = "run-i2565-stripe-starter-price-readonly"
 REQUIRED_WORKFLOW_MARKERS = (
     "github.repository == 'HuGR-dev/corelink-server'",
     "runs-on: ubuntu-latest",
@@ -35,6 +37,8 @@ REQUIRED_WORKFLOW_MARKERS = (
     "idempotency",
     "cleanup",
     "identity-only",
+    "starter-price-readonly",
+    "Products: Read",
     "STRIPE_TEST_ACCOUNT_ID",
     "Run read-only Stripe account identity probe",
     "persist-credentials: false",
@@ -237,6 +241,91 @@ def run_identity_probe(key: str, run_id: str, expected_account_id: str, output: 
     return 0
 
 
+def _bounded_list(key: str, path: str, *, max_pages: int = 5) -> list[dict[str, Any]]:
+    """Read a complete Stripe collection with a hard page and item bound."""
+    rows: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    next_path = path
+    for _ in range(max_pages):
+        _, page = request_json(key, "GET", next_path)
+        data = page.get("data")
+        has_more = page.get("has_more")
+        if not isinstance(data, list) or not isinstance(has_more, bool):
+            raise ProbeError("Stripe catalog page shape was incomplete")
+        for item in data:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str) or item["id"] in seen_ids:
+                raise ProbeError("Stripe catalog page contained an invalid or repeated item")
+            seen_ids.add(item["id"])
+            rows.append(item)
+        if not has_more:
+            return rows
+        if not data:
+            raise ProbeError("Stripe catalog pagination made no progress")
+        cursor = urllib.parse.quote(data[-1]["id"], safe="")
+        separator = "&" if "?" in path else "?"
+        next_path = f"{path}{separator}starting_after={cursor}"
+    raise ProbeError("Stripe catalog exceeds the bounded page limit")
+
+
+def run_starter_price_probe(key: str, run_id: str, expected_account_id: str, output: Path) -> int:
+    """Read account, products, then the exact active Starter monthly price."""
+    require_restricted_test_key(key)
+    if not run_id or not run_id.isascii() or not run_id.replace("-", "").isalnum():
+        raise ProbeError("GITHUB_RUN_ID is missing or malformed")
+    if not expected_account_id.startswith("acct_"):
+        raise ProbeError("STRIPE_TEST_ACCOUNT_ID is missing or malformed")
+
+    account_status, account = request_json(key, "GET", "/v1/account")
+    if account_status != 200:
+        raise ProbeError("Stripe account read failed")
+    assert_account_identity(account)
+    if account.get("id") != expected_account_id:
+        raise ProbeError("Stripe account did not match the configured test account")
+
+    products = _bounded_list(key, "/v1/products?active=true&limit=100")
+    matches = [p for p in products if p.get("name") == "CoreLink Starter" and p.get("active") is True and p.get("livemode") is False]
+    if len(matches) != 1 or not isinstance(matches[0].get("id"), str) or not matches[0]["id"].startswith("prod_"):
+        raise ProbeError("Stripe test catalog did not contain one exact CoreLink Starter product")
+    encoded_product = urllib.parse.quote(matches[0]["id"], safe="")
+    prices = _bounded_list(key, f"/v1/prices?product={encoded_product}&active=true&limit=100")
+    matching_prices = [
+        price for price in prices
+        if isinstance(price, dict)
+        and price.get("active") is True
+        and price.get("livemode") is False
+        and price.get("currency") == "usd"
+        and price.get("unit_amount") == 4900
+        and isinstance(price.get("recurring"), dict)
+        and price["recurring"].get("interval") == "month"
+        and price["recurring"].get("interval_count") == 1
+        and isinstance(price.get("id"), str)
+        and price["id"].startswith("price_")
+    ]
+    if len(matching_prices) != 1:
+        raise ProbeError("Stripe test catalog did not contain one active Starter USD 49 monthly price")
+    price = matching_prices[0]
+    receipt = {
+        "schema": "corelink.stripe-starter-test-price.v1",
+        "issue": 2565,
+        "run_id": run_id,
+        "mode": "test",
+        "livemode": False,
+        "account_matches_expected": True,
+        "starter_price": {
+            "id_sha256": hashlib.sha256(price["id"].encode("ascii")).hexdigest(),
+            "id_present": False, "unit_amount": 4900, "currency": "usd",
+            "interval": "month", "interval_count": 1,
+        },
+        "requests": ["GET /v1/account", "GET /v1/products?active=true&limit=100", "GET /v1/prices?product=<exact Starter product>&active=true&limit=100"],
+        "provider_mutations": 0,
+        "redacted": True,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return 0
+
+
 def contract_check(workflow: Path) -> int:
     text = workflow.read_text(encoding="utf-8")
     missing = [marker for marker in REQUIRED_WORKFLOW_MARKERS if marker not in text]
@@ -257,14 +346,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workflow", type=Path, default=Path(".github/workflows/issue-1649-stripe-test-mode.yml"))
     parser.add_argument("--output", type=Path, default=Path("artifacts/issue-1649-stripe-test-mode-receipt.json"))
     parser.add_argument("--identity-only", action="store_true")
+    parser.add_argument("--starter-price-readonly", action="store_true")
     args = parser.parse_args(argv)
     if args.contract:
         return contract_check(args.workflow)
     try:
+        if args.identity_only and args.starter_price_readonly:
+            raise ProbeError("at most one #2565 read-only mode may be selected")
         if args.identity_only:
             if os.environ.get("I2565_CONFIRM") != IDENTITY_CONFIRMATION:
                 raise ProbeError("identity-only dispatch confirmation is missing or incorrect")
             return run_identity_probe(
+                os.environ.get("STRIPE_SECRET_KEY", ""),
+                os.environ.get("GITHUB_RUN_ID", ""),
+                os.environ.get("STRIPE_TEST_ACCOUNT_ID", ""),
+                args.output,
+            )
+        if args.starter_price_readonly:
+            if os.environ.get("I2565_CONFIRM") != STARTER_PRICE_CONFIRMATION:
+                raise ProbeError("Starter-price read-only dispatch confirmation is missing or incorrect")
+            return run_starter_price_probe(
                 os.environ.get("STRIPE_SECRET_KEY", ""),
                 os.environ.get("GITHUB_RUN_ID", ""),
                 os.environ.get("STRIPE_TEST_ACCOUNT_ID", ""),
