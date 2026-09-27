@@ -74,8 +74,8 @@ jobs:
       - name: Check Rust formatting and focused signup writer
         run: |
           cargo fmt --all -- --check
-          cargo test --locked -p corelink-server b126_t1_files_remain_below_the_1000_line_ceiling
-          cargo test --locked -p corelink-server forged_staging_admission_is_rejected_before_signup_write
+          cargo test --locked -p corelink-server --bin corelink-server b126_t1_files_remain_below_the_1000_line_ceiling
+          cargo test --locked -p corelink-server --lib forged_staging_admission_is_rejected_before_signup_write
           cargo test --locked -p corelink-server --lib signup_d1_http::tests::happy_path_insert_returns_the_record -- --exact
           cargo test --locked -p corelink-server --lib signup_d1_http::tests::duplicate_email_returns_the_original_row_not_the_new_one -- --exact
 
