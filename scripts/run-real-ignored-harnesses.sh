@@ -11,7 +11,7 @@ set -euo pipefail
 
 readonly SCRIPT_NAME="${0##*/}"
 readonly PROFILE="${1:-}"
-readonly RECEIPT_DIR="${REAL_HARNESS_RECEIPT_DIR:-artifacts/real-ignored-harnesses}"
+readonly RECEIPT_DIR="${GITHUB_WORKSPACE:-.}/artifacts/real-ignored-harnesses"
 readonly RECEIPT_FILE="${RECEIPT_DIR}/receipt.jsonl"
 readonly RECEIPT_SHA="${GITHUB_SHA:-}"
 RAW_LOGS=()
@@ -83,7 +83,7 @@ run_cargo() {
   RAW_LOGS+=("$raw_log")
   record_receipt "$profile" "$expected" "started"
   local cargo_rc=0
-  if REAL_HARNESS_TEST_NAME="$expected" cargo test --locked "$@" "$expected" -- --ignored --nocapture >"$raw_log" 2>&1; then
+  if cargo test --locked "$@" "$expected" -- --ignored --nocapture >"$raw_log" 2>&1; then
     :
   else
     cargo_rc=$?
@@ -144,9 +144,11 @@ preflight_stripe() {
   # pointing at a live-mode wallet credential.
   require_env \
     HUGR_WALLET_BASE HUGR_WALLET_TOKEN HUGR_STRIPE_REF \
-    STRIPE_AUTH_MODE STRIPE_PRICE_ID_STARTER
-  [[ "${REAL_HARNESS_RUN_ID:-}" =~ ^[A-Za-z0-9_-]{1,80}$ ]] || \
-    die "REAL_HARNESS_RUN_ID must be a bounded run-owned selector"
+    STRIPE_AUTH_MODE STRIPE_PRICE_ID_STARTER GITHUB_RUN_ID
+  [[ "$GITHUB_RUN_ID" =~ ^[0-9]{1,20}$ ]] || \
+    die "GITHUB_RUN_ID must be a bounded numeric run selector"
+  [[ "$GITHUB_RUN_ID" =~ [1-9] ]] || \
+    die "GITHUB_RUN_ID must be nonzero"
   require_https HUGR_WALLET_BASE
   [[ "$HUGR_WALLET_TOKEN" == hugrw_* ]] || die "HUGR_WALLET_TOKEN must be a wallet-broker token"
   [[ "$HUGR_STRIPE_REF" == stripe-prod-test ]] || \
@@ -186,7 +188,7 @@ run_stripe() {
   run_cargo stripe live_idempotent_checkout_returns_same_session --package corelink-stripe-real --features live-integration --test live_integration
   run_cargo stripe live_billing_portal_session --package corelink-stripe-real --features live-integration --test live_integration
   run_cargo stripe live_authentication_failure_bad_token --package corelink-stripe-real --features live-integration --test live_integration
-  python3 scripts/verify_stripe_harness_cleanup_receipt.py "$RECEIPT_DIR/cleanup.jsonl" "$REAL_HARNESS_RUN_ID"
+  python3 scripts/verify_stripe_harness_cleanup_receipt.py "$RECEIPT_DIR/cleanup.jsonl" "$GITHUB_RUN_ID"
 }
 
 run_neon() {

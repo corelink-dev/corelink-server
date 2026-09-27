@@ -56,12 +56,8 @@ struct HarnessCleanup {
 
 impl HarnessCleanup {
     fn new(client: StripeRealClient) -> Self {
-        let run_id = env::var("REAL_HARNESS_RUN_ID").expect("REAL_HARNESS_RUN_ID must be set");
-        assert!(safe_selector(&run_id, 80));
-        let receipt_dir = env::var_os("REAL_HARNESS_RECEIPT_DIR")
-            .map(PathBuf::from)
-            .expect("receipt directory must be set");
-        Self::with_receipt_dir(client, run_id, receipt_dir)
+        let run_id = require_protected_stripe_run_id();
+        Self::with_receipt_dir(client, run_id, repo_receipt_dir())
     }
 
     fn with_receipt_dir(client: StripeRealClient, run_id: String, receipt_dir: PathBuf) -> Self {
@@ -85,12 +81,10 @@ impl HarnessCleanup {
 
     fn receipt(&mut self, kind: &str, id: &str, status: &str) {
         let digest = hex::encode(Sha256::digest(id.as_bytes()));
-        let test_name =
-            env::var("REAL_HARNESS_TEST_NAME").unwrap_or_else(|_| "cleanup_fault_injection".into());
-        if !safe_selector(&test_name, 100) {
+        let Some(test_name) = current_test_selector() else {
             self.cleanup_failed = true;
             return;
-        }
+        };
         let path = self.receipt_dir.join("cleanup.jsonl");
         let result = (|| -> std::io::Result<()> {
             let mut file = OpenOptions::new().create(true).append(true).open(path)?;
@@ -110,6 +104,43 @@ fn safe_selector(value: &str, max_len: usize) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+fn safe_run_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 20
+        && value.chars().all(|c| c.is_ascii_digit())
+        && value.bytes().any(|b| b != b'0')
+}
+
+fn require_protected_stripe_run_id() -> String {
+    let required_context = [
+        ("GITHUB_EVENT_NAME", "workflow_dispatch"),
+        ("GITHUB_REPOSITORY", "HuGR-dev/corelink-server"),
+        ("GITHUB_REF", "refs/heads/main"),
+        (
+            "GITHUB_WORKFLOW",
+            "real ignored integration harnesses (B-068)",
+        ),
+        ("HUGR_STRIPE_REF", "stripe-prod-test"),
+        ("STRIPE_AUTH_MODE", "wallet-broker"),
+    ];
+    for (name, expected) in required_context {
+        assert_eq!(env::var(name).ok().as_deref(), Some(expected));
+    }
+    let run_id = env::var("GITHUB_RUN_ID").expect("GITHUB_RUN_ID must be set");
+    assert!(safe_run_id(&run_id));
+    run_id
+}
+
+fn current_test_selector() -> Option<String> {
+    let thread = std::thread::current();
+    let name = thread.name()?.rsplit("::").next()?;
+    safe_selector(name, 100).then(|| name.to_owned())
+}
+
+fn repo_receipt_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../artifacts/real-ignored-harnesses")
+}
+
 #[cfg(test)]
 mod cleanup_fault_injection {
     use super::*;
@@ -120,22 +151,131 @@ mod cleanup_fault_injection {
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    struct RestoreEnv(&'static str, Option<String>);
+    struct RestoreEnv(String, Option<String>);
 
     impl RestoreEnv {
-        fn set(key: &'static str, value: &str) -> Self {
+        fn set(key: &str, value: &str) -> Self {
             let old = env::var(key).ok();
             env::set_var(key, value);
-            Self(key, old)
+            Self(key.to_owned(), old)
         }
+
+        fn remove(key: &str) -> Self {
+            let old = env::var(key).ok();
+            env::remove_var(key);
+            Self(key.to_owned(), old)
+        }
+    }
+
+    fn protected_stripe_context(run_id: &str) -> [RestoreEnv; 8] {
+        [
+            RestoreEnv::set("GITHUB_RUN_ID", run_id),
+            RestoreEnv::set("GITHUB_EVENT_NAME", "workflow_dispatch"),
+            RestoreEnv::set("GITHUB_REPOSITORY", "HuGR-dev/corelink-server"),
+            RestoreEnv::set("GITHUB_REF", "refs/heads/main"),
+            RestoreEnv::set(
+                "GITHUB_WORKFLOW",
+                "real ignored integration harnesses (B-068)",
+            ),
+            RestoreEnv::set("HUGR_STRIPE_REF", "stripe-prod-test"),
+            RestoreEnv::set("STRIPE_AUTH_MODE", "wallet-broker"),
+            RestoreEnv::set("STRIPE_PRICE_ID_STARTER", "price_test_fixture"),
+        ]
+    }
+
+    #[test]
+    fn github_run_id_alone_does_not_enable_run_owned_metadata() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _run_id = RestoreEnv::set("GITHUB_RUN_ID", "424244");
+        let _event = RestoreEnv::remove("GITHUB_EVENT_NAME");
+        let _repository = RestoreEnv::remove("GITHUB_REPOSITORY");
+        let _ref_name = RestoreEnv::remove("GITHUB_REF");
+        let _workflow = RestoreEnv::remove("GITHUB_WORKFLOW");
+        let _stripe_ref = RestoreEnv::remove("HUGR_STRIPE_REF");
+        let _auth_mode = RestoreEnv::remove("STRIPE_AUTH_MODE");
+        let _price = RestoreEnv::set("STRIPE_PRICE_ID_STARTER", "price_test_fixture");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        let customer_id = "cus_outside_profile_fixture";
+        let session_id = "cs_outside_profile_fixture";
+        let proxy = "/_wallet/proxy/stripe-prod-test";
+        runtime.block_on(async {
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/customers")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id,
+                    "email": null
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": session_id,
+                    "customer": customer_id,
+                    "url": "https://example.test/session"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        });
+        let client = StripeRealClient::builder()
+            .config(StripeClientConfig::wallet_broker(
+                server.uri(),
+                SecretString::from("hugrw_fake_test_token"),
+                "stripe-prod-test",
+            ))
+            .build()
+            .expect("mock client");
+        let constructor = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            HarnessCleanup::new(client.clone())
+        }));
+        assert!(
+            constructor.is_err(),
+            "run id alone cannot arm the cleanup harness"
+        );
+        let req = CheckoutSessionRequest::new(
+            TenantId::new("tenant_outside_profile"),
+            TierKind::Starter,
+            "outside-profile@example.test",
+            "https://example.test/ok",
+            "https://example.test/cancel",
+        );
+        let response = client
+            .create_checkout_session(&req)
+            .expect("ordinary mock checkout");
+        assert_eq!(response.session_id, session_id);
+        let requests = runtime
+            .block_on(server.received_requests())
+            .expect("captured mock requests");
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            let body = String::from_utf8_lossy(&request.body);
+            assert!(!body.contains("test_run_id"));
+        }
+    }
+
+    #[test]
+    fn receipt_selector_and_path_are_bounded() {
+        assert_eq!(
+            current_test_selector().as_deref(),
+            Some("receipt_selector_and_path_are_bounded")
+        );
+        assert!(repo_receipt_dir().ends_with("artifacts/real-ignored-harnesses"));
+        assert!(safe_run_id("424245"));
+        assert!(!safe_run_id("run-424245"));
     }
 
     impl Drop for RestoreEnv {
         fn drop(&mut self) {
             if let Some(value) = self.1.take() {
-                env::set_var(self.0, value);
+                env::set_var(&self.0, value);
             } else {
-                env::remove_var(self.0);
+                env::remove_var(&self.0);
             }
         }
     }
@@ -145,8 +285,7 @@ mod cleanup_fault_injection {
         use wiremock::matchers::query_param;
 
         let _env_lock = ENV_LOCK.lock().expect("env lock");
-        let _run_id = RestoreEnv::set("REAL_HARNESS_RUN_ID", "run-fault-create");
-        let _price = RestoreEnv::set("STRIPE_PRICE_ID_STARTER", "price_test_fixture");
+        let _context = protected_stripe_context("424242");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -177,7 +316,7 @@ mod cleanup_fault_injection {
                 .and(path(format!("{proxy}/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
-                    "metadata": {"test_run_id": "run-fault-create"}
+                    "metadata": {"test_run_id": "424242"}
                 })))
                 .up_to_n_times(1)
                 .mount(&server)
@@ -246,8 +385,7 @@ mod cleanup_fault_injection {
         use wiremock::matchers::query_param;
 
         let _env_lock = ENV_LOCK.lock().expect("env lock");
-        let _run_id = RestoreEnv::set("REAL_HARNESS_RUN_ID", "run-fault-missing-url");
-        let _price = RestoreEnv::set("STRIPE_PRICE_ID_STARTER", "price_test_fixture");
+        let _context = protected_stripe_context("424243");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -264,14 +402,14 @@ mod cleanup_fault_injection {
             "payment_status": "unpaid",
             "payment_intent": null,
             "subscription": null,
-            "metadata": {"test_run_id": "run-fault-missing-url"}
+            "metadata": {"test_run_id": "424243"}
         });
         let expired_session = serde_json::json!({
             "id": checkout_id,
             "customer": customer_id,
             "url": null,
             "status": "expired",
-            "metadata": {"test_run_id": "run-fault-missing-url"}
+            "metadata": {"test_run_id": "424243"}
         });
 
         runtime.block_on(async {
@@ -314,7 +452,7 @@ mod cleanup_fault_injection {
                 .and(path(format!("{proxy}/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
-                    "metadata": {"test_run_id": "run-fault-missing-url"}
+                    "metadata": {"test_run_id": "424243"}
                 })))
                 .up_to_n_times(1)
                 .mount(&server)
@@ -431,6 +569,24 @@ mod cleanup_fault_injection {
             std::fs::read_to_string(result.1.join("cleanup.jsonl")).expect("cleanup receipt");
         assert!(receipt.contains("cleanup_failed"));
         assert!(!receipt.contains(customer_id));
+        let row: serde_json::Value = serde_json::from_str(receipt.trim()).expect("receipt row");
+        assert_eq!(
+            row.get("run_id").and_then(|v| v.as_str()),
+            Some("run-fault-1")
+        );
+        assert_eq!(
+            row.get("test").and_then(|v| v.as_str()),
+            Some("panic_still_attempts_guarded_cleanup_and_receipt_redacts_ids")
+        );
+        assert_eq!(row.get("kind").and_then(|v| v.as_str()), Some("customer"));
+        assert_eq!(
+            row.get("status").and_then(|v| v.as_str()),
+            Some("cleanup_failed")
+        );
+        assert_eq!(
+            row.get("id_sha256").and_then(|v| v.as_str()).map(str::len),
+            Some(64)
+        );
         std::fs::remove_dir_all(result.1).expect("remove test receipt");
     }
 }

@@ -83,15 +83,17 @@ jobs:
           R2_TEST_BUCKET: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && vars.R2_TEST_BUCKET || '' }}
           # Stripe live integration uses the wallet broker's test reference;
           # CoreLink never receives a raw Stripe secret key.
-          HUGR_WALLET_BASE: ${{ vars.HUGR_WALLET_BASE }}
-          HUGR_WALLET_TOKEN: ${{ secrets.HUGR_WALLET_TOKEN }}
-          HUGR_STRIPE_REF: ${{ vars.HUGR_STRIPE_REF }}
-          STRIPE_AUTH_MODE: wallet-broker
-          STRIPE_PRICE_ID_STARTER: ${{ vars.STRIPE_PRICE_ID_STARTER }}
-          REAL_HARNESS_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          # Expose Stripe inputs only when this protected dispatch selected
+          # stripe/all. The Rust cleanup marker additionally checks the exact
+          # workflow/repository/ref/event context; GITHUB_RUN_ID alone is not
+          # enough to mark provider objects as harness-owned.
+          HUGR_WALLET_BASE: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.HUGR_WALLET_BASE || '' }}
+          HUGR_WALLET_TOKEN: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && secrets.HUGR_WALLET_TOKEN || '' }}
+          HUGR_STRIPE_REF: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.HUGR_STRIPE_REF || '' }}
+          STRIPE_AUTH_MODE: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && 'wallet-broker' || '' }}
+          STRIPE_PRICE_ID_STARTER: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.STRIPE_PRICE_ID_STARTER || '' }}
           # Neon is separately selected and receives only its staging DSN.
           NEON_TEST_DSN: ${{ secrets.NEON_TEST_DSN }}
-          REAL_HARNESS_RECEIPT_DIR: artifacts/real-ignored-harnesses
           # Pass the untrusted input as data, never by interpolating it into
           # the shell program. The runner's allow-list validates it again.
           REAL_HARNESS_PROFILE: ${{ inputs.profile }}

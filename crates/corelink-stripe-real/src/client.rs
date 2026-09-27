@@ -969,12 +969,31 @@ fn build_checkout_form(
 
 #[cfg(feature = "live-integration")]
 fn live_harness_run_id() -> Option<String> {
-    let value = env::var("REAL_HARNESS_RUN_ID").ok()?;
+    // A GitHub run id alone is not authority to mark provider objects for
+    // cleanup. Require the canonical, protected manual Stripe profile context;
+    // the executor workflow exposes the Stripe settings only for stripe/all.
+    let required_context = [
+        ("GITHUB_EVENT_NAME", "workflow_dispatch"),
+        ("GITHUB_REPOSITORY", "HuGR-dev/corelink-server"),
+        ("GITHUB_REF", "refs/heads/main"),
+        (
+            "GITHUB_WORKFLOW",
+            "real ignored integration harnesses (B-068)",
+        ),
+        ("HUGR_STRIPE_REF", "stripe-prod-test"),
+        ("STRIPE_AUTH_MODE", "wallet-broker"),
+    ];
+    if required_context
+        .iter()
+        .any(|(name, value)| env::var(name).ok().as_deref() != Some(*value))
+    {
+        return None;
+    }
+    let value = env::var("GITHUB_RUN_ID").ok()?;
     if value.is_empty()
-        || value.len() > 80
-        || !value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        || value.len() > 20
+        || !value.chars().all(|c| c.is_ascii_digit())
+        || value.bytes().all(|b| b == b'0')
     {
         return None;
     }
