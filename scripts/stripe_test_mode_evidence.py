@@ -10,6 +10,7 @@ bodies and credentials are never printed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -311,7 +312,8 @@ def run_starter_price_probe(key: str, run_id: str, expected_account_id: str, out
         "livemode": False,
         "account_matches_expected": True,
         "starter_price": {
-            "id": price["id"], "unit_amount": 4900, "currency": "usd",
+            "id_sha256": hashlib.sha256(price["id"].encode("ascii")).hexdigest(),
+            "id_present": False, "unit_amount": 4900, "currency": "usd",
             "interval": "month", "interval_count": 1,
         },
         "requests": ["GET /v1/account", "GET /v1/products?active=true&limit=100", "GET /v1/prices?product=<exact Starter product>&active=true&limit=100"],

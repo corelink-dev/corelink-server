@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -39,7 +40,12 @@ class StripeRestrictedKeyContractTests(unittest.TestCase):
             self.assertTrue(all(call.args[1] == "GET" for call in request.call_args_list))
             receipt_text = output.read_text(encoding="utf-8")
             receipt = json.loads(receipt_text)
-            self.assertEqual(receipt["starter_price"]["id"], "price_starter")
+            self.assertEqual(
+                receipt["starter_price"]["id_sha256"],
+                hashlib.sha256(b"price_starter").hexdigest(),
+            )
+            self.assertIs(receipt["starter_price"]["id_present"], False)
+            self.assertNotIn("price_starter", receipt_text)
             self.assertEqual(receipt["starter_price"]["unit_amount"], 4900)
             self.assertIs(receipt["livemode"], False)
             self.assertEqual(receipt["provider_mutations"], 0)

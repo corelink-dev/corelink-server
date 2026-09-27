@@ -118,6 +118,129 @@ mod cleanup_fault_injection {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct RestoreEnv(&'static str, Option<String>);
+
+    impl RestoreEnv {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old = env::var(key).ok();
+            env::set_var(key, value);
+            Self(key, old)
+        }
+    }
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            if let Some(value) = self.1.take() {
+                env::set_var(self.0, value);
+            } else {
+                env::remove_var(self.0);
+            }
+        }
+    }
+
+    #[test]
+    fn failed_checkout_creation_cleans_customer_before_returning_error() {
+        use wiremock::matchers::query_param;
+
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _run_id = RestoreEnv::set("REAL_HARNESS_RUN_ID", "run-fault-create");
+        let _price = RestoreEnv::set("STRIPE_PRICE_ID_STARTER", "price_test_fixture");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        let customer_id = "cus_create_failure_fixture";
+        let proxy = "/_wallet/proxy/stripe-prod-test";
+
+        runtime.block_on(async {
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/customers")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id,
+                    "email": null
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                    "error": {"type": "invalid_request_error", "message": "injected"}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id,
+                    "metadata": {"test_run_id": "run-fault-create"}
+                })))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/subscriptions")))
+                .and(query_param("customer", customer_id))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": [], "has_more": false
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/payment_intents")))
+                .and(query_param("customer", customer_id))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": [], "has_more": false
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id, "deleted": true
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                    "error": {"type": "invalid_request_error", "code": "resource_missing"}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        });
+
+        let client = StripeRealClient::builder()
+            .config(StripeClientConfig::wallet_broker(
+                server.uri(),
+                SecretString::from("hugrw_fake_test_token"),
+                "stripe-prod-test",
+            ))
+            .build()
+            .expect("mock client");
+        let req = CheckoutSessionRequest::new(
+            TenantId::new("tenant_checkout_failure".into()),
+            TierKind::Starter,
+            "failure@example.test",
+            "https://example.test/ok",
+            "https://example.test/cancel",
+        );
+        let error = client
+            .create_checkout_session(&req)
+            .expect_err("injected failure");
+        assert!(error
+            .to_string()
+            .contains("run-owned customer cleanup passed"));
+    }
+
     #[test]
     fn panic_still_attempts_guarded_cleanup_and_receipt_redacts_ids() {
         let runtime = tokio::runtime::Builder::new_multi_thread()

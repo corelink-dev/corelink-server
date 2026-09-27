@@ -1037,17 +1037,92 @@ impl StripeClient for StripeRealClient {
             .create_customer("", req.tenant_id.as_str(), &customer_idem)
             .map_err(|e| TierError::Stripe(e.to_string()))?;
 
-        let raw = self
-            .create_checkout_session_raw(req, &idem, &price_id, &promo, &created_customer.id)
-            .map_err(|e| TierError::Stripe(e.to_string()))?;
+        let raw = match self.create_checkout_session_raw(
+            req,
+            &idem,
+            &price_id,
+            &promo,
+            &created_customer.id,
+        ) {
+            Ok(raw) => raw,
+            Err(error) => {
+                // The live harness marks the customer with its run id. If
+                // session creation is rejected before returning a session id,
+                // perform the exact-run customer cleanup here: the caller has
+                // not received a response yet and cannot register the id in
+                // its Drop guard. Normal production calls have no run marker
+                // and retain their existing behavior.
+                #[cfg(feature = "live-integration")]
+                let cleanup = live_harness_run_id().map(|run_id| {
+                    if matches!(
+                        &error,
+                        StripeError::InvalidRequest(_) | StripeError::Authentication(_)
+                    ) {
+                        self.cleanup_harness_customer(&created_customer.id, &run_id)
+                    } else {
+                        Err(StripeError::InvalidRequest(
+                            "checkout outcome is ambiguous; customer retained for recovery".into(),
+                        ))
+                    }
+                });
+                #[cfg(feature = "live-integration")]
+                let suffix = match cleanup {
+                    Some(Ok(())) => "; run-owned customer cleanup passed",
+                    Some(Err(_))
+                        if matches!(
+                            &error,
+                            StripeError::InvalidRequest(_) | StripeError::Authentication(_)
+                        ) =>
+                    {
+                        "; run-owned customer cleanup failed"
+                    }
+                    Some(Err(_)) => {
+                        "; run-owned customer retained because Checkout outcome is ambiguous"
+                    }
+                    None => "",
+                };
+                #[cfg(not(feature = "live-integration"))]
+                let suffix = "";
+                return Err(TierError::Stripe(format!("{error}{suffix}")));
+            }
+        };
 
         // Stripe echoes the attached customer; fall back to the one we created
         // (belt-and-suspenders — the field is present because we passed it).
-        let customer = raw.customer.unwrap_or(created_customer.id);
+        let customer = raw.customer.unwrap_or_else(|| created_customer.id.clone());
 
-        let url = raw
-            .url
-            .ok_or_else(|| TierError::Stripe("missing url on checkout session".to_string()))?;
+        let url = match raw.url {
+            Some(url) => url,
+            None => {
+                // Here Stripe did return an exact session id. Expire and
+                // read it back before deleting its customer; if expiry fails,
+                // leave the customer for bounded recovery rather than deleting
+                // a still-open Checkout dependency.
+                #[cfg(feature = "live-integration")]
+                let cleanup = live_harness_run_id().map(|run_id| {
+                    if customer == created_customer.id
+                        && self
+                            .cleanup_harness_checkout(&raw.id, &customer, &run_id)
+                            .is_ok()
+                    {
+                        self.cleanup_harness_customer(&customer, &run_id).is_ok()
+                    } else {
+                        false
+                    }
+                });
+                #[cfg(feature = "live-integration")]
+                let suffix = match cleanup {
+                    Some(true) => "; run-owned checkout/customer cleanup passed",
+                    Some(false) => "; run-owned checkout/customer cleanup failed",
+                    None => "",
+                };
+                #[cfg(not(feature = "live-integration"))]
+                let suffix = "";
+                return Err(TierError::Stripe(format!(
+                    "missing url on checkout session{suffix}"
+                )));
+            }
+        };
         Ok(CheckoutSessionResponse::new(
             raw.id,
             StripeCustomerId::new(customer),
