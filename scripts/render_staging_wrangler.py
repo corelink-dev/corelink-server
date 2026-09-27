@@ -29,6 +29,7 @@ STAGING_SUFFIX = re.compile(r"-staging$", re.IGNORECASE)
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 HEX_ID = re.compile(r"^[0-9a-f]{32}$", re.I)
 R2_ENDPOINT_HOST = re.compile(r"^[0-9a-f]{32}\.r2\.cloudflarestorage\.com$", re.I)
+GITHUB_SHA = re.compile(r"^[0-9a-f]{40}$", re.I)
 
 
 class ContractError(ValueError):
@@ -171,10 +172,7 @@ class StagingTopologyAdapter:
 
         zone_name = _string(cloudflare.get("zone_name"), "cloudflare.zone_name")
         routes = _list(cloudflare.get("routes"), "cloudflare.routes")
-        expected_routes = {
-            (workers[0], f"{CANONICAL_HOST}/*", zone_name),
-            (workers[2], f"{CANONICAL_HOST}/v1/webhooks/pagerduty", zone_name),
-        }
+        expected_routes = {(workers[0], f"{CANONICAL_HOST}/*", zone_name)}
         actual_routes: set[tuple[str, str, str]] = set()
         for raw_route in routes:
             route = _mapping(raw_route, "cloudflare.routes entry")
@@ -186,7 +184,7 @@ class StagingTopologyAdapter:
                 raise ContractError("route escapes the canonical staging host")
             actual_routes.add((route["worker"], pattern, zone_name))
         if actual_routes != expected_routes or len(routes) != len(expected_routes):
-            raise ContractError("routes must contain exactly the root and synthetic staging routes")
+            raise ContractError("routes must contain exactly the root staging route")
 
         secret_names = {
             name
@@ -346,6 +344,15 @@ def render_worker(
                 if value.get("name") != "r2_s3_endpoint":
                     raise ContractError("topology contains an unsupported provider output")
                 vars_map[key] = r2_endpoint
+            elif isinstance(value, Mapping) and value.get("source") == "github_sha":
+                release = os.environ.get("GITHUB_SHA", "")
+                if not GITHUB_SHA.fullmatch(release):
+                    raise ContractError("GITHUB_SHA must be an exact 40-hex dispatch SHA")
+                vars_map[key] = release
+            elif isinstance(value, Mapping):
+                raise ContractError("topology contains an unsupported root Worker value source")
+    if worker == topology.workers[2]:
+        lines.append('version_metadata = { binding = "CF_VERSION_METADATA" }')
     lines.extend(["", *table("vars", vars_map)])
 
     for route in topology.routes_for(worker, phase):

@@ -399,12 +399,12 @@ V0008_RECONCILIATION = {
 V0009_RECONCILIATION = {
     "sequence": 9,
     "previous_sequence": 8,
-    "anchor_base_commit": "4bb6cfcb9bc37caf4fdf59b3bf69e13af5a39191",
-    "base_commit": "4bb6cfcb9bc37caf4fdf59b3bf69e13af5a39191",
+    "anchor_base_commit": "95eb6c5263f2687fcc1e473908ee42f0c4df4711",
+    "base_commit": "95eb6c5263f2687fcc1e473908ee42f0c4df4711",
     "history_start": "f56637f84f2366a8041d07d01e8657153a841030",
     "previous_source_sha256": "323b589d9e6a955409c9b701778736b1bf57e72998b030164c0a460cc498152b",
     "changed_ids": ("B-057",),
-    "history_changed_ids": ("B-011", "B-054", "B-103", "B-113", "B-134", "B-138", "B-216", "B-250", "B-316"),
+    "history_changed_ids": ("B-011", "B-054", "B-086", "B-103", "B-113", "B-134", "B-138", "B-216", "B-250", "B-316"),
     "history_transitions": (
         ("3f17eae164ecb497bf552bda88228020cc14cde0", "c7788a0af1d87678a9fb2124fc111bcddb6736df", "323b589d9e6a955409c9b701778736b1bf57e72998b030164c0a460cc498152b", "b42299cbc4a9ac8bc600db8682bc945a439d36a906438bc93470941d747fe07f", ("B-054",), {"B-054": ("0d9f376ddb04b8c6c6874a4391710db4508814785c163922e39862318a7b0e3f", "d7b7c57231f7766ccb52457b9e3eb721d8bec819c49ad81ad4aae2ffefcb99cf")} ),
         ("76e0bc6e66a5c9b24709a1a5ec655bbc9f3f1344", "9ed0baa2d8262d5325907ed9031b7009e154aca9", "b42299cbc4a9ac8bc600db8682bc945a439d36a906438bc93470941d747fe07f", "97ef93ff321a0710956b1db2394bf2a5559a53f49559f83f65fa0ee37a1ef695", ("B-054",), {"B-054": ("d7b7c57231f7766ccb52457b9e3eb721d8bec819c49ad81ad4aae2ffefcb99cf", "8d7cc1ba49e7b7ae3542605f45a1c5a7a298d38d4150c90f0c969fd8a87ef323")} ),
@@ -416,9 +416,10 @@ V0009_RECONCILIATION = {
         ("44f6c7e0a9d2cb044e2bd0ddeb2da398724ed603", "864a8be621471fea2a5e606a0a12dbe2c59488ce", "9ec2f061bc9a0cc290d5d9efe699c87f473de2a1e1b43a8ee4ab63b58fc65ddc", "e453068396a3c12b0c7215683838c1ed29ce7cea9f38db0eb3233d6e724d8899", ("B-113",), {"B-113": ("ece7d0b8f8416ad4567e34f1abc77666c1d1ba334d079e6d9875e878318c0d1b", "af57a9d19cfebd0435e95518aa4533e5b842efa86bdf5aac41e11d25d2e549e6")} ),
         ("08213bde21436b16644500ff0b2983d29dd2fd17", "44f6c7e0a9d2cb044e2bd0ddeb2da398724ed603", "e453068396a3c12b0c7215683838c1ed29ce7cea9f38db0eb3233d6e724d8899", "f4898ea2cdbbe3ff511a3e8faa09f7ad9edbbc884c57eab763f1ef88118450e5", ("B-216",), {"B-216": ("915bf4a894b4d18097f26b54a24084a15aa6dc12484a2eeacc186179af077d03", "afc9b4b92bd9db714b928d56c893c00d7f7ddddc5cd0940ff51bfd2d5eaf87d5")} ),
         ("f26858430cee9be93700cb08eecb128c540cc480", "08213bde21436b16644500ff0b2983d29dd2fd17", "f4898ea2cdbbe3ff511a3e8faa09f7ad9edbbc884c57eab763f1ef88118450e5", "00ac71310b31ca7dcc88e76e4805ffdae7d773007b4146ebb385b69452656fb9", ("B-103",), {"B-103": ("e52ca4a76a5241bb653088a7a6442499d391281c802d17f721465155d2631c34", "2c9e524bd3c1818cf1062540ec1cc82dfcb5b167bdff669d59d835df63bc8ae5")} ),
+        ("f1153874c7d3cdbe6afb217c76a24a42eead624d", "953aca6575c8ea8f9dae5803b85b5107994bda6c", "00ac71310b31ca7dcc88e76e4805ffdae7d773007b4146ebb385b69452656fb9", "123bc5449b6a2eaa56ca77afafee226a5fcd6055f34a2cb6d0b35a04218bfcd7", ("B-086",), {"B-086": ("cf4e54204fa0a65d2a245d7df8bb7e6dc47880e1efbf4eadf81b1ce093c5d1f3", "5936ca59e333e826686426e5a2b73ea6c5391cc53cfec3220d6908548b0944e2")} ),
     ),
-    "prior_source_sha256": "00ac71310b31ca7dcc88e76e4805ffdae7d773007b4146ebb385b69452656fb9",
-    "source_sha256": "159ef4473aecdd592315fd3e4909c13200c8251c1a1661efa52d1f586ec1d684",
+    "prior_source_sha256": "123bc5449b6a2eaa56ca77afafee226a5fcd6055f34a2cb6d0b35a04218bfcd7",
+    "source_sha256": "a1e75e2990f92d1d10aecce8703c98410b14a9f600d8eeedcfad52975e9a31ae",
     "prior_ledger_sha256": "fcc3a03cf4a2f82996212a24d7ae1947c874441635a6a680bb4caeb6c64e58fa",
     "prior_section_sha256": "4bd0d060401f0be30814308399bf1b6d02b7012d993ec20c10f0d4027a2f195d",
     "current_section_sha256": "907e5ad69e6e949b96d99d5e9977f5597bda45d3498610f6ba517f5f387ffbda",
@@ -428,6 +429,18 @@ V0009_RECONCILIATION = {
         "docs/campaigns/remediation/work-packages/B091-B130.md": "2875d5374471382a5422ceac83e3259fcd5780e55fa3e07f80746f7ceb2995ce",
         "docs/campaigns/remediation/work-packages/B131-B167.md": "13805dab851c5023d7d49bc707ce0c30713a11aeca8b1e179c8710ad8d91671f",
     },
+}
+
+# v0008 was merged after its declared derivation BASE had moved.  Admit only
+# the delivered receipt bytes at that reviewed merge, while retaining the
+# declared BASE as the state-derivation authority for every later replay.
+V0008_HISTORICAL_ADMISSION = {
+    "path": "docs/campaigns/remediation/backlog-ledger-snapshot-v0008.json",
+    "sequence": 8,
+    "receipt_sha256": "06ac9cd05acaf30b59adceb0444915d115417c238cce420d53a4209b8f2e1138",
+    "declared_base_commit": "f56637f84f2366a8041d07d01e8657153a841030",
+    "introduction_commit": "e5701af74acb93a5541b6ea088afe5a589077fb5",
+    "introduction_parent": "44a0dbb6d885dfe136b2d5aeee7e0f41a8251378",
 }
 
 
@@ -450,6 +463,44 @@ def install(api):
 
     def _sha256(raw: bytes) -> str:
         return hashlib.sha256(raw).hexdigest()
+
+    def _v0008_historical_admission_authorized(
+        root: Path,
+        path: Path,
+        raw: bytes,
+        receipt: dict[str, object],
+        commits: list[str],
+        first_parent: str,
+    ) -> bool:
+        """Accept only the reviewed v0008 merge whose receipt remains byte-identical."""
+        pinned = V0008_HISTORICAL_ADMISSION
+        if (
+            path.as_posix() != pinned["path"]
+            or receipt.get("sequence") != pinned["sequence"]
+            or receipt.get("base_commit") != pinned["declared_base_commit"]
+            or _sha256(raw) != pinned["receipt_sha256"]
+            or commits != [pinned["introduction_commit"]]
+            or first_parent != pinned["introduction_parent"]
+            or _git_bytes(root, pinned["introduction_commit"], path) != raw
+        ):
+            return False
+        return _v0008_historical_admission_ancestry(root)
+
+    def _v0008_historical_admission_ancestry(root: Path) -> bool:
+        """Require the declared v0008 derivation base before its reviewed merge parent."""
+        pinned = V0008_HISTORICAL_ADMISSION
+        return (
+            subprocess.run(
+                [
+                    "git", "merge-base", "--is-ancestor",
+                    pinned["declared_base_commit"],
+                    pinned["introduction_parent"],
+                ],
+                cwd=root,
+                check=False,
+            ).returncode
+            == 0
+        )
 
     def _replace_once(text: str, old: str, new: str) -> str:
         if text.count(old) != 1:
@@ -1501,7 +1552,13 @@ def install(api):
                 capture_output=True,
                 text=True,
             ).stdout.strip()
-            if first_parent != base_sha or _git_bytes(root, commits[0], path) != raw:
+            historical_v0008 = _v0008_historical_admission_authorized(
+                root, path, raw, receipt, commits, first_parent,
+            )
+            if (
+                (first_parent != base_sha or _git_bytes(root, commits[0], path) != raw)
+                and not historical_v0008
+            ):
                 raise LedgerError(
                     f"{path}: successor was rewritten or names the wrong main parent"
                 )
@@ -1763,6 +1820,9 @@ def install(api):
         _v0006_reconciliation_authorized=_v0006_reconciliation_authorized,
         _v0007_reconciliation_authorized=_v0007_reconciliation_authorized,
         _v0008_reconciliation_authorized=_v0008_reconciliation_authorized,
+        _v0008_historical_admission_authorized=_v0008_historical_admission_authorized,
+        _v0008_historical_admission_ancestry=_v0008_historical_admission_ancestry,
+        _git_bytes=_git_bytes,
         _v0009_reconciliation_authorized=_v0009_reconciliation_authorized,
         _v0009_ledger=_v0009_ledger,
     )

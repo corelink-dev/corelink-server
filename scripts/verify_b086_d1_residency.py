@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Fail-closed source verifier for the still-open B-086 decision.
+"""Fail-closed source verifier for the B-086 shared-D1 launch posture.
 
-B-086 is not a claim that the D1 primary is physically in any particular
-location.  It records the observable mismatch between the five production
-bindings and the DPA's tenant-pinned D1 claim.  The choice of a jurisdictional
-D1 deployment or a legal amendment remains an owner/counsel action.
+B-086 verifies the selected source posture: five production bindings use one
+shared D1 database, and the pending DPA accurately scopes D1 as a global
+control plane instead of a tenant-pinned service. It does not establish an
+executed transfer mechanism or counsel approval.
 
 The verifier uses TOML and a bounded Markdown-table parser instead of grep.
 That keeps comments and quoted/string bait inert, while URLs containing
@@ -36,7 +36,10 @@ EXPECTED_JURISDICTION_KEYS = (
     ("prod-lhr", "r2_buckets", "AC_BUCKET_LHR", "eu"),
 )
 EXPECTED_ROLE = "Infrastructure: Workers, R2, D1, KV, Durable Objects, Custom Domains"
-EXPECTED_SCOPE = "Tenant-pinned (Section 7)"
+EXPECTED_SCOPE = (
+    "R2/DO tenant-pinned; shared D1 control plane is global "
+    "(primary reported ENAM, no D1 jurisdiction)"
+)
 
 
 class VerificationError(RuntimeError):
@@ -83,8 +86,8 @@ def _load_manifest() -> dict[str, object]:
         raise VerificationError("contract manifest issue identity drifted")
     if value["credentialless"] is not True or value["network_calls"] is not False or value["mutating_actions"] is not False:
         raise VerificationError("contract manifest must be credentialless, network-free, and read-only")
-    if value["status"] != "open_external_decision_pending":
-        raise VerificationError("contract manifest must keep B-086 open pending owner/counsel evidence")
+    if value["status"] != "open_external_counsel_signoff_pending":
+        raise VerificationError("contract manifest must keep B-086 open pending counsel sign-off")
     sources = value["sources"]
     if sources != {
         "wrangler": "wrangler.toml",
@@ -96,11 +99,11 @@ def _load_manifest() -> dict[str, object]:
     acceptance = value["acceptance"]
     if not isinstance(acceptance, dict) or acceptance.get("production_environments") != list(PRODUCTION_ENVS):
         raise VerificationError("contract manifest production environment set drifted")
-    if acceptance.get("d1_binding") != "CONFIG_DB" or acceptance.get("minimum_distinct_database_ids") != 2:
-        raise VerificationError("contract manifest D1 mismatch contract drifted")
+    if acceptance.get("d1_binding") != "CONFIG_DB" or acceptance.get("distinct_database_ids") != 1:
+        raise VerificationError("contract manifest shared-D1 contract drifted")
     blocker = value["external_blocker"]
-    if not isinstance(blocker, dict) or blocker.get("owner") != "owner/counsel" or blocker.get("decision") != "provision jurisdictional D1 or amend and execute the residency instrument":
-        raise VerificationError("contract manifest external decision boundary drifted")
+    if not isinstance(blocker, dict) or blocker.get("owner") != "counsel" or blocker.get("decision") != "approve the applicable transfer basis and effective customer-facing terms for the selected shared-D1 posture":
+        raise VerificationError("contract manifest counsel boundary drifted")
     return value
 
 
@@ -174,7 +177,7 @@ def _table_cells(line: str) -> list[str] | None:
     return [cell.strip() for cell in stripped[1:-1].split("|")]
 
 
-def _dpa_claim_count(text: str) -> int:
+def _dpa_shared_global_claim_count(text: str) -> int:
     start_marker = "### 8.1 Authorised Sub-processors"
     start = text.find(start_marker)
     if start < 0:
@@ -222,7 +225,7 @@ def _dpa_claim_count(text: str) -> int:
         )
     if len(claims) != 1:
         raise VerificationError(
-            "DPA Section 8.1 Cloudflare row does not make the exact active D1 tenant-pinned claim"
+            "DPA Section 8.1 Cloudflare row does not make the exact shared-global D1 disclosure"
         )
     return len(claims)
 
@@ -244,7 +247,7 @@ def assess(
             "active jurisdiction keys drifted: "
             f"expected {expected!r}, found {actual!r}"
         )
-    dpa_claims = _dpa_claim_count(dpa_text)
+    dpa_claims = _dpa_shared_global_claim_count(dpa_text)
 
     if backlog_text is not None:
         match = re.search(r"^### B-086 .*?(?=^### |\Z)", backlog_text, re.MULTILINE | re.DOTALL)
@@ -252,9 +255,9 @@ def assess(
             raise VerificationError("B-086 backlog section is missing")
         section = match.group(0)
         if "status: open" not in section:
-            raise VerificationError("B-086 must remain open pending owner/counsel evidence")
-        if "Owner: base de transferência internacional é decisão jurídica." not in section:
-            raise VerificationError("B-086 owner/counsel decision boundary is missing")
+            raise VerificationError("B-086 must remain open pending counsel sign-off")
+        if "Counsel: aprovar a base de transferência" not in section:
+            raise VerificationError("B-086 counsel sign-off boundary is missing")
 
     return (
         len(d1_rows),
@@ -292,11 +295,11 @@ def self_test(wrangler_text: str, dpa_text: str) -> None:
             _mutate_dpa_row(dpa_text, "<!-- " + cloudflare_line + " -->"),
         ),
         (
-            "DPA quoted claim",
+            "DPA quoted scope",
             _mutate_dpa_row(
                 dpa_text,
                 cloudflare_line.replace(
-                    "| Tenant-pinned (Section 7) |", '| "Tenant-pinned (Section 7)" |', 1
+                    "| " + EXPECTED_SCOPE + " |", '| "' + EXPECTED_SCOPE + '" |', 1
                 ),
             ),
         ),
@@ -359,11 +362,11 @@ def main() -> int:
         print(f"FAIL: B-086 verifier: {exc}", file=sys.stderr)
         return 1
     print(
-        "B-086 open: "
+        "B-086 source posture aligned; external counsel sign-off remains pending: "
         f"production_d1_bindings={d1_count}, distinct_database_ids={distinct_ids}, "
-        f"active_dpa_d1_tenant_pinned_claims={dpa_claims}, "
+        f"active_dpa_d1_shared_global_claims={dpa_claims}, "
         f"jurisdiction_keys={jurisdiction_count} (R2 only); "
-        "owner/counsel evidence remains pending"
+        "no executed transfer term is asserted"
     )
     return 0
 

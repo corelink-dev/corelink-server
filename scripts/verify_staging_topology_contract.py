@@ -101,6 +101,9 @@ EXPECTED_ROOT_SETTINGS = {
         "AUDIT_DRAIN_BATCH_LIMIT": "512",
         "AUDIT_DRAIN_LEASE_ENABLED": "1",
         "EDGE_FIND_MISSING": "off",
+        "SYNTHETIC_DRILL_ENABLED": "false",
+        "SYNTHETIC_DRILL_PROVIDER_MODE": "provider_deferred",
+        "SENTRY_RELEASE": {"source": "github_sha"},
     },
 }
 
@@ -123,12 +126,11 @@ EXPECTED_RECEIVER_SETTINGS = {
     "workers_dev": False,
     "compatibility_date": "2026-04-01",
     "compatibility_flags": [],
-    "crons": ["59 23 * * 0"],
+    "crons": ["59 23 * * 1"],
     "vars": {
         "ENVIRONMENT": "staging",
         "SYNTHETIC_DRILL_ENABLED": "false",
-        "PAGERDUTY_EVENTS_URL": "https://events.pagerduty.com/v2/enqueue",
-        "PAGERDUTY_SERVICE": "synthetic-drill",
+        "SYNTHETIC_DRILL_PROVIDER_MODE": "provider_deferred",
     },
 }
 
@@ -141,12 +143,9 @@ EXPECTED_SECRETS = {
     },
     "corelink-signup-staging": {
         "CLERK_SECRET_KEY", "CLERK_WEBHOOK_SECRET", "CORELINK_ERASE_AUTH_KEY",
-        "CORELINK_INTERNAL_AUTH_KEY", "DSR_DLQ_ALERT_AUTH_TOKEN", "DSR_DLQ_ALERT_ENDPOINT",
-        "DSR_DLQ_REDRIVE_AUTH_KEY", "ERASURE_SALT_KEY",
+        "CORELINK_INTERNAL_AUTH_KEY", "DSR_DLQ_REDRIVE_AUTH_KEY", "ERASURE_SALT_KEY",
     },
-    "corelink-synthetic-pager-staging": {
-        "PAGERDUTY_SYNTHETIC_ROUTING_KEY", "PAGERDUTY_WEBHOOK_SECRET",
-    },
+    "corelink-synthetic-pager-staging": set(),
     "github_environment_staging": {
         "STAGING_DSR_DLQ_REDRIVE_AUTH_KEY",
         "K6_STAGING_BYOK_CMK_ID", "K6_STAGING_MFA_STUB", "K6_STAGING_PAT",
@@ -205,11 +204,6 @@ def assess(root: Path = Path(".")) -> list[str]:
         gaps.append("synthetic-receiver-worker-settings")
     if cloudflare.get("routes") != [
         {"worker": "corelink-staging", "pattern": "staging.corelink.humangr.com/*", "zone_name": "humangr.com"},
-        {
-            "worker": "corelink-synthetic-pager-staging",
-            "pattern": "staging.corelink.humangr.com/v1/webhooks/pagerduty",
-            "zone_name": "humangr.com",
-        },
     ]:
         gaps.append("canonical-route")
     if cloudflare.get("container") != {

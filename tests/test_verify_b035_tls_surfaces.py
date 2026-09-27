@@ -6,6 +6,7 @@ read-only ``--live`` invocation and must not receive credentials in this suite.
 
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 import tempfile
@@ -21,7 +22,7 @@ class B035TlsSurfaceTests(unittest.TestCase):
     def test_inventory_enumerates_exactly_eight_promises(self) -> None:
         report = verify.inventory()
         self.assertEqual(report["instrument_count"], 8)
-        self.assertEqual(report["status"], "open_exact_inventory")
+        self.assertEqual(report["status"], "truthful_exact_inventory")
         self.assertTrue(
             all(row["claim_count"] == 1 for row in report["instruments"])
         )
@@ -34,7 +35,7 @@ class B035TlsSurfaceTests(unittest.TestCase):
     def test_surface_inventory_is_source_bound_and_covers_route_families(self) -> None:
         report = verify.inventory()
         surfaces = report["external_surface"]["named_surfaces"]
-        self.assertGreaterEqual(len(surfaces), 22)
+        self.assertGreaterEqual(len(surfaces), 21)
         self.assertEqual(
             report["external_surface"]["source_validation"]["status"],
             "all_markers_match",
@@ -52,9 +53,6 @@ class B035TlsSurfaceTests(unittest.TestCase):
         self.assertIn("humangr.com/corelink/docs/*", hostnames)
         self.assertIn("api.humangr.com/*", hostnames)
         self.assertIn("<region>.api.humangr.com/*", hostnames)
-        self.assertIn(
-            "staging.corelink.humangr.com/v1/webhooks/pagerduty", hostnames
-        )
         self.assertIn("events.pagerduty.com/v2/enqueue", hostnames)
         self.assertIn(
             "github.com/HuGR-Labs/corelink-cli/releases/latest/download", hostnames
@@ -100,7 +98,7 @@ class B035TlsSurfaceTests(unittest.TestCase):
 
             removed = root / verify.INSTRUMENTS[0].path
             removed.unlink()
-            code, report = verify.verify(root, live=False, expect_open=True)
+            code, report = verify.verify(root, live=False)
 
         self.assertEqual(code, 1)
         self.assertEqual(report["status"], "verification_error")
@@ -108,11 +106,24 @@ class B035TlsSurfaceTests(unittest.TestCase):
     def test_correcting_any_claim_fails_closed(self) -> None:
         instrument = verify.INSTRUMENTS[0]
         original = (verify.ROOT / instrument.path).read_text(encoding="utf-8")
-        corrected = original.replace(
-            "TLS 1.3+", "TLS 1.2 minimum (TLS 1.3 preferred)", 1
+        claim_pattern = re.compile(
+            r"\s+".join(re.escape(part) for part in instrument.claim.split())
         )
+        corrected, replacements = claim_pattern.subn(
+            "TLS 1.3 minimum", original, count=1
+        )
+        self.assertEqual(replacements, 1)
         report = verify.inventory_from_overrides(
             verify.ROOT, {instrument.path: corrected}
+        )
+        self.assertEqual(report["status"], "drift_or_incomplete")
+
+    def test_additional_unqualified_tls_13_claim_fails_closed(self) -> None:
+        instrument = verify.INSTRUMENTS[0]
+        original = (verify.ROOT / instrument.path).read_text(encoding="utf-8")
+        mutated = original + "\nAdditional promise: TLS 1.3+.\n"
+        report = verify.inventory_from_overrides(
+            verify.ROOT, {instrument.path: mutated}
         )
         self.assertEqual(report["status"], "drift_or_incomplete")
 
@@ -122,7 +133,7 @@ class B035TlsSurfaceTests(unittest.TestCase):
             {"CLOUDFLARE_API_TOKEN": "", "CF_API_TOKEN": ""},
             clear=False,
         ):
-            code, report = verify.verify(verify.ROOT, live=True, expect_open=True)
+            code, report = verify.verify(verify.ROOT, live=True)
         self.assertEqual(code, 2)
         self.assertEqual(report["live_floor"]["status"], "credential_unavailable")
 

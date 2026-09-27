@@ -8,10 +8,7 @@
       "required_env": [
         "CLOUDFLARE_ACCOUNT_ID",
         "CF_API_TOKEN",
-        "D1_DATABASE_ID",
-        "R2_S3_ENDPOINT",
-        "R2_S3_ACCESS_KEY_ID",
-        "R2_S3_SECRET_ACCESS_KEY"
+        "D1_DATABASE_ID"
       ],
       "tests": [
         {

@@ -1,12 +1,21 @@
 name: B-035 TLS contract PR guard
 
 # The repository-level B-035 workflow is manually disabled in this repository.
-# This PR guard keeps the exact static/mutation contract checks hosted and
-# credential-free; it never calls a provider and never changes legal state.
+# This PR guard keeps the truthful TLS inventory and mutation contract hosted
+# and credential-free; it never calls a provider or changes provider state.
 on:
   pull_request:
     paths:
+      - "legal/dpa/v1.0.0.en-US.md"
+      - "legal/dpa/v1.0.0.pt-BR.md"
+      - "legal/dpa/v1.0.0.es-419.md"
+      - "legal/dpa/STANDARD-CONTRACTUAL-CLAUSES-EU.md"
+      - "legal/dpa/SUB-PROCESSOR-COMMITMENTS.md"
+      - "legal/privacy-notice/v1.0.0/en-US.md"
+      - "legal/privacy-notice/v1.0.0/pt-BR.md"
+      - "legal/privacy-notice/v1.0.0/es-MX.md"
       - "scripts/verify_b035_tls_surfaces.py"
+      - "scripts/probe_b035_tls_handshakes.py"
       - "tests/test_verify_b035_tls_surfaces.py"
       - "reports/b035/**"
       - ".github/workflows/b035-contract-pr.yml"
@@ -30,4 +39,6 @@ jobs:
       - name: Run focused B-035 contract tests
         run: python3 -m unittest -v tests/test_verify_b035_tls_surfaces.py
       - name: Emit redacted static evidence
-        run: python3 scripts/verify_b035_tls_surfaces.py --expect-open --json
+        run: python3 scripts/verify_b035_tls_surfaces.py --json
+      - name: Validate read-only TLS probe source inventory
+        run: python3 scripts/probe_b035_tls_handshakes.py --inventory-only

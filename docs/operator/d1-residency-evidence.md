@@ -16,21 +16,14 @@ what the repository can prove and the owner/counsel decision that remains.
 
 ## Decision status
 
-**OPEN — owner/counsel decision required.** The five production Workers bind
-the same D1 database, while the active DPA amendment's Cloudflare row includes
-D1 in the services whose region scope is `Tenant-pinned (Section 7)`.
+**OPEN — counsel sign-off required.** The selected prelaunch architecture keeps
+one shared D1 database. The corrected source text scopes tenant pinning to R2
+and Durable Object state, and discloses the D1 control plane as global.
 
-The repository cannot choose between these two closure paths:
-
-1. provision jurisdictional D1 databases and perform an approved data/control
-   plane migration; or
-2. execute a reviewed amendment that expressly discloses the global D1 control
-   plane and its transfer safeguards, and reconciles the residency and failover
-   promises.
-
-Until one path has an owner/counsel or provider artifact, B-086 stays open.
-No draft, source verifier, or this packet converts `PENDING LEGAL REVIEW` into
-an executed obligation.
+The remaining closure artifact is counsel approval of the applicable transfer
+basis, safeguards, and effective customer-facing terms. No draft, source
+verifier, or this packet converts `PENDING LEGAL REVIEW` into an executed
+obligation.
 
 ## Measured repository topology
 
@@ -144,39 +137,25 @@ These outcomes are operational behavior, not legal approval. A commercial
 downgrade or outage policy must state whether a tenant receives an error,
 local service, or a legally reviewed transfer path.
 
-## Contract surfaces that must be reconciled
+## Reconciled source surfaces and remaining authority
 
-- `legal/dpa-residency-amendment.md:124-148` promises per-tenant region
-  storage/processing and restricts failover; Section 8.1 names D1 among the
-  tenant-pinned Cloudflare services. The file is explicitly `PENDING LEGAL
-  REVIEW` (`:402`).
-- `legal/sub-processors.md:14,173` currently describes R2/DO as tenant-pinned
-  but D1 control-plane metadata as global under SCC/TIA safeguards.
-- `legal/tia-template.md:127-130,189` describes provisioned-region handling
-  and the DPA commitment without resolving the shared D1 control plane.
+- The DPA, TIA, sub-processor commitments, data-handling copies, and sales
+  templates distinguish tenant-pinned R2/DO state from the shared global D1
+  control plane. The DPA and TIA remain `PENDING LEGAL REVIEW`.
+- `legal/sub-processors.md:14,173` already uses the same R2/DO versus global
+  D1 distinction under SCC/TIA safeguards.
 
-Those texts are inconsistent. No source file can determine which legal
-position controls. The owner/counsel decision must name the controlling,
-executed instrument and effective date.
+The source posture is aligned. No source file can approve a transfer basis,
+select an effective date, or become an executed instrument.
 
 ## Required closure evidence
 
-### Path A — jurisdictional D1
-
-Provide provider-backed, read-only evidence for each production binding and an
-approved migration record showing the control-plane data set, cutover,
-rollback, tenant mapping, replicas, DSR/audit handling, and effective date.
-The provider evidence must establish the jurisdictional binding; a region
-label in D1 or an R2 bucket name is insufficient.
-
-### Path B — legal amendment
-
-Provide the executed superseding instrument and counsel's transfer-impact
-decision. It must explicitly identify the global D1 control plane, affected
-data categories, applicable SCC/TIA safeguards, migration limitations,
-failover read behavior, outage/downgrade responses, and effective date.
+Provide counsel's approval of the applicable transfer basis, safeguards and
+effective customer-facing terms for the shared global D1 control plane. It must
+cover the affected data categories, migration limitations, failover-read and
+outage/downgrade behavior, and effective date.
 
 The existing `evidence/i1654/d1-residency-contract-manifest.json` and
 `scripts/verify_b086_d1_residency.py` are credentialless source checks. They
-correctly keep B-086 open and detect the current five-bindings/one-ID versus
-tenant-pinned claim mismatch; they do not close either external decision.
+confirm the aligned source posture; they do not supply counsel approval or an
+executed instrument.
