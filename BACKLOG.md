@@ -8636,10 +8636,12 @@ verify-means: |
   shared observer, the observer invokes the canonical BurnRateCalculator on
   real range buckets, AC/CAS latency arguments use the measured handler
   window, all AC audit operations account for audit failures, and the OKF
-  surface documents the consumer. Companion mutation tests reopen the gate
-  when the calculator, temporal window, audit error SLI, bounded sink, or AC
-  latency catalog discipline is removed.
-last-verified: 2026-09-05
+  surface documents the consumer. The verifier assembles the builder and
+  handler source from the executable `r2_s3_parts` files after the storage
+  split. Companion mutation tests reopen the gate when the calculator,
+  temporal window, audit error SLI, bounded sink, AC lookup zero-latency
+  behavior, or AC latency catalog discipline is removed.
+last-verified: 2026-09-24
 ```
 
 ### B-059 — the OKF citation regex cannot see abbreviated citations, so a re-anchor can be wrong and green
