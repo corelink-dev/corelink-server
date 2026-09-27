@@ -268,6 +268,7 @@ def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
     harness = (root / "crates/corelink-stripe-real/tests/live_integration.rs").read_text(encoding="utf-8")
     runner = (root / "scripts/run-real-ignored-harnesses.sh").read_text(encoding="utf-8")
     workflow = (root / ".github/workflows/real-ignored-harnesses.yml").read_text(encoding="utf-8")
+    pr_workflow = (root / ".github/workflows/issue-1650-real-integration-contract.yml").read_text(encoding="utf-8")
     receipt = (root / "scripts/verify_stripe_harness_cleanup_receipt.py").read_text(encoding="utf-8")
     required = (
         (client, "metadata[test_run_id]"),
@@ -292,6 +293,20 @@ def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
     )
     if missing := [fragment for source, fragment in required if fragment not in source]:
         fail(f"Stripe cleanup contract is missing reviewed gate(s): {missing}")
+    hosted_required = (
+        "pull_request:",
+        "ref: ${{ github.event.pull_request.head.sha }}",
+        'test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"',
+        "dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8",
+        "toolchain: 1.91.1",
+        "arduino/setup-protoc@f4d5893b897028ff5739576ea0409746887fa536",
+        "cargo test --locked -p corelink-stripe-real --features live-integration --test live_integration cleanup_fault_injection -- --nocapture",
+        "persist-credentials: false",
+    )
+    if missing := [fragment for fragment in hosted_required if fragment not in pr_workflow]:
+        fail(f"credentialless hosted Rust fault-injection gate is incomplete: {missing}")
+    if "${{ secrets." in pr_workflow:
+        fail("credentialless hosted Rust fault-injection gate must not reference provider secrets")
 
 
 def verify_exact_manifest() -> None:
