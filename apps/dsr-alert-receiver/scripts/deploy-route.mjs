@@ -9,6 +9,7 @@ export const TARGET = Object.freeze({
   accountId: "51284495e71acdb5a7677e7383ab026b",
   workerName: "corelink-dsr-b216-alert-receiver-20260927",
   databaseName: "corelink-dsr-b216-alert-receipts-20260927",
+  databaseId: "dce5e90a-2c3d-43d2-8037-a6d15d74e1cb",
   databaseBinding: "ALERT_RECEIPTS_DB",
   migration: "0001_alert_receipts.sql",
   apiTokenSecret: "B216_CF_RECEIVER_WRITE_TOKEN",
@@ -29,6 +30,7 @@ export class RouteError extends Error {
 
 const fail = (code) => { throw new RouteError(code); };
 const isUuid = (value) => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+const D1_PAGE_SIZE = 100;
 
 export function validateDispatch(context) {
   if (context.repository !== TARGET.repository) fail("repository_mismatch");
@@ -59,9 +61,11 @@ export function selectNamedResource(resources, expectedName, kind) {
 
 export function validateDatabaseIdentity(database) {
   if (!database || database.name !== TARGET.databaseName) fail("database_identity_ambiguous");
+  if (database.account_id !== undefined && database.account_id !== TARGET.accountId) fail("database_account_mismatch");
   const id = database.uuid ?? database.id;
   if (id === TARGET.placeholderId) fail("placeholder_uuid_rejected");
   if (!isUuid(id)) fail("database_identity_ambiguous");
+  if (id !== TARGET.databaseId) fail("database_identity_mismatch");
   return id;
 }
 
@@ -149,6 +153,36 @@ export function validateInventoryPage(rows, kind, { requireTotalCount = false } 
   return rows;
 }
 
+export function validateD1InventoryPage(rows, { page, perPage }) {
+  if (!Array.isArray(rows) || rows.length > perPage) fail("database_inventory_ambiguous");
+  const info = rows.result_info;
+  if (info === undefined) return { rows, count: undefined };
+  if (!info || typeof info !== "object" || Array.isArray(info)) fail("database_inventory_ambiguous");
+  if (info.page !== undefined && (!Number.isInteger(info.page) || info.page !== page)) fail("database_inventory_truncated");
+  if (info.per_page !== undefined && (!Number.isInteger(info.per_page) || info.per_page !== perPage)) fail("database_inventory_ambiguous");
+  if (info.count !== undefined && (!Number.isInteger(info.count) || info.count < rows.length)) fail("database_inventory_ambiguous");
+  if (info.total_count !== undefined && (!Number.isInteger(info.total_count) || info.total_count < 0)) fail("database_inventory_ambiguous");
+  if (info.count !== undefined && info.total_count !== undefined && info.total_count < info.count) fail("database_inventory_ambiguous");
+  return { rows, count: info.count };
+}
+
+export async function listNamedD1Databases(api) {
+  const resources = [];
+  let maxReportedCount = 0;
+  for (let page = 1; page <= 100; page += 1) {
+    const query = new URLSearchParams({ name: TARGET.databaseName, page: String(page), per_page: String(D1_PAGE_SIZE) });
+    const pageRows = await api(`/accounts/${TARGET.accountId}/d1/database?${query}`);
+    const validated = validateD1InventoryPage(pageRows, { page, perPage: D1_PAGE_SIZE });
+    if (validated.count !== undefined) maxReportedCount = Math.max(maxReportedCount, validated.count);
+    resources.push(...validated.rows);
+    if (validated.rows.length < D1_PAGE_SIZE) {
+      if (maxReportedCount > resources.length) fail("database_inventory_truncated");
+      return resources;
+    }
+  }
+  fail("database_inventory_truncated");
+}
+
 export function validatePostflight({ versionId, deployment, bindings, secrets }, expectedDatabaseId, expectedTag) {
   if (!isUuid(versionId) || !Array.isArray(deployment?.versions) || deployment.versions.length !== 1 || deployment.versions[0]?.version_id !== versionId || deployment.versions[0]?.percentage !== 100) fail("worker_revision_readback_mismatch");
   if (bindings?.some((binding) => binding?.type === "d1" && binding.name === TARGET.databaseBinding && (binding.database_id ?? binding.id) === expectedDatabaseId) !== true) fail("worker_database_binding_mismatch");
@@ -220,12 +254,11 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     binding: TARGET.databaseBinding,
     migration: TARGET.migration,
     migration_sha256: TARGET.migrationSha256,
-    disjointness_note: "B-216 uses its dedicated exact-name resource; #2563 has no current D1 target and its future owner must provision a distinct disposable database.",
+    disjointness_note: "B-216 adopts its dedicated exact-name and UUID target; #2563 uses a separate distinct D1 resource.",
     captured_at: new Date().toISOString(),
     status: "started",
   };
   let stage = "account_readback";
-  let databaseCreated = false;
   let workerMutationStarted = false;
   let priorWorkerVersion = null;
   let tempConfig = null;
@@ -233,13 +266,12 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
   try {
     const account = await api(`/accounts/${TARGET.accountId}`);
     if (account?.id !== TARGET.accountId) fail("account_identity_mismatch");
-    const [databasePage, workerPage] = await Promise.all([
-      api(`/accounts/${TARGET.accountId}/d1/database?per_page=100`),
+    const [databaseRows, workerPage] = await Promise.all([
+      listNamedD1Databases(api),
       api(`/accounts/${TARGET.accountId}/workers/scripts`),
     ]);
-    validateInventoryPage(databasePage, "database", { requireTotalCount: true });
     validateInventoryPage(workerPage, "worker");
-    const priorDatabase = selectNamedResource(databasePage, TARGET.databaseName, "database");
+    const priorDatabase = selectNamedResource(databaseRows, TARGET.databaseName, "database");
     const priorWorker = selectNamedResource(workerPage, TARGET.workerName, "worker");
     if (priorWorker) {
       const deployments = normalizeDeploymentList(await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`));
@@ -249,6 +281,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     receipt.worker_preimage = priorWorkerVersion ?? "absent";
     if (priorDatabase) {
       receipt.database_id = validateDatabaseIdentity(priorDatabase);
+      receipt.database_preimage = "existing_exact_target";
       stage = "database_schema_preimage";
       const tables = await queryDatabase(api, receipt.database_id, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
       receipt.database_schema_preimage = validateReceiptSchema(tables, migration);
@@ -256,17 +289,8 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
         validateMigrationLedger(await queryDatabase(api, receipt.database_id, "SELECT name FROM d1_migrations ORDER BY name"));
       }
     } else {
-      stage = "database_create";
       receipt.database_preimage = "absent";
-      receipt.database_create_attempted = true;
-      const created = await api(`/accounts/${TARGET.accountId}/d1/database`, { method: "POST", body: { name: TARGET.databaseName } });
-      if (created?.name !== TARGET.databaseName || created?.account_id && created.account_id !== TARGET.accountId) fail("database_create_readback_mismatch");
-      receipt.database_id = validateDatabaseIdentity(created);
-      databaseCreated = true;
-      const reread = await api(`/accounts/${TARGET.accountId}/d1/database?per_page=100`);
-      validateInventoryPage(reread, "database", { requireTotalCount: true });
-      const confirmed = selectNamedResource(reread, TARGET.databaseName, "database");
-      if (!confirmed || validateDatabaseIdentity(confirmed) !== receipt.database_id) fail("database_create_readback_mismatch");
+      fail("database_target_missing");
     }
 
     const runDir = process.env.RUNNER_TEMP || tmpdir();
@@ -353,7 +377,6 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     receipt.status = "failed";
     receipt.failed_stage = stage;
     receipt.failure_code = error instanceof RouteError ? error.code : "route_failed_closed";
-    if (databaseCreated) receipt.database_created = true;
     if (workerMutationStarted && tempConfig) {
       receipt.rollback_target = priorWorkerVersion ?? "absent";
       try {

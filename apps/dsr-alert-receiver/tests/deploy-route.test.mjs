@@ -4,6 +4,7 @@ import {
   RouteError,
   TARGET,
   makeCloudflareApi,
+  listNamedD1Databases,
   normalizeDeploymentList,
   normalizeVersionList,
   runRoute,
@@ -14,6 +15,7 @@ import {
   validateIntakeDisabled,
   validateInventoryPage,
   validateDispatch,
+  validateD1InventoryPage,
   validateMigrationLedger,
   validatePostflight,
   validateReceiptSchema,
@@ -60,6 +62,8 @@ describe("B-216 protected receiver route admission", () => {
     errorCode(() => validateTrackedInputs(config, `${migration}\nCREATE TABLE extra (id TEXT);`), "migration_drift");
     errorCode(() => validateDatabaseIdentity({ name: TARGET.databaseName, uuid: TARGET.placeholderId }), "placeholder_uuid_rejected");
     errorCode(() => validateDatabaseIdentity({ name: "another-database", uuid: "123e4567-e89b-42d3-a456-426614174000" }), "database_identity_ambiguous");
+    errorCode(() => validateDatabaseIdentity({ name: TARGET.databaseName, uuid: "123e4567-e89b-42d3-a456-426614174000" }), "database_identity_mismatch");
+    errorCode(() => validateDatabaseIdentity({ name: TARGET.databaseName, uuid: TARGET.databaseId, account_id: "f".repeat(32) }), "database_account_mismatch");
   });
 
   it("fails closed on duplicate provider names instead of choosing or creating again", () => {
@@ -70,7 +74,6 @@ describe("B-216 protected receiver route admission", () => {
   });
 
   it("rejects truncated or inconsistent provider inventories instead of assuming a unique target", () => {
-    expect(validateInventoryPage(Object.assign([{ name: "only-db" }], { result_info: { count: 1, page: 1, per_page: 100, total_count: 1 } }), "database", { requireTotalCount: true })).toHaveLength(1);
     const completeWorkerList = [{ id: TARGET.workerName }];
     expect(validateInventoryPage(completeWorkerList, "worker")).toHaveLength(1);
     expect(selectNamedResource(completeWorkerList, TARGET.workerName, "worker")).toEqual(completeWorkerList[0]);
@@ -78,9 +81,139 @@ describe("B-216 protected receiver route admission", () => {
       { id: TARGET.workerName },
       { id: TARGET.workerName },
     ], TARGET.workerName, "worker"), "worker_duplicate_name");
-    errorCode(() => validateInventoryPage(Object.assign([{ name: "first-page-db" }], { result_info: { count: 1, page: 1, per_page: 100, total_count: 101 } }), "database", { requireTotalCount: true }), "database_inventory_truncated");
-    errorCode(() => validateInventoryPage(Object.assign([{ name: "only-db" }], { result_info: { count: 2, page: 1, per_page: 100, total_count: 1 } }), "database", { requireTotalCount: true }), "database_inventory_ambiguous");
-    errorCode(() => validateInventoryPage([], "database", { requireTotalCount: true }), "database_inventory_ambiguous");
+  });
+
+  it("adopts the exact B-216 D1 when the account has two databases", async () => {
+    const requests = [];
+    const rows = Object.assign([{
+      name: TARGET.databaseName,
+      uuid: TARGET.databaseId,
+    }], { result_info: { count: 1, page: 1, per_page: 100, total_count: 2 } });
+    const result = await listNamedD1Databases(async (path) => {
+      requests.push(path);
+      return rows;
+    });
+    expect(result).toHaveLength(1);
+    expect(validateDatabaseIdentity(selectNamedResource(result, TARGET.databaseName, "database"))).toBe(TARGET.databaseId);
+    expect(requests).toEqual([`/accounts/${TARGET.accountId}/d1/database?name=${TARGET.databaseName}&page=1&per_page=100`]);
+  });
+
+  it("accepts a documented D1 array with omitted optional result_info metadata", async () => {
+    const rows = [{ name: TARGET.databaseName, uuid: TARGET.databaseId }];
+    const result = await listNamedD1Databases(async () => rows);
+    expect(result).toEqual(rows);
+  });
+
+  it("paginates a full result page without metadata before deciding target uniqueness", async () => {
+    const requests = [];
+    const fullPage = Array.from({ length: 100 }, (_, index) => ({ name: `unrelated-${index}` }));
+    const target = { name: TARGET.databaseName, uuid: TARGET.databaseId };
+    const result = await listNamedD1Databases(async (path) => {
+      requests.push(path);
+      return requests.length === 1 ? fullPage : [target];
+    });
+    expect(requests).toHaveLength(2);
+    expect(selectNamedResource(result, TARGET.databaseName, "database")).toEqual(target);
+  });
+
+  it("rejects duplicate exact D1 names across pages and contradictory pagination metadata", async () => {
+    const duplicate = { name: TARGET.databaseName, uuid: TARGET.databaseId };
+    const duplicates = await listNamedD1Databases(async (path) => {
+      const requestedPage = Number(new URLSearchParams(path.split("?")[1]).get("page"));
+      return requestedPage === 1
+        ? Object.assign([duplicate, ...Array.from({ length: 99 }, (_, index) => ({ name: `similar-${index}` }))], { result_info: { count: 100, page: 1, per_page: 100, total_count: 200 } })
+        : Object.assign([duplicate], { result_info: { count: 100, page: 2, per_page: 100, total_count: 200 } });
+    });
+    errorCode(() => selectNamedResource(duplicates, TARGET.databaseName, "database"), "database_duplicate_name");
+    errorCode(() => validateD1InventoryPage(Object.assign([{ name: TARGET.databaseName }], {
+      result_info: { count: 1, page: 2, per_page: 100, total_count: 2 },
+    }), { page: 1, perPage: 100 }), "database_inventory_truncated");
+    errorCode(() => validateD1InventoryPage(Object.assign([{ name: TARGET.databaseName }], {
+      result_info: { count: 2, page: 1, per_page: 100, total_count: 1 },
+    }), { page: 1, perPage: 100 }), "database_inventory_ambiguous");
+    const pages = [];
+    let truncated;
+    try {
+      await listNamedD1Databases(async (path) => {
+        const requestedPage = Number(new URLSearchParams(path.split("?")[1]).get("page"));
+        pages.push(requestedPage);
+        return requestedPage === 1
+          ? Object.assign(Array.from({ length: 100 }, (_, index) => ({ name: `page-one-${index}` })), { result_info: { count: 150, page: 1, per_page: 100, total_count: 200 } })
+          : Object.assign([{ name: "one-result-on-short-page" }], { result_info: { count: 150, page: 2, per_page: 100, total_count: 200 } });
+      });
+    } catch (error) {
+      truncated = error;
+    }
+    expect(pages).toEqual([1, 2]);
+    expect(truncated).toBeInstanceOf(RouteError);
+    expect(truncated.code).toBe("database_inventory_truncated");
+  });
+
+  it("retries a partial-create run by adopting the exact existing D1, never POSTing another database", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    let creates = 0;
+    let migrations = 0;
+    const fetchImpl = async (url, options) => {
+      if (url.endsWith(`/accounts/${TARGET.accountId}`)) return Response.json({ success: true, result: { id: TARGET.accountId } });
+      if (url.includes("/d1/database?name=")) {
+        return Response.json({
+          success: true,
+          result: [{ name: TARGET.databaseName, uuid: TARGET.databaseId }],
+          result_info: { count: 1, page: 1, per_page: 100, total_count: 2 },
+        });
+      }
+      if (url.endsWith("/workers/scripts")) return Response.json({ success: true, result: [] });
+      if (url.includes(`/d1/database/${TARGET.databaseId}/query`)) {
+        return Response.json({ success: true, result: [{ success: true, results: [] }] });
+      }
+      if (url.endsWith("/d1/database") && options.method === "POST") {
+        creates += 1;
+        throw new Error("retry must not create another D1");
+      }
+      throw new Error("unexpected provider request");
+    };
+    const command = (args) => {
+      if (args[0] === "d1" && args[1] === "migrations") {
+        migrations += 1;
+        throw new RouteError("injected_after_exact_adoption");
+      }
+      throw new Error("Worker command must not precede the exact D1 schema");
+    };
+    let rejection;
+    try {
+      await runRoute({ context: goodContext, config, migration, fetchImpl, command });
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toBeInstanceOf(RouteError);
+    expect(rejection.code).toBe("injected_after_exact_adoption");
+    expect(creates).toBe(0);
+    expect(migrations).toBe(1);
+  });
+
+  it("fails closed when the frozen D1 is absent instead of provisioning an unverified UUID", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    let creates = 0;
+    const fetchImpl = async (url, options) => {
+      if (url.endsWith(`/accounts/${TARGET.accountId}`)) return Response.json({ success: true, result: { id: TARGET.accountId } });
+      if (url.includes("/d1/database?name=")) {
+        return Response.json({ success: true, result: [{ name: "unrelated-d1-fixture", uuid: "123e4567-e89b-42d3-a456-426614174000" }], result_info: { count: 1, page: 1, per_page: 100, total_count: 2 } });
+      }
+      if (url.endsWith("/workers/scripts")) return Response.json({ success: true, result: [] });
+      if (url.endsWith("/d1/database") && options.method === "POST") creates += 1;
+      throw new Error("no provider mutation is allowed for an absent frozen D1");
+    };
+    let rejection;
+    try {
+      await runRoute({ context: goodContext, config, migration, fetchImpl, command: () => { throw new Error("Worker command must not run"); } });
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toBeInstanceOf(RouteError);
+    expect(rejection.code).toBe("database_target_missing");
+    expect(creates).toBe(0);
   });
 
   it("accepts only the exact empty or migrated schema and rejects unknown/partial state", async () => {
@@ -138,31 +271,28 @@ describe("B-216 protected receiver route admission", () => {
     expect(error.message).not.toContain(goodContext.receiverToken);
   });
 
-  it("does not retry an ambiguous D1 create or invoke a second create", async () => {
+  it("fails closed on a missing exact D1 target without attempting a database create", async () => {
     const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
     let creates = 0;
     const fetchImpl = async (url, options) => {
       if (url.endsWith(`/accounts/${TARGET.accountId}`)) return Response.json({ success: true, result: { id: TARGET.accountId } });
-      if (url.includes("/d1/database?") || url.endsWith("/workers/scripts")) return Response.json({ success: true, result: [], result_info: { count: 0, page: 1, per_page: 100, total_count: 0 } });
-      if (url.endsWith("/d1/database")) {
+      if (url.includes("/d1/database?name=") || url.endsWith("/workers/scripts")) return Response.json({ success: true, result: [] });
+      if (url.endsWith("/d1/database") && options.method === "POST") {
         creates += 1;
-        expect(options.method).toBe("POST");
-        return Response.json({ success: false, errors: [{ message: "provider body must stay private" }] }, { status: 503 });
+        throw new Error("missing frozen target must never be created by a retry");
       }
       throw new Error("unexpected provider request");
     };
-    const command = () => { throw new Error("no Worker command before D1 create is confirmed"); };
     let rejection;
     try {
-      await runRoute({ context: goodContext, config, migration, fetchImpl, command });
+      await runRoute({ context: goodContext, config, migration, fetchImpl, command: () => { throw new Error("no Worker command without the exact D1"); } });
     } catch (error) {
       rejection = error;
     }
     expect(rejection).toBeInstanceOf(RouteError);
-    expect(rejection.code).toBe("provider_response_rejected");
-    expect(rejection.message).not.toContain("provider body must stay private");
-    expect(creates).toBe(1);
+    expect(rejection.code).toBe("database_target_missing");
+    expect(creates).toBe(0);
   });
 
   it("stops before any provider request when protected receiver secret or approval ref is absent", async () => {
