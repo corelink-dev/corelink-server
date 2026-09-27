@@ -123,7 +123,7 @@ class StripeRestrictedKeyContractTests(unittest.TestCase):
             original.replace("rk_test_", "sk_test_"),
             original.replace("Accounts: Read", "Accounts: Write"),
             original.replace("Customers: Write", "Customers: Read"),
-            original.replace("--identity-only", "--customer-mutation-only"),
+            original.replace("identity-only", "customer-mutation-only"),
             original.replace("STRIPE_TEST_ACCOUNT_ID", "STRIPE_OTHER_ACCOUNT_ID"),
         )
         for index, mutated in enumerate(mutations):
