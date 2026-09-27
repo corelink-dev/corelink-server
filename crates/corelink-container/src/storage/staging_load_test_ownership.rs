@@ -1742,15 +1742,11 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let receipt = reconcile_staging_load_test_teardown(
-            &identity,
-            None,
-            &scans,
-            &resources,
-            10,
-            |_| StagingLoadTestTeardownAction::Deleted,
-        )
-        .expect("valid nine-class receipt");
+        let receipt =
+            reconcile_staging_load_test_teardown(&identity, None, &scans, &resources, 10, |_| {
+                StagingLoadTestTeardownAction::Deleted
+            })
+            .expect("valid nine-class receipt");
         for class in STAGING_LOAD_TEST_RESOURCE_CLASSES {
             let count = &receipt.resources[class.as_str()];
             assert_eq!(count.inventory, 1);
