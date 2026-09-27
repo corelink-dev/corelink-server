@@ -1103,6 +1103,20 @@ mod tests {
             .expect("pre has_active_subscription query");
         assert!(!before, "fresh tenant must not be active before activation");
 
+        // A free activation without the matching live lease must fail closed.
+        // The same lease is required by the production tier-select path.
+        let without_lock = store.persist_free_active(&tenant, now_ms, cid).await;
+        assert_eq!(
+            without_lock,
+            Err("tier-selection lock ownership lost before free persist".to_owned())
+        );
+
+        let acquired = store
+            .acquire_lock(&tenant, now_ms, cid)
+            .await
+            .expect("acquire free activation lock");
+        assert!(acquired, "fresh tenant must acquire its activation lock");
+
         // Instant free activation.
         store
             .persist_free_active(&tenant, now_ms, cid)
@@ -1115,6 +1129,10 @@ mod tests {
             .has_active_subscription(&tenant)
             .await
             .expect("post has_active_subscription query");
+        store
+            .release_lock(&tenant, cid)
+            .await
+            .expect("release free activation lock");
         assert!(
             !after,
             "a free/active row must NOT count as an active subscription — it is \

@@ -81,7 +81,7 @@ REQUIRED_TARGET_SOURCES = {
 # run. The self-hosted runner's PATH/toolchain remains the infrastructure trust
 # boundary; this manifest binds the repository-owned selector/source inputs.
 SOURCE_SHA256 = {
-    "crates/corelink-container/src/routes/tier_select_store.rs": "37c0cc992da7f77b95996066c25eadd39a2f92279d35dcfc8077a7bcdd187f97",
+    "crates/corelink-container/src/routes/tier_select_store.rs": "2c8420e87367772276ac807dee0a9c386f304afecbb842e1214a91be3c120602",
     "crates/corelink-container/src/storage/d1_http.rs": "57df01654b44a12c57663d4543b1290125c87346e014e3b8210624a2d9cb6dd2",
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "2148abe19ae9b119dc17eca0f242e983b47f8f6100d8d6fbba0536aafcc88af7",
