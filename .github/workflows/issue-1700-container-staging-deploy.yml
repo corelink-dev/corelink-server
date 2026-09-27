@@ -3,8 +3,35 @@ name: issue-1700 protected staging container deploy
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        required: true
+        type: choice
+        options:
+          - deploy
+          - verify_existing
       expected_sha:
         required: true
+        type: string
+      rollout_sha:
+        required: false
+        type: string
+      rollout_run_id:
+        required: false
+        type: string
+      expected_deployment_id:
+        required: false
+        type: string
+      expected_version_id:
+        required: false
+        type: string
+      preimage_deployment_id:
+        required: false
+        type: string
+      preimage_version_id:
+        required: false
+        type: string
+      expected_image_digest:
+        required: false
         type: string
       confirm:
         required: true
@@ -22,7 +49,9 @@ jobs:
     if: >-
       github.repository == 'HuGR-dev/corelink-server' &&
       github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main' && github.ref_protected
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      inputs.operation == 'deploy' &&
+      inputs.confirm == 'deploy-container-staging-1700'
     runs-on: ubuntu-latest
     environment: staging
     timeout-minutes: 45
@@ -32,10 +61,12 @@ jobs:
     steps:
       - name: Confirm exact protected route-free operation
         env:
+          OPERATION: ${{ inputs.operation }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           CONFIRM: ${{ inputs.confirm }}
         run: |
           set -euo pipefail
+          test "$OPERATION" = 'deploy'
           test "$CONFIRM" = 'deploy-container-staging-1700'
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$EXPECTED_SHA" = "$GITHUB_SHA"
@@ -110,18 +141,51 @@ jobs:
         id: candidate
         if: always() && steps.preimage.outputs.preimage_version_id != ''
         continue-on-error: true
-        env:
-          DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
         run: |
           set -euo pipefail
           pnpm exec wrangler deployments list \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
             > "$RUNNER_TEMP/staging-deployments-after.json"
-          python3 scripts/staging_deployment_guard.py candidate \
+          python3 scripts/verify_issue_1700_existing_deployment.py select-candidate \
             --deployments "$RUNNER_TEMP/staging-deployments-after.json" \
             --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
+            --output "$GITHUB_OUTPUT"
+
+      - name: Read the complete candidate Worker Version
+        id: candidate_version
+        if: always() && steps.candidate.outputs.candidate_version_id != ''
+        continue-on-error: true
+        env:
+          CANDIDATE_VERSION_ID: ${{ steps.candidate.outputs.candidate_version_id }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler versions view "$CANDIDATE_VERSION_ID" \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-candidate-version.json"
+
+      - name: Verify the full marker and unchanged active candidate
+        id: verify_candidate
+        if: always() && steps.candidate_version.outcome == 'success'
+        continue-on-error: true
+        env:
+          CANDIDATE_DEPLOYMENT_ID: ${{ steps.candidate.outputs.candidate_deployment_id }}
+          CANDIDATE_VERSION_ID: ${{ steps.candidate.outputs.candidate_version_id }}
+          DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deployments list \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-deployments-verify-candidate.json"
+          python3 scripts/verify_issue_1700_existing_deployment.py verify-candidate \
+            --deployments "$RUNNER_TEMP/staging-deployments-verify-candidate.json" \
+            --version "$RUNNER_TEMP/staging-candidate-version.json" \
+            --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
             --marker "$DEPLOYMENT_MARKER" \
+            --expected-deployment-id "$CANDIDATE_DEPLOYMENT_ID" \
+            --expected-version-id "$CANDIDATE_VERSION_ID" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
 
@@ -129,8 +193,8 @@ jobs:
         if: always()
         env:
           DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
-          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
-          CANDIDATE_VERSION_ID: ${{ steps.candidate.outputs.candidate_version_id }}
+          CANDIDATE_OUTCOME: ${{ steps.verify_candidate.outcome }}
+          CANDIDATE_VERSION_ID: ${{ steps.verify_candidate.outputs.candidate_version_id }}
         run: |
           set -euo pipefail
           test "$DEPLOY_OUTCOME" = success
@@ -139,9 +203,10 @@ jobs:
 
       - name: Verify deployed compatibility flags and empty route inventory
         id: verify
-        if: steps.deploy.outcome == 'success' && steps.candidate.outputs.candidate_version_id != ''
+        if: steps.deploy.outcome == 'success' && steps.verify_candidate.outcome == 'success'
         env:
-          CANDIDATE_VERSION_ID: ${{ steps.candidate.outputs.candidate_version_id }}
+          CANDIDATE_VERSION_ID: ${{ steps.verify_candidate.outputs.candidate_version_id }}
+          CANDIDATE_DEPLOYMENT_ID: ${{ steps.verify_candidate.outputs.candidate_deployment_id }}
           DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
         run: |
           set -euo pipefail
@@ -149,10 +214,19 @@ jobs:
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
             > "$RUNNER_TEMP/staging-deployments-verify.json"
-          python3 scripts/staging_deployment_guard.py assert-candidate \
+          pnpm exec wrangler versions view "$CANDIDATE_VERSION_ID" \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-current-candidate-version.json"
+          python3 scripts/verify_issue_1700_existing_deployment.py verify-candidate \
             --deployments "$RUNNER_TEMP/staging-deployments-verify.json" \
-            --version-id "$CANDIDATE_VERSION_ID" \
-            --marker "$DEPLOYMENT_MARKER"
+            --version "$RUNNER_TEMP/staging-current-candidate-version.json" \
+            --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
+            --marker "$DEPLOYMENT_MARKER" \
+            --expected-deployment-id "$CANDIDATE_DEPLOYMENT_ID" \
+            --expected-version-id "$CANDIDATE_VERSION_ID" \
+            --output "$GITHUB_OUTPUT" \
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
           curl --fail --silent --show-error \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging/settings" \
@@ -170,10 +244,11 @@ jobs:
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
 
       - name: Roll back only this run to the recorded exact preimage
-        if: failure() && steps.candidate.outputs.candidate_version_id != ''
+        if: failure() && steps.verify_candidate.outcome == 'success'
         env:
           PREIMAGE_VERSION_ID: ${{ steps.preimage.outputs.preimage_version_id }}
-          CANDIDATE_VERSION_ID: ${{ steps.candidate.outputs.candidate_version_id }}
+          CANDIDATE_VERSION_ID: ${{ steps.verify_candidate.outputs.candidate_version_id }}
+          CANDIDATE_DEPLOYMENT_ID: ${{ steps.verify_candidate.outputs.candidate_deployment_id }}
           DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
           ROLLBACK_MARKER: issue-1700-route-free-rollback-${{ github.run_id }}-${{ github.sha }}
         run: |
@@ -182,12 +257,19 @@ jobs:
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
             > "$RUNNER_TEMP/staging-deployments-before-rollback.json"
-          python3 scripts/staging_deployment_guard.py rollback \
+          pnpm exec wrangler versions view "$CANDIDATE_VERSION_ID" \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-before-rollback-version.json"
+          python3 scripts/verify_issue_1700_existing_deployment.py verify-candidate \
             --deployments "$RUNNER_TEMP/staging-deployments-before-rollback.json" \
+            --version "$RUNNER_TEMP/staging-before-rollback-version.json" \
             --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
-            --candidate-version-id "$CANDIDATE_VERSION_ID" \
-            --candidate-marker "$DEPLOYMENT_MARKER" \
+            --marker "$DEPLOYMENT_MARKER" \
+            --expected-deployment-id "$CANDIDATE_DEPLOYMENT_ID" \
+            --expected-version-id "$CANDIDATE_VERSION_ID" \
             --rollback-marker "$ROLLBACK_MARKER" \
+            --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
           pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
@@ -197,14 +279,19 @@ jobs:
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
             > "$RUNNER_TEMP/staging-deployments-after-rollback.json"
+          pnpm exec wrangler versions view "$PREIMAGE_VERSION_ID" \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-after-rollback-version.json"
           python3 scripts/verify_issue_1700_route_inventory.py \
             > "$RUNNER_TEMP/staging-route-inventory-after-rollback.json"
-          python3 scripts/staging_deployment_guard.py verify-rollback \
+          python3 scripts/verify_issue_1700_existing_deployment.py verify-rollback \
             --deployments "$RUNNER_TEMP/staging-deployments-after-rollback.json" \
+            --version "$RUNNER_TEMP/staging-after-rollback-version.json" \
             --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
-            --marker "$ROLLBACK_MARKER" \
             --routes "$RUNNER_TEMP/staging-route-inventory-after-rollback.json" \
-            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json" \
+            --marker "$ROLLBACK_MARKER"
 
       - name: Upload redacted route-free deployment receipt
         if: always()
@@ -217,5 +304,130 @@ jobs:
             ${{ runner.temp }}/staging-route-inventory-after.json
             ${{ runner.temp }}/staging-route-inventory-after-rollback.json
             ${{ runner.temp }}/staging-worker-settings-readback.json
+          retention-days: 30
+          if-no-files-found: warn
+
+  verify_existing:
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      inputs.operation == 'verify_existing' &&
+      inputs.confirm == 'verify-existing-staging-1700'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Confirm exact protected read-only verification
+        env:
+          OPERATION: ${{ inputs.operation }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ROLLOUT_SHA: ${{ inputs.rollout_sha }}
+          ROLLOUT_RUN_ID: ${{ inputs.rollout_run_id }}
+          DEPLOYMENT_ID: ${{ inputs.expected_deployment_id }}
+          VERSION_ID: ${{ inputs.expected_version_id }}
+          PREIMAGE_DEPLOYMENT_ID: ${{ inputs.preimage_deployment_id }}
+          PREIMAGE_VERSION_ID: ${{ inputs.preimage_version_id }}
+          IMAGE_DIGEST: ${{ inputs.expected_image_digest }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          test "$OPERATION" = 'verify_existing'
+          test "$CONFIRM" = 'verify-existing-staging-1700'
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          [[ "$ROLLOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$ROLLOUT_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+          [[ "$DEPLOYMENT_ID" =~ ^[0-9a-f-]{36}$ ]]
+          [[ "$VERSION_ID" =~ ^[0-9a-f-]{36}$ ]]
+          [[ "$PREIMAGE_DEPLOYMENT_ID" =~ ^[0-9a-f-]{36}$ ]]
+          [[ "$PREIMAGE_VERSION_ID" =~ ^[0-9a-f-]{36}$ ]]
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$GH_TOKEN"
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Create minimal read-only root config
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/staging-config"
+          cat > "$RUNNER_TEMP/staging-config/root.toml" <<'TOML'
+          name = "corelink-staging"
+          account_id = "6a1fc1c626fc2628823e60b9db01f5cd"
+          compatibility_date = "2026-04-01"
+          workers_dev = false
+          TOML
+          test -s "$RUNNER_TEMP/staging-config/root.toml"
+      - name: Install pinned Wrangler and gather provider readbacks
+        env:
+          VERSION_ID: ${{ inputs.expected_version_id }}
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm exec wrangler deployments list \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-deployments.json"
+          pnpm exec wrangler versions view "$VERSION_ID" \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-version.json"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging/settings" \
+            --output "$RUNNER_TEMP/staging-worker-settings.json"
+      - name: Read original rollout run metadata and immutable logs
+        env:
+          ROLLOUT_RUN_ID: ${{ inputs.rollout_run_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ROLLOUT_RUN_ID" \
+            --jq '{id,event,status,head_sha}' \
+            > "$RUNNER_TEMP/rollout-run.json"
+          gh run view "$ROLLOUT_RUN_ID" --repo "$GITHUB_REPOSITORY" --log \
+            > "$RUNNER_TEMP/rollout-run.log"
+      - name: Validate existing route-free rollout without mutation
+        env:
+          CURRENT_SHA: ${{ inputs.expected_sha }}
+          ROLLOUT_SHA: ${{ inputs.rollout_sha }}
+          ROLLOUT_RUN_ID: ${{ inputs.rollout_run_id }}
+          DEPLOYMENT_ID: ${{ inputs.expected_deployment_id }}
+          VERSION_ID: ${{ inputs.expected_version_id }}
+          PREIMAGE_DEPLOYMENT_ID: ${{ inputs.preimage_deployment_id }}
+          PREIMAGE_VERSION_ID: ${{ inputs.preimage_version_id }}
+          IMAGE_DIGEST: ${{ inputs.expected_image_digest }}
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_issue_1700_existing_deployment.py verify-existing \
+            --deployments "$RUNNER_TEMP/staging-deployments.json" \
+            --version "$RUNNER_TEMP/staging-version.json" \
+            --settings "$RUNNER_TEMP/staging-worker-settings.json" \
+            --topology infra/staging/topology.json \
+            --workflow-run "$RUNNER_TEMP/rollout-run.json" \
+            --rollout-log "$RUNNER_TEMP/rollout-run.log" \
+            --receipt "$RUNNER_TEMP/staging-existing-deployment-receipt.json" \
+            --current-sha "$CURRENT_SHA" \
+            --rollout-sha "$ROLLOUT_SHA" \
+            --rollout-run-id "$ROLLOUT_RUN_ID" \
+            --deployment-id "$DEPLOYMENT_ID" \
+            --version-id "$VERSION_ID" \
+            --preimage-deployment-id "$PREIMAGE_DEPLOYMENT_ID" \
+            --preimage-version-id "$PREIMAGE_VERSION_ID" \
+            --image-digest "$IMAGE_DIGEST"
+      - name: Upload redacted existing-deployment receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: issue-1700-existing-deployment-${{ github.run_id }}
+          path: ${{ runner.temp }}/staging-existing-deployment-receipt.json
           retention-days: 30
           if-no-files-found: warn
