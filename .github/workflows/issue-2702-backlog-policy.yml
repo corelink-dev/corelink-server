@@ -1,0 +1,47 @@
+name: issue-2702 backlog concurrency policy
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact candidate SHA approved for this read-only proof
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-2702-backlog-policy-${{ inputs.expected_sha }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Bind manual proof to the dispatched commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: test "$EXPECTED_SHA" = "$GITHUB_SHA"
+      - name: Checkout exact trusted SHA without write credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4.2.2
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify checked out commit is the exact trusted SHA
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned CI test requirements
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements-ci.txt
+      - name: Verify the exact concurrency policy allowlist and negative controls
+        run: >-
+          python -m pytest -q
+          tests/test_backlog_verify_trust_boundary.py::BacklogVerifyTrustBoundaryTests::test_concurrency_group_migration_is_monotonic_and_exact
