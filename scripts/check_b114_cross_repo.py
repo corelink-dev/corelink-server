@@ -4,17 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 from pathlib import Path
 
 EXPECTED = {
-    "repository": "HuGR-Labs/corelink-runners",
+    "repository": "HuGR-dev/corelink-runners",
     "runners_commit": "70045e8d322d46888066481b702ddf4d3103df06",
     "publication_run": "36223081235",
     "publication_artifact": "10900170202",
     "artifact_digest": "sha256:7bfc278457c6570e66d4f0f360888e237f54ef63baa89c6c27cc020b95c57a2d",
     "build_only_run": "36223176826",
 }
+EXPECTED_RECEIPT_SHA256 = "bec9d6c155a9b0a48a425feae06ad38a7e496339ad3f785eedd44866fa728158"
 FORBIDDEN_CLAIMS = re.compile(r"\b(?:deploy(?:ed|ment)?|pin(?:ned|ning)?|provider mutation|image pull)\b", re.I)
 
 
@@ -65,7 +67,10 @@ def main() -> int:
         return 0
     receipt = Path("docs/campaigns/remediation/B-114-corelink-runners-receipt.md")
     try:
-        check(receipt.read_text(encoding="utf-8"))
+        raw = receipt.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != EXPECTED_RECEIPT_SHA256:
+            raise ContractError("B-114 receipt bytes do not match the canonical path hash")
+        check(raw.decode("utf-8"))
     except (OSError, ContractError) as error:
         print(f"B-114 contract FAILED: {error}")
         return 1

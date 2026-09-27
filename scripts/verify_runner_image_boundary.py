@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Verify the corelink-server boundary for the B-114/B-135/B-138 image family.
 
-B-114 and B-138 remain external image holds owned by the sibling
-``corelink-runners`` repository. B-135 is closed by an exact redacted receipt
-for the sibling PR that delivered its tested tree to ``main``; this repository
-still cannot build, pin, or inspect the image itself. The boundary therefore
-keeps B-114/B-138 open/manual, validates B-135's exact receipt, avoids inventing
-a local image or OCI-label consumer, and ensures the one local container-build
+B-114 is closed by an exact sibling build/publication receipt, while B-138
+remains an external image hold owned by the sibling ``corelink-runners``
+repository. B-135 is closed by an exact redacted receipt for the sibling PR
+that delivered its tested tree to ``main``; this repository still cannot build,
+pin, or inspect the image itself. The boundary validates the B-114/B-135
+receipts, keeps B-138 parked/manual, and avoids inventing a local image or OCI-label consumer, and ensures the one local container-build
 lane checks its baked tools before invoking a build. ``--self-test`` mutates
 each control in memory and proves the verifier rejects the weakened contract.
 """
@@ -25,6 +25,8 @@ from scripts.check_b135_cross_repo import (
     REQUIRED_BEHAVIOR as B135_REQUIRED_BEHAVIOR,
     receipt_fields,
 )
+from scripts.check_b114_cross_repo import ContractError as B114ContractError
+from scripts.check_b114_cross_repo import check as check_b114_receipt
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +35,7 @@ HOLDS = ROOT / "docs/operator/dependency-holds.md"
 BUILD_WORKFLOW = ROOT / ".github/workflows/container-build-push-prod.yml"
 WORKFLOWS = ROOT / ".github/workflows"
 B135_EVIDENCE = ROOT / "docs/campaigns/remediation/B-135-corelink-runners-closure.md"
+B114_EVIDENCE = ROOT / "docs/campaigns/remediation/B-114-corelink-runners-receipt.md"
 PREFLIGHT_TITLE = "Preflight — BuildKit + runc must be baked in the runner image"
 REQUIRED_TOOL_LOOP = re.compile(r"^for\s+t\s+in\s+buildkitd\s+buildctl\s+runc\s*$")
 REQUIRED_MISSING_IF = re.compile(r'^if\s+\[\s*"\$missing"\s*=\s*"1"\s*\]\s*$')
@@ -168,14 +171,24 @@ def check_contract(
     workflow_texts: tuple[str, ...],
     b135_receipt: str | None = None,
 ) -> None:
-    for item in ("B-114", "B-138"):
-        block = _backlog_block(backlog, item)
-        if not re.search(r"(?m)^repo: corelink-runners$", block):
-            raise ContractError(f"{item} must remain owned by corelink-runners")
-        if not re.search(r"(?m)^status: parked$", block):
-            raise ContractError(f"{item} cannot be closed from corelink-server")
-        if not re.search(r"(?m)^verify: manual$", block):
-            raise ContractError(f"{item} must remain manually verified cross-repo")
+    block = _backlog_block(backlog, "B-114")
+    if not re.search(r"(?m)^repo: corelink-runners$", block):
+        raise ContractError("B-114 must remain owned by corelink-runners")
+    if not re.search(r"(?m)^status: done$", block):
+        raise ContractError("B-114 must remain done after exact sibling receipt")
+    if not re.search(r"(?m)^verify: python3 scripts/check_b114_cross_repo.py --receipt$", block):
+        raise ContractError("B-114 verify must invoke the exact receipt checker")
+    try:
+        check_b114_receipt(B114_EVIDENCE.read_text(encoding="utf-8"))
+    except (OSError, B114ContractError) as error:
+        raise ContractError(str(error)) from error
+    block = _backlog_block(backlog, "B-138")
+    if not re.search(r"(?m)^repo: corelink-runners$", block):
+        raise ContractError("B-138 must remain owned by corelink-runners")
+    if not re.search(r"(?m)^status: parked$", block):
+        raise ContractError("B-138 cannot be closed from corelink-server")
+    if not re.search(r"(?m)^verify: manual$", block):
+        raise ContractError("B-138 must remain manually verified cross-repo")
     if b135_receipt is None:
         try:
             b135_receipt = B135_EVIDENCE.read_text(encoding="utf-8")
@@ -187,7 +200,7 @@ def check_contract(
     if hold_heading not in holds:
         raise ContractError("cross-repo image hold is not documented")
     normalized_holds = re.sub(r"\s+", " ", holds)
-    if "B-135 remains open" in normalized_holds or "all three backlog entries `open`/`manual`" in normalized_holds:
+    if "B-114 remains parked" in normalized_holds or "B-135 remains open" in normalized_holds or "all three backlog entries `open`/`manual`" in normalized_holds:
         raise ContractError("B-135 hold text is stale after exact receipt closure")
     for phrase in (
         "cannot inspect the sibling repository from this CI token",
@@ -232,8 +245,8 @@ class Mutation:
 
 
 MUTATIONS = (
-    Mutation("close-b114", ("status: parked", "status: done"), "B-114 cannot be closed", "backlog"),
-    Mutation("cross-repo-automation", ("verify: manual", "verify: python3 scripts/fake.py"), "B-114 must remain manually verified", "backlog"),
+    Mutation("reopen-b114", ("status: done", "status: parked"), "B-114 must remain done", "backlog"),
+    Mutation("fake-b114-checker", ("verify: python3 scripts/check_b114_cross_repo.py --receipt", "verify: python3 scripts/fake.py"), "B-114 verify must invoke", "backlog"),
     Mutation("close-b135", ("status: done", "status: open"), "B-135 must remain done", "backlog-b135"),
     Mutation(
         "b135-receipt-head",
@@ -294,6 +307,11 @@ def self_test() -> int:
             if b135_receipt.count(old) != 1:
                 raise ContractError(f"{mutation.name}: mutation target count is not one")
             mutated_receipt = b135_receipt.replace(old, new, 1)
+        elif mutation.target == "b114-receipt":
+            if B114_EVIDENCE.read_text(encoding="utf-8").count(old) != 1:
+                raise ContractError(f"{mutation.name}: mutation target count is not one")
+            original = B114_EVIDENCE.read_text(encoding="utf-8")
+            B114_EVIDENCE.write_text(original.replace(old, new, 1), encoding="utf-8")
         elif mutation.target == "holds":
             if holds.count(old) != 1:
                 raise ContractError(f"{mutation.name}: mutation target count is not one")
