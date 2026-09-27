@@ -40,6 +40,7 @@ on:
       - "specs/03_architecture/issue-2176-grpc-transport-contract.md"
       - "scripts/verify_i2176_grpc_deny_gate.py"
       - "tests/test_verify_i2176_grpc_deny_gate.py"
+      - "tests/test_pull_request_target_spawn_boundary.py"
       - "scripts/verify_i2574_grpc_diagnostic_policy.py"
       - "tests/test_verify_i2574_grpc_diagnostic_policy.py"
       - "tests/test_i2574_p0_transition_fixture.py"
@@ -58,8 +59,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  transport-policy:
-    name: trusted exact-head gRPC transport policy
+  deny-contract:
+    name: trusted exact-head gRPC deny contract
     if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -83,9 +84,10 @@ jobs:
 
       - name: Validate candidate with the protected-base verifier
         run: >-
-          python3 -S trusted-base/scripts/verify_i2574_grpc_diagnostic_policy.py
+          python3 -S trusted-base/scripts/verify_i2176_grpc_deny_gate.py
           --trusted-base trusted-base
           --candidate candidate
+          --expected-head ${{ github.event.pull_request.head.sha }}
 
       - name: Run protected-base adversarial fixtures
         run: >-

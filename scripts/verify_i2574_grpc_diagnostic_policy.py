@@ -37,6 +37,7 @@ POLICY = {
     "docs/campaigns/remediation/wp150-workflow-ownership.md",
     "docs/internal/secrets-checklist.md",
     "scripts/verify_i2176_grpc_deny_gate.py",
+    "tests/test_pull_request_target_spawn_boundary.py",
     "tests/test_verify_i2176_grpc_deny_gate.py",
     "scripts/verify_i2574_grpc_diagnostic_policy.py",
     "tests/test_verify_i2574_grpc_diagnostic_policy.py",
@@ -107,12 +108,23 @@ def require_tree_union(base: Path, candidate: Path) -> None:
         if left.is_symlink() or right.is_symlink():
             if not left.is_symlink() or not right.is_symlink() or os.readlink(left) != os.readlink(right):
                 raise ContractError(f"symlink changed: {relative}")
+            if str(relative) != ".github/actionlint.yaml" or os.readlink(left) != "../.actionlint.yaml":
+                raise ContractError(f"symlink forbidden: {relative}")
+        elif left.exists() and right.exists() and stat.S_IMODE(left.lstat().st_mode) != stat.S_IMODE(right.lstat().st_mode):
+            raise ContractError(f"mode changed: {relative}")
+    canonical = base / ".github/actionlint.yaml"
+    candidate_canonical = candidate / ".github/actionlint.yaml"
+    if not canonical.is_symlink() or not candidate_canonical.is_symlink() or os.readlink(canonical) != "../.actionlint.yaml" or os.readlink(candidate_canonical) != "../.actionlint.yaml":
+        raise ContractError("canonical actionlint symlink missing or changed")
 
 
 def require_pinned_modes(root: Path, paths: set[str]) -> None:
     for name in paths:
         path = root / name
-        mode = path.lstat().st_mode
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError as error:
+            raise ContractError(f"missing pinned path: {name}") from error
         if not stat.S_ISREG(mode) or stat.S_IMODE(mode) != 0o644:
             raise ContractError(f"unexpected pinned mode: {name}")
 
@@ -151,6 +163,9 @@ def self_test() -> None:
         for name in POLICY | POLICY_FIXTURES:
             p = base / name; p.parent.mkdir(parents=True, exist_ok=True); p.write_text("protected")
             p = candidate / name; p.parent.mkdir(parents=True, exist_ok=True); p.write_text("protected")
+        (base / ".github").mkdir(exist_ok=True); (candidate / ".github").mkdir(exist_ok=True)
+        os.symlink("../.actionlint.yaml", base / ".github/actionlint.yaml")
+        os.symlink("../.actionlint.yaml", candidate / ".github/actionlint.yaml")
         # Install exact expected bytes by replacing the predicate for this fixture.
         original = EXPECTED
         EXPECTED = {name: digest(candidate / name) for name in original}

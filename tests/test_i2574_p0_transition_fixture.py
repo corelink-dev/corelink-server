@@ -50,6 +50,9 @@ class P0TransitionFixtureTests(unittest.TestCase):
             copy_current(p0, set(policy.POLICY) | set(policy.POLICY_FIXTURES))
             shutil.copytree(p0, delivery, dirs_exist_ok=True)
             overlay_delivery_fixture(delivery)
+            (p0 / ".github").mkdir(exist_ok=True); (delivery / ".github").mkdir(exist_ok=True)
+            os.symlink("../.actionlint.yaml", p0 / ".github/actionlint.yaml")
+            os.symlink("../.actionlint.yaml", delivery / ".github/actionlint.yaml")
 
             self.assertFalse((old / "scripts/verify_i2574_grpc_diagnostic_policy.py").exists())
             self.assertNotEqual(
@@ -97,12 +100,13 @@ class P0TransitionFixtureTests(unittest.TestCase):
 
             canonical_base, canonical_candidate = Path(directory) / "canonical-base", Path(directory) / "canonical-candidate"
             canonical_base.mkdir(); canonical_candidate.mkdir()
-            os.symlink("../.actionlint.yaml", canonical_base / ".github-actionlint")
-            os.symlink("../.actionlint.yaml", canonical_candidate / ".github-actionlint")
+            (canonical_base / ".github").mkdir(); (canonical_candidate / ".github").mkdir()
+            os.symlink("../.actionlint.yaml", canonical_base / ".github/actionlint.yaml")
+            os.symlink("../.actionlint.yaml", canonical_candidate / ".github/actionlint.yaml")
             policy.require_regular_tree(canonical_candidate, canonical_base)
             policy.require_tree_union(canonical_base, canonical_candidate)
-            (canonical_candidate / ".github-actionlint").unlink()
-            os.symlink("../retargeted", canonical_candidate / ".github-actionlint")
+            (canonical_candidate / ".github/actionlint.yaml").unlink()
+            os.symlink("../retargeted", canonical_candidate / ".github/actionlint.yaml")
             with self.assertRaises(policy.ContractError): policy.require_regular_tree(canonical_candidate, canonical_base)
             with self.assertRaises(policy.ContractError): policy.require_tree_union(canonical_base, canonical_candidate)
             for name in policy.POLICY:

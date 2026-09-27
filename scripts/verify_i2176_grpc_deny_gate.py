@@ -10,7 +10,11 @@ package hook, build, test, or import is executed.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +29,152 @@ INDEX = Path("worker/src/index_fetch.ts")
 GATE = Path("worker/src/grpc_transport_gate.ts")
 CONTRACT = Path("specs/03_architecture/issue-2176-grpc-transport-contract.md")
 WORKFLOW = Path(".github/workflows/issue-2176-grpc-deny-gate.yml")
+B141_TEST = Path("tests/test_pull_request_target_spawn_boundary.py")
+CANONICAL_SYMLINK = Path(".github/actionlint.yaml")
+CANONICAL_SYMLINK_TARGET = "../.actionlint.yaml"
+
+
+def load_trusted_delivery_policy() -> object:
+    """Load only the sibling verifier shipped by this protected BASE tree."""
+    path = Path(__file__).with_name("verify_i2574_grpc_diagnostic_policy.py")
+    spec = importlib.util.spec_from_file_location("trusted_i2574_policy", path)
+    if spec is None or spec.loader is None:
+        raise ContractError("trusted delivery policy is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def sha256_file(root: Path, relative: Path) -> str | None:
+    path = root / relative
+    if not path.is_file() or path.is_symlink():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def require_regular_mode(root: Path, relative: Path, mode: int = 0o644) -> None:
+    path = root / relative
+    try:
+        actual = path.lstat().st_mode
+    except FileNotFoundError as error:
+        raise ContractError(f"missing pinned path: {relative}") from error
+    if path.is_symlink() or not path.is_file() or actual & 0o777 != mode:
+        raise ContractError(f"pinned mode drift: {relative}")
+
+
+def require_canonical_symlink(base: Path, candidate: Path) -> None:
+    for root in (base, candidate):
+        path = root / CANONICAL_SYMLINK
+        if (
+            not path.is_symlink()
+            or path.lstat().st_mode & 0o170000 != 0o120000
+            or os.readlink(path) != CANONICAL_SYMLINK_TARGET
+        ):
+            raise ContractError("canonical actionlint symlink missing or changed")
+
+
+def node_kind(path: Path) -> str:
+    """Classify a path from lstat, so links never inherit their target kind."""
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return "absent"
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISREG(mode):
+        return "regular"
+    return "special"
+
+
+def is_regular_digest(root: Path, relative: Path, expected: str) -> bool:
+    path = root / relative
+    return (
+        node_kind(path) == "regular"
+        and path.lstat().st_mode & 0o777 == 0o644
+        and sha256_file(root, relative) == expected
+    )
+
+
+def is_absent(root: Path, relative: Path) -> bool:
+    return node_kind(root / relative) == "absent"
+
+
+def changed_paths(base: Path, candidate: Path) -> set[Path]:
+    names = {p.relative_to(base) for p in base.rglob("*")} | {p.relative_to(candidate) for p in candidate.rglob("*")}
+    changed: set[Path] = set()
+    for name in names:
+        if ".git" in name.parts:
+            continue
+        left, right = base / name, candidate / name
+        left_kind, right_kind = node_kind(left), node_kind(right)
+        if left_kind == "symlink" or right_kind == "symlink":
+            if name != CANONICAL_SYMLINK or not left.is_symlink() or not right.is_symlink() or os.readlink(left) != CANONICAL_SYMLINK_TARGET or os.readlink(right) != CANONICAL_SYMLINK_TARGET:
+                raise ContractError(f"noncanonical symlink: {name}")
+            continue
+        if left_kind == right_kind == "directory":
+            continue
+        if left_kind == "special" or right_kind == "special":
+            raise ContractError(f"non-regular path: {name}")
+        if left_kind != right_kind:
+            changed.add(name); continue
+        if left_kind == "regular" and (sha256_file(base, name) != sha256_file(candidate, name) or left.lstat().st_mode != right.lstat().st_mode):
+            changed.add(name)
+    require_canonical_symlink(base, candidate)
+    return changed
+
+
+MOUNT = {
+    "crates/corelink-container/build.rs": ("11000cad599f6b9afea46c379c9f1dff73bd56d30a99aba68ddc9bc7ccfc8bd1", "b7d1b11510f0bf00a21f2f83a97a43389b0d288167f6b9c5516da57ffda9ce4d"),
+    "crates/corelink-container/proto/staging_transport_probe.proto": (None, "b243732e58ba3ced040e9181befd4f3c2bd995e0b23eb750889c93629245970c"),
+    "crates/corelink-container/src/grpc_staging_probe.rs": (None, "797aff699ce4b64e1112daf5634575ac2da0d2f30e72647f7729669a1cf66867"),
+    "crates/corelink-container/src/lib.rs": ("b47f78891864678310d0d3ff6395f00cf5a3fa074a8733cd656c49f09d07baa9", "9148917bfa87f2d46b502d1c3ed4ed639e6ded55f0afab4c70c054d42f2cd1e5"),
+    "crates/corelink-container/src/main.rs": ("cd08712cf96d988246665314a29a02f7ecf7072def91b75dddc285513eeb4d16", "551c05c037b9c65120b08fd71035eb1e8405ceca48dadd338674ff0c72c03f8a"),
+    "crates/corelink-container/src/reapi_composition.rs": ("a7b0fcbe499f7db437da745e74091675e62c5917675a230d08a4cd35ea5f35c6", "57b3e2c730cf2f326b7f8bdb99df04b9423179524dc830805c3dbb8e62a5f337"),
+    "examples/buck2-starter/.buckconfig": ("24ffdf356bff1238e4397392048f7f20702b75ef408ac03307adddca75be2905", "47f6c78d1b20449bf429537b0ba06f1453c2fbc3ec2e0e2b9e828b1f38281899"),
+    "scripts/verify_i2183_reapi_composition.py": ("99550ecedb1d700945b5b214323923db2e6bbf9b17067e9f6758491cffe17f6d", "532408187817e4ff508e9b2f5776e1646f7f304235ab697cf2e28fbab49a1b6c"),
+}
+
+# Exact known public-deny state, derived from the frozen #2574 old-base
+# fixtures.  The three diagnostic implementation paths did not exist there.
+DENY = {
+    "specs/03_architecture/issue-2176-grpc-transport-contract.md": "cc66f40453ffea97861297db9736d76f2feeea24ecfa39dd422426452b4e92db",
+    "worker/src/grpc_transport_gate.ts": "aa4f8cba311c1609c56d54a5f1af2becbc67e136f4bcf49b3472d8e79e00e68e",
+    "worker/src/grpc_staging_authorization.ts": None,
+    "worker/src/grpc_staging_transport.ts": None,
+    "worker/src/index_fetch.ts": "dfc46d5dc6c34078ad38708d03103508f923fead9d8b8149968a658000150b11",
+    "worker/src/index_env.ts": "ffdaca609ecb6cbf44375c18e03b10212e00bcbdb1aade4381c3473dc0070ca4",
+    "worker/src/index_env_contract.ts": "00600f034876b848b5c0008a982a0a813e1dc63d7daba4a5d75706356aff71cf",
+    "worker/src/durable_object.ts": "30159334631b5d3dbe0f4d1569f3fcf9fe87ab1909592cd20b310d57082e1bc2",
+    "worker/src/durable_object_probes.ts": "1d7f3c9038322f65ad8ffb7cfc6fe37109bdbad8c86fe97cad25df54d3bc7e60",
+    "worker/src/durable_object_start.ts": "7069df729c81016bc46e5c969820d32cf6bea9eb69f82158efdf680c35a5bc47",
+    "worker/tests/grpc_staging_transport.test.ts": None,
+    "worker/src/lib/internal_auth.ts": "e773fa80db1ffd97ccdd20ae08e60e662482eea7e55bef6f19a3d61644b43acf",
+}
+
+
+def matches_state(root: Path, expected: dict[str, str | None]) -> bool:
+    return all(
+        is_absent(root, Path(path)) if digest is None else is_regular_digest(root, Path(path), digest)
+        for path, digest in expected.items()
+    )
+
+
+def classify_phase(root: Path) -> str:
+    policy = load_trusted_delivery_policy()
+    if matches_state(root, policy.EXPECTED):
+        if all(
+            is_absent(root, Path(path)) if preimage is None else is_regular_digest(root, Path(path), preimage)
+            for path, (preimage, _candidate) in MOUNT.items()
+        ):
+            return "pre-mount"
+        if all(is_regular_digest(root, Path(path), candidate) for path, (_preimage, candidate) in MOUNT.items()):
+            return "mounted"
+        raise ContractError("partial or unknown #2578 mount state")
+    if matches_state(root, DENY):
+        return "deny"
+    raise ContractError("unknown or partial delivery base state")
 
 # These files select the public Worker entrypoint or its deployable source.
 # They stay byte-identical to the protected base while native gRPC is denied,
@@ -263,6 +413,71 @@ def validate(candidate: Path, trusted_base: Path) -> None:
     for relative in LOCKED_PERIMETER_PATHS:
         require_exact(candidate, trusted_base, relative)
 
+    # Once #2574's protected predicate exists in BASE, neither its policy
+    # surface nor the B141 spawn-boundary sentinel may be changed by any
+    # phase, including a deny-base candidate.  The module is loaded only from
+    # this verifier's sibling path in trusted BASE.
+    policy = None
+    if (trusted_base / "scripts/verify_i2574_grpc_diagnostic_policy.py").is_file():
+        policy = load_trusted_delivery_policy()
+        frozen_policy = {Path(path) for path in policy.POLICY | policy.POLICY_FIXTURES}
+        frozen_policy.add(B141_TEST)
+        for relative in frozen_policy:
+            require_regular_mode(trusted_base, relative)
+            require_regular_mode(candidate, relative)
+            require_exact(candidate, trusted_base, relative)
+
+    # Inspect the full union before selecting an admission branch.  This is
+    # deliberately closed-world: a candidate cannot use a partial delivery or
+    # an unrelated Container change to reach a weaker legacy deny check.
+    changes = changed_paths(trusted_base, candidate)
+
+    if policy is not None:
+        phase = classify_phase(trusted_base)
+        ci_changes = set(MIGRATABLE_CI_PATHS)
+        ci_only = changes <= ci_changes and all(
+            node_kind(trusted_base / path) == node_kind(candidate / path) == "regular"
+            and (trusted_base / path).lstat().st_mode == (candidate / path).lstat().st_mode
+            for path in changes
+        )
+        if phase == "deny":
+            if not changes or ci_only:
+                return
+            delivery_paths = {Path(path) for path in policy.EXPECTED} - {Path("worker/src/lib/internal_auth.ts")}
+            if changes - delivery_paths:
+                raise ContractError(f"deny closed-world violation: {sorted(map(str, changes - delivery_paths))}")
+            try:
+                policy.validate(trusted_base, candidate)
+            except policy.ContractError as error:
+                raise ContractError(str(error)) from error
+            return
+
+        if phase != "deny":
+            if not changes or ci_only:
+                return
+            if phase == "pre-mount" and changes == {Path(path) for path in MOUNT}:
+                pass
+            else:
+                raise ContractError(f"post-delivery closed-world violation: {sorted(map(str, changes))}")
+        for path, digest in policy.EXPECTED.items():
+            relative = Path(path)
+            if sha256_file(trusted_base, relative) != digest or sha256_file(candidate, relative) != digest:
+                raise ContractError(f"delivered transport drift: {relative}")
+            if (trusted_base / relative).lstat().st_mode & 0o777 != 0o644 or (candidate / relative).lstat().st_mode & 0o777 != 0o644:
+                raise ContractError(f"delivered transport mode drift: {relative}")
+        for path, (preimage, mounted) in MOUNT.items():
+            relative = Path(path)
+            base_matches = (
+                is_absent(trusted_base, relative)
+                if phase == "pre-mount" and preimage is None
+                else is_regular_digest(trusted_base, relative, mounted if phase == "mounted" else preimage)
+            )
+            if not base_matches:
+                raise ContractError(f"mount base drift: {relative}")
+            if not is_regular_digest(candidate, relative, mounted):
+                raise ContractError(f"mount candidate drift: {relative}")
+        return
+
     base_is_bootstrap = (
         DENY_IMPORT not in read(trusted_base, INDEX)
         and not (trusted_base / GATE).exists()
@@ -310,11 +525,14 @@ def write_fixture_base(root: Path) -> None:
     )
     for relative in LOCKED_PERIMETER_PATHS:
         write(root, relative, f"protected base fixture: {relative}\n")
+    write(root, Path(".actionlint.yaml"), "self-test actionlint fixture\n")
+    (root / CANONICAL_SYMLINK).parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(CANONICAL_SYMLINK_TARGET, root / CANONICAL_SYMLINK)
     write(root, WORKFLOW, BOOTSTRAP_WORKFLOW_SOURCE)
 
 
 def write_fixture_candidate(candidate: Path, trusted_base: Path) -> None:
-    shutil.copytree(trusted_base, candidate, dirs_exist_ok=True)
+    shutil.copytree(trusted_base, candidate, dirs_exist_ok=True, symlinks=True)
     write(candidate, INDEX, expected_index(trusted_base))
     write(candidate, GATE, GATE_SOURCE)
     write(candidate, CONTRACT, CONTRACT_SOURCE)
@@ -346,7 +564,7 @@ def self_test() -> None:
 
         # A CI-only migration does not edit the absent bootstrap gRPC surface.
         unchanged = fixture / "unchanged"
-        shutil.copytree(trusted_base, unchanged)
+        shutil.copytree(trusted_base, unchanged, symlinks=True)
         validate(unchanged, trusted_base)
 
         mutations = (
