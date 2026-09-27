@@ -20,6 +20,12 @@ on:
       - "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs"
       - "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs"
       - "crates/corelink-stripe-real/tests/live_integration.rs"
+      - "crates/corelink-stripe-real/src/client.rs"
+      - "scripts/verify_stripe_harness_cleanup_receipt.py"
+      - "tests/test_stripe_harness_cleanup_receipt.py"
+      - "scripts/stripe_test_mode_evidence.py"
+      - "tests/test_stripe_test_mode_evidence.py"
+      - ".github/workflows/issue-1649-stripe-test-mode.yml"
       - "crates/corelink-audit-chain/tests/neon_shadow_real.rs"
 
 permissions:
@@ -49,4 +55,5 @@ jobs:
         run: |
           set -euo pipefail
           python3 -S scripts/verify_real_ignored_harnesses.py
+          python3 -S -m unittest tests/test_stripe_harness_cleanup_receipt.py
           python3 -S scripts/verify_i1650_real_integration_readiness.py

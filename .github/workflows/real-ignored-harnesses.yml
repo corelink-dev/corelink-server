@@ -88,6 +88,7 @@ jobs:
           HUGR_STRIPE_REF: ${{ vars.HUGR_STRIPE_REF }}
           STRIPE_AUTH_MODE: wallet-broker
           STRIPE_PRICE_ID_STARTER: ${{ vars.STRIPE_PRICE_ID_STARTER }}
+          REAL_HARNESS_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
           # Neon is separately selected and receives only its staging DSN.
           NEON_TEST_DSN: ${{ secrets.NEON_TEST_DSN }}
           REAL_HARNESS_RECEIPT_DIR: artifacts/real-ignored-harnesses

@@ -86,7 +86,7 @@ SOURCE_SHA256 = {
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "2148abe19ae9b119dc17eca0f242e983b47f8f6100d8d6fbba0536aafcc88af7",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "1589c0bf78b5ecee786f39e71e66feb3bcd387ba1465d4ad5f22133cdcf14b4e",
-    "crates/corelink-stripe-real/tests/live_integration.rs": "55e9d64edb8b35a97de82ff8f55f75ce74159d1bcf4e86d5fa73b0874105ae7a",
+    "crates/corelink-stripe-real/tests/live_integration.rs": "67cf34a83e82124f14a0d7c42a28251aa0464c573612a507a8de4e2c79d5f4fa",
     "crates/corelink-audit-chain/tests/neon_shadow_real.rs": "dfd22738e96d82695b40addf64b3dbaf611fbd8026346f0b4e33b28f10fe79eb",
 }
 
@@ -147,6 +147,12 @@ CONTRACT_TRIGGER_INPUTS = (
     "scripts/verify_i1650_real_integration_readiness.py",
     "docs/handoff/2026-09-22-i1650-real-integration-readiness.json",
     "crates/corelink-pat/tests/emit_e2e_seed.rs",
+    "crates/corelink-stripe-real/src/client.rs",
+    "scripts/verify_stripe_harness_cleanup_receipt.py",
+    "tests/test_stripe_harness_cleanup_receipt.py",
+    "scripts/stripe_test_mode_evidence.py",
+    "tests/test_stripe_test_mode_evidence.py",
+    ".github/workflows/issue-1649-stripe-test-mode.yml",
     *SOURCE_SHA256.keys(),
 )
 
@@ -254,6 +260,36 @@ def verify_source_binding_manifest(
     bound_sources = REQUIRED_TARGET_SOURCES if target_sources is None else target_sources
     if set(bound_sources.values()) != set(SOURCE_SHA256):
         fail("target/source binding is not closed over the reviewed digest manifest")
+
+
+def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
+    """Bind the wallet-broker-only cleanup and public receipt controls."""
+    client = (root / "crates/corelink-stripe-real/src/client.rs").read_text(encoding="utf-8")
+    harness = (root / "crates/corelink-stripe-real/tests/live_integration.rs").read_text(encoding="utf-8")
+    runner = (root / "scripts/run-real-ignored-harnesses.sh").read_text(encoding="utf-8")
+    workflow = (root / ".github/workflows/real-ignored-harnesses.yml").read_text(encoding="utf-8")
+    receipt = (root / "scripts/verify_stripe_harness_cleanup_receipt.py").read_text(encoding="utf-8")
+    required = (
+        (client, "metadata[test_run_id]"),
+        (client, "pub fn cleanup_harness_checkout"),
+        (client, "pub fn cleanup_harness_customer"),
+        (client, "payment_status"),
+        (client, "/v1/payment_intents?customer="),
+        (client, ".delete(&url)"),
+        (harness, "impl Drop for HarnessCleanup"),
+        (harness, "catch_unwind"),
+        (harness, "id_sha256"),
+        (harness, "panic_still_attempts_guarded_cleanup_and_receipt_redacts_ids"),
+        (runner, "REAL_HARNESS_RUN_ID must be a bounded run-owned selector"),
+        (runner, "REAL_HARNESS_TEST_NAME=\"$expected\" cargo test"),
+        (runner, "verify_stripe_harness_cleanup_receipt.py"),
+        (workflow, "REAL_HARNESS_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}"),
+        (receipt, "expired_readback_pass"),
+        (receipt, "deleted_readback_pass"),
+        (receipt, '"id_sha256"'),
+    )
+    if missing := [fragment for source, fragment in required if fragment not in source]:
+        fail(f"Stripe cleanup contract is missing reviewed gate(s): {missing}")
 
 
 def verify_exact_manifest() -> None:
@@ -432,6 +468,7 @@ def assert_contract(workflow: str, runner: str) -> None:
     verify_exact_manifest()
     verify_source_binding_manifest()
     verify_source_digests()
+    verify_stripe_cleanup_contract()
     wf = code_text(workflow)
     sh = code_text(runner)
     runs = workflow_run_lines(workflow)
@@ -1051,6 +1088,7 @@ def preflight_runtime_checks() -> None:
                 "CLOUDFLARE_ACCOUNT_ID": "account",
                 "CF_API_TOKEN": "cf-token",
                 "D1_DATABASE_ID": "database",
+                "GITHUB_SHA": "a" * 40,
                 "PATH": os.pathsep.join((str(root), os.environ.get("PATH", ""))),
             }
         )
