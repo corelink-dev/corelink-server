@@ -430,6 +430,18 @@ V0009_RECONCILIATION = {
     },
 }
 
+# v0008 was merged after its declared derivation BASE had moved.  Admit only
+# the delivered receipt bytes at that reviewed merge, while retaining the
+# declared BASE as the state-derivation authority for every later replay.
+V0008_HISTORICAL_ADMISSION = {
+    "path": "docs/campaigns/remediation/backlog-ledger-snapshot-v0008.json",
+    "sequence": 8,
+    "receipt_sha256": "06ac9cd05acaf30b59adceb0444915d115417c238cce420d53a4209b8f2e1138",
+    "declared_base_commit": "f56637f84f2366a8041d07d01e8657153a841030",
+    "introduction_commit": "e5701af74acb93a5541b6ea088afe5a589077fb5",
+    "introduction_parent": "44a0dbb6d885dfe136b2d5aeee7e0f41a8251378",
+}
+
 
 def install(api):
     REPO_ROOT = api.REPO_ROOT
@@ -450,6 +462,44 @@ def install(api):
 
     def _sha256(raw: bytes) -> str:
         return hashlib.sha256(raw).hexdigest()
+
+    def _v0008_historical_admission_authorized(
+        root: Path,
+        path: Path,
+        raw: bytes,
+        receipt: dict[str, object],
+        commits: list[str],
+        first_parent: str,
+    ) -> bool:
+        """Accept only the reviewed v0008 merge whose receipt remains byte-identical."""
+        pinned = V0008_HISTORICAL_ADMISSION
+        if (
+            path.as_posix() != pinned["path"]
+            or receipt.get("sequence") != pinned["sequence"]
+            or receipt.get("base_commit") != pinned["declared_base_commit"]
+            or _sha256(raw) != pinned["receipt_sha256"]
+            or commits != [pinned["introduction_commit"]]
+            or first_parent != pinned["introduction_parent"]
+            or _git_bytes(root, pinned["introduction_commit"], path) != raw
+        ):
+            return False
+        return _v0008_historical_admission_ancestry(root)
+
+    def _v0008_historical_admission_ancestry(root: Path) -> bool:
+        """Require the declared v0008 derivation base before its reviewed merge parent."""
+        pinned = V0008_HISTORICAL_ADMISSION
+        return (
+            subprocess.run(
+                [
+                    "git", "merge-base", "--is-ancestor",
+                    pinned["declared_base_commit"],
+                    pinned["introduction_parent"],
+                ],
+                cwd=root,
+                check=False,
+            ).returncode
+            == 0
+        )
 
     def _replace_once(text: str, old: str, new: str) -> str:
         if text.count(old) != 1:
@@ -1501,7 +1551,13 @@ def install(api):
                 capture_output=True,
                 text=True,
             ).stdout.strip()
-            if first_parent != base_sha or _git_bytes(root, commits[0], path) != raw:
+            historical_v0008 = _v0008_historical_admission_authorized(
+                root, path, raw, receipt, commits, first_parent,
+            )
+            if (
+                (first_parent != base_sha or _git_bytes(root, commits[0], path) != raw)
+                and not historical_v0008
+            ):
                 raise LedgerError(
                     f"{path}: successor was rewritten or names the wrong main parent"
                 )
@@ -1763,6 +1819,9 @@ def install(api):
         _v0006_reconciliation_authorized=_v0006_reconciliation_authorized,
         _v0007_reconciliation_authorized=_v0007_reconciliation_authorized,
         _v0008_reconciliation_authorized=_v0008_reconciliation_authorized,
+        _v0008_historical_admission_authorized=_v0008_historical_admission_authorized,
+        _v0008_historical_admission_ancestry=_v0008_historical_admission_ancestry,
+        _git_bytes=_git_bytes,
         _v0009_reconciliation_authorized=_v0009_reconciliation_authorized,
         _v0009_ledger=_v0009_ledger,
     )
