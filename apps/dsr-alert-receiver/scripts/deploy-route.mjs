@@ -58,9 +58,10 @@ export function selectNamedResource(resources, expectedName, kind) {
 }
 
 export function validateDatabaseIdentity(database) {
-  if (!database || database.name !== TARGET.databaseName || !isUuid(database.uuid ?? database.id)) fail("database_identity_ambiguous");
+  if (!database || database.name !== TARGET.databaseName) fail("database_identity_ambiguous");
   const id = database.uuid ?? database.id;
   if (id === TARGET.placeholderId) fail("placeholder_uuid_rejected");
+  if (!isUuid(id)) fail("database_identity_ambiguous");
   return id;
 }
 
