@@ -141,10 +141,11 @@ def _read_only_client_operations() -> list[dict[str, Any]]:
     """Exercise authenticated, source-bound read routes; never write cache data."""
     token_sccache = os.environ.get("CORELINK_SCCACHE_TOKEN")
     token_canary = os.environ.get("CORELINK_CANARY_PAT")
-    tenant = "93da3f7a-984d-4ef9-86e0-b0bd9fd0252e"
+    sccache_tenant = "ee30f7ba-fc25-4d71-939e-ebe130b4c6a3"
+    canary_tenant = "93da3f7a-984d-4ef9-86e0-b0bd9fd0252e"
     operations = [
-        ("sccache", "PROPFIND", f"https://corelink-api.humangr.com/cargo/{tenant}/b035-tls-probe-never-written", token_sccache, (200, 404)),
-        ("bazel_reapi", "GET", f"https://corelink-api.humangr.com/bazel/v2/{tenant}/blobs/" + "0" * 64 + "/0", token_canary, (200, 404)),
+        ("sccache", "PROPFIND", f"https://corelink-api.humangr.com/cargo/{sccache_tenant}/b035-tls-probe-never-written", token_sccache, (200, 404)),
+        ("bazel_reapi", "GET", f"https://corelink-api.humangr.com/bazel/v2/{canary_tenant}/blobs/" + "0" * 64 + "/0", token_canary, (200, 404)),
         ("turborepo", "POST", "https://corelink-api.humangr.com/v8/artifacts/status", token_canary, (200,)),
     ]
     results = []
