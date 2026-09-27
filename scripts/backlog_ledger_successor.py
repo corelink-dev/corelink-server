@@ -438,11 +438,11 @@ V0010_RECONCILIATION = {
     "previous_sequence": 9,
     "anchor_base_commit": "0a45fe71776cd04ecc2131eb64577593ec78879a",
     "previous_source_sha256": "a1e75e2990f92d1d10aecce8703c98410b14a9f600d8eeedcfad52975e9a31ae",
-    "source_sha256": "6b4030148216788d6734e6f811fe1c7468d1799b7eea7dd43b42b3e3d28808e8",
+    "source_sha256": "cb22a787eb4ccdcbe4fe45516326e2a4623d0a52f5f34eb515ba3ff65c8c94da",
     "changed_ids": ("B-114",),
     "prior_ledger_sha256": "65f1d0128922d0ff4eea5f74767b181bf1e35d17ea3eeaaba9e3b2454aeccc54",
     "prior_section_sha256": "e8845e06569ac1d3563fad9c08c3ec81b5b4205b30fd10461bac6ab0f9bacf15",
-    "current_section_sha256": "11718db550de0a310a654aea5cc6adaf52d3ce88019d62c323403abc6475ad22",
+    "current_section_sha256": "7f6aa4ef11cbc6e1abf354da55603275cd586bf00c0f4e5d3102a4ab3630718f",
     "prior_catalog_sha256": {
         "docs/campaigns/remediation/work-packages/B001-B045.md": "081c9885db8d79c18f2f31edb7864bb1ca1a18d53f408720f3f9e4f00524f9c6",
         "docs/campaigns/remediation/work-packages/B046-B090.md": "1a164260a84f3adb406676e1505fd8379aad07b15a5c45365369dcef7b0586da",
