@@ -305,6 +305,7 @@ def check(
     max_age: int,
     *,
     trusted_by_id: dict[str, Item] | None = None,
+    authorized_verify_deltas: dict[str, tuple[str, str]] | None = None,
     enforce_manual_age: bool = False,
     execution_mode: str = "candidate",
 ) -> None:
@@ -334,9 +335,11 @@ def check(
 
     trusted = (trusted_by_id or {}).get(item.id)
     if trusted is not None and item.raw.get("verify") != trusted.raw.get("verify"):
-        item.verdict = BROKEN
-        item.detail = "verify declaration differs from BASE; semantic execution is deferred to exact-SHA CI"
-        return
+        expected_delta = (trusted.raw.get("verify"), item.raw.get("verify"))
+        if expected_delta != (authorized_verify_deltas or {}).get(item.id):
+            item.verdict = BROKEN
+            item.detail = "verify declaration differs from BASE; semantic execution is deferred to exact-SHA CI"
+            return
     if execution_mode == "candidate":
         item.verdict = CONFIRMED
         item.detail = "verify declaration is syntactically present; semantic execution is deferred to exact-SHA CI"
@@ -1048,6 +1051,7 @@ def main() -> int:
         return 2
     items = parse(text)
     trusted_by_id: dict[str, Item] | None = None
+    authorized_verify_deltas: dict[str, tuple[str, str]] = {}
     if candidate_mode:
         trusted_path = Path(args.trusted_file).resolve()
         if not trusted_path.is_file() or trusted_path.is_symlink():
@@ -1075,7 +1079,20 @@ def main() -> int:
             trusted_root = Path(args.trusted_root).resolve()
             try:
                 if ledger.successor_required(trusted_root, candidate_root):
-                    ledger.validate_candidate_successor(trusted_root, candidate_root, today=today)
+                    receipt = ledger.validate_candidate_successor(
+                        trusted_root, candidate_root, today=today,
+                    )
+                    authorized_ids = set(receipt["changed_ids"])
+                    candidate_by_id = {item.id: item for item in items if item.raw}
+                    for item_id in authorized_ids:
+                        trusted_item = trusted_by_id.get(item_id)
+                        candidate_item = candidate_by_id.get(item_id)
+                        if trusted_item is None or candidate_item is None:
+                            continue
+                        old_verify = trusted_item.raw.get("verify")
+                        new_verify = candidate_item.raw.get("verify")
+                        if isinstance(old_verify, str) and isinstance(new_verify, str) and old_verify != new_verify:
+                            authorized_verify_deltas[item_id] = (old_verify, new_verify)
                 else:
                     transition_errors = validate_candidate_transitions(items, trusted_items, today)
                     if transition_errors:
@@ -1317,6 +1334,7 @@ def main() -> int:
             today,
             args.max_age_days,
             trusted_by_id=trusted_by_id,
+            authorized_verify_deltas=authorized_verify_deltas,
             enforce_manual_age=execution_mode in {"fixture", "trusted"},
             execution_mode=execution_mode,
         )
