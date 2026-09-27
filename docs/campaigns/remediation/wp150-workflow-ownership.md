@@ -4,8 +4,8 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 267
-workflow-paths-sha256: 0b6658f15ed3169e6b4399c5007e548dd6e9aef32e9541fa90151525a79299d3
+workflow-count: 268
+workflow-paths-sha256: 63b76d943193e4ff5b778d2455f88214eebdb1d4b0a897fc2bcc03c222ee33fd
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -258,6 +258,7 @@ workflow-paths-sha256: 0b6658f15ed3169e6b4399c5007e548dd6e9aef32e9541fa90151525a
 .github/workflows/slo-instrumentation.yml | LEAD-BLOCKED | blocked
 .github/workflows/smoke-install.yml | LEAD-BLOCKED | blocked
 .github/workflows/spec_validation.yml | LEAD-BLOCKED | blocked
+.github/workflows/staging-load-seal-contract.yml | WP-B113 | owned
 .github/workflows/staging-provider-preflight.yml | LEAD-BLOCKED | blocked
 .github/workflows/staging-provision-plan.yml | LEAD-BLOCKED | blocked
 .github/workflows/staging-quarantine-apply.yml | LEAD-BLOCKED | blocked
