@@ -41,6 +41,15 @@ class StagingTargetContractTests(unittest.TestCase):
         self.assertIn("lifecycle-or-teardown", self.mutate("lifecycle", {"lease_ttl_hours": 48}))
         self.assertIn("validated-inputs", self.mutate("validated_inputs", {"runner_label": "ubuntu-latest"}))
 
+    def test_request_signal_flags_are_required_for_staging_root(self) -> None:
+        temp, root = self.fixture()
+        with temp:
+            path = root / module.CONTRACT
+            data = json.loads(path.read_text())
+            data["cloudflare"]["root_worker_settings"]["compatibility_flags"] = ["nodejs_compat"]
+            path.write_text(json.dumps(data), encoding="utf-8")
+            self.assertIn("root-request-signal-compatibility", module.assess(root))
+
     def test_workflows_reject_host_and_duration_drift(self) -> None:
         temp, root = self.fixture()
         with temp:

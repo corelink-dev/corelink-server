@@ -27,6 +27,16 @@ FOCUSED_PACK = ".github/workflows/b029-load-gate.yml"
 COMPARATOR = "scripts/load-test-baseline-check.py"
 SANITIZER = "scripts/sanitize_k6_summary.py"
 TARGET_RECEIPT_VALIDATOR = "scripts/validate_load_target_receipt.py"
+LIFECYCLE_AUTH = "scripts/staging_load_lifecycle_auth.py"
+ADMISSION_HELPER = "tests/load/k6/lib/staging_load_admission.js"
+ADMISSION_CALLS = {
+    "tests/load/k6/byok-revoke-stampede.js": ("headers: adminHeaders()", 4),
+    "tests/load/k6/cas-write-read.js": ("headers: casHeaders(", 2),
+    "tests/load/k6/dsr-api.js": ("headers: dsrHeaders()", 2),
+    "tests/load/k6/signup-orchestration.js": ("headers: signupHeaders(idemKey)", 2),
+    "tests/load/k6/stripe-webhook-burst.js": ("headers: admissionHeaders({", 1),
+    "tests/load/k6/scenarios/endurance-24h.js": ("headers: authHeaders(", 6),
+}
 OPERATOR_README = "tests/load/README.md"
 COMPARE_STEP = "compare median vs stored baseline"
 POPULATION_STEP = "classify scenario population"
@@ -634,6 +644,43 @@ def _hostname_gaps(root: Path) -> list[str]:
     return gaps
 
 
+def admission_client_gaps(root: Path) -> list[str]:
+    """Prove every workload HTTP operation obtains a fresh v2 header."""
+    gaps: list[str] = []
+    try:
+        helper = (root / ADMISSION_HELPER).read_text(encoding="utf-8")
+        lifecycle = (root / LIFECYCLE_AUTH).read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"admission helper is unreadable: {exc}"]
+    for marker in (
+        "corelink/staging-load-admission-auth/v2\\0",
+        "crypto.randomBytes(32)",
+        "crypto.hmac('sha256', KEY, DOMAIN + payload, 'hex')",
+        "ADMISSION_GOLDEN_VECTOR_V2",
+    ):
+        if marker not in helper:
+            gaps.append(f"v2 k6 signer is missing {marker}")
+    for marker in ("GOLDEN_V1", "GOLDEN_V2", "validate_seal_receipt", "sum(resources.values()) > 256"):
+        if marker not in lifecycle:
+            gaps.append(f"lifecycle helper is missing {marker}")
+    for relative, (header_expression, expected_calls) in ADMISSION_CALLS.items():
+        try:
+            source = (root / relative).read_text(encoding="utf-8")
+        except OSError as exc:
+            gaps.append(f"workload source is unreadable: {relative}: {exc}")
+            continue
+        if "staging_load_admission.js" not in source:
+            gaps.append(f"workload source does not import request signer: {relative}")
+        if "K6_AUTH_BEARER" in source or "authorization:" in source:
+            gaps.append(f"legacy static workload auth remains in {relative}")
+        if source.count(header_expression) != expected_calls:
+            gaps.append(f"fresh admission call census mismatch in {relative}")
+    endurance = (root / "tests/load/k6/scenarios/endurance-24h.js").read_text(encoding="utf-8")
+    if endurance.count("headers: admissionHeaders({") != 1:
+        gaps.append("endurance memory poll does not mint exactly one fresh admission header")
+    return gaps
+
+
 def assess(root: Path, *, expect: str) -> list[str]:
     gaps: list[str] = []
     workflow_path = root / WORKFLOW
@@ -672,6 +719,8 @@ def assess(root: Path, *, expect: str) -> list[str]:
             gaps.append(f"workflow does not require sanitized summaries: {needle}")
 
     gaps.extend(_hostname_gaps(root))
+    if (root / ADMISSION_HELPER).exists():
+        gaps.extend(admission_client_gaps(root))
 
     # The gate must compare the current run with a prior cached baseline and
     # publish only after a successful comparison.  These checks are intentionally

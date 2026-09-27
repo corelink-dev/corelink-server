@@ -31,8 +31,37 @@ environment by its required reviewers. Pull requests run credentialless
 topology, renderer, and quarantine-only workflow checks. The workflow deploys
 the three Workers with no `workers.dev`, DNS, custom-domain, or route
 publication, binds only staging secret names, and captures a redacted
-quarantine readback. Health and route publication require separately reviewed
-workflows after this receipt.
+quarantine readback. The root Worker is the application origin, so publication
+uses the exact `staging.corelink.humangr.com` Custom Domain, not a Worker Route.
+The separately reviewed
+`.github/workflows/issue-1700-staging-custom-domain.yml` previews provider
+inventory, confirms runtime secret binding names, and publishes only that Custom
+Domain after the protected staging environment is released. Cloudflare creates
+the DNS record and certificate for a Custom Domain; the workflow does not invent
+an origin record or wildcard route.
+
+Cloudflare recommends Custom Domains when the Worker is the application origin;
+routes instead sit in front of an existing proxied origin. The workflow reads
+the exact Worker-domain, DNS, zone, account, `workers.dev`, and full zone-route
+inventories first, and rejects malformed or conflicting state. Repeating a
+publish against the exact existing Worker/domain/DNS binding is an idempotent
+readback. If a domain created in that same run fails DNS/TLS `/health`, the
+workflow detaches only the returned domain ID after verifying its exact target,
+then verifies the hostname is clear. Cloudflare can retain the automatically
+issued certificate after detach; the receipt carries its certificate ID for
+owner custody and the workflow never deletes certificates.
+Authenticated readiness remains a separate protected `i1675-live-probe.yml`
+dispatch. Publish requires the exact runtime secret names already bound to the
+root and signup Workers, plus all protected `K6_*` readiness inputs.
+The root Worker config also pins `enable_request_signal` and
+`request_signal_passthrough` alongside `nodejs_compat`; the publisher reads back
+that exact flag set before attaching the Custom Domain.
+
+Provider semantics: [Workers Routes](https://developers.cloudflare.com/workers/configuration/routing/routes/),
+[Workers Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/),
+[Attach Worker Domain API](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/update/),
+[List Worker Domains API](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/list/),
+and [Detach Worker Domain API](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/delete/).
 
 Before dispatch, the `staging` environment must contain these bootstrap inputs
 by name. Values stay in the protected environment and must never appear in git,
@@ -55,13 +84,13 @@ repository-scoped backend inputs.
 
 The workflow checks provider ownership and an empty canonical route set, deploys
 the three named Workers without `workers.dev` or public routes, verifies their
-staging bindings and secret names, and only then publishes the two exact
-canonical routes. Signup remains route-free and uses its service binding. This
+staging bindings and secret names, and leaves the root Custom Domain unpublished.
+Signup remains route-free and uses its service binding. This
 route-free phase does not disable scheduled handlers: the signup Worker retains
 its hourly trigger and the synthetic receiver retains its weekly trigger during
 bootstrap. Review those handlers and their staging guards before dispatch; a
-missing public route does not prevent scheduled execution. A failed preflight,
-incomplete binding readback, or unexpected route stops the run before route
+missing public domain does not prevent scheduled execution. A failed preflight,
+incomplete binding readback, or unexpected route stops the run before domain
 publication. Do not add a partial `[env.staging]` to `wrangler.toml`.
 
 The separate `staging-provision-plan.yml` workflow is read-only. Its redacted
@@ -72,14 +101,14 @@ workflow configuration or a green PR check as provider readiness.
 
 ## Readiness, load, and teardown
 
-After bootstrap, capture current provider identity and route/DNS/TLS readback,
+After bootstrap, capture current provider identity and Custom Domain/DNS/TLS readback,
 then run the bounded authenticated readiness probe through its protected
 workflow. The current `i1675-live-probe.yml` runner is `ubuntu-24.04`; this does
 not satisfy the topology's declared `corelink` runner until owners reconcile
 that contract. Retain `evidence/staging/readiness.json` with DNS/TLS, HTTP and
 Worker/container health, migration head, deployment identity, binding
 isolation, owner, timestamp, and run ID. Do not mark the topology provisioned
-unless the exact Workers, routes, resources, and isolated bindings match
+unless the exact Workers, Custom Domain, resources, and isolated bindings match
 `topology.json`.
 
 Issue #2161 must provide the live authenticated, exact-run teardown endpoint
@@ -103,7 +132,7 @@ SRE and Security reviewers with self-review prevented. Secret metadata shows
 inputs above and `CF_ZONE_ID` are absent. Move the Terraform backend names out
 of this environment before provisioning. The latest public DNS query returned
 NXDOMAIN. The last provider resource receipt (2026-09-09) records all three
-Workers absent and the canonical DNS/route unavailable; a current provider
+Workers absent and the canonical DNS/Custom Domain unavailable; a current provider
 readback is required before acting on that older snapshot.
 
 No provider mutation, secret write, live probe, load run, or readiness claim is

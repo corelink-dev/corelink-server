@@ -13,6 +13,7 @@ on:
       - docs/internal/secrets-checklist.md
       - .github/workflows/cf-deploy-prod.yml
       - migrations/d1/0148_staging_load_test_admission_nonce.sql
+      - migrations/d1/0152_staging_load_test_request_nonces.sql
       - scripts/check_issue_2576_clippy.py
       - scripts/verify_issue_2576_admission.py
       - tests/test_issue_2576_staging_admission.py
@@ -65,6 +66,8 @@ jobs:
 
       - name: Install pinned Protobuf compiler
         uses: arduino/setup-protoc@f4d5893b897028ff5739576ea0409746887fa536 # v3.0.0
+        with:
+          repo-token: ${{ github.token }}
 
       - name: Check migration prefix and additivity
         run: |

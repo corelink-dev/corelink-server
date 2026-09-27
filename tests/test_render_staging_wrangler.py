@@ -95,12 +95,12 @@ class StagingWranglerRendererTests(unittest.TestCase):
         self.assertNotIn("routes", configs[self.topology.workers[1]])
         self.assertEqual(
             {
-                (route["pattern"], route["zone_name"])
+                (route["pattern"], route["custom_domain"])
                 for config in configs.values()
                 for route in config.get("routes", [])
             },
             {
-                ("staging.corelink.humangr.com/*", "humangr.com"),
+                ("staging.corelink.humangr.com", True),
             },
         )
         self.assertEqual(

@@ -117,6 +117,111 @@ B057_C0_TARGETS = {
     ".github/workflows/issue-2414-b057-sli.yml": "feed9cf65ce17f8a11427db710ff0dbae26ad185ca38c1effeffdb94bfc09084",
 }
 
+# One-time #2585 load-admission client transition. The trusted BASE verifier
+# admits this bundle only as a complete byte-pinned tree transition. Candidate
+# files remain data: this code reads their bytes and never imports or runs them.
+# ``None`` is an intentionally frozen absent preimage for files introduced by
+# this delivery.
+B029_LOAD_GATE_PREIMAGES: dict[str, str | None] = {
+    ".github/workflows/endurance-2h-nightly.yml": "f4739df34adc52669f3ae95f69afc9dc2d8d6d435804c90249e8aa0313f0d3d0",
+    ".github/workflows/load-test-nightly.yml": "353f8357b95b4f0b2d6223b402c291eced64c6a47131495747cbbb949b84fb90",
+    "scripts/staging_load_lifecycle_auth.py": None,
+    "scripts/verify_b029_load_gate.py": "8621cab412ac9acc4ae49449e14bfd768f0de8e2cec8613d08d47487040653be",
+    "scripts/verify_i1687_endurance_lane.py": "95a8c6c71bdefb6327d5fdfc3c839b6218c8539e27c05f5aa911b45453c66c0a",
+    "tests/load/k6/byok-revoke-stampede.js": "715a284bc9c7a297271e4145a04c3b3e27510a7d6cc848c901cff9255d154695",
+    "tests/load/k6/cas-write-read.js": "d479b7ab832ba1fedba6e676644871a730c13d84eea5e15b9e6412f630bfb2e7",
+    "tests/load/k6/dsr-api.js": "2bea908cb7eef957c15b18ed7b2d990aa3ebe67b3b9865bb9d27e5d7b8af5d11",
+    "tests/load/k6/lib/staging_load_admission.js": None,
+    "tests/load/k6/scenarios/endurance-24h.js": "0bee2d15fb0ce2c519de0020a5e4d00f2405f00d22ab9eb5599a900d74b58de8",
+    "tests/load/k6/signup-orchestration.js": "e99cbb84a20bd21403a3f95cf40c9c531ccc6d33d2c4701aa4f71c3316ec3fad",
+    "tests/load/k6/stripe-webhook-burst.js": "06a14722634ed0c9e5686b04df24fd127f0061e37f51f1b85e03b403aa3d8033",
+    "tests/test_b029_load_gate.py": "4402a59616b002f69b995ff9c4c2c50272581e93dfc55832b3be6f5d82c2bca5",
+    "tests/test_staging_load_lifecycle_auth.py": None,
+}
+B029_LOAD_GATE_TARGETS = {
+    ".github/workflows/endurance-2h-nightly.yml": "3ceeb7551fb510d04bf02ee217d235b40116468d4eeff329e2d8aaac908a67df",
+    ".github/workflows/load-test-nightly.yml": "bba2ef8825eb641be4e0db5faeb4cfa71739d863f9f5104801dcd51a0dbecd0e",
+    "scripts/staging_load_lifecycle_auth.py": "0b5c58f99f856afcc48207a3d13f0b1ee30f27fdf5d05491a494ea5215a4040c",
+    "scripts/verify_b029_load_gate.py": "e6771e4379d5a9673739fd9ffc4bc0fdfd65a9ede431ca4a4039d1e051cc7393",
+    "scripts/verify_i1687_endurance_lane.py": "b81c8db0aa3bfe5f298d3f5c9fe211c91f88817b316ae598b4a1aa51a3ccb44f",
+    "tests/load/k6/byok-revoke-stampede.js": "19bc5eb99bafc1a7d2605b66c9cf03fdf41d42eb52046d5c7b2c47bc8da9b94b",
+    "tests/load/k6/cas-write-read.js": "a6f9c19471c077dbf217de164fabe778801453a53a6ebb3582319800ec6ba92e",
+    "tests/load/k6/dsr-api.js": "35c3106460e5ee17414c8afc2baf00a1ac59e32e07512363cb1dc5acbee32dfc",
+    "tests/load/k6/lib/staging_load_admission.js": "1065b994de05236332112023cdd89727777239cf15555e7122e58f0c516fc64a",
+    "tests/load/k6/scenarios/endurance-24h.js": "b5acaf4bfb6e366e91f0b332af3bbe453bea7c31599d01319ad2bd157b583d33",
+    "tests/load/k6/signup-orchestration.js": "0b006dba9c2465420389c3ff71e70bfc4815ca23ca241088d6e3176ae093449a",
+    "tests/load/k6/stripe-webhook-burst.js": "e103615d94e559db751c0dad6d8c56692d0a9d79edb6e105d6abaedaf033b88d",
+    "tests/test_b029_load_gate.py": "db521b18c5bea32858dbe29965010f543a4ca8394f68357e7a55e6cc0f6134bf",
+    "tests/test_staging_load_lifecycle_auth.py": "7f64f668a5eafb38b34dd46fd8b8b1b977363dc9126dc8d21b923ccd746fc399",
+}
+B029_LOAD_GATE_TARGET_MODES = {
+    path: 0o644 for path in B029_LOAD_GATE_TARGETS
+}
+B029_LOAD_GATE_TARGET_MODES["scripts/verify_b029_load_gate.py"] = 0o755
+
+# One-time #1700 Custom Domain transition. This admits only the exact three
+# trusted control edits plus their exact unprovisioned topology input. The
+# BASE copy of this file checks bytes only; it never imports candidate code.
+STAGING_CUSTOM_DOMAIN_PREIMAGES = {
+    "scripts/verify_b072_receiver.py": "8acce3d50dbe4ad9a3df24d33e56828203a51510eab3fcfa3bff2b46c0b27a69",
+    "scripts/verify_staging_topology_contract.py": "ba7abe9d5887269a69fcf2a8cfcec6d60d579ecd53f72a3ec6e9cc74250c677b",
+    "tests/test_verify_staging_topology_contract.py": "97d1f75eb3608dbf71cc0506922ddd7b88b92f7f8f0812f01d392ee535be8103",
+    "infra/staging/topology.json": "5156d6578d662020777a7e98cb1b91a181c6b4536afbd2c4a9498be06f57357e",
+}
+STAGING_CUSTOM_DOMAIN_TARGETS = {
+    "scripts/verify_b072_receiver.py": "3bfa5d552f9d588c424c25a2cb7654dd840f77279cd89ff249f594c052674ecc",
+    "scripts/verify_staging_topology_contract.py": "18a70767b543a5ea8cadda94a216c068de41a8a294182ef255067126a9fa0e27",
+    "tests/test_verify_staging_topology_contract.py": "bba450e2410791916e7ec80600c7968be86152a21526d02cf1dddf57f2ae909f",
+    "infra/staging/topology.json": "586665e34c11bf91a34fb83247fdbafec9fdfb8e7a336ba4da6f5bda8266dd99",
+}
+STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS = frozenset({
+    ".github/workflows/issue-1700-staging-custom-domain.yml",
+    "docs/campaigns/remediation/wp150-workflow-ownership.md",
+    "infra/staging/README.md",
+    "scripts/plan_staging_provider.py",
+    "scripts/render_staging_wrangler.py",
+    "scripts/staging_bootstrap_provider.py",
+    "scripts/staging_custom_domain.py",
+    "scripts/verify_staging_provider_preflight.py",
+    "scripts/verify_staging_target.py",
+    "tests/test_render_staging_wrangler.py",
+    "tests/test_staging_bootstrap_provider.py",
+    "tests/test_staging_custom_domain.py",
+    "tests/test_verify_staging_target.py",
+})
+
+# One reviewed B-035 closeout. The exact old/new bytes and file modes are
+# frozen against protected main after #2585's serial integration.
+B035_CLOSEOUT_PREIMAGES: dict[str, tuple[int, str]] = {'BACKLOG.md': (420, 'cb22a787eb4ccdcbe4fe45516326e2a4623d0a52f5f34eb515ba3ff65c8c94da'),
+ 'docs/campaigns/remediation/BACKLOG-WP-LEDGER.md': (420,
+                                                     'fa1d028ac338e9fd9b7119caf228541bc756f27776d7970e1d6f2522140127c3'),
+ 'docs/campaigns/remediation/work-packages/B001-B045.md': (420,
+                                                           '081c9885db8d79c18f2f31edb7864bb1ca1a18d53f408720f3f9e4f00524f9c6'),
+ 'docs/handoff/2026-09-05-owner-action-packets-b008-b154.json': (420,
+                                                                 'f12c3c95ed8e3fc02bbcf5c050d238ebbc6a663546ce1a95fbd11a2fb8da020e'),
+ 'scripts/verify_b155_owned.py': (420,
+                                  '3389811be2d3f42eb0e8b6998502544b64bd6a538aeb8bf80bb1c2fcdfe04b62'),
+ 'scripts/verify_owner_action_packets.py': (420,
+                                            '30954c34e64946339cde8b2b9f648cac2442a9dd4fce3cb25b41654fe8d235ba')}
+B035_CLOSEOUT_TARGETS: dict[str, tuple[int, str]] = {'BACKLOG.md': (420, '503a9c3b42827843206330d3693ecd9a9b1f7ce9866bec70b18d692752d4f13d'),
+ 'docs/campaigns/remediation/work-packages/B001-B045.md': (420,
+                                                           'd5e3b5edfb7a47e9ff360c07c2fe602d1c9b91decf59c7b8523ed9091c1d3b47'),
+ 'docs/handoff/2026-09-05-owner-action-packets-b008-b154.json': (420,
+                                                                 'd08a1dc56721feb1a55102449581d54f52d7345278545fa901f3852a21d48d27'),
+ 'scripts/verify_b155_owned.py': (420,
+                                  '2ad10f2ea62197502badd0c711e757ae352cf35f82b792ddb99a9b9f232ac1a4'),
+ 'scripts/verify_owner_action_packets.py': (420,
+                                            '10cc058394ecdeb0ac27d98fdb5d0779e7a0d1bb1c1d1a15eae0d872d3f227a2'),
+ 'evidence/owner-actions/B-035/tls-legal-remediation.json': (420,
+                                                             '1fe3d441fd99f39b8059fbd836089f4a8dc1e86e8e272ebadab83cd0eb848cbb')}
+B035_CLOSEOUT_DYNAMIC_PATHS = frozenset({'docs/campaigns/remediation/BACKLOG-WP-LEDGER.md', 'docs/campaigns/remediation/backlog-ledger-snapshot-v0011.json'})
+B035_CLOSEOUT_LEDGER_TEMPLATE_SHA256 = '1ff010467cf3125af24c7f8e434be04cbbcc4e5e5046d7c25e6000482afe3d4a'
+B035_CLOSEOUT_SNAPSHOT_TEMPLATE_SHA256 = '92587079ef9d6b5fe29229e2fb614a95f6dac261849696663861aa6911409c71'
+B035_CLOSEOUT_NEW_PATHS = frozenset({
+    "docs/campaigns/remediation/backlog-ledger-snapshot-v0011.json",
+    "evidence/owner-actions/B-035/tls-legal-remediation.json",
+})
+
 # A command's polarity cannot be inferred from arbitrary shell.  We can still
 # reject the known dangerous declaration: a `done` item whose human explanation
 # explicitly says the check remains `open`.  Unmarked legacy entries remain
@@ -305,6 +410,7 @@ def check(
     max_age: int,
     *,
     trusted_by_id: dict[str, Item] | None = None,
+    authorized_verify_deltas: dict[str, tuple[str, str]] | None = None,
     enforce_manual_age: bool = False,
     execution_mode: str = "candidate",
 ) -> None:
@@ -334,9 +440,11 @@ def check(
 
     trusted = (trusted_by_id or {}).get(item.id)
     if trusted is not None and item.raw.get("verify") != trusted.raw.get("verify"):
-        item.verdict = BROKEN
-        item.detail = "verify declaration differs from BASE; semantic execution is deferred to exact-SHA CI"
-        return
+        expected_delta = (trusted.raw.get("verify"), item.raw.get("verify"))
+        if expected_delta != (authorized_verify_deltas or {}).get(item.id):
+            item.verdict = BROKEN
+            item.detail = "verify declaration differs from BASE; semantic execution is deferred to exact-SHA CI"
+            return
     if execution_mode == "candidate":
         item.verdict = CONFIRMED
         item.detail = "verify declaration is syntactically present; semantic execution is deferred to exact-SHA CI"
@@ -617,20 +725,241 @@ def _preauthorized_b057_c0(candidate_root: Path, trusted_root: Path) -> bool:
     )
 
 
+def _preauthorized_b029_load_gate(candidate_root: Path, trusted_root: Path) -> bool:
+    """Recognize only the complete byte-pinned #2585 load gate transition."""
+    try:
+        candidate_entries = _candidate_tree_entries(candidate_root)
+        trusted_entries = _candidate_tree_entries(trusted_root)
+    except (OSError, RuntimeError):
+        return False
+
+    paths = set(B029_LOAD_GATE_TARGETS)
+    if set(B029_LOAD_GATE_PREIMAGES) != paths:
+        return False
+    changed = {
+        path for path in set(candidate_entries) | set(trusted_entries)
+        if candidate_entries.get(path) != trusted_entries.get(path)
+    }
+    if changed != paths:
+        return False
+    for path in paths:
+        candidate = candidate_entries.get(path)
+        if candidate is None or candidate[0] != "file":
+            return False
+        if candidate[1] != B029_LOAD_GATE_TARGET_MODES.get(path):
+            return False
+        if candidate[2] != B029_LOAD_GATE_TARGETS[path]:
+            return False
+        trusted = trusted_entries.get(path)
+        preimage = B029_LOAD_GATE_PREIMAGES[path]
+        if preimage is None:
+            if trusted is not None:
+                return False
+        elif trusted is None or trusted[0] != "file" or trusted[2] != preimage:
+            return False
+    return True
+
+
+def _preauthorized_staging_custom_domain(candidate_root: Path, trusted_root: Path) -> bool:
+    """Recognize only the frozen #1700 verifier/topology byte transition."""
+    try:
+        candidate_entries = _candidate_tree_entries(candidate_root)
+        trusted_entries = _candidate_tree_entries(trusted_root)
+    except (OSError, RuntimeError):
+        return False
+    paths = set(STAGING_CUSTOM_DOMAIN_PREIMAGES)
+    if set(STAGING_CUSTOM_DOMAIN_TARGETS) != paths:
+        return False
+    if any(candidate_entries.get(path, ("", 0, ""))[0] != "file" for path in paths):
+        return False
+    if any(trusted_entries.get(path, ("", 0, ""))[0] != "file" for path in paths):
+        return False
+    if any(candidate_entries[path][1] != trusted_entries[path][1] for path in paths):
+        return False
+    # The delivery changes thirteen explicitly named application/docs paths in
+    # addition to the four frozen controls. This allows the reviewed delivery
+    # while rejecting arbitrary extra files; the BASE closure checks any other
+    # trusted-control changes independently.
+    allowed_changes = paths | STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS
+    changed = {
+        path for path in set(candidate_entries) | set(trusted_entries)
+        if candidate_entries.get(path) != trusted_entries.get(path)
+    }
+    if changed != allowed_changes:
+        return False
+    if not all(
+        trusted_entries[path][2] == digest
+        for path, digest in STAGING_CUSTOM_DOMAIN_PREIMAGES.items()
+    ) or not all(
+        candidate_entries[path][2] == digest
+        for path, digest in STAGING_CUSTOM_DOMAIN_TARGETS.items()
+    ):
+        return False
+    try:
+        topology = json.loads((candidate_root / "infra/staging/topology.json").read_bytes())
+        cloudflare = topology["cloudflare"]
+        domains = cloudflare["routes"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return (
+        topology.get("deployment_state") == "unprovisioned"
+        and isinstance(domains, list)
+        and domains == [{
+            "pattern": "staging.corelink.humangr.com",
+            "worker": "corelink-staging",
+            "zone_name": "humangr.com",
+            "custom_domain": True,
+        }]
+    )
+
+
+def _preauthorized_b035_closeout(candidate_root: Path, trusted_root: Path) -> bool:
+    """Admit only the frozen B-035 data/control successor, without executing it."""
+    try:
+        candidate = _candidate_tree_entries(candidate_root)
+        trusted = _candidate_tree_entries(trusted_root)
+    except (OSError, RuntimeError):
+        return False
+    old_paths = set(B035_CLOSEOUT_PREIMAGES)
+    new_paths = set(B035_CLOSEOUT_TARGETS) | B035_CLOSEOUT_DYNAMIC_PATHS
+    if not old_paths or new_paths != old_paths | B035_CLOSEOUT_NEW_PATHS:
+        return False
+    if not B035_CLOSEOUT_NEW_PATHS.isdisjoint(trusted):
+        return False
+    if set(candidate) != set(trusted) | B035_CLOSEOUT_NEW_PATHS:
+        return False
+    changed = {
+        path for path in set(candidate) | set(trusted)
+        if candidate.get(path) != trusted.get(path)
+    }
+    if changed != new_paths:
+        return False
+    if not (all(
+        trusted.get(path) == ("file", *expected)
+        for path, expected in B035_CLOSEOUT_PREIMAGES.items()
+    ) and all(
+        candidate.get(path) == ("file", *expected)
+        for path, expected in B035_CLOSEOUT_TARGETS.items()
+    )):
+        return False
+    if any(candidate.get(path, ("", 0, ""))[:2] != ("file", 0o644)
+           for path in B035_CLOSEOUT_DYNAMIC_PATHS):
+        return False
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=trusted_root,
+        check=False, capture_output=True, text=True,
+    ).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", base):
+        return False
+    ledger_path = "docs/campaigns/remediation/BACKLOG-WP-LEDGER.md"
+    snapshot_path = "docs/campaigns/remediation/backlog-ledger-snapshot-v0011.json"
+    try:
+        ledger = _regular_control(candidate_root, ledger_path)
+        normalized = ledger
+        for field in ("base-ref", "base-sha"):
+            line = f"{field}: {base}".encode()
+            if normalized.count(line) != 1:
+                return False
+            normalized = normalized.replace(line, f"{field}: <BASE>".encode(), 1)
+        if hashlib.sha256(normalized).hexdigest() != B035_CLOSEOUT_LEDGER_TEMPLATE_SHA256:
+            return False
+        raw = _regular_control(candidate_root, snapshot_path)
+        receipt = json.loads(raw)
+        if receipt.get("base_commit") != base or receipt.get("ledger_sha256") != hashlib.sha256(ledger).hexdigest():
+            return False
+        if raw != (json.dumps(receipt, indent=2) + "\n").encode():
+            return False
+        receipt["base_commit"] = "<BASE>"
+        receipt["ledger_sha256"] = "<LEDGER_SHA>"
+        template = (json.dumps(receipt, indent=2) + "\n").encode()
+        return hashlib.sha256(template).hexdigest() == B035_CLOSEOUT_SNAPSHOT_TEMPLATE_SHA256
+    except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_items: list[Item]) -> None:
     """Fail closed when PR data changes a trusted control in the closure."""
+    topology_path = "infra/staging/topology.json"
+    candidate_topology = candidate_root / topology_path
+    trusted_topology = trusted_root / topology_path
+    try:
+        candidate_topology.lstat()
+        candidate_has_topology = True
+    except FileNotFoundError:
+        candidate_has_topology = False
+    try:
+        trusted_topology.lstat()
+        trusted_has_topology = True
+    except FileNotFoundError:
+        trusted_has_topology = False
+    if candidate_has_topology != trusted_has_topology:
+        topology_changed = True
+    elif not candidate_has_topology:
+        topology_changed = False
+    else:
+        try:
+            topology_changed = _regular_control(candidate_root, topology_path) != _regular_control(
+                trusted_root, topology_path
+            )
+        except RuntimeError:
+            topology_changed = True
+    staging_transition = topology_changed and _preauthorized_staging_custom_domain(
+        candidate_root, trusted_root
+    )
+    b035_transition: bool | None = None
     for relative in sorted(_candidate_control_paths(trusted_root, trusted_items)):
         trusted = _regular_control(trusted_root, relative)
         candidate = _regular_control(candidate_root, relative)
         if candidate != trusted:
+            if relative in STAGING_CUSTOM_DOMAIN_PREIMAGES and staging_transition:
+                continue
             if relative == "scripts/verify_b057_sli.py" and _preauthorized_b057_c0(
                 candidate_root, trusted_root
             ):
                 continue
+            if relative == "scripts/verify_b029_load_gate.py" and _preauthorized_b029_load_gate(
+                candidate_root, trusted_root
+            ):
+                continue
+            if relative in {"scripts/verify_b155_owned.py", "scripts/verify_owner_action_packets.py"}:
+                if b035_transition is None:
+                    b035_transition = _preauthorized_b035_closeout(candidate_root, trusted_root)
+                if b035_transition:
+                    continue
             raise RuntimeError(
                 f"candidate mutated trusted backlog control {relative}; "
                 "candidate verifier code is data-only and was not executed"
             )
+
+
+def check_candidate_staging_topology(candidate_root: Path, trusted_root: Path) -> None:
+    """Reject topology-only or malformed changes after ledger diagnostics."""
+    topology_path = "infra/staging/topology.json"
+    candidate_topology = candidate_root / topology_path
+    trusted_topology = trusted_root / topology_path
+    try:
+        candidate_topology.lstat()
+        candidate_has_topology = True
+    except FileNotFoundError:
+        candidate_has_topology = False
+    try:
+        trusted_topology.lstat()
+        trusted_has_topology = True
+    except FileNotFoundError:
+        trusted_has_topology = False
+    if candidate_has_topology != trusted_has_topology:
+        topology_changed = True
+    elif not candidate_has_topology:
+        topology_changed = False
+    else:
+        try:
+            topology_changed = _regular_control(candidate_root, topology_path) != _regular_control(
+                trusted_root, topology_path
+            )
+        except RuntimeError:
+            topology_changed = True
+    if topology_changed and not _preauthorized_staging_custom_domain(candidate_root, trusted_root):
+        raise RuntimeError("candidate mutated unapproved staging topology; candidate data was not executed")
 
 
 def validate_candidate_transitions(
@@ -640,6 +969,7 @@ def validate_candidate_transitions(
     allow_v0007_reconciliation: bool = False,
     allow_v0009_reconciliation: bool = False,
     allow_v0010_reconciliation: bool = False,
+    allow_b035_reconciliation: bool = False,
     successor_mode: bool = False
 ) -> list[str]:
     """Validate the small, auditable set of BACKLOG changes a PR may make."""
@@ -672,6 +1002,8 @@ def validate_candidate_transitions(
         v0010_fields = {"B-114": {"verify", "verify-means"}}
         for item_field in IMMUTABLE_ITEM_FIELDS:
             if old_raw.get(item_field) != new_raw.get(item_field):
+                if item.id == "B-035" and item_field == "verify" and allow_b035_reconciliation:
+                    continue
                 if (
                     allow_v0006_reconciliation
                     and item.id in v0006_fields
@@ -941,6 +1273,7 @@ def validate_candidate_workflow(candidate_root: Path, trusted_root: Path | None 
     )
     expected_data = {
         "runs-on": "ubuntu-24.04", "timeout-minutes": 10,
+        "env": {"PYTHONDONTWRITEBYTECODE": "1"},
         "steps": [
             checkout("Checkout candidate data (immutable event SHA)",
                      "${{ github.event.pull_request.head.sha || github.sha }}", "_candidate"),
@@ -1048,6 +1381,7 @@ def main() -> int:
         return 2
     items = parse(text)
     trusted_by_id: dict[str, Item] | None = None
+    authorized_verify_deltas: dict[str, tuple[str, str]] = {}
     if candidate_mode:
         trusted_path = Path(args.trusted_file).resolve()
         if not trusted_path.is_file() or trusted_path.is_symlink():
@@ -1075,13 +1409,27 @@ def main() -> int:
             trusted_root = Path(args.trusted_root).resolve()
             try:
                 if ledger.successor_required(trusted_root, candidate_root):
-                    ledger.validate_candidate_successor(trusted_root, candidate_root, today=today)
+                    receipt = ledger.validate_candidate_successor(
+                        trusted_root, candidate_root, today=today,
+                    )
+                    authorized_ids = set(receipt["changed_ids"])
+                    candidate_by_id = {item.id: item for item in items if item.raw}
+                    for item_id in authorized_ids:
+                        trusted_item = trusted_by_id.get(item_id)
+                        candidate_item = candidate_by_id.get(item_id)
+                        if trusted_item is None or candidate_item is None:
+                            continue
+                        old_verify = trusted_item.raw.get("verify")
+                        new_verify = candidate_item.raw.get("verify")
+                        if isinstance(old_verify, str) and isinstance(new_verify, str) and old_verify != new_verify:
+                            authorized_verify_deltas[item_id] = (old_verify, new_verify)
                 else:
                     transition_errors = validate_candidate_transitions(items, trusted_items, today)
                     if transition_errors:
                         raise RuntimeError("candidate transition rejected:\n" + "\n".join(transition_errors))
             except ledger.LedgerError as exc:
                 raise RuntimeError(f"candidate ledger successor rejected: {exc}") from exc
+            check_candidate_staging_topology(candidate_root, trusted_root)
             validate_candidate_workflow(candidate_root, trusted_root)
         except (OSError, RuntimeError) as exc:
             print(f"FATAL: {exc}", file=sys.stderr)
@@ -1317,6 +1665,7 @@ def main() -> int:
             today,
             args.max_age_days,
             trusted_by_id=trusted_by_id,
+            authorized_verify_deltas=authorized_verify_deltas,
             enforce_manual_age=execution_mode in {"fixture", "trusted"},
             execution_mode=execution_mode,
         )

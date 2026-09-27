@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import os
 import shutil
@@ -12,9 +13,13 @@ import tempfile
 import unittest
 import datetime as dt
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts import backlog_verify
+from scripts import verify_backlog_wp_ledger
+
+backlog_ledger_successor = verify_backlog_wp_ledger.backlog_ledger_successor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +32,120 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(contents)
+
+    def test_b035_closeout_exact_tree_and_mutation_teeth(self) -> None:
+        paths = (
+            "BACKLOG.md",
+            "docs/campaigns/remediation/BACKLOG-WP-LEDGER.md",
+            "docs/campaigns/remediation/work-packages/B001-B045.md",
+            "docs/handoff/2026-09-05-owner-action-packets-b008-b154.json",
+            "scripts/verify_b155_owned.py",
+            "scripts/verify_owner_action_packets.py",
+        )
+        new_paths = (
+            "docs/campaigns/remediation/backlog-ledger-snapshot-v0011.json",
+            "evidence/owner-actions/B-035/tls-legal-remediation.json",
+        )
+        ledger = "docs/campaigns/remediation/BACKLOG-WP-LEDGER.md"
+        snapshot = new_paths[0]
+        base = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            trusted = Path(directory) / "trusted"
+            candidate = Path(directory) / "candidate"
+            trusted.mkdir()
+            candidate.mkdir()
+            old_pins: dict[str, tuple[int, str]] = {}
+            new_pins: dict[str, tuple[int, str]] = {}
+            for path in paths:
+                old = f"old:{path}\n".encode()
+                new = (f"base-ref: {base}\nbase-sha: {base}\n".encode()
+                       if path == ledger else f"new:{path}\n".encode())
+                self._write(trusted, path, old)
+                self._write(candidate, path, new)
+                old_pins[path] = (0o644, hashlib.sha256(old).hexdigest())
+                if path != ledger:
+                    new_pins[path] = (0o644, hashlib.sha256(new).hexdigest())
+            for path in new_paths:
+                new = (json.dumps({"base_commit": base, "ledger_sha256": hashlib.sha256(
+                    (candidate / ledger).read_bytes()
+                ).hexdigest()}, indent=2) + "\n").encode() if path == snapshot else f"new:{path}\n".encode()
+                self._write(candidate, path, new)
+                if path != snapshot:
+                    new_pins[path] = (0o644, hashlib.sha256(new).hexdigest())
+            ledger_template = b"base-ref: <BASE>\nbase-sha: <BASE>\n"
+            snapshot_template = (json.dumps({"base_commit": "<BASE>",
+                "ledger_sha256": "<LEDGER_SHA>"}, indent=2) + "\n").encode()
+            with patch.object(backlog_verify, "B035_CLOSEOUT_PREIMAGES", old_pins), patch.object(
+                backlog_verify, "B035_CLOSEOUT_TARGETS", new_pins
+            ), patch.object(backlog_verify, "B035_CLOSEOUT_NEW_PATHS", frozenset(new_paths)), patch.object(
+                backlog_verify, "B035_CLOSEOUT_DYNAMIC_PATHS", frozenset((ledger, snapshot))
+            ), patch.object(backlog_verify, "B035_CLOSEOUT_LEDGER_TEMPLATE_SHA256", hashlib.sha256(ledger_template).hexdigest()), patch.object(
+                backlog_verify, "B035_CLOSEOUT_SNAPSHOT_TEMPLATE_SHA256", hashlib.sha256(snapshot_template).hexdigest()
+            ), patch.object(backlog_verify.subprocess, "run", return_value=SimpleNamespace(stdout=base)):
+                self.assertTrue(backlog_verify._preauthorized_b035_closeout(candidate, trusted))
+                for path in (*paths, *new_paths):
+                    original = (candidate / path).read_bytes()
+                    self._write(candidate, path, b"wrong bytes\n")
+                    self.assertFalse(backlog_verify._preauthorized_b035_closeout(candidate, trusted), path)
+                    self._write(candidate, path, original)
+                extra = candidate / "unapproved.txt"
+                extra.write_text("extra", encoding="utf-8")
+                self.assertFalse(backlog_verify._preauthorized_b035_closeout(candidate, trusted))
+                extra.unlink()
+                target = candidate / "scripts/verify_b155_owned.py"
+                target.chmod(0o755)
+                self.assertFalse(backlog_verify._preauthorized_b035_closeout(candidate, trusted))
+                target.chmod(0o644)
+                target.unlink()
+                target.symlink_to("../verify_owner_action_packets.py")
+                self.assertFalse(backlog_verify._preauthorized_b035_closeout(candidate, trusted))
+                target.unlink()
+                self._write(candidate, "scripts/verify_b155_owned.py", b"new:scripts/verify_b155_owned.py\n")
+                (trusted / "BACKLOG.md").write_bytes(b"stale base\n")
+                self.assertFalse(backlog_verify._preauthorized_b035_closeout(candidate, trusted))
+                (trusted / "BACKLOG.md").write_bytes(b"old:BACKLOG.md\n")
+                self._write(trusted, new_paths[0], b"preexisting snapshot\n")
+                self.assertFalse(backlog_verify._preauthorized_b035_closeout(candidate, trusted))
+
+    def test_b035_ledger_successor_is_exact_and_rejects_neighbor_mutations(self) -> None:
+        old_section = (
+            b"### B-035 - old\n\n```backlog\nid: B-035\nrepo: corelink-server\n"
+            b"owner: owner\nstatus: open\nverify: manual\nverify-means: old\n"
+            b"last-verified: 2026-09-27\n```\n"
+        )
+        new_section = (
+            b"### B-035 - closed\n\n```backlog\nid: B-035\nrepo: corelink-server\n"
+            b"owner: tl\nstatus: done\nverify: manual\nverify-means: done\n"
+            b"last-verified: 2026-09-27\n```\n"
+        )
+        names = [path.as_posix() for path in verify_backlog_wp_ledger._catalog_relatives()]
+        old = {"BACKLOG.md": old_section}
+        new = {"BACKLOG.md": new_section}
+        for path in names:
+            old[path] = f"old:{path}".encode()
+            new[path] = old[path]
+        catalog = "docs/campaigns/remediation/work-packages/B001-B045.md"
+        new[catalog] = b"closed catalog"
+        receipt = {"changed_ids": ["B-035"]}
+        digest = lambda data: hashlib.sha256(data).hexdigest()
+        with patch.object(backlog_ledger_successor, "B035_CLOSEOUT_SOURCE_SHA256", (
+            digest(old_section), digest(new_section)
+        )), patch.object(backlog_ledger_successor, "B035_CLOSEOUT_SECTION_SHA256", (
+            digest(old_section), digest(new_section)
+        )), patch.object(backlog_ledger_successor, "B035_CLOSEOUT_CATALOG_SHA256", (
+            digest(old[catalog]), digest(new[catalog])
+        )), patch.object(backlog_ledger_successor, "B035_CLOSEOUT_SEQUENCE", 11):
+            policy = verify_backlog_wp_ledger._successor_policy()
+            self.assertTrue(policy._b035_closeout_authorized(old, new, receipt, 11))
+            self.assertFalse(policy._b035_closeout_authorized(old, new, receipt, 12))
+            self.assertFalse(policy._b035_closeout_authorized(old, new, {"changed_ids": ["B-036"]}, 11))
+            for path in ("BACKLOG.md", catalog, names[1]):
+                mutated = new.copy()
+                mutated[path] += b"wrong"
+                self.assertFalse(policy._b035_closeout_authorized(old, mutated, receipt, 11), path)
+            mutated_old = old.copy()
+            mutated_old["BACKLOG.md"] += b"stale"
+            self.assertFalse(policy._b035_closeout_authorized(mutated_old, new, receipt, 11))
 
     def _c0_fixture(self) -> tuple[Path, Path, dict[str, str], dict[str, str]]:
         directory = tempfile.TemporaryDirectory()
@@ -62,6 +181,147 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
             {relative: hashlib.sha256(contents).hexdigest() for relative, contents in targets.items()},
         )
 
+    def _b029_load_gate_fixture(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        trusted, candidate = Path(directory.name) / "trusted", Path(directory.name) / "candidate"
+        trusted.mkdir()
+        candidate.mkdir()
+        preimages: dict[str, str | None] = {}
+        targets: dict[str, str] = {}
+        modes: dict[str, int] = {}
+        for relative in backlog_verify.B029_LOAD_GATE_TARGETS:
+            old = None if relative in {
+                "scripts/staging_load_lifecycle_auth.py",
+                "tests/load/k6/lib/staging_load_admission.js",
+                "tests/test_staging_load_lifecycle_auth.py",
+            } else f"old:{relative}".encode()
+            new = f"new:{relative}".encode()
+            if old is not None:
+                self._write(trusted, relative, old)
+                preimages[relative] = hashlib.sha256(old).hexdigest()
+            else:
+                preimages[relative] = None
+            self._write(candidate, relative, new)
+            targets[relative] = hashlib.sha256(new).hexdigest()
+            modes[relative] = 0o755 if relative == "scripts/verify_b029_load_gate.py" else 0o644
+            (candidate / relative).chmod(modes[relative])
+            if old is not None:
+                (trusted / relative).chmod(modes[relative])
+        return trusted, candidate, preimages, targets, modes
+
+    def _staging_transition_fixture(self, *, delivered: bool = False):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        trusted, candidate = Path(directory.name) / "trusted", Path(directory.name) / "candidate"
+        trusted.mkdir()
+        candidate.mkdir()
+        preimages = {path: f"old:{path}".encode() for path in backlog_verify.STAGING_CUSTOM_DOMAIN_PREIMAGES}
+        targets = {path: f"new:{path}".encode() for path in backlog_verify.STAGING_CUSTOM_DOMAIN_TARGETS}
+        for relative in preimages:
+            self._write(trusted, relative, targets[relative] if delivered else preimages[relative])
+            self._write(candidate, relative, preimages[relative] if delivered else targets[relative])
+        for relative in backlog_verify.STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS:
+            old_payload, new_payload = b"previous delivery bytes\n", b"new delivery bytes\n"
+            self._write(trusted, relative, new_payload if delivered else old_payload)
+            self._write(candidate, relative, old_payload if delivered else new_payload)
+        target_topology = (
+            b'{"deployment_state":"unprovisioned","cloudflare":{"routes":[{"pattern":'
+            b'"staging.corelink.humangr.com","worker":"corelink-staging",'
+            b'"zone_name":"humangr.com","custom_domain":true}]}}'
+        )
+        preimages["infra/staging/topology.json"] = b'{"deployment_state":"unprovisioned", "cloudflare":{"routes":[]}}'
+        targets["infra/staging/topology.json"] = target_topology
+        # Rewrite topology with the compact, semantically exact target fixture.
+        self._write(trusted, "infra/staging/topology.json", target_topology if delivered else preimages["infra/staging/topology.json"])
+        self._write(candidate, "infra/staging/topology.json", preimages["infra/staging/topology.json"] if delivered else target_topology)
+        old_pins = {path: hashlib.sha256(data).hexdigest() for path, data in preimages.items()}
+        new_pins = {path: hashlib.sha256(data).hexdigest() for path, data in targets.items()}
+        return trusted, candidate, old_pins, new_pins, preimages, targets
+
+    def test_1700_staging_custom_domain_transition_is_exact_and_data_only(self) -> None:
+        trusted, candidate, old_pins, new_pins, _, targets = self._staging_transition_fixture()
+        # The real delivery changes thirteen separately enumerated paths
+        # alongside the four pinned controls.
+        delivery_paths = (
+            ".github/workflows/issue-1700-staging-custom-domain.yml",
+            "docs/campaigns/remediation/wp150-workflow-ownership.md",
+            "infra/staging/README.md",
+            "scripts/plan_staging_provider.py",
+            "scripts/render_staging_wrangler.py",
+            "scripts/staging_bootstrap_provider.py",
+            "scripts/staging_custom_domain.py",
+            "scripts/verify_staging_provider_preflight.py",
+            "scripts/verify_staging_target.py",
+            "tests/test_render_staging_wrangler.py",
+            "tests/test_staging_bootstrap_provider.py",
+            "tests/test_staging_custom_domain.py",
+            "tests/test_verify_staging_target.py",
+        )
+        self.assertEqual(set(delivery_paths), backlog_verify.STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS)
+        marker = candidate.parent / "executed"
+        malicious = f"from pathlib import Path; Path({str(marker)!r}).write_text('bad')".encode()
+        targets["scripts/verify_b072_receiver.py"] = malicious
+        new_pins["scripts/verify_b072_receiver.py"] = hashlib.sha256(malicious).hexdigest()
+        self._write(candidate, "scripts/verify_b072_receiver.py", malicious)
+        with patch.object(backlog_verify, "STAGING_CUSTOM_DOMAIN_PREIMAGES", old_pins), patch.object(
+            backlog_verify, "STAGING_CUSTOM_DOMAIN_TARGETS", new_pins
+        ):
+            self.assertTrue(backlog_verify._preauthorized_staging_custom_domain(candidate, trusted))
+        self.assertFalse(marker.exists())
+
+    def test_1700_transition_still_rejects_an_additional_trusted_control(self) -> None:
+        trusted, candidate, old_pins, new_pins, _, _ = self._staging_transition_fixture()
+        control_paths = (
+            "scripts/backlog_verify.py",
+            "scripts/verify_backlog_wp_ledger.py",
+            "scripts/backlog_ledger_successor.py",
+            "scripts/backlog_ledger_contracts.py",
+            "scripts/extra_trusted.py",
+        )
+        for relative in control_paths:
+            self._write(trusted, relative, b"trusted bytes\n")
+            self._write(candidate, relative, b"trusted bytes\n")
+        self._write(candidate, "scripts/extra_trusted.py", b"candidate mutation\n")
+        items = [self.item("B-001", verify="python3 scripts/extra_trusted.py")]
+        with patch.object(backlog_verify, "STAGING_CUSTOM_DOMAIN_PREIMAGES", old_pins), patch.object(
+            backlog_verify, "STAGING_CUSTOM_DOMAIN_TARGETS", new_pins
+        ):
+            with self.assertRaisesRegex(RuntimeError, "scripts/extra_trusted.py"):
+                backlog_verify.check_candidate_controls(candidate, trusted, items)
+
+    def test_1700_staging_custom_domain_rejects_partial_mixed_extra_and_wrong_topology(self) -> None:
+        for mutation in ("partial", "mixed", "extra", "wrong-topology"):
+            with self.subTest(mutation=mutation):
+                trusted, candidate, old_pins, new_pins, _, _ = self._staging_transition_fixture()
+                if mutation == "partial":
+                    self._write(candidate, "tests/test_verify_staging_topology_contract.py", (trusted / "tests/test_verify_staging_topology_contract.py").read_bytes())
+                elif mutation == "mixed":
+                    self._write(candidate, "scripts/verify_b072_receiver.py", b"mixed preimage")
+                elif mutation == "extra":
+                    self._write(candidate, "unapproved.txt", b"extra")
+                else:
+                    self._write(candidate, "infra/staging/topology.json", b'{"deployment_state":"provisioned"}')
+                with patch.object(backlog_verify, "STAGING_CUSTOM_DOMAIN_PREIMAGES", old_pins), patch.object(
+                    backlog_verify, "STAGING_CUSTOM_DOMAIN_TARGETS", new_pins
+                ):
+                    self.assertFalse(backlog_verify._preauthorized_staging_custom_domain(candidate, trusted))
+
+    def test_1700_staging_custom_domain_rejects_downgrade_after_delivery(self) -> None:
+        trusted, candidate, old_pins, new_pins, _, _ = self._staging_transition_fixture(delivered=True)
+        with patch.object(backlog_verify, "STAGING_CUSTOM_DOMAIN_PREIMAGES", old_pins), patch.object(
+            backlog_verify, "STAGING_CUSTOM_DOMAIN_TARGETS", new_pins
+        ):
+            self.assertFalse(backlog_verify._preauthorized_staging_custom_domain(candidate, trusted))
+
+    def test_1700_staging_custom_domain_constants_bind_frozen_hashes(self) -> None:
+        self.assertEqual(backlog_verify.STAGING_CUSTOM_DOMAIN_PREIMAGES, {
+            "scripts/verify_b072_receiver.py": "8acce3d50dbe4ad9a3df24d33e56828203a51510eab3fcfa3bff2b46c0b27a69",
+            "scripts/verify_staging_topology_contract.py": "ba7abe9d5887269a69fcf2a8cfcec6d60d579ecd53f72a3ec6e9cc74250c677b",
+            "tests/test_verify_staging_topology_contract.py": "97d1f75eb3608dbf71cc0506922ddd7b88b92f7f8f0812f01d392ee535be8103",
+            "infra/staging/topology.json": "5156d6578d662020777a7e98cb1b91a181c6b4536afbd2c4a9498be06f57357e",
+        })
+
     def test_b057_c0_pins_the_fresh_preimage_and_target_bytes(self) -> None:
         self.assertEqual(
             backlog_verify.B057_C0_PREIMAGES,
@@ -93,6 +353,53 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         ):
             self.assertTrue(backlog_verify._preauthorized_b057_c0(candidate, trusted))
         self.assertFalse(marker.exists(), "candidate verifier code was executed")
+
+    def test_b029_load_gate_transition_is_full_pinned_and_data_only(self) -> None:
+        trusted, candidate, preimages, targets, modes = self._b029_load_gate_fixture()
+        verifier = "scripts/verify_b029_load_gate.py"
+        marker = candidate.parent / "candidate-code-executed"
+        payload = (
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('executed')\n"
+        ).encode()
+        self._write(candidate, verifier, payload)
+        (candidate / verifier).chmod(0o755)
+        targets[verifier] = hashlib.sha256(payload).hexdigest()
+        with patch.object(backlog_verify, "B029_LOAD_GATE_PREIMAGES", preimages), patch.object(
+            backlog_verify, "B029_LOAD_GATE_TARGETS", targets
+        ), patch.object(backlog_verify, "B029_LOAD_GATE_TARGET_MODES", modes):
+            self.assertTrue(backlog_verify._preauthorized_b029_load_gate(candidate, trusted))
+            with patch.object(backlog_verify, "_candidate_control_paths", return_value={verifier}):
+                backlog_verify.check_candidate_controls(candidate, trusted, [])
+        self.assertFalse(marker.exists(), "candidate verifier code was executed")
+
+    def test_b029_load_gate_rejects_partial_mixed_extra_downgrade_mode_and_symlink(self) -> None:
+        for mutation in ("partial", "mixed", "extra", "downgrade", "wrong-mode", "symlink"):
+            with self.subTest(mutation=mutation):
+                trusted, candidate, preimages, targets, modes = self._b029_load_gate_fixture()
+                verifier = "scripts/verify_b029_load_gate.py"
+                if mutation == "partial":
+                    self._write(candidate, verifier, (trusted / verifier).read_bytes())
+                    (candidate / verifier).chmod(0o755)
+                elif mutation == "mixed":
+                    self._write(candidate, verifier, b"unapproved mixed bytes\n")
+                    (candidate / verifier).chmod(0o755)
+                elif mutation == "extra":
+                    self._write(candidate, "unapproved.txt", b"extra\n")
+                elif mutation == "wrong-mode":
+                    (candidate / verifier).chmod(0o644)
+                elif mutation == "symlink":
+                    payload = candidate.parent / "external-pinned-verifier.py"
+                    payload.write_bytes((candidate / verifier).read_bytes())
+                    (candidate / verifier).unlink()
+                    (candidate / verifier).symlink_to(payload)
+                else:
+                    self._write(trusted, verifier, (candidate / verifier).read_bytes())
+                    (trusted / verifier).chmod(0o755)
+                with patch.object(backlog_verify, "B029_LOAD_GATE_PREIMAGES", preimages), patch.object(
+                    backlog_verify, "B029_LOAD_GATE_TARGETS", targets
+                ), patch.object(backlog_verify, "B029_LOAD_GATE_TARGET_MODES", modes):
+                    self.assertFalse(backlog_verify._preauthorized_b029_load_gate(candidate, trusted))
 
     def test_b057_c0_allows_an_unchanged_inherited_symlink_without_following_it(self) -> None:
         trusted, candidate, preimages, targets = self._c0_fixture()
@@ -231,6 +538,7 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         self.assertIn("pull_request_target:", workflow)
         self.assertNotIn("\n  pull_request:\n", workflow)
         self.assertIn("  verify:\n    runs-on: ubuntu-24.04", workflow)
+        self.assertIn('    env:\n      PYTHONDONTWRITEBYTECODE: "1"', workflow)
         self.assertIn(
             "  trusted_semantic:\n"
             "    if: github.event_name == 'push' || github.event_name == 'schedule'\n"
@@ -596,6 +904,16 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         backlog_verify.validate_candidate_workflow(self.candidate)
         b314_marker = "      - name: Prove BASE B-314 owner-gate mutation teeth"
         mutations = {
+            "job-bytecode-env-removed": baseline.replace(
+                '      PYTHONDONTWRITEBYTECODE: "1"\n', "", 1,
+            ),
+            "job-bytecode-env-wrong": baseline.replace(
+                'PYTHONDONTWRITEBYTECODE: "1"', 'PYTHONDONTWRITEBYTECODE: "0"', 1,
+            ),
+            "job-bytecode-env-extra": baseline.replace(
+                '      PYTHONDONTWRITEBYTECODE: "1"\n',
+                '      PYTHONDONTWRITEBYTECODE: "1"\n      BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n', 1,
+            ),
             "root-env-bash-env": baseline.replace(
                 "name: backlog-verify\n",
                 "name: backlog-verify\nenv:\n  BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n", 1,
@@ -605,8 +923,8 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
                 "name: backlog-verify\ndefaults:\n  run:\n    shell: bash\n", 1,
             ),
             "job-env-bash-env": baseline.replace(
-                "    timeout-minutes: 10\n",
-                "    timeout-minutes: 10\n    env:\n      BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n", 1,
+                '      PYTHONDONTWRITEBYTECODE: "1"\n',
+                '      PYTHONDONTWRITEBYTECODE: "1"\n      BASH_ENV: ${{ github.workspace }}/_candidate/evil.sh\n', 1,
             ),
             "job-defaults": baseline.replace(
                 "    timeout-minutes: 10\n",

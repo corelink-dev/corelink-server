@@ -50,9 +50,12 @@ def verify_workflow(text: str) -> list[str]:
         errors.append("runtime does not consume the checked target output")
     if "K6_TARGET_HOST: ${{ secrets.K6_TARGET_HOST }}" not in text:
         errors.append("preflight does not read the environment secret")
-    for secret in ("K6_TARGET_IDENTITY_RECEIPT", "K6_STAGING_PAT", "K6_STAGING_TEARDOWN_TOKEN"):
-        if f"{secret}: ${{{{ secrets.{secret} }}}}" not in text:
-            errors.append(f"preflight does not bind required staging secret {secret}")
+    for env_name, secret_name in (
+        ("K6_TARGET_IDENTITY_RECEIPT", "K6_TARGET_IDENTITY_RECEIPT"),
+        ("K6_STAGING_LOAD_ADMISSION_KEY", "CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY"),
+    ):
+        if f"{env_name}: ${{{{ secrets.{secret_name} }}}}" not in text:
+            errors.append(f"preflight does not bind required staging secret {secret_name}")
     if "scripts/validate_load_target_receipt.py" not in text:
         errors.append("preflight does not validate the owner-issued staging identity receipt")
     if "VUS:                        '50'" not in text:
@@ -92,14 +95,23 @@ def verify_workflow(text: str) -> list[str]:
     teardown = text.split("- name: teardown synthetic staging state", 1)[-1].split("- name: write receipt and teardown checkpoint", 1)[0]
     if (
         "continue-on-error: true" in teardown
-        or "K6_STAGING_TEARDOWN_TOKEN is required" not in teardown
-        or "HTTP_STATUS=$(timeout 30s curl --fail --silent --show-error" not in teardown
-        or "--location" in teardown
+        or "admission key is required" not in teardown
+        or "HTTP_STATUS=$(timeout 30s curl --silent --show-error --max-redirs 0" not in teardown
+        or "Authorization: Bearer" in teardown
         or "test \"${HTTP_STATUS}\" = '200'" not in teardown
     ):
         errors.append("failed, redirected, or unconfigured cleanup must fail the lane")
-    if "payload=$(printf '{\"run_id\":\"%s\",\"scenario\":\"endurance-2h\"}' \"${GITHUB_RUN_ID}\")" not in text:
-        errors.append("teardown must identify exactly this run and the endurance scenario")
+    for marker in (
+        "staging_load_lifecycle_auth.py --version v1",
+        "--run-id \"$GITHUB_RUN_ID\" --scenario endurance-2h --deployment-sha \"$TARGET_DEPLOYMENT_SHA\"",
+        "x-corelink-staging-load-admission: ${CREDENTIAL}",
+        "/_internal/staging/load-tests/endurance-2h/teardown",
+        "/_internal/staging/load-tests/endurance-2h/seal",
+    ):
+        if marker not in text:
+            errors.append(f"lifecycle identity/auth marker missing: {marker}")
+    if "K6_AUTH_BEARER" in text or "K6_STAGING_TEARDOWN_TOKEN" in text:
+        errors.append("legacy static workload or teardown credential remains")
     if '"teardown_status": os.environ["TEARDOWN_STATUS"]' not in text:
         errors.append("receipt must record the teardown outcome")
     if '"teardown_deletion_proven": os.environ["TEARDOWN_DELETION_PROVEN"] == "true"' not in text:
@@ -118,6 +130,14 @@ def verify_workflow(text: str) -> list[str]:
         errors.append("teardown receipt must be covered by the artifact digest")
     if text.find("- name: teardown synthetic staging state") > text.find("- name: write receipt and teardown checkpoint"):
         errors.append("receipt must be written after the teardown attempt")
+    seal = text.split("- name: seal synthetic staging state", 1)[-1].split("- name: teardown synthetic staging state", 1)[0]
+    for marker in (
+        "staging_load_lifecycle_auth.py --validate-seal",
+        "seal-receipt-${GITHUB_RUN_ID}.json",
+        "--max-redirs 0",
+    ):
+        if marker not in seal:
+            errors.append(f"seal receipt validation marker missing: {marker}")
     if 'test "${CONFIRM}" = "run-bounded-endurance"' not in text:
         errors.append("dispatch must require the exact bounded endurance confirmation")
     if 'test "${DURATION}" = \'2h\'' not in text:

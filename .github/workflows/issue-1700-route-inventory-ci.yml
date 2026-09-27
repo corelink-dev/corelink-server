@@ -1,0 +1,36 @@
+name: issue-1700 route inventory contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/issue-1700-container-staging-deploy.yml'
+      - '.github/workflows/issue-1700-route-inventory-ci.yml'
+      - 'scripts/verify_issue_1700_route_inventory.py'
+      - 'scripts/staging_deployment_guard.py'
+      - 'tests/test_issue_1700_route_inventory.py'
+      - 'tests/test_staging_deployment_guard.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  route-inventory-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Assert exact checkout SHA
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Run frozen route inventory acceptance cases
+        run: |
+          python3 -m unittest discover -s tests -p 'test_issue_1700_route_inventory.py' -v
+          python3 -m unittest discover -s tests -p 'test_staging_deployment_guard.py' -v

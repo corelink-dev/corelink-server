@@ -4,8 +4,8 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 264
-workflow-paths-sha256: 14065f22ec9a222d8df0793e4c267b82d86750ada25e85eab112d3682eccfaad
+workflow-count: 269
+workflow-paths-sha256: c1c60b9c725ef619bf5d787dbb981786983f08a00b790f679b49de47bb27d66c
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -147,6 +147,9 @@ workflow-paths-sha256: 14065f22ec9a222d8df0793e4c267b82d86750ada25e85eab112d3682
 .github/workflows/issue-1682-b316-vendor-review.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1690-p12-p14-verifier.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1699-ownership-preparation.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1700-container-staging-deploy.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1700-staging-custom-domain.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1700-route-inventory-ci.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1720-cloudflare-drift-audit.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1720-cloudflare-drift-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1721-r2-lock-proof.yml | LEAD-BLOCKED | blocked
@@ -188,6 +191,7 @@ workflow-paths-sha256: 14065f22ec9a222d8df0793e4c267b82d86750ada25e85eab112d3682
 .github/workflows/issue-2581-dsr-audit.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2582-signup-ownership.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2583-byok-ownership.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2584-teardown-receipt.yml | WP-B113 | owned
 .github/workflows/issue-2586-windows-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2586-windows-readiness.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2610-mutants-failure-receipt.yml | LEAD-BLOCKED | blocked
@@ -198,10 +202,10 @@ workflow-paths-sha256: 14065f22ec9a222d8df0793e4c267b82d86750ada25e85eab112d3682
 .github/workflows/issue-2649-b114-policy.yml | WP-B114 | owned
 .github/workflows/issue-2663-teardown-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2664-worker-synthetic-tenant.yml | LEAD-BLOCKED | blocked
-.github/workflows/issue-2699-cloudflare-handoff-contract.yml | LEAD-BLOCKED | blocked
-.github/workflows/issue-2702-backlog-policy.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2665-dsr-teardown.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2666-byok-teardown.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2699-cloudflare-handoff-contract.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2702-backlog-policy.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-605-billing-fixture.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-ci-pack.yml | LEAD-BLOCKED | blocked
 .github/workflows/legal-changes-review.yml | LEAD-BLOCKED | blocked
@@ -255,6 +259,7 @@ workflow-paths-sha256: 14065f22ec9a222d8df0793e4c267b82d86750ada25e85eab112d3682
 .github/workflows/slo-instrumentation.yml | LEAD-BLOCKED | blocked
 .github/workflows/smoke-install.yml | LEAD-BLOCKED | blocked
 .github/workflows/spec_validation.yml | LEAD-BLOCKED | blocked
+.github/workflows/staging-load-seal-contract.yml | WP-B113 | owned
 .github/workflows/staging-provider-preflight.yml | LEAD-BLOCKED | blocked
 .github/workflows/staging-provision-plan.yml | LEAD-BLOCKED | blocked
 .github/workflows/staging-quarantine-apply.yml | LEAD-BLOCKED | blocked

@@ -65,7 +65,7 @@ use corelink_privacy_erasure_worker::orchestrator::{ErasureWorker, InMemoryErasu
 // WI-S11-008 Wave 1 real transports. The 4 effective/pseudonymize backends
 // (D1, R2Ac, R2Cas, Stripe) are real; the other 8 are reconciled to
 // NotApplicable (not shipped in prod — ADR-S11-013).
-mod access;
+pub(crate) mod access;
 mod adapter_d1;
 mod adapter_not_applicable;
 mod adapter_r2_ac;

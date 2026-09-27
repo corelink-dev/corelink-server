@@ -1,0 +1,156 @@
+name: issue-1700 staging Custom Domain
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/issue-1700-staging-custom-domain.yml'
+      - '.github/workflows/staging-quarantine-apply.yml'
+      - '.github/workflows/issue-1700-container-staging-deploy.yml'
+      - 'infra/staging/topology.json'
+      - 'infra/staging/README.md'
+      - 'scripts/staging_custom_domain.py'
+      - 'scripts/verify_issue_1700_route_inventory.py'
+      - 'scripts/staging_bootstrap_provider.py'
+      - 'scripts/plan_staging_provider.py'
+      - 'scripts/render_staging_wrangler.py'
+      - 'scripts/verify_b072_receiver.py'
+      - 'scripts/test_b072_receiver_mutations.py'
+      - 'scripts/verify_staging_target.py'
+      - 'scripts/verify_staging_topology_contract.py'
+      - 'tests/test_issue_1700_route_inventory.py'
+      - 'tests/test_staging_custom_domain.py'
+      - 'tests/test_render_staging_wrangler.py'
+      - 'tests/test_staging_bootstrap_provider.py'
+      - 'tests/test_plan_staging_provider.py'
+      - 'tests/test_verify_staging_topology_contract.py'
+      - 'tests/test_verify_staging_target.py'
+      - 'tests/test_staging_quarantine_apply_contract.py'
+      - 'scripts/test_b072_receiver_mutations.py'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Preview provider state or publish the exact staging Custom Domain'
+        required: true
+        type: choice
+        options:
+          - preview
+          - publish
+      expected_sha:
+        description: 'Exact protected main commit SHA to operate on'
+        required: true
+        type: string
+      confirm:
+        description: 'Type the mode-specific confirmation phrase'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-1700-staging-custom-domain
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: credentialless Custom Domain contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify staging topology and Custom Domain contract
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_staging_target.py
+          python3 scripts/verify_staging_topology_contract.py --expect ready
+          python3 -S -m unittest -v \
+            tests/test_staging_custom_domain.py \
+            tests/test_issue_1700_route_inventory.py \
+            tests/test_render_staging_wrangler.py \
+            tests/test_staging_bootstrap_provider.py \
+            tests/test_plan_staging_provider.py \
+            tests/test_verify_staging_topology_contract.py \
+            tests/test_verify_staging_target.py \
+            tests/test_staging_quarantine_apply_contract.py
+          python3 scripts/test_b072_receiver_mutations.py
+          python3 scripts/verify_b072_receiver.py
+
+  provider:
+    name: protected staging Custom Domain preview/publish
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      (inputs.mode == 'preview' || inputs.mode == 'publish')
+    needs: contract
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 45
+    steps:
+      - name: Confirm exact protected target and operation
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          STAGING_CF_ACCOUNT_ID: ${{ secrets.STAGING_CF_ACCOUNT_ID }}
+          CF_ZONE_ID: ${{ vars.CF_ZONE_ID }}
+          K6_TARGET_HOST: ${{ secrets.K6_TARGET_HOST }}
+          K6_TARGET_IDENTITY_RECEIPT: ${{ secrets.K6_TARGET_IDENTITY_RECEIPT }}
+          K6_STAGING_PAT: ${{ secrets.K6_STAGING_PAT }}
+          K6_STAGING_MFA_STUB: ${{ secrets.K6_STAGING_MFA_STUB }}
+          K6_STAGING_STRIPE_WHSEC: ${{ secrets.K6_STAGING_STRIPE_WHSEC }}
+          K6_STAGING_BYOK_CMK_ID: ${{ secrets.K6_STAGING_BYOK_CMK_ID }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test "$STAGING_CF_ACCOUNT_ID" = '6a1fc1c626fc2628823e60b9db01f5cd'
+          test "$CF_ZONE_ID" = '73f57f6d508beea67e2f78bea11d3c25'
+          if [[ "$MODE" == preview ]]; then
+            test "$CONFIRM" = 'preview-custom-domain-staging-1700'
+          elif [[ "$MODE" == publish ]]; then
+            test "$CONFIRM" = 'publish-custom-domain-staging-1700'
+          else
+            exit 1
+          fi
+          if [[ "$MODE" == publish ]]; then
+            test "$K6_TARGET_HOST" = 'https://staging.corelink.humangr.com'
+            for name in K6_TARGET_IDENTITY_RECEIPT K6_STAGING_PAT K6_STAGING_MFA_STUB K6_STAGING_STRIPE_WHSEC K6_STAGING_BYOK_CMK_ID; do
+              test -n "${!name:-}"
+            done
+          fi
+
+      - name: Checkout exact protected dispatch SHA
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Recheck immutable staging topology contract
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_staging_target.py
+          python3 scripts/verify_staging_topology_contract.py --expect ready
+
+      - name: Preview exact provider state or publish and verify readiness
+        env:
+          MODE: ${{ inputs.mode }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          STAGING_CF_ACCOUNT_ID: ${{ secrets.STAGING_CF_ACCOUNT_ID }}
+          CF_ZONE_ID: ${{ vars.CF_ZONE_ID }}
+        run: |
+          set -euo pipefail
+          python3 scripts/staging_custom_domain.py \
+            --mode "$MODE" \
+            --receipt "$RUNNER_TEMP/staging-custom-domain-${GITHUB_RUN_ID}.json"
+
+      - name: Upload redacted provider receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-custom-domain-${{ github.run_id }}
+          path: ${{ runner.temp }}/staging-custom-domain-${{ github.run_id }}.json
+          retention-days: 30
+          if-no-files-found: warn

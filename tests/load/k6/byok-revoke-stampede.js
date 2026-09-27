@@ -31,14 +31,14 @@
 import http from 'k6/http';
 import { check, sleep, fail } from 'k6';
 import { Counter, Trend } from 'k6/metrics';
+import { admissionHeaders, requireAdmissionConfig } from './lib/staging_load_admission.js';
 
 const TARGET_HOST = __ENV.K6_TARGET_HOST || 'https://staging.corelink.humangr.com';
-const AUTH_BEARER = __ENV.K6_AUTH_BEARER || '';
 const TEST_CMK_ID = __ENV.K6_BYOK_TEST_CMK_ID || '';
 
 // Defer env-required gate to setup() (k6 inspect runs module-load only).
 export function setup() {
-  if (!AUTH_BEARER) throw new Error('K6_AUTH_BEARER required (admin staging PAT)');
+  requireAdmissionConfig();
   if (!TEST_CMK_ID) throw new Error('K6_BYOK_TEST_CMK_ID required (pre-warmed CMK id)');
   return {};
 }
@@ -67,11 +67,10 @@ export const options = {
 };
 
 function adminHeaders() {
-  return {
-    'authorization': `Bearer ${AUTH_BEARER}`,
+  return admissionHeaders({
     'content-type': 'application/json',
     'x-corelink-load-test': 'r3-prep',
-  };
+  });
 }
 
 function pollKillSwitchStatus(cmkId) {

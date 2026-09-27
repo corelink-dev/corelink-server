@@ -63,6 +63,8 @@ pub mod region_map;
 pub mod staging_load_test_admission;
 /// Exact-run resource attribution writes for staging load-test teardown.
 pub mod staging_load_test_ownership;
+/// Atomic nine-class census and exact-run seal for staging load tests.
+pub mod staging_load_test_seal;
 
 /// Configuration for the native-container storage layer, sourced
 /// entirely from environment variables.
