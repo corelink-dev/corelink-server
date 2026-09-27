@@ -737,7 +737,8 @@ def _check_b089_surface_contract(item: dict[str, object], root: Path = ROOT) -> 
     draft_path = root / "legal/sla/v1.1.0.md"
     if draft_path.is_symlink() or not draft_path.is_file():
         raise PacketError("B-089 v1.1.0 prelaunch draft missing or non-regular")
-    draft = re.sub(r"\s+", " ", draft_path.read_text(encoding="utf-8"))
+    draft_raw = draft_path.read_text(encoding="utf-8")
+    draft = re.sub(r"\s+", " ", draft_raw)
     for marker in (
         "DRAFT — NOT EFFECTIVE", "not a customer agreement", "No SLA service-credit program is currently active",
         "SLA_CREDITS_ENABLED", "#2568", "Counsel approval", "Free", "Solo", "Starter", "Pro", "Max", "Enterprise",
@@ -762,7 +763,7 @@ def _check_b089_surface_contract(item: dict[str, object], root: Path = ROOT) -> 
     if "issued automatically against the next invoice" in draft.lower():
         raise PacketError("B-089 v1.1.0 draft reintroduced active issuance promise")
     expected_tiers = ("Free", "Solo", "Starter", "Pro", "Max", "Enterprise")
-    tier_rows = re.findall(r"^\| (Free|Solo|Starter|Pro|Max|Enterprise) \|([^\n]*)$", draft, flags=re.M)
+    tier_rows = re.findall(r"^\| (Free|Solo|Starter|Pro|Max|Enterprise) \|([^\n]*)$", draft_raw, flags=re.M)
     if [tier for tier, _ in tier_rows] != list(expected_tiers):
         raise PacketError("B-089 v1.1.0 six-tier credit matrix drifted")
     for tier, row in tier_rows:
