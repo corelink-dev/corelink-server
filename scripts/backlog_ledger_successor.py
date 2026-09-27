@@ -697,6 +697,9 @@ def install(api):
         for old, new in (
             ("base-ref: b312a963122e9041f8a56e10127ef20e6367aea3", f"base-ref: {base_sha}"),
             ("base-sha: b312a963122e9041f8a56e10127ef20e6367aea3", f"base-sha: {base_sha}"),
+            ("observed-at: 2026-09-24", "observed-at: 2026-09-27"),
+            ("done-count: 332", "done-count: 333"),
+            ("parked-count: 30", "parked-count: 29"),
         ):
             if text.count(old) != 1:
                 raise LedgerError("v0010 derivation source drifted")
