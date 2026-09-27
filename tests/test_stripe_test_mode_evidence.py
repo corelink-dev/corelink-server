@@ -20,6 +20,55 @@ SPEC.loader.exec_module(MODULE)
 
 
 class StripeRestrictedKeyContractTests(unittest.TestCase):
+    def test_identity_only_performs_one_read_and_records_boolean_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "receipt.json"
+            with patch.object(
+                MODULE,
+                "request_json",
+                return_value=(200, {"object": "account", "id": "acct_expected"}),
+            ) as request:
+                result = MODULE.run_identity_probe(
+                    "rk_test_fixture", "123456", "acct_expected", output
+                )
+            self.assertEqual(result, 0)
+            request.assert_called_once_with("rk_test_fixture", "GET", "/v1/account")
+            receipt_text = output.read_text(encoding="utf-8")
+            receipt = json.loads(receipt_text)
+            self.assertIs(receipt["livemode"], False)
+            self.assertIs(receipt["account_matches_expected"], True)
+            self.assertEqual(receipt["provider_mutations"], 0)
+            self.assertEqual(receipt["requests"], ["GET /v1/account"])
+            self.assertNotIn("acct_expected", receipt_text)
+            self.assertNotIn("rk_test_fixture", receipt_text)
+
+    def test_identity_only_records_wrong_account_without_exposing_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "receipt.json"
+            with patch.object(
+                MODULE,
+                "request_json",
+                return_value=(200, {"object": "account", "id": "acct_other"}),
+            ) as request:
+                with self.assertRaises(MODULE.ProbeError):
+                    MODULE.run_identity_probe(
+                        "rk_test_fixture", "123456", "acct_expected", output
+                    )
+            request.assert_called_once_with("rk_test_fixture", "GET", "/v1/account")
+            receipt_text = output.read_text(encoding="utf-8")
+            receipt = json.loads(receipt_text)
+            self.assertIs(receipt["account_matches_expected"], False)
+            self.assertIs(receipt["livemode"], False)
+            self.assertNotIn("acct_other", receipt_text)
+
+    def test_identity_only_rejects_non_test_key_before_request(self) -> None:
+        with patch.object(MODULE, "request_json") as request:
+            with self.assertRaises(MODULE.ProbeError):
+                MODULE.run_identity_probe(
+                    "rk_live_fixture", "123456", "acct_expected", Path("unused-receipt.json")
+                )
+        request.assert_not_called()
+
     def test_restricted_test_key_runs_only_through_mocked_requests(self) -> None:
         responses = [
             (200, {"object": "account", "id": "acct_fixture"}),
@@ -74,6 +123,8 @@ class StripeRestrictedKeyContractTests(unittest.TestCase):
             original.replace("rk_test_", "sk_test_"),
             original.replace("Accounts: Read", "Accounts: Write"),
             original.replace("Customers: Write", "Customers: Read"),
+            original.replace("identity-only", "customer-mutation-only"),
+            original.replace("STRIPE_TEST_ACCOUNT_ID", "STRIPE_OTHER_ACCOUNT_ID"),
         )
         for index, mutated in enumerate(mutations):
             with self.subTest(mutation=index):

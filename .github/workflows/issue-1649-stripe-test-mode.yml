@@ -25,8 +25,16 @@ on:
       - docs/operator/issue-1649-stripe-test-mode-evidence.md
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'Read-only account identity probe for #2565, or the existing disposable customer lifecycle probe'
+        required: true
+        type: choice
+        default: customer-lifecycle
+        options:
+          - identity-only
+          - customer-lifecycle
       confirm:
-        description: 'Type run-i1649-stripe-test-mode to run the bounded test-mode probe'
+        description: 'Type run-i2565-stripe-identity-only for identity-only, or run-i1649-stripe-test-mode for customer-lifecycle'
         required: true
         type: string
 
@@ -84,7 +92,7 @@ jobs:
           persist-credentials: false
 
       - name: Run bounded Stripe test-mode probe
-        if: steps.secret-gate.outputs.run == 'true'
+        if: steps.secret-gate.outputs.run == 'true' && inputs.mode == 'customer-lifecycle'
         env:
           I1649_CONFIRM: ${{ inputs.confirm }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
@@ -94,11 +102,25 @@ jobs:
           python3 scripts/stripe_test_mode_evidence.py \
             --output artifacts/issue-1649-stripe-test-mode-receipt.json
 
+      - name: Run read-only Stripe account identity probe
+        if: steps.secret-gate.outputs.run == 'true' && inputs.mode == 'identity-only'
+        env:
+          I2565_CONFIRM: ${{ inputs.confirm }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_TEST_ACCOUNT_ID: ${{ vars.STRIPE_TEST_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${STRIPE_SECRET_KEY}"
+          python3 scripts/stripe_test_mode_evidence.py --identity-only \
+            --output artifacts/issue-2565-stripe-identity-receipt.json
+
       - name: Upload redacted receipt
         if: always() && steps.secret-gate.outputs.run == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: issue-1649-stripe-test-mode-receipt-${{ github.run_id }}
-          path: artifacts/issue-1649-stripe-test-mode-receipt.json
+          name: stripe-${{ inputs.mode }}-receipt-${{ github.run_id }}
+          path: |
+            artifacts/issue-1649-stripe-test-mode-receipt.json
+            artifacts/issue-2565-stripe-identity-receipt.json
           if-no-files-found: error
           retention-days: 14
