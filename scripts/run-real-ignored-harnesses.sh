@@ -15,6 +15,7 @@ readonly RECEIPT_DIR="${REAL_HARNESS_RECEIPT_DIR:-artifacts/real-ignored-harness
 readonly RECEIPT_FILE="${RECEIPT_DIR}/receipt.jsonl"
 readonly RECEIPT_SHA="${GITHUB_SHA:-}"
 RAW_LOGS=()
+LAST_DIAGNOSTIC_CLASS=""
 
 usage() {
   printf 'usage: %s {d1|r2|stripe|neon|all}\n' "$SCRIPT_NAME" >&2
@@ -42,8 +43,13 @@ record_receipt() {
   # Values are closed selectors/statuses plus GitHub's immutable run SHA;
   # credentials never enter receipts.
   local profile="$1" test_name="$2" status="$3"
-  printf '{"sha":"%s","profile":"%s","test":"%s","status":"%s"}\n' \
-    "$RECEIPT_SHA" "$profile" "$test_name" "$status" >> "$RECEIPT_FILE"
+  if [[ ( "$status" == "failed" || "$status" == "not-discovered" ) && "$LAST_DIAGNOSTIC_CLASS" =~ ^[A-Za-z0-9_]+$ ]]; then
+    printf '{"sha":"%s","profile":"%s","test":"%s","status":"%s","diagnostic_class":"%s"}\n' \
+      "$RECEIPT_SHA" "$profile" "$test_name" "$status" "$LAST_DIAGNOSTIC_CLASS" >> "$RECEIPT_FILE"
+  else
+    printf '{"sha":"%s","profile":"%s","test":"%s","status":"%s"}\n' \
+      "$RECEIPT_SHA" "$profile" "$test_name" "$status" >> "$RECEIPT_FILE"
+  fi
 }
 
 finish_receipt() {
@@ -83,9 +89,15 @@ run_cargo() {
     cargo_rc=$?
   fi
   if [[ "$cargo_rc" -ne 0 ]]; then
+    # The classifier reads private output but emits only a bounded diagnostic
+    # category, never the provider body, source line, URL, or test payload.
+    LAST_DIAGNOSTIC_CLASS="$(python3 scripts/verify_real_ignored_harnesses.py --classify-failure "$raw_log")"
+    if [[ ! "$LAST_DIAGNOSTIC_CLASS" =~ ^(rustc_E[0-9]{4}|rust_compile_error|provider_http_[1-5][0-9]{2}|network_connection_refused|network_timeout|network_dns_failure|test_panic|test_assertion_failure|unclassified_failure)$ ]]; then
+      LAST_DIAGNOSTIC_CLASS="unclassified_failure"
+    fi
     record_receipt "$profile" "$expected" "failed"
-    printf 'sha=%s profile=%s test=%s status=failed\n' \
-      "$RECEIPT_SHA" "$profile" "$expected" > "$log_file"
+    printf 'sha=%s profile=%s test=%s status=failed diagnostic_class=%s\n' \
+      "$RECEIPT_SHA" "$profile" "$expected" "$LAST_DIAGNOSTIC_CLASS" > "$log_file"
     rm -f -- "$raw_log"
     return "$cargo_rc"
   fi
@@ -95,9 +107,10 @@ run_cargo() {
   local passed
   passed="$(awk -v target="$expected" '$1 == "test" && $NF == "ok" && ($2 == target || $2 ~ ("::" target "$")) { count++ } END { print count + 0 }' "$raw_log")"
   if [[ "$passed" != "1" ]]; then
+    LAST_DIAGNOSTIC_CLASS="expected_test_not_discovered"
     record_receipt "$profile" "$expected" "not-discovered"
-    printf 'sha=%s profile=%s test=%s status=not-discovered\n' \
-      "$RECEIPT_SHA" "$profile" "$expected" > "$log_file"
+    printf 'sha=%s profile=%s test=%s status=not-discovered diagnostic_class=%s\n' \
+      "$RECEIPT_SHA" "$profile" "$expected" "$LAST_DIAGNOSTIC_CLASS" > "$log_file"
     printf 'error: expected exactly one passing ignored test named %s; observed %s\n' \
       "$expected" "$passed" >&2
     rm -f -- "$raw_log"

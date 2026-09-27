@@ -90,6 +90,53 @@ SOURCE_SHA256 = {
     "crates/corelink-audit-chain/tests/neon_shadow_real.rs": "dfd22738e96d82695b40addf64b3dbaf611fbd8026346f0b4e33b28f10fe79eb",
 }
 
+
+def safe_failure_diagnostic(raw_output: str) -> str:
+    """Map private Cargo output to a small, non-sensitive diagnostic class.
+
+    Never return a matched line, provider body, source location, URL, or test
+    payload. Every result is either a fixed label or a compiler/HTTP status
+    code selected by a narrow numeric expression.
+    """
+
+    if match := re.search(r"\berror\[(E[0-9]{4})\]", raw_output):
+        return f"rustc_{match.group(1)}"
+    if re.search(r"(?i)\bcould not compile\b", raw_output):
+        return "rust_compile_error"
+    if match := re.search(r"(?i)\b(?:d1\s+http|http\s+status|status(?:_code)?|status\s+code)\s*[:= ]\s*([1-5][0-9]{2})\b", raw_output):
+        return f"provider_http_{match.group(1)}"
+    if re.search(r"(?i)\bconnection refused\b", raw_output):
+        return "network_connection_refused"
+    if re.search(r"(?i)\b(?:timed out|timeout)\b", raw_output):
+        return "network_timeout"
+    if re.search(r"(?i)\b(?:name or service not known|temporary failure in name resolution|dns resolution failed)\b", raw_output):
+        return "network_dns_failure"
+    if re.search(r"(?i)\bpanicked at\b", raw_output):
+        return "test_panic"
+    if re.search(r"(?m)^test result:\s+FAILED\b", raw_output):
+        return "test_assertion_failure"
+    return "unclassified_failure"
+
+
+def failure_diagnostic_negative_controls() -> None:
+    """Prove classification retains no token, DSN, payload, or personal data."""
+
+    secret = "CF_DIAGNOSTIC_SENTINEL_never_emit"
+    dsn = "postgresql://private-user:private-pass@private.example.test/db"
+    personal = "private.person@example.test"
+    fixtures = (
+        (f"error[E0433]: {secret} {dsn} {personal}", "rustc_E0433"),
+        (f"D1 HTTP 503: {secret} DSN={dsn} user={personal}", "provider_http_503"),
+        (f"thread 'd1' panicked at {secret} {dsn} {personal}", "test_panic"),
+        (f"opaque provider response {secret} {dsn} {personal}", "unclassified_failure"),
+    )
+    for raw_output, expected in fixtures:
+        summary = safe_failure_diagnostic(raw_output)
+        if summary != expected:
+            fail(f"failure diagnostic fixture expected {expected}, received {summary}")
+        if any(marker in summary for marker in (secret, dsn, personal, raw_output)):
+            fail("failure diagnostic exposed private input material")
+
 CONTRACT_TRIGGER_INPUTS = (
     ".github/workflows/issue-1650-real-integration-contract.yml",
     ".github/workflows/campaign-ci.yml",
@@ -448,6 +495,12 @@ def assert_contract(workflow: str, runner: str) -> None:
         fail("raw Cargo output is copied into an uploadable artifact")
     if ' >"$raw_log" 2>&1' not in sh or 'tee "$log_file"' in sh:
         fail("raw Cargo output is not isolated from Actions logs and artifacts")
+    if 'LAST_DIAGNOSTIC_CLASS="$(python3 scripts/verify_real_ignored_harnesses.py --classify-failure "$raw_log")"' not in sh:
+        fail("failed Cargo output is not reduced to a sanitized diagnostic class")
+    if 'status=failed diagnostic_class=%s' not in sh:
+        fail("failed test artifact omits its sanitized diagnostic class")
+    if '"diagnostic_class":"%s"' not in sh:
+        fail("failed test receipt omits its sanitized diagnostic class")
     for status in ("failed", "not-discovered", "passed"):
         if f"sha=%s profile=%s test=%s status={status}" not in sh:
             fail(f"redacted test log summary is missing status: {status}")
@@ -1016,7 +1069,75 @@ def preflight_runtime_checks() -> None:
             fail("D1-only inputs did not pass preflight without R2 credentials")
 
 
+def failure_receipt_runtime_checks() -> None:
+    """Prove fail-fast receipts expose only a sanitized error category."""
+
+    secret = "CF_DIAGNOSTIC_SENTINEL_never_emit"
+    dsn = "postgresql://private-user:private-pass@private.example.test/db"
+    personal = "private.person@example.test"
+    with tempfile.TemporaryDirectory(prefix="b068-failure-receipt-") as temp:
+        root = Path(temp)
+        cargo_calls = root / "cargo-calls"
+        artifact_dir = root / "receipt"
+        fake_cargo = root / "cargo"
+        fake_cargo.write_text(
+            "#!/bin/sh\n"
+            'printf "%s\\n" "$*" >> "$FAKE_CARGO_CALLS"\n'
+            f"printf '%s\\n' \"thread 'd1' panicked at {secret} {dsn} {personal}\" >&2\n"
+            "exit 101\n",
+            encoding="utf-8",
+        )
+        fake_cargo.chmod(0o700)
+        env = os.environ.copy()
+        env.update(
+            {
+                "CLOUDFLARE_ACCOUNT_ID": "account",
+                "CF_API_TOKEN": "cf-token",
+                "D1_DATABASE_ID": "database",
+                "GITHUB_SHA": "a" * 40,
+                "REAL_HARNESS_RECEIPT_DIR": str(artifact_dir),
+                "FAKE_CARGO_CALLS": str(cargo_calls),
+                "PATH": os.pathsep.join((str(root), env.get("PATH", ""))),
+            }
+        )
+        for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_TEST_BUCKET"):
+            env.pop(name, None)
+        result = subprocess.run(
+            ["bash", str(RUNNER_PATH), "d1"],
+            env=env,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 101:
+            fail("failed Cargo invocation did not preserve its terminal exit code")
+        calls = cargo_calls.read_text(encoding="utf-8").splitlines()
+        if len(calls) != 1 or "d1_acquire_lock_then_held_then_release" not in calls[0]:
+            fail("failed first D1 test did not fail fast before subsequent profile tests")
+        receipt = (artifact_dir / "receipt.jsonl").read_text(encoding="utf-8").splitlines()
+        entries = [json.loads(line) for line in receipt]
+        if len(entries) != 3 or [entry["status"] for entry in entries] != ["started", "failed", "failed"]:
+            fail("failed first D1 test did not leave complete started/test/profile receipts")
+        if any(entry.get("diagnostic_class") != "test_panic" for entry in entries[1:]):
+            fail("failed D1 receipts omitted the safe panic classification")
+        log_text = (artifact_dir / "d1-d1_acquire_lock_then_held_then_release.log").read_text(encoding="utf-8")
+        public_output = result.stdout + result.stderr + log_text + "\n".join(receipt)
+        if "diagnostic_class=test_panic" not in log_text:
+            fail("redacted test log omitted its diagnostic class")
+        if any(marker in public_output for marker in (secret, dsn, personal)):
+            fail("runner or artifact exposed private text from raw Cargo output")
+        if any(path.name.endswith(".log") and "private" in path.read_text(encoding="utf-8", errors="replace") for path in artifact_dir.iterdir()):
+            fail("artifact contains raw private Cargo output")
+
+
 def main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == "--classify-failure":
+        raw_output = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+        print(safe_failure_diagnostic(raw_output))
+        return 0
+
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     contract_workflow = CONTRACT_WORKFLOW_PATH.read_text(encoding="utf-8")
     campaign_workflow = CAMPAIGN_WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -1027,6 +1148,8 @@ def main() -> int:
     mutation_checks(workflow, runner, contract_workflow)
     campaign_mutation_checks(campaign_workflow)
     preflight_runtime_checks()
+    failure_diagnostic_negative_controls()
+    failure_receipt_runtime_checks()
     print("B-068 executor contract: PASS (full allow-list + negative mutations)")
     return 0
 
