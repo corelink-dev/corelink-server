@@ -144,7 +144,7 @@ describe("B-216 protected receiver route admission", () => {
     let creates = 0;
     const fetchImpl = async (url, options) => {
       if (url.endsWith(`/accounts/${TARGET.accountId}`)) return Response.json({ success: true, result: { id: TARGET.accountId } });
-      if (url.includes("/d1/database?") || url.includes("/workers/scripts?")) return Response.json({ success: true, result: [], result_info: { count: 0, page: 1, per_page: 100, total_count: 0 } });
+      if (url.includes("/d1/database?") || url.endsWith("/workers/scripts")) return Response.json({ success: true, result: [], result_info: { count: 0, page: 1, per_page: 100, total_count: 0 } });
       if (url.endsWith("/d1/database")) {
         creates += 1;
         expect(options.method).toBe("POST");
