@@ -1273,11 +1273,18 @@ def verify_policy_gate_cargo_deny(root: Path, baseline: Path) -> None:
         policy = ".github/workflows/dependabot-policy.yml"
         run_original_shell(root, policy, "policy-gate", "Prepare isolated Cargo policy tree (PR data only)",
                            cwd=baseline, env=env)
-        # The real policy step makes every copied input read-only to keep PR
-        # data inert. Cargo-deny needs to refresh the disposable fixture's
-        # lockfile while reading its valid package manifest, so grant write
-        # access only to that throwaway lockfile after the original setup runs.
-        (tmp / "policy-tree/Cargo.lock").chmod(0o644)
+        # The real policy step copies manifests and lock data only, then makes
+        # them read-only. Keep candidate source out of the policy tree and add
+        # a harness-owned target so Cargo sees a valid disposable package.
+        policy_tree = tmp / "policy-tree"
+        (policy_tree / "src").mkdir(parents=True)
+        (policy_tree / "src/lib.rs").write_text(
+            "//! Synthetic target for the disposable cargo-deny fixture.\n",
+            encoding="utf-8",
+        )
+        # Cargo-deny 0.19.8 refreshes the throwaway lockfile. Grant write
+        # access only to that disposable lockfile after the original setup.
+        (policy_tree / "Cargo.lock").chmod(0o644)
         command = named_run_block(root, policy, "policy-gate", "Run cargo-deny licenses (fail-closed)")
         checked = subprocess.run(["bash", "-euo", "pipefail", "-c", command], cwd=baseline,
                                  env=env, capture_output=True, text=True)
