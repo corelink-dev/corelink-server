@@ -12,6 +12,8 @@ on:
       - "tests/test_i2574_p0_transition_fixture.py"
       - "tests/fixtures/i2574_old_base_bytes/**"
       - "tests/fixtures/i2574_delivery_bytes/**"
+      - "docs/internal/secrets-checklist.md"
+      - "docs/campaigns/remediation/wp150-workflow-ownership.md"
       - "specs/03_architecture/issue-2176-grpc-transport-contract.md"
       - "worker/src/grpc_transport_gate.ts"
       - "worker/src/grpc_staging_authorization.ts"

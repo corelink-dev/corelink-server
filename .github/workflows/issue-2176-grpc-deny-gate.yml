@@ -46,6 +46,8 @@ on:
       - "tests/test_i2574_p0_transition_fixture.py"
       - "tests/fixtures/i2574_old_base_bytes/**"
       - "tests/fixtures/i2574_delivery_bytes/**"
+      - "docs/internal/secrets-checklist.md"
+      - "docs/campaigns/remediation/wp150-workflow-ownership.md"
       - ".github/workflows/issue-2176-grpc-deny-gate.yml"
       - ".github/workflows/issue-2574-staging-grpc-diagnostic.yml"
 

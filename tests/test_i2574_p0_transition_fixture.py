@@ -94,6 +94,15 @@ class P0TransitionFixtureTests(unittest.TestCase):
             executable.write_text("#!/bin/sh\nexit 0\n")
             executable.chmod(0o755)
             policy.require_regular_tree(ordinary)
+
+            canonical_base, canonical_candidate = Path(directory) / "canonical-base", Path(directory) / "canonical-candidate"
+            canonical_base.mkdir(); canonical_candidate.mkdir()
+            os.symlink("../.actionlint.yaml", canonical_base / ".github-actionlint")
+            os.symlink("../.actionlint.yaml", canonical_candidate / ".github-actionlint")
+            policy.require_regular_tree(canonical_candidate, canonical_base)
+            (canonical_candidate / ".github-actionlint").unlink()
+            os.symlink("../retargeted", canonical_candidate / ".github-actionlint")
+            with self.assertRaises(policy.ContractError): policy.require_regular_tree(canonical_candidate, canonical_base)
             for name in policy.POLICY:
                 target = delivery / name
                 original = target.read_bytes(); target.write_bytes(original + b"\nmutation\n")

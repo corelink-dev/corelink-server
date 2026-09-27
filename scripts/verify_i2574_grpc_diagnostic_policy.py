@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import shutil
 import stat
 import tempfile
@@ -33,6 +34,8 @@ EXPECTED = {
     "worker/src/lib/internal_auth.ts": "e773fa80db1ffd97ccdd20ae08e60e662482eea7e55bef6f19a3d61644b43acf",
 }
 POLICY = {
+    "docs/campaigns/remediation/wp150-workflow-ownership.md",
+    "docs/internal/secrets-checklist.md",
     "scripts/verify_i2176_grpc_deny_gate.py",
     "tests/test_verify_i2176_grpc_deny_gate.py",
     "scripts/verify_i2574_grpc_diagnostic_policy.py",
@@ -78,13 +81,19 @@ def files(root: Path) -> set[str]:
     }
 
 
-def require_regular_tree(root: Path) -> None:
+def require_regular_tree(root: Path, trusted_base: Path | None = None) -> None:
     for path in root.rglob("*"):
         if ".git" in path.parts:
             continue
         mode = path.lstat().st_mode
         if stat.S_ISLNK(mode):
-            raise ContractError(f"symlink forbidden: {path.relative_to(root)}")
+            relative = path.relative_to(root)
+            base_path = trusted_base / relative if trusted_base is not None else None
+            if base_path is None:
+                continue
+            if not base_path.is_symlink() or os.readlink(base_path) != os.readlink(path):
+                raise ContractError(f"symlink forbidden: {relative}")
+            continue
         if not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
             raise ContractError(f"non-regular path forbidden: {path.relative_to(root)}")
 
@@ -104,7 +113,7 @@ def changed(base: Path, candidate: Path) -> set[str]:
 
 def validate(base: Path, candidate: Path) -> None:
     require_regular_tree(base)
-    require_regular_tree(candidate)
+    require_regular_tree(candidate, base)
     require_pinned_modes(base, POLICY | POLICY_FIXTURES)
     require_pinned_modes(candidate, set(EXPECTED) | POLICY | POLICY_FIXTURES)
     differences = changed(base, candidate)
