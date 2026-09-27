@@ -4,8 +4,8 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 264
-workflow-paths-sha256: 14065f22ec9a222d8df0793e4c267b82d86750ada25e85eab112d3682eccfaad
+workflow-count: 266
+workflow-paths-sha256: 0a1739cd11943b5a8f60e6e992e9108a6e1fde531f45cb4ec3166f2eadb67ceb
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -147,6 +147,8 @@ workflow-paths-sha256: 14065f22ec9a222d8df0793e4c267b82d86750ada25e85eab112d3682
 .github/workflows/issue-1682-b316-vendor-review.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1690-p12-p14-verifier.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1699-ownership-preparation.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1700-container-staging-deploy.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1700-route-inventory-ci.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1720-cloudflare-drift-audit.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1720-cloudflare-drift-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1721-r2-lock-proof.yml | LEAD-BLOCKED | blocked
@@ -198,10 +200,10 @@ workflow-paths-sha256: 14065f22ec9a222d8df0793e4c267b82d86750ada25e85eab112d3682
 .github/workflows/issue-2649-b114-policy.yml | WP-B114 | owned
 .github/workflows/issue-2663-teardown-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2664-worker-synthetic-tenant.yml | LEAD-BLOCKED | blocked
-.github/workflows/issue-2699-cloudflare-handoff-contract.yml | LEAD-BLOCKED | blocked
-.github/workflows/issue-2702-backlog-policy.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2665-dsr-teardown.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2666-byok-teardown.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2699-cloudflare-handoff-contract.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2702-backlog-policy.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-605-billing-fixture.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-ci-pack.yml | LEAD-BLOCKED | blocked
 .github/workflows/legal-changes-review.yml | LEAD-BLOCKED | blocked

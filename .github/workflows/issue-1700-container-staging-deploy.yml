@@ -1,0 +1,79 @@
+name: issue-1700 protected staging container deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        required: true
+        type: string
+      confirm:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 45
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      STAGING_R2_S3_ENDPOINT: ${{ secrets.STAGING_R2_S3_ENDPOINT }}
+    steps:
+      - name: Confirm exact protected route-free operation
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          test "$CONFIRM" = 'deploy-container-staging-1700'
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$STAGING_R2_S3_ENDPOINT"
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Prove hosted Docker and Cloudflare Worker access
+        run: |
+          set -euo pipefail
+          docker version
+          docker info
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging/settings" \
+            | python3 -c 'import json,sys; assert json.load(sys.stdin).get("success") is True'
+      - name: Fail closed when a canonical staging route exists
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_issue_1700_route_inventory.py
+      - name: Render and validate isolated root config
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/staging-config"
+          python3 scripts/render_staging_wrangler.py --phase bootstrap --worker root --output "$RUNNER_TEMP/staging-config/root.toml"
+          python3 - "$RUNNER_TEMP/staging-config/root.toml" <<'PY'
+          import sys,tomllib
+          config=tomllib.load(open(sys.argv[1],'rb'))
+          assert config['name']=='corelink-staging'
+          assert config.get('workers_dev') is False
+          assert not any(x in config for x in ('routes','route','custom_domain'))
+          assert config['containers'][0]['image'].endswith('Dockerfile')
+          PY
+      - name: Deploy root with container rollout and no route
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm exec wrangler deploy --config "$RUNNER_TEMP/staging-config/root.toml"
+      - name: Read back canonical staging route inventory
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_issue_1700_route_inventory.py
