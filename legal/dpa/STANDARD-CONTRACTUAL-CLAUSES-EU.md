@@ -76,8 +76,9 @@ where applicable.
 The TOMs required under Clause 8.6 and Annex II are described in DPA §8 and
 `specs/03_architecture/security_model.md`. Highlights:
 
-- Pseudonymisation and encryption (TLS 1.3+; AES-256/XChaCha20-Poly1305 at
-  rest; per-tenant key separation; Enterprise BYOK).
+- Pseudonymisation and encryption in transit (TLS 1.2 minimum; TLS 1.3
+  negotiated where supported). At-rest encryption uses AES-256/XChaCha20-Poly1305
+  for BYOK; per-tenant key separation; Enterprise BYOK.
 - Confidentiality, integrity, availability, and resilience of processing
   systems (multi-region active-active; PAT-REGION-FAILOVER-001).
 - Restoration of availability after an incident (RTO/RPO per

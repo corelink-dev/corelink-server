@@ -116,8 +116,9 @@ onboarding (`docs/compliance/vendor-reviews/*.md`).
 
 ## 3. Schrems II supplementary measures (applied across sub-processors)
 
-1. **Technical.** Encryption in transit (TLS 1.3+) and at rest (AES-256 /
-   XChaCha20-Poly1305 for BYOK); per-tenant key separation; data-residency
+1. **Technical.** Encryption in transit uses TLS 1.2 as the minimum; TLS 1.3 is
+   negotiated where supported. At-rest encryption uses AES-256 /
+   XChaCha20-Poly1305 for BYOK; per-tenant key separation; data-residency
    pinning; cryptographic erasure NIST SP 800-88 Rev. 1 equivalence.
 2. **Organisational.** Vendor security questionnaires renewed annually;
    continuous monitoring (Drata/Vanta); transparency reporting; warrant
