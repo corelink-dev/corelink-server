@@ -60,6 +60,7 @@ import {
   isStagingGrpcDiagnosticPath,
   verifyStagingGrpcDiagnosticBinding,
 } from "./grpc_staging_authorization.js";
+import { isNonRedirectNativeGrpcResponse } from "./grpc_staging_transport.js";
 import { handleRunnerPrepare } from "./lib/runner_credential_routes.js";
 import {
   drainCredentialCleanupObligations,
@@ -429,10 +430,11 @@ export class CoreLinkServer implements DurableObject {
     if (container === undefined || !container.running) return grpcDiagnosticUnavailable();
 
     try {
-      return await proxyToContainer(request, container.getTcpPort(CONTAINER_PORT), {
+      const response = await proxyToContainer(request, container.getTcpPort(CONTAINER_PORT), {
         signal: request.signal,
         redirect: "manual",
       });
+      return isNonRedirectNativeGrpcResponse(response) ? response : grpcDiagnosticUnavailable();
     } catch {
       return grpcDiagnosticUnavailable();
     }

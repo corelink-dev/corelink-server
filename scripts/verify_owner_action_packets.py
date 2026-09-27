@@ -45,6 +45,7 @@ B089_SURFACES = (
     "apps/docs/src/pages/legal/terms.tsx",
     "apps/docs/src/lib/pricing.ts",
 )
+B089_HISTORICAL_V1_SHA256 = "4b6e39a0891eecf32640e9815386436e155e3334cd655ea180ca6f3bc1af6d09"
 ITEM_FIELDS = {
     "id", "owner", "status", "action_type", "procedure",
     "inputs_and_credentials_boundary", "evidence", "expected_postcondition",
@@ -709,11 +710,7 @@ def _check_b110_evidence(item: dict[str, object]) -> None:
 
 
 def _check_b089_surface_contract(item: dict[str, object], root: Path = ROOT) -> None:
-    """Pin the *unresolved* legal/pricing contradiction, not a false closure.
-
-    An executed amendment or authorized settlement must update this census and
-    its tests together. A missing path or unilateral copy change cannot pass.
-    """
+    """Pin the approved but inactive Enterprise-only prelaunch posture."""
     expected_references = ["BACKLOG.md#B-089", *B089_SURFACES]
     if item["references"] != expected_references:
         raise PacketError("B-089 source references drifted")
@@ -734,23 +731,87 @@ def _check_b089_surface_contract(item: dict[str, object], root: Path = ROOT) -> 
         except (OSError, UnicodeDecodeError) as exc:
             raise PacketError(f"B-089 source unreadable: {path_text}") from exc
 
-    sla = sources[B089_SURFACES[0]]
-    slo_section = sla.split("## 2. Uptime SLO per Tier", 1)
-    if len(slo_section) != 2:
-        raise PacketError("B-089 SLA tier section missing")
-    slo_rows = slo_section[1].split("\n## ", 1)[0]
-    tier_rows = re.findall(r"^\| \*\*\w+\*\* \|.*$", slo_rows, flags=re.M)
-    sla_tiers = [row.split("**", 2)[1] for row in tier_rows]
-    if sla_tiers != ["Free", "Starter", "Pro", "Enterprise"]:
-        raise PacketError(f"B-089 executed SLA tier census drifted: {sla_tiers}")
-    for row, credit_expected in zip(tier_rows, (False, True, True, True), strict=True):
-        coverage = row.rsplit("|", 2)[1].strip().lower()
-        positive = "service credits per §4" in coverage
-        negative = "no service credits" in coverage
-        if positive != credit_expected or negative == credit_expected:
-            raise PacketError(f"B-089 executed SLA tier credit coverage drifted: {row.split('**', 2)[1]}")
-    if "issued automatically against the next invoice" not in sla or "sole and exclusive remedy" not in sla:
-        raise PacketError("B-089 executed SLA credit/remedy claim drifted")
+    historical_path = root / B089_SURFACES[0]
+    if hashlib.sha256(historical_path.read_bytes()).hexdigest() != B089_HISTORICAL_V1_SHA256:
+        raise PacketError("B-089 historical v1.0.0 SHA-256 differs from the approved base bytes")
+    draft_path = root / "legal/sla/v1.1.0.md"
+    if draft_path.is_symlink() or not draft_path.is_file():
+        raise PacketError("B-089 v1.1.0 prelaunch draft missing or non-regular")
+    draft_raw = draft_path.read_text(encoding="utf-8")
+    draft = re.sub(r"\s+", " ", draft_raw)
+    for marker in (
+        "DRAFT — NOT EFFECTIVE", "not a customer agreement", "No SLA service-credit program is currently active",
+        "SLA_CREDITS_ENABLED", "#2568", "Counsel approval", "Free", "Solo", "Starter", "Pro", "Max", "Enterprise",
+        "0 < shortfall < 0.5 pp", "0.5 pp ≤ shortfall < 1.0 pp", "1.0 pp ≤ shortfall < 2.5 pp",
+        "2.5 pp ≤ shortfall ≤ 5.0 pp", "shortfall > 5.0 pp", "absolute uptime `< 95%`",
+        "0 < excess ≤ 25%", "25% < excess ≤ 50%", "excess > 50%",
+        "DSR erasure `30 days ≤ duration < 45 days`", "DSR erasure `duration ≥ 45 days`",
+        "Billing reconciliation drift `≥ 0.1%` sustained for `> 24 hours`",
+        "Credits stack only across distinct SLOs in the same Service Period.",
+        "aggregate is capped at 100% of the Monthly Service Fee.",
+        "Catastrophic uptime takes priority over every lower band.",
+        "No separate refund is added for the same ordinary SLA breach.",
+        "A signed Enterprise Order Form may change only the metrics, rates, or remedies that it expressly identifies.",
+        "three consecutive months of uptime breach against an applicable §2 SLO",
+        "one catastrophic uptime breach", "repeated DSR erasure breach in two consecutive months",
+        "A pro-rata refund of prepaid fees applies only after a valid termination under this section",
+        "is not a second recovery for the same SLA breach.",
+        "no promise of automatic or manual issuance", "separate controlled release acceptance is recorded",
+    ):
+        if marker.lower() not in draft.lower():
+            raise PacketError(f"B-089 v1.1.0 draft missing policy marker: {marker}")
+    if "issued automatically against the next invoice" in draft.lower():
+        raise PacketError("B-089 v1.1.0 draft reintroduced active issuance promise")
+    expected_tiers = ("Free", "Solo", "Starter", "Pro", "Max", "Enterprise")
+    tier_rows = re.findall(r"^\| (Free|Solo|Starter|Pro|Max|Enterprise) \|([^\n]*)$", draft_raw, flags=re.M)
+    if [tier for tier, _ in tier_rows] != list(expected_tiers):
+        raise PacketError("B-089 v1.1.0 six-tier credit matrix drifted")
+    for tier, row in tier_rows:
+        values = [value.strip() for value in row.split("|") if value.strip()]
+        if tier != "Enterprise" and any(value.strip().lower() != "no" for value in values):
+            raise PacketError(f"B-089 non-Enterprise credits are not disabled: {tier}")
+        if tier == "Enterprise" and any("proposed" not in value.lower() for value in values):
+            raise PacketError("B-089 Enterprise eligibility must remain proposed")
+
+    def require_credit_table(start: str, end: str, header: str, separator: str, expected: tuple[str, ...]) -> None:
+        section = draft_raw.split(start, 1)
+        if len(section) != 2:
+            raise PacketError(f"B-089 v1.1.0 schedule section missing: {start}")
+        table = section[1].split(end, 1)[0]
+        rows = [line.strip() for line in table.splitlines() if line.strip().startswith("|")]
+        if rows[:2] != [header, separator] or rows[2:] != list(expected):
+            raise PacketError(f"B-089 v1.1.0 exact schedule rows drifted: {start}")
+
+    require_credit_table(
+        "### 2.1 Uptime / availability", "### 2.2 p99 GET latency",
+        "| Measured result | Credit as % of Monthly Service Fee |", "|---|---:|",
+        (
+            "| Target met or exceeded | 0% |",
+            "| `0 < shortfall < 0.5 pp` | 5% |",
+            "| `0.5 pp ≤ shortfall < 1.0 pp` | 10% |",
+            "| `1.0 pp ≤ shortfall < 2.5 pp` | 25% |",
+            "| `2.5 pp ≤ shortfall ≤ 5.0 pp` | 50% |",
+            "| `shortfall > 5.0 pp` or absolute uptime `< 95%` | 100% plus the §4 termination right |",
+        ),
+    )
+    require_credit_table(
+        "### 2.2 p99 GET latency", "### 2.3 Freshness",
+        "| Excess over target | Credit as % of Monthly Service Fee |", "|---|---:|",
+        (
+            "| `0 < excess ≤ 25%` | 5% |",
+            "| `25% < excess ≤ 50%` | 10% |",
+            "| `excess > 50%` | 25% |",
+        ),
+    )
+    require_credit_table(
+        "### 2.3 Freshness", "## 3. Stacking, cap, and remedy",
+        "| Breach | Credit |", "|---|---|",
+        (
+            "| DSR erasure `30 days ≤ duration < 45 days` | 5% |",
+            "| DSR erasure `duration ≥ 45 days` | 25% plus DPO incident review |",
+            "| Billing reconciliation drift `≥ 0.1%` sustained for `> 24 hours` | 10% |",
+        ),
+    )
 
     pricing = sources[B089_SURFACES[2]]
     canonical = re.search(r"CANONICAL_TIERS:\s*readonly TierId\[\]\s*=\s*\[([^]]+)\]", pricing, re.S)
@@ -759,8 +820,7 @@ def _check_b089_surface_contract(item: dict[str, object], root: Path = ROOT) -> 
     sold_tiers = re.findall(r'"([a-z]+)"', canonical.group(1))
     if sold_tiers != ["free", "solo", "starter", "pro", "max", "enterprise"]:
         raise PacketError(f"B-089 sold-tier census drifted: {sold_tiers}")
-    # The two live contradictions are Starter/Pro (SLA promises credit, price
-    # card denies it). Solo/Max are sold but absent from the executed SLA.
+    # Pricing keeps a future Enterprise eligibility flag; activation is separately gated.
     expected_flags = ("false", "false", "false", "false", "false", "true")
     for tier, expected_flag in zip(sold_tiers, expected_flags, strict=True):
         blocks = re.findall(rf"(?ms)^  {tier}: \{{(.*?)^  \}},", pricing)
@@ -772,8 +832,20 @@ def _check_b089_surface_contract(item: dict[str, object], root: Path = ROOT) -> 
     if len(section) != 2:
         raise PacketError("B-089 published Terms credit section missing")
     section_body = section[1].split("</section>", 1)[0]
-    if "Pro-tier customers are entitled to a" not in section_body or "applied automatically to the next invoice" not in section_body:
-        raise PacketError("B-089 published Terms Pro credit claim drifted")
+    if "No SLA service-credit program is currently active" not in section_body:
+        raise PacketError("B-089 Terms must keep SLA credits inactive")
+    if "Pro-tier customers are entitled to a" in section_body or "applied automatically to the next invoice" in section_body:
+        raise PacketError("B-089 Terms reintroduced a Pro/automatic active credit claim")
+    faq = root / "marketing/sales/FAQ-MASTER.md"
+    pricing_page = root / "apps/docs/src/pages/pricing.tsx"
+    for path in (faq, pricing_page):
+        if path.is_symlink() or not path.is_file():
+            raise PacketError(f"B-089 public surface missing or non-regular: {path.relative_to(root)}")
+    faq_text = faq.read_text(encoding="utf-8").lower()
+    if "sla service credits are not active for any tier today" not in faq_text or "valid termination under that sla" not in faq_text:
+        raise PacketError("B-089 FAQ active-credit/refund posture drifted")
+    if "99.9% sla + credits" in pricing_page.read_text(encoding="utf-8").lower():
+        raise PacketError("B-089 public pricing page reintroduced inactive SLA-credit claim")
 
 
 def _read_json_evidence(path_text: str, expected_fields: list[str], label: str) -> dict[str, object]:

@@ -6,7 +6,10 @@ import {
   STAGING_GRPC_DIAGNOSTIC_PATHS,
   verifyStagingGrpcDiagnosticBinding,
 } from "../src/grpc_staging_authorization.js";
-import { forwardStagingGrpcDiagnostic } from "../src/grpc_staging_transport.js";
+import {
+  forwardStagingGrpcDiagnostic,
+  isNonRedirectNativeGrpcResponse,
+} from "../src/grpc_staging_transport.js";
 import { proxyToContainer } from "../src/durable_object_probes.js";
 
 const NOW = 1_800_000_000_000;
@@ -107,6 +110,29 @@ describe("staging gRPC diagnostic boundary", () => {
     expect(authResponse?.status).toBe(503);
     expect(upstreamResponse?.status).toBe(503);
     await expect(upstreamResponse?.text()).resolves.toBe('{"error":"GRPC_TRANSPORT_UNAVAILABLE"}');
+  });
+
+  it.each([
+    new Response(null, { status: 302, headers: { "content-type": "application/grpc", location: "https://external.invalid" } }),
+    new Response(null, { headers: { "content-type": "application/grpc", location: "https://external.invalid" } }),
+    new Response(null, { status: 204, headers: { "content-type": "application/grpc" } }),
+    new Response(null, { status: 500, headers: { "content-type": "application/grpc" } }),
+  ])("fails closed for redirect-shaped or non-200 native gRPC upstream responses", async (upstream) => {
+    const captured: { name?: string; request?: Request } = {};
+    const response = await forwardStagingGrpcDiagnostic(request(), environment(upstream, captured), NOW);
+
+    expect(response?.status).toBe(503);
+    expect(response?.headers.has("location")).toBe(false);
+    expect(captured.request).toBeDefined();
+  });
+
+  it.each([
+    new Response(null, { status: 302, headers: { "content-type": "application/grpc", location: "https://external.invalid" } }),
+    new Response(null, { headers: { "content-type": "application/grpc", location: "https://external.invalid" } }),
+    new Response(null, { status: 204, headers: { "content-type": "application/grpc" } }),
+    new Response(null, { status: 500, headers: { "content-type": "application/grpc" } }),
+  ])("uses the shared DO and Worker predicate to reject redirect or non-200 responses", (upstream) => {
+    expect(isNonRedirectNativeGrpcResponse(upstream)).toBe(false);
   });
 
   it.each([
