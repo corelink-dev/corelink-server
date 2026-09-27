@@ -260,6 +260,20 @@ mod cleanup_fault_injection {
     }
 
     #[test]
+    fn retry_attempts_share_run_identity_without_broadening_cleanup() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _context = protected_stripe_context("424246");
+        let _attempt = RestoreEnv::set("GITHUB_RUN_ATTEMPT", "1");
+        let first = live_harness_run_id();
+        env::set_var("GITHUB_RUN_ATTEMPT", "2");
+        let retry = live_harness_run_id();
+        assert_eq!(first.as_deref(), Some("424246"));
+        assert_eq!(retry, first);
+        // The marker is only an exact metadata label. Cleanup APIs still need
+        // the individual in-memory customer/session IDs and never scan by run.
+    }
+
+    #[test]
     fn receipt_selector_and_path_are_bounded() {
         assert_eq!(
             current_test_selector().as_deref(),
