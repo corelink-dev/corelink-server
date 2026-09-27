@@ -436,7 +436,7 @@ V0009_RECONCILIATION = {
 V0010_RECONCILIATION = {
     "sequence": 10,
     "previous_sequence": 9,
-    "base_commit": "0a45fe71776cd04ecc2131eb64577593ec78879a",
+    "anchor_base_commit": "0a45fe71776cd04ecc2131eb64577593ec78879a",
     "previous_source_sha256": "a1e75e2990f92d1d10aecce8703c98410b14a9f600d8eeedcfad52975e9a31ae",
     "source_sha256": "6b4030148216788d6734e6f811fe1c7468d1799b7eea7dd43b42b3e3d28808e8",
     "changed_ids": ("B-114",),
@@ -689,6 +689,18 @@ def install(api):
             ("base-sha: aad9435a7f4092d1d1bae5de4f32aa38f4379a49", f"base-sha: {base_sha}"),
         ):
             text = _replace_once(text, old, new)
+        return text.encode("utf-8")
+
+    def _v0010_ledger(prior_raw: bytes, base_sha: str) -> bytes:
+        """Derive only the ledger-base advance for the B-114 receipt."""
+        text = prior_raw.decode("utf-8")
+        for old, new in (
+            ("base-ref: b312a963122e9041f8a56e10127ef20e6367aea3", f"base-ref: {base_sha}"),
+            ("base-sha: b312a963122e9041f8a56e10127ef20e6367aea3", f"base-sha: {base_sha}"),
+        ):
+            if text.count(old) != 1:
+                raise LedgerError("v0010 derivation source drifted")
+            text = text.replace(old, new, 1)
         return text.encode("utf-8")
 
     def _v0009_ledger(prior_raw: bytes, base_sha: str) -> bytes:
@@ -1058,10 +1070,15 @@ def install(api):
     ) -> bool:
         """Authorize only the pinned B-114 receipt transition."""
         pinned = V0010_RECONCILIATION
+        anchor_is_ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", pinned["anchor_base_commit"], trusted_base],
+            cwd=REPO_ROOT, check=False,
+        ).returncode == 0
         if (
-            trusted_base != pinned["base_commit"] or receipt.get("base_commit") != trusted_base
+            not anchor_is_ancestor or receipt.get("base_commit") != trusted_base
             or sequence != pinned["sequence"] or previous.get("sequence") != pinned["previous_sequence"]
             or previous.get("source_sha256") != pinned["previous_source_sha256"]
+            or _git_state_bytes(REPO_ROOT, pinned["anchor_base_commit"]) != prior
             or _sha256(prior["BACKLOG.md"]) != pinned["previous_source_sha256"]
             or _sha256(current["BACKLOG.md"]) != pinned["source_sha256"]
             or receipt.get("changed_ids") != list(pinned["changed_ids"])
@@ -1069,6 +1086,9 @@ def install(api):
             or receipt.get("source_sha256") != pinned["source_sha256"]
             or _sha256(prior[LEDGER_RELATIVE.as_posix()]) != pinned["prior_ledger_sha256"]
             or receipt.get("prior_ledger_sha256") != pinned["prior_ledger_sha256"]
+            or current[LEDGER_RELATIVE.as_posix()] != _v0010_ledger(
+                prior[LEDGER_RELATIVE.as_posix()], trusted_base,
+            )
         ):
             return False
         _, old_order, old_sections = _backlog_sections(prior["BACKLOG.md"])
@@ -1887,4 +1907,5 @@ def install(api):
         _v0009_reconciliation_authorized=_v0009_reconciliation_authorized,
         _v0009_ledger=_v0009_ledger,
         _v0010_reconciliation_authorized=_v0010_reconciliation_authorized,
+        _v0010_ledger=_v0010_ledger,
     )

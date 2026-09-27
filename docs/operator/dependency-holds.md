@@ -26,9 +26,9 @@ must not be closed by a corelink-server-only green check; do not re-run the fail
 
 The dependency chain is intentionally recorded as one hold:
 
-- B-114 is closed only by the exact build/publication receipt in
-  `docs/campaigns/remediation/B-114-corelink-runners-receipt.md`. The receipt
-  does not assert deployment, pinning, provider mutation, or image use.
+- B-114 remains parked while the DevEnv image/Dockerfile and a reproducible digest
+  workflow are unresolved. Removing a server-side reference is not proof that
+  the sibling feature was removed.
 - B-135 is closed by the exact sibling receipt in
   `docs/campaigns/remediation/B-135-corelink-runners-closure.md`: PR #561's
   tested head/tree and delivered `main` merge/tree are pinned, and the receipt
@@ -43,8 +43,8 @@ The dependency chain is intentionally recorded as one hold:
   output) before spending another build.
 
 `scripts/verify_runner_image_boundary.py --self-test` is the cheap local
-boundary check. It keeps B-138 `parked`/`manual`, validates B-114/B-135 exact
-receipts and done status, rejects stale hold prose, invented DevEnv image or
+boundary check. It keeps B-114/B-138 `parked`/`manual`, validates B-135's exact
+receipt and done status, rejects stale hold prose, invented DevEnv image or
 OCI-label wiring, requires the local container-build preflight to fail before
 the first `buildctl ... build` invocation, and runs bounded in-memory mutations
 of each control. The guard parses active shell commands, ignoring YAML/shell
