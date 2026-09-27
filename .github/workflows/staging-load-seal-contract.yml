@@ -1,0 +1,56 @@
+name: Staging load seal contract
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/staging-load-seal-contract.yml
+      - crates/corelink-container/src/main.rs
+      - crates/corelink-container/src/routes.rs
+      - crates/corelink-container/src/routes/staging_load_test_seal.rs
+      - crates/corelink-container/src/storage.rs
+      - crates/corelink-container/src/storage/staging_load_test_seal.rs
+      - docs/campaigns/remediation/wp150-workflow-ownership.md
+      - scripts/verify_staging_load_test_seal.py
+      - tests/test_staging_load_test_seal.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-load-seal-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  seal-contract:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.repository == 'HuGR-dev/corelink-server' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind pull-request candidate to its base
+        if: github.event_name == 'pull_request'
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git merge-base "$EXPECTED_BASE" "$EXPECTED_HEAD")" = "$EXPECTED_BASE"
+      - name: Verify production SQL and narrow route contract
+        run: |
+          python3 -I tests/test_staging_load_test_seal.py
+          python3 -I scripts/verify_staging_load_test_seal.py
+      - name: Format and run focused Rust route tests
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked -p corelink-server --lib staging_load_test_seal -- --nocapture
