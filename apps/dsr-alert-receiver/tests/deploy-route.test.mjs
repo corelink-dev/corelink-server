@@ -224,12 +224,17 @@ describe("B-216 protected receiver route admission", () => {
     expect(validateReceiptSchema([
       reservedD1Table,
       { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" },
-      { name: "dsr_alert_receipts", sql: migration },
+      { name: "dsr_alert_receipts", sql: migration.trim().replace(/;$/, "") },
     ], migration)).toBe("applied");
     errorCode(() => validateReceiptSchema([
       reservedD1Table,
       { name: "unexpected_internal_table", sql: "CREATE TABLE unexpected_internal_table (id TEXT)" },
     ], migration), "database_schema_unknown");
+    errorCode(() => validateReceiptSchema([
+      reservedD1Table,
+      { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" },
+      { name: "dsr_alert_receipts", sql: migration.replace("schema_version INTEGER", "schema_version TEXT").trim().replace(/;$/, "") },
+    ], migration), "database_schema_drift");
     errorCode(() => validateReceiptSchema([{ name: "unknown_table", sql: "CREATE TABLE unknown_table (id TEXT)" }], migration), "database_schema_unknown");
     errorCode(() => validateReceiptSchema([{ name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" }], migration), "database_migration_state_unknown");
     errorCode(() => validateReceiptSchema([

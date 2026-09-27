@@ -75,8 +75,8 @@ const normalizeSql = (sql) => sql.toLowerCase()
   .replace(/["`\[\]]/g, "")
   .replace(/\s+/g, " ")
   .replace(/\s*([(),=])\s*/g, "$1")
-  .replace(/;$/, "")
-  .trim();
+  .trim()
+  .replace(/;$/, "");
 
 export function validateReceiptSchema(rows, migration) {
   if (!Array.isArray(rows)) fail("database_schema_ambiguous");
