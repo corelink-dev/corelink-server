@@ -26,6 +26,8 @@ jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Checkout candidate data (immutable event SHA) # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout # reason: candidate is data-only; BASE checker runs separately; ADR-0101
         uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0  # v6.0.3
