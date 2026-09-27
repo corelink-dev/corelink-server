@@ -395,12 +395,13 @@ mod tests {
         let endpoint = format!("http://{}", listener.local_addr().expect("address"));
         let opens = Arc::new(Barrier::new(2));
         let batches = Arc::new(AtomicUsize::new(0));
+        let server_batches = Arc::clone(&batches);
         let server = std::thread::spawn(move || {
             let mut workers = Vec::new();
             for _ in 0..6 {
                 let (mut stream, _) = listener.accept().expect("connection");
                 let opens = Arc::clone(&opens);
-                let batches = Arc::clone(&batches);
+                let batches = Arc::clone(&server_batches);
                 workers.push(std::thread::spawn(move || {
                     let request = request_body(&mut stream);
                     let request = String::from_utf8(request).expect("request utf8");
