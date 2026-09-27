@@ -1,6 +1,6 @@
 # B-114 corelink-runners receipt
 
-repository: HuGR-Labs/corelink-runners
+repository: HuGR-dev/corelink-runners
 runners_commit: 70045e8d322d46888066481b702ddf4d3103df06
 publication_run: 36223081235
 publication_artifact: 10900170202

@@ -424,6 +424,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
 
+    // #2708: inventory sealing is a staging-only capability. The route uses
+    // the same mandatory admission verifier as teardown and is absent unless
+    // both it and the narrow D1 ownership writer are configured.
+    if let Some(seal_router) =
+        corelink_server::routes::staging_load_test_seal::build_router_from_env().await
+    {
+        info!("routes: exact staging load-test seal route mounted");
+        app = app.merge(seal_router);
+    } else {
+        warn!(
+            "staging admission / D1 config incomplete or non-staging; \\
+             exact staging load-test seal route NOT mounted (fail-CLOSED)"
+        );
+    }
+
     // S-09 audit-chain drain: `POST /_internal/audit/drain` — seals the live
     // `audit_outbox` trail into the BLAKE3 tamper-evident hash chain (closes the
     // "audit trail is mutable / not tamper-evident" gap). Gated by the dedicated
