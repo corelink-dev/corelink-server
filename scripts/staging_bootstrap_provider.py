@@ -13,6 +13,12 @@ import urllib.request
 from typing import Any
 
 from scripts import render_staging_wrangler as renderer
+from scripts import staging_custom_domain as custom_domain
+from scripts.verify_issue_1700_route_inventory import (
+    InventoryError,
+    route_matches_canonical,
+    validate_route_inventory,
+)
 
 
 def get(token: str, path: str) -> dict[str, Any]:
@@ -30,19 +36,35 @@ def get(token: str, path: str) -> dict[str, Any]:
     return payload
 
 
-def route_pairs(result: Any) -> set[tuple[str, str]]:
-    items = result if isinstance(result, list) else []
-    pairs: set[tuple[str, str]] = set()
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        pattern = item.get("pattern")
-        script = item.get("script")
-        if isinstance(pattern, str) and pattern.split("/", 1)[0].lower() == renderer.CANONICAL_HOST:
-            if not isinstance(script, str) or "prod" in script.lower():
-                raise RuntimeError("canonical staging route has an unsafe Worker target")
-            pairs.add((pattern, script))
-    return pairs
+def route_pairs(result: Any) -> set[tuple[str, str | None]]:
+    try:
+        items = validate_route_inventory({"success": True, "result": result})
+        matching: set[tuple[str, str | None]] = set()
+        for item in items:
+            if route_matches_canonical(item["pattern"]):
+                script = item.get("script")
+                if not isinstance(script, str) or "prod" in script.lower():
+                    raise RuntimeError("canonical staging route has an unsafe Worker target")
+                matching.add((item["pattern"], script))
+        return matching
+    except (InventoryError, TypeError) as error:
+        raise RuntimeError("Worker Route inventory is malformed or incomplete") from error
+
+
+def validate_postflight_custom_domain(
+    inventory: tuple[Any, ...], account: str, zone: str
+) -> dict[str, Any]:
+    if len(inventory) != 7:
+        raise RuntimeError("provider Custom Domain inventory is malformed")
+    plan = custom_domain.assess_state(
+        *inventory[:5], supplied_zone_id=zone, supplied_account_id=account
+    )
+    if plan["action"] != "already-exact":
+        raise RuntimeError("provider Custom Domain readback is not exact and ready")
+    custom_domain.validate_request_signal_settings(inventory[5])
+    if custom_domain.runtime_binding_gaps(inventory[5], inventory[6]):
+        raise RuntimeError("provider runtime secret names are incomplete")
+    return plan
 
 
 def expected_worker_bindings(topology: renderer.StagingTopologyAdapter, worker: str) -> set[str]:
@@ -134,13 +156,11 @@ def main(argv: list[str] | None = None) -> int:
         routes = get(token, f"zones/{urllib.parse.quote(zone, safe='')}/workers/routes").get("result")
         actual = route_pairs(routes)
         workers = topology.workers
-        expected = {
-            (f"{renderer.CANONICAL_HOST}/*", workers[0]),
-        }
-        if args.phase in {"preflight", "quarantine"} and actual:
+        if actual:
             raise RuntimeError("canonical staging route set must remain empty during quarantine")
-        if args.phase == "postflight" and actual != expected:
-            raise RuntimeError("provider route readback does not match the exact staging route set")
+        if args.phase == "postflight":
+            inventory = custom_domain._inventory(token, account, zone)
+            validate_postflight_custom_domain(inventory, account, zone)
 
         script_result = get(
             token,
@@ -168,7 +188,8 @@ def main(argv: list[str] | None = None) -> int:
             "scope": "staging-only",
             "worker_count": len(deployed_staging),
             "route_count": len(actual),
-            "route_set": "empty" if not actual else "exact-canonical-staging-root",
+            "route_set": "empty" if not actual else "canonical-staging-conflict",
+            "custom_domain_count": len(inventory[2]["result"]) if args.phase == "postflight" else 0,
             "provider_mutation_performed": False,
         }, sort_keys=True))
     except (OSError, TypeError, ValueError, RuntimeError, renderer.ContractError) as error:

@@ -64,7 +64,7 @@ class StagingTopologyContractTests(unittest.TestCase):
             "worker:root_worker": lambda d: d["cloudflare"].__setitem__("root_worker", "corelink-prod"),
             "container": lambda d: d["cloudflare"]["container"].__setitem__("max_instances", 200),
             "root-worker-settings": lambda d: d["cloudflare"]["root_worker_settings"].__setitem__("workers_dev", True),
-            "canonical-route": lambda d: d["cloudflare"]["routes"][0].__setitem__("pattern", "api-staging.corelink.humangr.com/*"),
+            "canonical-custom-domain": lambda d: d["cloudflare"]["routes"][0].__setitem__("custom_domain", False),
             "binding-family:d1": lambda d: d["cloudflare"]["d1"][0]["bindings"].pop(),
             "binding-family:r2": lambda d: d["cloudflare"]["r2"].pop(),
             "binding-family:kv": lambda d: d["cloudflare"]["kv"].pop(),
@@ -228,7 +228,7 @@ class StagingTopologyContractTests(unittest.TestCase):
     def test_every_resource_family_pins_worker_ownership(self) -> None:
         mutations = {
             "container": lambda d: d["cloudflare"]["container"].__setitem__("worker", "corelink-prod"),
-            "canonical-route": lambda d: d["cloudflare"]["routes"][0].__setitem__("worker", "corelink-prod"),
+            "canonical-custom-domain": lambda d: d["cloudflare"]["routes"][0].__setitem__("worker", "corelink-prod"),
             "binding-family:d1": lambda d: d["cloudflare"]["d1"][0]["bindings"][0].__setitem__("worker", "corelink-prod"),
             "binding-family:r2": lambda d: d["cloudflare"]["r2"][0].__setitem__("worker", "corelink-prod"),
             "binding-family:kv": lambda d: d["cloudflare"]["kv"][0].__setitem__("worker", "corelink-prod"),

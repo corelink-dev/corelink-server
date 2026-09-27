@@ -48,11 +48,13 @@ def assess(root: Path) -> list[str]:
     if outputs.get("target_host") != ORIGIN or outputs.get("github_environment") != "staging" or set(outputs.get("resource_names", [])) != RESOURCES:
         gaps.append("outputs")
     cf = data.get("cloudflare", {})
-    if cf.get("zone_name") != "humangr.com" or cf.get("route") != "staging.corelink.humangr.com/*" or cf.get("root_worker") != "corelink-staging" or cf.get("signup_worker") != "corelink-signup-staging" or cf.get("synthetic_receiver_worker") != "corelink-synthetic-pager-staging":
+    if cf.get("zone_name") != "humangr.com" or cf.get("route") != "staging.corelink.humangr.com" or cf.get("root_worker") != "corelink-staging" or cf.get("signup_worker") != "corelink-signup-staging" or cf.get("synthetic_receiver_worker") != "corelink-synthetic-pager-staging":
         gaps.append("cloudflare-boundary")
     settings = cf.get("root_worker_settings", {})
     if settings.get("workers_dev") is not False or settings.get("crons") != [] or settings.get("observability", {}).get("enabled") is not True:
         gaps.append("worker-isolation")
+    if settings.get("compatibility_flags") != ["nodejs_compat", "enable_request_signal", "request_signal_passthrough"]:
+        gaps.append("root-request-signal-compatibility")
     if cf.get("container", {}).get("max_instances") != 5 or cf.get("container", {}).get("instance_type") != "basic":
         gaps.append("container-budget")
     serialized = json.dumps(data, sort_keys=True)
