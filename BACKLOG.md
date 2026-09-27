@@ -7154,73 +7154,37 @@ verify-means: |
 last-verified: 2026-08-25
 ```
 
-### B-035 — eight contract lines promise a TLS floor we do not enforce
+### B-035 — prelaunch TLS claims reconciled with the observed floor
 
-The DPA (`legal/dpa/v1.0.0.{en-US,pt-BR,es-419}.md`), the EU SCC annex, the
-sub-processor commitments and the three privacy notices all state encryption in
-transit as **"TLS 1.3+"** or **"(TLS 1.3)"**. The `humangr.com` edge floor is
-**1.2** (ADR-0072), so those lines commit us contractually to a control we do
-not enforce. Everything editorial — docs site, questionnaires, legal templates,
-compliance crosswalks — was corrected in the same sweep; these eight were not,
-deliberately.
+The owner selected truthful prelaunch wording. PR #2691 merged the eight
+versioned legal/privacy source claims on protected main `ff232e5c53f69872ed8108e5f5defb185655b0ae`:
+TLS 1.2 is the minimum; TLS 1.3 is negotiated where supported. No counsel
+approval, executed customer instrument, recipient notice, or edge-floor change
+is inferred. The owner recorded that no v1.0.0 customer terms were executed
+before launch. See #1645 and the terminal #2163 receipt.
 
-They are **versioned, effective-dated legal instruments**, and the earlier "just
-correct the wording, it's cheap" framing was wrong on inspection: the DPA carries
-`legal_review_status: "approved"` (counsel sign-off) and a `wording_id` UUID; the
-SCC annex and sub-processor commitments are the DPA's own `related_documents`
-(annexes to the executed package); the three privacy notices are DPO-published,
-versioned notices. Changing **"TLS 1.3" → "TLS 1.2"** is not an editorial tidy —
-it is a **material downgrade of a stated security control** in text a customer
-signs at sign-up (`apps/docs/src/pages/trust/center.tsx`: "DPA v1.0.0 signed at
-sign-up"). Doing that unilaterally, in place, on a counsel-approved signed
-template is exactly the outward-facing, hard-to-reverse act a TL must not take
-alone. The honest paths both need counsel/owner:
-- **(a) Publish `v1.0.1`** (DPA + annexes + notices) with the corrected clause and
-  counsel re-approval, leave v1.0.0 byte-intact as the historical signed bytes,
-  repoint the sign-up click-through to v1.0.1, and — if anyone executed v1.0.0 —
-  give notice. Recommendation. (A draft v1.0.1 cannot be self-approved: setting
-  `legal_review_status: approved` without counsel would be a second lie.)
-- **(b) Raise the zone floor back to 1.3** and accept that `sccache` and every
-  other `native-tls`/SecureTransport client stops connecting (ADR-0072's own exit
-  condition) — re-breaks a live cache surface.
-
-**Corrected in passing 2026-08-25 (TL lane, no counsel needed):** the two
-customer-facing **marketing** overclaims that stated the floor as *mandatory
-1.3* — `marketing/sales/FAQ-MASTER.md` and
-`marketing/sales/legal-questionnaires/VENDOR-QUESTIONNAIRE-RESPONSE-TEMPLATE.md`
-("In transit: TLS 1.3 mandatory") — now read "TLS 1.2 minimum (1.3 negotiated
-when supported), per ADR-0072". These are sales collateral, not signed
-instruments, so accuracy is the TL's to fix; they were also NOT among the eight
-and had been missed by the 2026-08-24 editorial sweep.
-
-**Verify was broken and is fixed here.** The prior `verify` grepped
-`scripts/docs_reality_allowlist.json` for `tls-13-floor-claim-executed-contracts`
-— a key that does not exist, in an allowlist whose gate (`validate_docs_reality.py`)
-only scans `corelink <cmd>` CLI references and does not read `legal/` for TLS
-claims at all. It passed vacuously while all eight lines still said 1.3. The
-verify now counts the actual drift in the eight files.
-
-**Owner decision brief:** `docs/internal/2026-08-24-owner-decision-brief.md` §7.
-
-**Só ele (reconfirmado 2026-08-31) — o ato: contratar counsel e assinar o `v1.0.1`.** Redigir
-o texto eu faço; **aprová-lo** sem counsel seria uma segunda mentira.
+Protected-main run 36282709392 read `humangr.com min_tls_version=1.2`,
+validated the source map, and passed 24/24 TLS 1.2/1.3 handshakes on 12
+source-bound hosts. Redacted artifact 10918909501 has SHA-256
+`060de7b927cc46a3035f646b03348ccc92f4b60673d1edee44a4d9a04c0d3761`.
+The Bazel HTTP 500 occurred after TLS 1.3 negotiation and is an application
+response, not a TLS handshake failure or successful Bazel operation.
 
 ```backlog
 id: B-035
 repo: corelink-server
 owner: owner
-status: open
+status: done
 action-packet: docs/handoff/2026-09-05-owner-action-packets-b008-b154.json
 verify: |
   python3 -S scripts/verify_owner_action_packets.py --id B-035
-  python3 scripts/verify_b155_owned.py --id B-035 --expect open
+  python3 scripts/verify_b155_owned.py --id B-035 --expect done
+  python3 scripts/verify_b035_tls_surfaces.py --self-test
 verify-means: |
-  open (exit 0) while any of the eight signed legal instruments still claims a TLS
-  1.3 floor; goes red the moment counsel-approved corrected text (v1.0.1 or an
-  errata) replaces them, or the zone floor is raised to 1.3. MANUAL residual: only
-  the owner/counsel can decide v1.0.1-vs-floor-raise and whether a v1.0.0 signer
-  needs notice.
-last-verified: 2026-09-05
+  done only while all eight exact locale-specific TLS 1.2-minimum/TLS 1.3-when-
+  supported source claims and the source map remain intact. The protected-main
+  live receipt establishes the observed Cloudflare floor and handshakes.
+last-verified: 2026-09-27
 ```
 
 ### B-034 — docs CI has six hosted-runner jobs and 2 116 broken links

@@ -18,6 +18,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from verify_b035_tls_surfaces import inventory as b035_inventory
+
 ROOT = Path(__file__).resolve().parents[1]
 LEGAL_TLS = (
     "legal/dpa/v1.0.0.en-US.md", "legal/dpa/v1.0.0.pt-BR.md",
@@ -444,13 +446,10 @@ def _b015(root: Path) -> str:
 
 
 def _b035(root: Path) -> str:
-    claims=[]
-    for rel in LEGAL_TLS:
-        lines=_markdown_body(_read(root,rel), ignore_headings=False); n=sum(bool(re.search(r"TLS 1\.3\+|\(TLS 1\.3\)",x)) for x in lines)
-        if n: claims.append((rel,n))
-    if not claims:
-        raise VerificationError("B-035 open contract no longer has an active TLS claim")
-    return f"B-035 open PASS ({sum(n for _,n in claims)} active TLS claims in {len(claims)}/{len(LEGAL_TLS)} instruments)"
+    report = b035_inventory(root)
+    if report["status"] != "truthful_exact_inventory" or report["instrument_count"] != 8:
+        raise VerificationError("B-035 exact eight-instrument TLS 1.2/1.3 contract drifted")
+    return "B-035 done PASS (eight truthful TLS 1.2-minimum claims; TLS 1.3 where supported)"
 
 
 def _read_mirror_digest() -> tuple[int, str]:
@@ -777,7 +776,7 @@ def main(argv=None) -> int:
         result=CHECKS[args.id](ROOT, live=not args.offline) if args.id in {"B-014","B-039"} else CHECKS[args.id](ROOT)
         # B-039 is closed only by the live mirror read. Offline mode remains a
         # useful static check, but it cannot satisfy the done polarity.
-        is_open = args.id == "B-035" or (args.id == "B-039" and args.offline)
+        is_open = args.id == "B-039" and args.offline
         if args.expect == "open" and not is_open:
             raise VerificationError(f"{args.id} has done polarity but --expect open was requested")
         if args.expect == "done" and is_open:

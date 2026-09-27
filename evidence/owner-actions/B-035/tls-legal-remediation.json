@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-09-27T04:43:38Z",
+  "decision": "truthful_tls_1_2_prelaunch",
+  "source_sha": "ff232e5c53f69872ed8108e5f5defb185655b0ae",
+  "source_pr": "https://github.com/HuGR-dev/corelink-server/pull/2691",
+  "source_receipt": "https://github.com/HuGR-dev/corelink-server/issues/2163#issuecomment-5851309900",
+  "workflow_run": "https://github.com/HuGR-dev/corelink-server/actions/runs/36282709392",
+  "artifact_id": 10918909501,
+  "artifact_sha256": "060de7b927cc46a3035f646b03348ccc92f4b60673d1edee44a4d9a04c0d3761",
+  "observed_floor": "TLS 1.2",
+  "handshakes": {
+    "passed": 24,
+    "total": 24,
+    "host_count": 12
+  },
+  "prelaunch_disposition": {
+    "customer_terms_executed": false,
+    "external_recipients": false,
+    "basis": "owner-selected prelaunch path and no-customer/no-circulation context recorded on issues #1645 and #2163",
+    "counsel_approval_claimed": false,
+    "customer_notice_claimed": false
+  },
+  "limitations": "Bazel returned HTTP 500 after TLS 1.3 negotiation. This receipt establishes TLS only; it does not establish Bazel application health or a cipher-suite policy."
+}

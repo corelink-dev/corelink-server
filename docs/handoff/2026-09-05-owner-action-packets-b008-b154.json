@@ -110,26 +110,43 @@
     {
       "id": "B-035",
       "owner": "owner",
-      "status": "open",
-      "action_type": "counsel_approved_legal_version",
+      "status": "done",
+      "action_type": "prelaunch_tls_claim_reconciliation",
       "procedure": [
-        "UI: Engage counsel to choose the legal remedy: publish DPA/legal notice v1.0.1 with TLS 1.2 minimum wording, or raise the production edge floor to TLS 1.3 after compatibility review; do not edit executed v1.0.0 in place.",
-        "RUN: Have counsel provide the final versioned bytes and signed approval, then verify every one of the eight named v1.0.0 instruments is either preserved historically or superseded through the approved v1.0.1/errata process.",
-        "UI: If v1.0.0 was signed by customers, execute the counsel-approved notice/addendum process and record recipient scope; do not claim notice from a draft."
+        "RUN: Verify the eight versioned prelaunch instruments state TLS 1.2 minimum and TLS 1.3 where supported using scripts/verify_b035_tls_surfaces.py.",
+        "RUN: Verify protected-main run 36282709392 reports humangr.com floor 1.2 and 24/24 protocol handshakes across 12 source-bound hosts; retain the redacted artifact digest.",
+        "UI: Record owner-selected prelaunch disposition: no executed v1.0.0 customer terms or external recipients; do not assert counsel approval or customer notice."
       ],
       "inputs_and_credentials_boundary": {
-        "inputs": ["eight versioned legal instruments", "ADR-0072 TLS 1.2 edge reality", "counsel decision on v1.0.1 versus edge-floor raise", "customer notice scope if applicable"],
-        "credentials": "Owner/counsel authentication and signature are external. No legal approval, customer notice, or edge-floor change is authorized by this repository packet."
+        "inputs": [
+          "owner prelaunch disposition on #1645 and #2163",
+          "merged source PR #2691",
+          "protected-main TLS run 36282709392"
+        ],
+        "credentials": "Live floor read used the protected GitHub workflow. No new credential, counsel approval, customer notice, or edge-floor mutation is claimed."
       },
       "evidence": {
         "path": "evidence/owner-actions/B-035/tls-legal-remediation.json",
         "format": "json",
-        "required_fields": ["schema_version", "captured_at", "decision", "counsel", "approved_version", "superseded_files", "customer_notice", "signed_document_sha256", "reviewer"],
-        "item_schema": "decision is v1.0.1, edge_floor_1.3, or dual; superseded_files[] names all eight instruments; customer_notice records required, completed, or not_applicable with rationale."
+        "required_fields": [
+          "schema_version",
+          "captured_at",
+          "decision",
+          "source_sha",
+          "workflow_run",
+          "artifact_sha256",
+          "prelaunch_disposition"
+        ],
+        "item_schema": "decision records truthful_tls_1_2_prelaunch; source_sha binds PR #2691; workflow_run binds floor 1.2 and 24/24 handshakes; prelaunch_disposition states no executed instruments or notice recipients. The legacy evidence path is a packet locator, not an assertion that a new file or counsel signature exists."
       },
-      "expected_postcondition": "The executed legal text and deployed TLS floor no longer contradict, with historical v1.0.0 preserved and any required customer notice evidenced; B-035 remains open until owner/counsel completion.",
-      "retry_and_rollback": "Retry only with the same counsel-approved version and signature workflow. Do not overwrite v1.0.0. Roll back an unpublished draft by abandoning it; a signed version requires a new counsel-approved superseding instrument, not git revert.",
-      "references": ["BACKLOG.md#B-035", "legal/dpa/v1.0.0.en-US.md", "legal/dpa/v1.0.0.pt-BR.md", "legal/dpa/v1.0.0.es-419.md", "legal/dpa/STANDARD-CONTRACTUAL-CLAUSES-EU.md", "legal/dpa/SUB-PROCESSOR-COMMITMENTS.md", "legal/privacy-notice/v1.0.0/en-US.md", "legal/privacy-notice/v1.0.0/pt-BR.md", "legal/privacy-notice/v1.0.0/es-MX.md"]
+      "expected_postcondition": "Eight source claims and live Cloudflare floor agree at TLS 1.2 minimum, with TLS 1.3 where supported; #2163 terminal proof and #1645 prelaunch disposition close B-035 without an executed-customer amendment claim.",
+      "retry_and_rollback": "If the floor or any source claim drifts, fail the exact inventory and reopen B-035; an executed customer obligation would require a new attributable decision before outward legal action.",
+      "references": [
+        "BACKLOG.md#B-035",
+        "scripts/verify_b035_tls_surfaces.py",
+        "https://github.com/HuGR-dev/corelink-server/issues/2163#issuecomment-5851309900",
+        "https://github.com/HuGR-dev/corelink-server/actions/runs/36282709392"
+      ]
     },
     {
       "id": "B-065",

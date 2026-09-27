@@ -41,7 +41,7 @@ EXPECTED_IDS = (
 # the other ten legacy rows remain owner-controlled until their actions are
 # evidenced and reclassified.
 LEGACY_OWNER_IDS = frozenset(EXPECTED_IDS[:12]) - {"B-012", "B-013", "B-110"}
-CLOSED_PACKET_IDS = frozenset({"B-012", "B-013", "B-110", "B-165"})
+CLOSED_PACKET_IDS = frozenset({"B-012", "B-013", "B-035", "B-110", "B-165"})
 B089_SURFACES = (
     "legal/sla/v1.0.0.md",
     "apps/docs/src/pages/legal/terms.tsx",
@@ -1382,6 +1382,65 @@ def _check_b154_evidence(item: dict[str, object]) -> None:
         raise PacketError("B-154 operator boundary drifted")
 
 
+
+B035_EVIDENCE_PATH = "evidence/owner-actions/B-035/tls-legal-remediation.json"
+B035_SOURCE_SHA = "ff232e5c53f69872ed8108e5f5defb185655b0ae"
+B035_ARTIFACT_SHA256 = "060de7b927cc46a3035f646b03348ccc92f4b60673d1edee44a4d9a04c0d3761"
+
+
+def _check_b035_record(record: object) -> None:
+    if not isinstance(record, dict):
+        raise PacketError("B-035 closure evidence must be a JSON object")
+    required = {
+        "schema_version", "captured_at", "decision", "source_sha", "source_pr",
+        "source_receipt", "workflow_run", "artifact_id", "artifact_sha256",
+        "observed_floor", "handshakes", "prelaunch_disposition", "limitations",
+    }
+    if set(record) != required:
+        raise PacketError("B-035 closure evidence fields drifted")
+    expected = {
+        "schema_version": 1,
+        "decision": "truthful_tls_1_2_prelaunch",
+        "source_sha": B035_SOURCE_SHA,
+        "source_pr": "https://github.com/HuGR-dev/corelink-server/pull/2691",
+        "source_receipt": "https://github.com/HuGR-dev/corelink-server/issues/2163#issuecomment-5851309900",
+        "workflow_run": "https://github.com/HuGR-dev/corelink-server/actions/runs/36282709392",
+        "artifact_id": 10918909501,
+        "artifact_sha256": B035_ARTIFACT_SHA256,
+        "observed_floor": "TLS 1.2",
+        "handshakes": {"passed": 24, "total": 24, "host_count": 12},
+    }
+    if any(record.get(key) != value for key, value in expected.items()):
+        raise PacketError("B-035 closure evidence source/run/artifact contract drifted")
+    stamp = record["captured_at"]
+    if not isinstance(stamp, str) or not re.fullmatch(r"2026-09-27T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z", stamp):
+        raise PacketError("B-035 closure evidence UTC capture time missing")
+    disposition = record["prelaunch_disposition"]
+    if not isinstance(disposition, dict) or set(disposition) != {
+        "customer_terms_executed", "external_recipients", "basis",
+        "counsel_approval_claimed", "customer_notice_claimed",
+    }:
+        raise PacketError("B-035 prelaunch disposition fields drifted")
+    if any(disposition[key] is not False for key in (
+        "customer_terms_executed", "external_recipients",
+        "counsel_approval_claimed", "customer_notice_claimed",
+    )) or not isinstance(disposition["basis"], str) or "#1645" not in disposition["basis"]:
+        raise PacketError("B-035 prelaunch disposition is not source-bound")
+    limitations = record["limitations"]
+    if not isinstance(limitations, str) or "Bazel returned HTTP 500" not in limitations or "does not establish Bazel application health" not in limitations:
+        raise PacketError("B-035 TLS-only limitation missing")
+
+
+def _check_b035_evidence(path: Path) -> None:
+    if not path.is_file() or path.is_symlink():
+        raise PacketError("B-035 closure evidence file missing or non-regular")
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise PacketError("B-035 closure evidence unreadable or malformed") from exc
+    _check_b035_record(record)
+
+
 def _check_item(
     item: object,
     expected_id: str,
@@ -1402,7 +1461,8 @@ def _check_item(
     # B-012 closes on its verified hosted DCO/rustfmt receipt; B-013 closes on
     # its owner-authorized redacted deletion record; B-110 closes after the
     # owner selects the already-provisioned CoreLink Linux substrate and the
-    # four workflow migrations are evidenced. Other legacy owner items remain pending.
+    # four workflow migrations are evidenced. B-035 closes on the owner-selected
+    # prelaunch wording and exact live TLS receipt. Other legacy items remain pending.
     if expected_id in CLOSED_PACKET_IDS:
         allowed_statuses.add("done")
     if canonical_owner != expected_owner or canonical_status not in allowed_statuses:
@@ -1450,6 +1510,10 @@ def _check_item(
     references = _string_list(item["references"], f"{expected_id}.references", minimum=1)
     if not any(reference.startswith("BACKLOG.md#") for reference in references):
         raise PacketError(f"{expected_id}.references must include its BACKLOG anchor")
+    if expected_id == "B-035":
+        if path != B035_EVIDENCE_PATH:
+            raise PacketError("B-035 evidence locator drifted")
+        _check_b035_evidence(ROOT / path)
     if expected_id == "B-008":
         _check_b008_action_contract(item)
     if expected_id == "B-089":
@@ -1647,6 +1711,22 @@ def mutation_self_test(data: dict[str, object]) -> int:
         mutations += 1
     else:
         raise PacketError("duplicate evidence-path mutation was accepted")
+    # B-035: a metadata-only done claim must fail if the source-bound receipt
+    # is absent or its immutable artifact digest changes.
+    try:
+        _check_b035_evidence(ROOT / "evidence/owner-actions/B-035/missing.json")
+    except PacketError:
+        mutations += 1
+    else:
+        raise PacketError("B-035 missing-file mutation was accepted")
+    b035 = json.loads((ROOT / B035_EVIDENCE_PATH).read_text(encoding="utf-8"))
+    b035["artifact_sha256"] = "0" * 64
+    try:
+        _check_b035_record(b035)
+    except PacketError:
+        mutations += 1
+    else:
+        raise PacketError("B-035 artifact-digest mutation was accepted")
     return mutations
 
 
