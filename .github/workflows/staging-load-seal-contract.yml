@@ -52,6 +52,8 @@ jobs:
           python3 -I scripts/verify_staging_load_test_seal.py
       - name: Install pinned Protobuf compiler
         uses: arduino/setup-protoc@f4d5893b897028ff5739576ea0409746887fa536 # v3.0.0
+        with:
+          repo-token: ${{ github.token }}
       - name: Format and run focused Rust route tests
         run: |
           cargo fmt --all -- --check
