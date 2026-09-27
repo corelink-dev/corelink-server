@@ -6,6 +6,7 @@ read-only ``--live`` invocation and must not receive credentials in this suite.
 
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 import tempfile
@@ -105,7 +106,13 @@ class B035TlsSurfaceTests(unittest.TestCase):
     def test_correcting_any_claim_fails_closed(self) -> None:
         instrument = verify.INSTRUMENTS[0]
         original = (verify.ROOT / instrument.path).read_text(encoding="utf-8")
-        corrected = original.replace(instrument.claim, "TLS 1.3 minimum", 1)
+        claim_pattern = re.compile(
+            r"\s+".join(re.escape(part) for part in instrument.claim.split())
+        )
+        corrected, replacements = claim_pattern.subn(
+            "TLS 1.3 minimum", original, count=1
+        )
+        self.assertEqual(replacements, 1)
         report = verify.inventory_from_overrides(
             verify.ROOT, {instrument.path: corrected}
         )
