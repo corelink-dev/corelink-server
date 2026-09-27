@@ -98,6 +98,17 @@ def require_regular_tree(root: Path, trusted_base: Path | None = None) -> None:
             raise ContractError(f"non-regular path forbidden: {path.relative_to(root)}")
 
 
+def require_tree_union(base: Path, candidate: Path) -> None:
+    names = {p.relative_to(base) for p in base.rglob("*")} | {p.relative_to(candidate) for p in candidate.rglob("*")}
+    for relative in names:
+        if ".git" in relative.parts:
+            continue
+        left, right = base / relative, candidate / relative
+        if left.is_symlink() or right.is_symlink():
+            if not left.is_symlink() or not right.is_symlink() or os.readlink(left) != os.readlink(right):
+                raise ContractError(f"symlink changed: {relative}")
+
+
 def require_pinned_modes(root: Path, paths: set[str]) -> None:
     for name in paths:
         path = root / name
@@ -114,6 +125,7 @@ def changed(base: Path, candidate: Path) -> set[str]:
 def validate(base: Path, candidate: Path) -> None:
     require_regular_tree(base)
     require_regular_tree(candidate, base)
+    require_tree_union(base, candidate)
     require_pinned_modes(base, POLICY | POLICY_FIXTURES)
     require_pinned_modes(candidate, set(EXPECTED) | POLICY | POLICY_FIXTURES)
     differences = changed(base, candidate)

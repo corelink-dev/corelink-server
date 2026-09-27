@@ -100,9 +100,11 @@ class P0TransitionFixtureTests(unittest.TestCase):
             os.symlink("../.actionlint.yaml", canonical_base / ".github-actionlint")
             os.symlink("../.actionlint.yaml", canonical_candidate / ".github-actionlint")
             policy.require_regular_tree(canonical_candidate, canonical_base)
+            policy.require_tree_union(canonical_base, canonical_candidate)
             (canonical_candidate / ".github-actionlint").unlink()
             os.symlink("../retargeted", canonical_candidate / ".github-actionlint")
             with self.assertRaises(policy.ContractError): policy.require_regular_tree(canonical_candidate, canonical_base)
+            with self.assertRaises(policy.ContractError): policy.require_tree_union(canonical_base, canonical_candidate)
             for name in policy.POLICY:
                 target = delivery / name
                 original = target.read_bytes(); target.write_bytes(original + b"\nmutation\n")

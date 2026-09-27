@@ -16,8 +16,7 @@ on:
       - "docs/campaigns/remediation/wp150-workflow-ownership.md"
       - "specs/03_architecture/issue-2176-grpc-transport-contract.md"
       - "worker/src/grpc_transport_gate.ts"
-      - "worker/src/grpc_staging_authorization.ts"
-      - "worker/src/grpc_staging_transport.ts"
+      - "worker/src/grpc_*.ts"
       - "worker/src/index_fetch.ts"
       - "worker/src/index_env.ts"
       - "worker/src/index_env_contract.ts"
@@ -25,7 +24,7 @@ on:
       - "worker/src/durable_object_probes.ts"
       - "worker/src/durable_object_start.ts"
       - "worker/src/lib/internal_auth.ts"
-      - "worker/tests/grpc_staging_transport.test.ts"
+      - "worker/tests/grpc_*.test.ts"
 
 permissions:
   contents: read
