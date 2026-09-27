@@ -161,7 +161,7 @@ def validate_packet(packet: dict[str, Any], manifest: dict[str, Any], workflow: 
     for event in ("pull_request", "pull_request_target", "push", "schedule", "workflow_call"):
         if re.search(rf"(?m)^\s{{2}}{event}:\s*", workflow):
             fail(f"real executor has automatic trigger: {event}")
-    for marker in ('environment: real-integration', 'test "$GITHUB_REF" = "refs/heads/main"', 'persist-credentials: false', 'python3 scripts/verify_real_ignored_harnesses.py'):
+    for marker in ("environment: ${{ inputs.profile == 'd1' && 'real-d1-2563' || 'real-integration' }}", 'test "$GITHUB_REF" = "refs/heads/main"', 'persist-credentials: false', 'python3 scripts/verify_real_ignored_harnesses.py'):
         if marker not in workflow:
             fail(f"real executor missing safety marker: {marker}")
     if re.search(r"(?m)^\s*if:\s*.*secrets\.", workflow):
@@ -173,6 +173,12 @@ def validate_packet(packet: dict[str, Any], manifest: dict[str, Any], workflow: 
 
 def mutation_checks(packet: dict[str, Any], manifest: dict[str, Any], workflow: str) -> None:
     """Prove READY rejects missing resources and owner-reviewed cleanup evidence."""
+    expect_rejected(
+        "D1 routed to shared environment",
+        packet,
+        manifest,
+        workflow.replace("environment: ${{ inputs.profile == 'd1' && 'real-d1-2563' || 'real-integration' }}", "environment: real-integration", 1),
+    )
     ready_packet = copy.deepcopy(packet)
     ready_packet["status"] = "ready"
     for profile in PROFILES:

@@ -79,7 +79,7 @@ export interface TierShape {
   readonly byok: boolean;
   /** True if SSO/SAML (Clerk org-mode) is offered. */
   readonly sso: boolean;
-  /** True if a contractual SLA with credits applies. */
+  /** Future SLA-credit eligibility only; does not mean a program or issuance is active. */
   readonly slaCredits: boolean;
   /** True if DPA + custom MSA are offered. */
   readonly dpa: boolean;
@@ -245,6 +245,7 @@ export const TIER_RATE_CARD: Readonly<Record<TierId, TierShape>> = {
     includedWorkspaces: null,
     byok: true,
     sso: true,
+    // Enterprise eligibility is reserved for a gated future SLA; credits remain inactive.
     slaCredits: true,
     dpa: true,
     auditLogExport: true,

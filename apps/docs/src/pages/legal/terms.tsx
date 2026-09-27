@@ -322,20 +322,12 @@ export default function TermsPage(): ReactElement {
         <section className={styles.section}>
           <h2>14. Service availability and credits</h2>
           <p>
-            For paid tiers (Pro and Enterprise), CoreLink targets a monthly
-            uptime of 99.9% for the API control plane and the Admin UI.
-            Availability is measured against the synthetic probe set
-            reported publicly on the Statuspage. If the measured monthly
-            uptime falls below 99.9%, Pro-tier customers are entitled to a
-            service credit equal to 10% of the affected month&rsquo;s fees,
-            applied automatically to the next invoice; below 99.0%, the
-            credit scales to 25%. Service credits are the sole and
-            exclusive remedy for missed availability targets and do not
-            apply to scheduled-maintenance windows announced at least 72
-            hours in advance, force-majeure events, or downtime
-            attributable to the customer&rsquo;s misconfiguration of the
-            Service. Enterprise customers may negotiate a bespoke service
-            level under the executed Order Form.
+            No SLA service-credit program is currently active or effective for
+            any tier. These Terms do not promise service-credit eligibility,
+            an invoice adjustment, or automatic issuance. Any later service-
+            credit policy must appear in a separately approved, dated SLA
+            version after legal and release review; this section does not
+            activate that policy.
           </p>
         </section>
 

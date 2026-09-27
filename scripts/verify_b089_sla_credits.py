@@ -49,15 +49,41 @@ def verify(root: Path = ROOT) -> dict[str, object]:
     ))
     need("apps/signup-worker/wrangler.toml", ("SLA_CREDITS_ENABLED = \"false\"", "SLA_OBSERVATIONS_ENABLED = \"false\"", "STRIPE_SECRET_KEY", "FOUR sweep families"))
 
-    sla = root / "legal/sla/v1.0.0.md"
-    if not sla.is_file():
-        failures.append("missing legal/sla/v1.0.0.md")
+    historical = root / "legal/sla/v1.0.0.md"
+    draft = root / "legal/sla/v1.1.0.md"
+    if not historical.is_file():
+        failures.append("missing immutable historical legal/sla/v1.0.0.md")
+    if not draft.is_file():
+        failures.append("missing prelaunch legal/sla/v1.1.0.md draft")
     else:
-        body = sla.read_text(encoding="utf-8")
-        if "issued automatically against the next invoice" not in body:
-            failures.append("executed SLA promise was silently removed")
-        if "sole and exclusive remedy" not in body:
-            failures.append("executed SLA exclusive-remedy clause was silently removed")
+        body = draft.read_text(encoding="utf-8")
+        for required in (
+            "DRAFT", "not effective", "Enterprise", "Free", "Solo", "Starter", "Pro", "Max",
+            "SLA_CREDITS_ENABLED", "Stripe", "Counsel", "100%", "sole and exclusive remedy",
+        ):
+            if required.lower() not in body.lower():
+                failures.append(f"legal/sla/v1.1.0.md: missing fail-closed policy marker {required}")
+        for forbidden in ("issued automatically against the next invoice", "credits are issued automatically"):
+            if forbidden.lower() in body.lower():
+                failures.append(f"legal/sla/v1.1.0.md: active issuance promise is forbidden: {forbidden}")
+
+    for path, required in (
+        ("apps/docs/src/pages/legal/terms.tsx", ("No SLA service-credit program is currently active",)),
+        ("marketing/sales/FAQ-MASTER.md", ("SLA service credits are not active for any tier today", "valid termination under that SLA")),
+        ("apps/docs/src/pages/pricing.tsx", ("99.9% SLA + credits",)),
+    ):
+        target = root / path
+        if not target.is_file():
+            failures.append(f"missing {path}")
+            continue
+        source = target.read_text(encoding="utf-8").lower()
+        for marker in required:
+            present = marker.lower() in source
+            if path.endswith("pricing.tsx"):
+                if present:
+                    failures.append("public pricing page reintroduced the inactive SLA-credit claim")
+            elif not present:
+                failures.append(f"{path}: missing inactive-credit guard {marker}")
 
     return {
         "ok": not failures,

@@ -1,0 +1,76 @@
+name: issue 2176 trusted gRPC deny gate
+
+# This workflow definition is evaluated from the protected base branch by
+# pull_request_target. Candidate files are data only: this workflow never runs
+# a candidate workflow, script, package hook, build, or test command.
+on:
+  pull_request_target:
+    branches: [main]
+    paths:
+      # Current Worker / Durable Object ingress and its deployment boundary.
+      - "wrangler.toml"
+      - "worker/package.json"
+      - "worker/tsconfig.json"
+      - "worker/tsconfig.test.json"
+      - "worker/vitest.config.mts"
+      - "worker/vitest.miniflare.config.mts"
+      - "worker/src/index.ts"
+      - "worker/src/index_common.ts"
+      - "worker/src/index_fetch.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/corelink-worker.yml"
+      - ".github/workflows/corelink-reapi.yml"
+      - ".github/workflows/container-build-push-prod.yml"
+      # Current Container ingress and image/build boundary.
+      - "Dockerfile"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/corelink-container/**"
+      # Future #2176 admission-gate and contract surfaces.
+      - "worker/src/grpc_transport_gate.ts"
+      - "specs/03_architecture/issue-2176-grpc-transport-contract.md"
+      - "scripts/verify_i2176_grpc_deny_gate.py"
+      - "tests/test_verify_i2176_grpc_deny_gate.py"
+      - ".github/workflows/issue-2176-grpc-deny-gate.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-2176-trusted-grpc-deny-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deny-contract:
+    name: trusted exact-head gRPC deny contract
+    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout protected-base verifier
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-base
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout exact candidate head as inert data
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate candidate with the protected-base verifier
+        run: >-
+          python3 -S trusted-base/scripts/verify_i2176_grpc_deny_gate.py
+          --trusted-base trusted-base
+          --candidate candidate
+          --expected-head ${{ github.event.pull_request.head.sha }}
+
+      - name: Run protected-base adversarial fixtures
+        run: python3 -S -m unittest -v trusted-base/tests/test_verify_i2176_grpc_deny_gate.py

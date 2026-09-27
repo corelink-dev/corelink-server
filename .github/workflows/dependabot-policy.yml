@@ -219,7 +219,7 @@ jobs:
           set -euo pipefail
           echo "::group::cargo-deny licenses"
           # Fail fast on any banned license OR yanked crate OR advisory.
-          cargo deny --manifest-path "$POLICY_TREE/Cargo.toml" --config "$DENY_CONFIG" check licenses bans
+          cargo deny --manifest-path "$POLICY_TREE/Cargo.toml" check --config "$DENY_CONFIG" licenses bans
           echo "::endgroup::"
 
       # ---------------------------------------------------------------------

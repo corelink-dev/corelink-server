@@ -11,6 +11,7 @@ on:
       - "scripts/run-real-ignored-harnesses.sh"
       - "scripts/real-ignored-harness-manifest.json"
       - "scripts/verify_real_ignored_harnesses.py"
+      - "scripts/probe_i2563_d1_token_scope.py"
       - "scripts/verify_i1650_real_integration_readiness.py"
       - "docs/handoff/2026-09-22-i1650-real-integration-readiness.json"
       - "crates/corelink-pat/tests/emit_e2e_seed.rs"
@@ -69,6 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -S scripts/verify_real_ignored_harnesses.py
+          python3 -S scripts/probe_i2563_d1_token_scope.py --self-test
           python3 -S -m unittest tests/test_stripe_harness_cleanup_receipt.py
           python3 -S -m unittest tests/test_stripe_test_mode_evidence.py
           python3 -S scripts/verify_i1650_real_integration_readiness.py

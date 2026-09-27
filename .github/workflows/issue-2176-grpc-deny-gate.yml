@@ -1,4 +1,4 @@
-name: issue 2176 trusted gRPC deny gate
+name: issue 2176 trusted gRPC transport policy
 
 # This workflow definition is evaluated from the protected base branch by
 # pull_request_target. Candidate files are data only: this workflow never runs
@@ -17,6 +17,14 @@ on:
       - "worker/src/index.ts"
       - "worker/src/index_common.ts"
       - "worker/src/index_fetch.ts"
+      - "worker/src/index_env.ts"
+      - "worker/src/index_env_contract.ts"
+      - "worker/src/durable_object.ts"
+      - "worker/src/durable_object_probes.ts"
+      - "worker/src/durable_object_start.ts"
+      - "worker/src/lib/internal_auth.ts"
+      - "worker/src/grpc_*.ts"
+      - "worker/tests/grpc_*.test.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/corelink-worker.yml"
@@ -32,7 +40,16 @@ on:
       - "specs/03_architecture/issue-2176-grpc-transport-contract.md"
       - "scripts/verify_i2176_grpc_deny_gate.py"
       - "tests/test_verify_i2176_grpc_deny_gate.py"
+      - "tests/test_pull_request_target_spawn_boundary.py"
+      - "scripts/verify_i2574_grpc_diagnostic_policy.py"
+      - "tests/test_verify_i2574_grpc_diagnostic_policy.py"
+      - "tests/test_i2574_p0_transition_fixture.py"
+      - "tests/fixtures/i2574_old_base_bytes/**"
+      - "tests/fixtures/i2574_delivery_bytes/**"
+      - "docs/internal/secrets-checklist.md"
+      - "docs/campaigns/remediation/wp150-workflow-ownership.md"
       - ".github/workflows/issue-2176-grpc-deny-gate.yml"
+      - ".github/workflows/issue-2574-staging-grpc-diagnostic.yml"
 
 permissions:
   contents: read
@@ -73,4 +90,7 @@ jobs:
           --expected-head ${{ github.event.pull_request.head.sha }}
 
       - name: Run protected-base adversarial fixtures
-        run: python3 -S -m unittest -v trusted-base/tests/test_verify_i2176_grpc_deny_gate.py
+        run: >-
+          python3 -S -m unittest -v
+          trusted-base/tests/test_verify_i2176_grpc_deny_gate.py
+          trusted-base/tests/test_verify_i2574_grpc_diagnostic_policy.py
