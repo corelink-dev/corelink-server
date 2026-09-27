@@ -316,6 +316,7 @@ def _check_backlog(backlog: str) -> None:
     block = match.group("body")
     if not re.search(r"(?m)^status: done$", block):
         raise VerificationError("BACKLOG B-314 is not in done state")
+    normalized = " ".join(block.split())
     for marker in (
         "remove_sigstore_row",
         DECISION_REFERENCE,
@@ -328,7 +329,7 @@ def _check_backlog(backlog: str) -> None:
         EVIDENCE,
         "release-signing flows ceased",
     ):
-        if marker not in block:
+        if marker not in normalized:
             raise VerificationError(f"BACKLOG B-314 omitted completed decision detail: {marker}")
 
 
@@ -501,6 +502,8 @@ def mutation_checks(root: Path = ROOT) -> int:
     _must_reject("signed receipt reference mutation", root, {EVIDENCE: originals[EVIDENCE].replace("issuecomment-5854794010", "issuecomment-1", 1)})
     count += 1
     _must_reject("backlog done-state mutation", root, {BACKLOG: originals[BACKLOG].replace("status: done", "status: open", 1)})
+    count += 1
+    _must_reject("backlog signed receipt removal", root, {BACKLOG: originals[BACKLOG].replace(DECISION_REFERENCE, "https://example.invalid/decision", 1)})
     count += 1
     trust_mutation = originals[TRUST].replace("no customer-data path is wired", "customer-data path is wired", 1)
     _must_reject("trust current-flow posture removal", root, {TRUST: trust_mutation})
