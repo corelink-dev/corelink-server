@@ -380,6 +380,11 @@ pub(super) const RETAIN_SET: &[&str] = &[
     // required, it needs a principal-keyed delete path (out of this adapter's
     // tenant-scoped contract).
     "session_exchange_throttle",
+    // Migration 0151 records the immutable exact-run staging ownership
+    // witness here. UPDATE/DELETE are rejected by its append-only triggers;
+    // retain the marker with that technical ownership evidence rather than
+    // route it through the tenant erase loop.
+    "staging_load_test_synthetic_tenants",
 ];
 
 /// Tenant-keyed tables whose erasure is owned by ANOTHER canonical backend
