@@ -9,6 +9,12 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+# Frozen only after the preceding serial BACKLOG successor reaches main.
+B035_CLOSEOUT_SOURCE_SHA256 = ('cb22a787eb4ccdcbe4fe45516326e2a4623d0a52f5f34eb515ba3ff65c8c94da', '503a9c3b42827843206330d3693ecd9a9b1f7ce9866bec70b18d692752d4f13d')
+B035_CLOSEOUT_SECTION_SHA256 = ('780ecd90ff0f84eb79b4a2a99caecfa183e22673c4a4e9526ce5df3f71a0c513', '2467aedc6650b1ed56c9d479a6a6a1779d60ed748715fae76627e8c08f1c1139')
+B035_CLOSEOUT_CATALOG_SHA256 = ('081c9885db8d79c18f2f31edb7864bb1ca1a18d53f408720f3f9e4f00524f9c6', 'd5e3b5edfb7a47e9ff360c07c2fe602d1c9b91decf59c7b8523ed9091c1d3b47')
+B035_CLOSEOUT_SEQUENCE = 11
+
 # A one-time trusted-control authorization for the reviewed Sprint3 correction.
 # The candidate receipt is not an authority: both entire BACKLOG preimages and
 # the seven rewritten sections' machine fields must match pinned SHA-256 bytes.
@@ -1108,6 +1114,34 @@ def install(api):
             and receipt.get("prior_catalog_sha256") == catalogs and receipt.get("catalog_sha256") == catalogs
         )
 
+    def _b035_closeout_authorized(
+        prior: dict[str, bytes], current: dict[str, bytes],
+        receipt: dict[str, object], sequence: int,
+    ) -> bool:
+        """Bind the B-035 normative rewrite to one exact ledger successor."""
+        if (
+            sequence != B035_CLOSEOUT_SEQUENCE
+            or receipt.get("changed_ids") != ["B-035"]
+            or (_sha256(prior["BACKLOG.md"]), _sha256(current["BACKLOG.md"]))
+            != B035_CLOSEOUT_SOURCE_SHA256
+        ):
+            return False
+        _, old_order, old_sections = _backlog_sections(prior["BACKLOG.md"])
+        _, new_order, new_sections = _backlog_sections(current["BACKLOG.md"])
+        catalog_path = "docs/campaigns/remediation/work-packages/B001-B045.md"
+        return (
+            old_order == new_order
+            and [item_id for item_id in new_order if old_sections[item_id] != new_sections[item_id]] == ["B-035"]
+            and (_sha256(old_sections["B-035"]), _sha256(new_sections["B-035"]))
+            == B035_CLOSEOUT_SECTION_SHA256
+            and (_sha256(prior[catalog_path]), _sha256(current[catalog_path]))
+            == B035_CLOSEOUT_CATALOG_SHA256
+            and all(
+                prior[path.as_posix()] == current[path.as_posix()]
+                for path in _catalog_relatives() if path.as_posix() != catalog_path
+            )
+        )
+
     def _v0009_history_authorized() -> bool:
         """Replay every delivered BACKLOG transition from v0008 to the C0 base."""
         return _history_authorized(V0009_RECONCILIATION)
@@ -1533,6 +1567,7 @@ def install(api):
         v0010_reconciliation = previous is not None and _v0010_reconciliation_authorized(
             previous, prior, current, receipt, sequence, trusted_base=base_sha,
         )
+        b035_closeout = _b035_closeout_authorized(prior, current, receipt, sequence)
         for item_id in changed:
             if item_id not in old_sections:
                 continue
@@ -1547,6 +1582,7 @@ def install(api):
                 or (v0008_reconciliation and item_id in V0008_RECONCILIATION["changed_ids"])
                 or (v0009_reconciliation and item_id in V0009_RECONCILIATION["changed_ids"])
                 or (v0010_reconciliation and item_id in V0010_RECONCILIATION["changed_ids"])
+                or (b035_closeout and item_id == "B-035")
             ) and (
                 _normative_section(old_sections[item_id], item_id)
                 != _normative_section(new_sections[item_id], item_id)
@@ -1586,6 +1622,7 @@ def install(api):
             allow_v0007_reconciliation=v0007_reconciliation,
             allow_v0009_reconciliation=v0009_reconciliation,
             allow_v0010_reconciliation=v0010_reconciliation,
+            allow_b035_reconciliation=b035_closeout,
             successor_mode=True,
         )
         if transition_errors:
@@ -1912,4 +1949,5 @@ def install(api):
         _v0009_ledger=_v0009_ledger,
         _v0010_reconciliation_authorized=_v0010_reconciliation_authorized,
         _v0010_ledger=_v0010_ledger,
+        _b035_closeout_authorized=_b035_closeout_authorized,
     )

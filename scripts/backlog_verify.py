@@ -190,6 +190,38 @@ STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS = frozenset({
     "tests/test_verify_staging_target.py",
 })
 
+# One reviewed B-035 closeout. The exact old/new bytes and file modes are
+# frozen against protected main after #2585's serial integration.
+B035_CLOSEOUT_PREIMAGES: dict[str, tuple[int, str]] = {'BACKLOG.md': (420, 'cb22a787eb4ccdcbe4fe45516326e2a4623d0a52f5f34eb515ba3ff65c8c94da'),
+ 'docs/campaigns/remediation/BACKLOG-WP-LEDGER.md': (420,
+                                                     'fa1d028ac338e9fd9b7119caf228541bc756f27776d7970e1d6f2522140127c3'),
+ 'docs/campaigns/remediation/work-packages/B001-B045.md': (420,
+                                                           '081c9885db8d79c18f2f31edb7864bb1ca1a18d53f408720f3f9e4f00524f9c6'),
+ 'docs/handoff/2026-09-05-owner-action-packets-b008-b154.json': (420,
+                                                                 'f12c3c95ed8e3fc02bbcf5c050d238ebbc6a663546ce1a95fbd11a2fb8da020e'),
+ 'scripts/verify_b155_owned.py': (420,
+                                  '3389811be2d3f42eb0e8b6998502544b64bd6a538aeb8bf80bb1c2fcdfe04b62'),
+ 'scripts/verify_owner_action_packets.py': (420,
+                                            '30954c34e64946339cde8b2b9f648cac2442a9dd4fce3cb25b41654fe8d235ba')}
+B035_CLOSEOUT_TARGETS: dict[str, tuple[int, str]] = {'BACKLOG.md': (420, '503a9c3b42827843206330d3693ecd9a9b1f7ce9866bec70b18d692752d4f13d'),
+ 'docs/campaigns/remediation/work-packages/B001-B045.md': (420,
+                                                           'd5e3b5edfb7a47e9ff360c07c2fe602d1c9b91decf59c7b8523ed9091c1d3b47'),
+ 'docs/handoff/2026-09-05-owner-action-packets-b008-b154.json': (420,
+                                                                 'd08a1dc56721feb1a55102449581d54f52d7345278545fa901f3852a21d48d27'),
+ 'scripts/verify_b155_owned.py': (420,
+                                  '2ad10f2ea62197502badd0c711e757ae352cf35f82b792ddb99a9b9f232ac1a4'),
+ 'scripts/verify_owner_action_packets.py': (420,
+                                            '10cc058394ecdeb0ac27d98fdb5d0779e7a0d1bb1c1d1a15eae0d872d3f227a2'),
+ 'evidence/owner-actions/B-035/tls-legal-remediation.json': (420,
+                                                             '1fe3d441fd99f39b8059fbd836089f4a8dc1e86e8e272ebadab83cd0eb848cbb')}
+B035_CLOSEOUT_DYNAMIC_PATHS = frozenset({'docs/campaigns/remediation/BACKLOG-WP-LEDGER.md', 'docs/campaigns/remediation/backlog-ledger-snapshot-v0011.json'})
+B035_CLOSEOUT_LEDGER_TEMPLATE_SHA256 = '1ff010467cf3125af24c7f8e434be04cbbcc4e5e5046d7c25e6000482afe3d4a'
+B035_CLOSEOUT_SNAPSHOT_TEMPLATE_SHA256 = '92587079ef9d6b5fe29229e2fb614a95f6dac261849696663861aa6911409c71'
+B035_CLOSEOUT_NEW_PATHS = frozenset({
+    "docs/campaigns/remediation/backlog-ledger-snapshot-v0011.json",
+    "evidence/owner-actions/B-035/tls-legal-remediation.json",
+})
+
 # A command's polarity cannot be inferred from arbitrary shell.  We can still
 # reject the known dangerous declaration: a `done` item whose human explanation
 # explicitly says the check remains `open`.  Unmarked legacy entries remain
@@ -781,6 +813,70 @@ def _preauthorized_staging_custom_domain(candidate_root: Path, trusted_root: Pat
     )
 
 
+def _preauthorized_b035_closeout(candidate_root: Path, trusted_root: Path) -> bool:
+    """Admit only the frozen B-035 data/control successor, without executing it."""
+    try:
+        candidate = _candidate_tree_entries(candidate_root)
+        trusted = _candidate_tree_entries(trusted_root)
+    except (OSError, RuntimeError):
+        return False
+    old_paths = set(B035_CLOSEOUT_PREIMAGES)
+    new_paths = set(B035_CLOSEOUT_TARGETS) | B035_CLOSEOUT_DYNAMIC_PATHS
+    if not old_paths or new_paths != old_paths | B035_CLOSEOUT_NEW_PATHS:
+        return False
+    if not B035_CLOSEOUT_NEW_PATHS.isdisjoint(trusted):
+        return False
+    if set(candidate) != set(trusted) | B035_CLOSEOUT_NEW_PATHS:
+        return False
+    changed = {
+        path for path in set(candidate) | set(trusted)
+        if candidate.get(path) != trusted.get(path)
+    }
+    if changed != new_paths:
+        return False
+    if not (all(
+        trusted.get(path) == ("file", *expected)
+        for path, expected in B035_CLOSEOUT_PREIMAGES.items()
+    ) and all(
+        candidate.get(path) == ("file", *expected)
+        for path, expected in B035_CLOSEOUT_TARGETS.items()
+    )):
+        return False
+    if any(candidate.get(path, ("", 0, ""))[:2] != ("file", 0o644)
+           for path in B035_CLOSEOUT_DYNAMIC_PATHS):
+        return False
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=trusted_root,
+        check=False, capture_output=True, text=True,
+    ).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", base):
+        return False
+    ledger_path = "docs/campaigns/remediation/BACKLOG-WP-LEDGER.md"
+    snapshot_path = "docs/campaigns/remediation/backlog-ledger-snapshot-v0011.json"
+    try:
+        ledger = _regular_control(candidate_root, ledger_path)
+        normalized = ledger
+        for field in ("base-ref", "base-sha"):
+            line = f"{field}: {base}".encode()
+            if normalized.count(line) != 1:
+                return False
+            normalized = normalized.replace(line, f"{field}: <BASE>".encode(), 1)
+        if hashlib.sha256(normalized).hexdigest() != B035_CLOSEOUT_LEDGER_TEMPLATE_SHA256:
+            return False
+        raw = _regular_control(candidate_root, snapshot_path)
+        receipt = json.loads(raw)
+        if receipt.get("base_commit") != base or receipt.get("ledger_sha256") != hashlib.sha256(ledger).hexdigest():
+            return False
+        if raw != (json.dumps(receipt, indent=2) + "\n").encode():
+            return False
+        receipt["base_commit"] = "<BASE>"
+        receipt["ledger_sha256"] = "<LEDGER_SHA>"
+        template = (json.dumps(receipt, indent=2) + "\n").encode()
+        return hashlib.sha256(template).hexdigest() == B035_CLOSEOUT_SNAPSHOT_TEMPLATE_SHA256
+    except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_items: list[Item]) -> None:
     """Fail closed when PR data changes a trusted control in the closure."""
     topology_path = "infra/staging/topology.json"
@@ -810,6 +906,7 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
     staging_transition = topology_changed and _preauthorized_staging_custom_domain(
         candidate_root, trusted_root
     )
+    b035_transition: bool | None = None
     for relative in sorted(_candidate_control_paths(trusted_root, trusted_items)):
         trusted = _regular_control(trusted_root, relative)
         candidate = _regular_control(candidate_root, relative)
@@ -824,6 +921,11 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
                 candidate_root, trusted_root
             ):
                 continue
+            if relative in {"scripts/verify_b155_owned.py", "scripts/verify_owner_action_packets.py"}:
+                if b035_transition is None:
+                    b035_transition = _preauthorized_b035_closeout(candidate_root, trusted_root)
+                if b035_transition:
+                    continue
             raise RuntimeError(
                 f"candidate mutated trusted backlog control {relative}; "
                 "candidate verifier code is data-only and was not executed"
@@ -867,6 +969,7 @@ def validate_candidate_transitions(
     allow_v0007_reconciliation: bool = False,
     allow_v0009_reconciliation: bool = False,
     allow_v0010_reconciliation: bool = False,
+    allow_b035_reconciliation: bool = False,
     successor_mode: bool = False
 ) -> list[str]:
     """Validate the small, auditable set of BACKLOG changes a PR may make."""
@@ -899,6 +1002,8 @@ def validate_candidate_transitions(
         v0010_fields = {"B-114": {"verify", "verify-means"}}
         for item_field in IMMUTABLE_ITEM_FIELDS:
             if old_raw.get(item_field) != new_raw.get(item_field):
+                if item.id == "B-035" and item_field == "verify" and allow_b035_reconciliation:
+                    continue
                 if (
                     allow_v0006_reconciliation
                     and item.id in v0006_fields
