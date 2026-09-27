@@ -4,8 +4,8 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 270
-workflow-paths-sha256: e7cc6a5998f7a6eb490bd4c307f38f0c7cb7907cc18bce55459b9c0908a7ee82
+workflow-count: 272
+workflow-paths-sha256: dd93c5e5afe95187c119e0fe44b984f3fa7f7ce550dd657e38553a3210901b99
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -195,6 +195,7 @@ workflow-paths-sha256: e7cc6a5998f7a6eb490bd4c307f38f0c7cb7907cc18bce55459b9c090
 .github/workflows/issue-2584-teardown-receipt.yml | WP-B113 | owned
 .github/workflows/issue-2586-windows-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2586-windows-readiness.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2602-b314-reconcile.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2610-mutants-failure-receipt.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2612-provider-deferred.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2623-ownership-contract.yml | LEAD-BLOCKED | blocked
@@ -207,6 +208,7 @@ workflow-paths-sha256: e7cc6a5998f7a6eb490bd4c307f38f0c7cb7907cc18bce55459b9c090
 .github/workflows/issue-2666-byok-teardown.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2699-cloudflare-handoff-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2702-backlog-policy.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2730-dsr-alert-receiver.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-605-billing-fixture.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-ci-pack.yml | LEAD-BLOCKED | blocked
 .github/workflows/legal-changes-review.yml | LEAD-BLOCKED | blocked

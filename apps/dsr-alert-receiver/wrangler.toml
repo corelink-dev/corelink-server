@@ -1,0 +1,12 @@
+name = "corelink-dsr-b216-alert-receiver-20260927"
+main = "src/index.ts"
+compatibility_date = "2026-09-27"
+workers_dev = true
+account_id = "51284495e71acdb5a7677e7383ab026b"
+
+# Provisioning remains a parent #1678 provider action; this child performs no provider mutation.
+[[d1_databases]]
+binding = "ALERT_RECEIPTS_DB"
+database_name = "corelink-dsr-b216-alert-receipts-20260927"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
