@@ -1806,12 +1806,13 @@ acceptance: "A signed Legal/DPO disposition covers all four locale copies; the a
 action-packet: docs/handoff/2026-09-06-b314-gdpr-sigstore-transfer.json
 verify: python3 -S scripts/verify_b314_gdpr_sigstore.py
 verify-means: |
-  done — one signed GitHub issue receipt records remove_sigstore_row, effective
-  2026-09-27T09:48:32Z, notice B-314-prelaunch-2026-09-27, and the same gmhelmold
+  done — one signed GitHub issue receipt records remove_sigstore_row at
+  https://github.com/HuGR-dev/corelink-server/issues/2601#issuecomment-5854794010,
+  effective 2026-09-27T09:48:32Z, notice B-314-prelaunch-2026-09-27, and the same gmhelmold
   identity exercising Counsel and DPO functions (not two independent signers).
   All four draft tables remove only “ / Sigstore” from the Recipient cell; preserve
   PagerDuty and GitHub, country, mechanism, transfer description, and all other rows.
-  No individual notice or re-consent is required for this prelaunch correction. This
+  no individual notice or re-consent is required for this prelaunch correction. This
   does not assert Sigstore has no operational metadata/personal data or that release-signing flows ceased,
   and it invents no Sigstore transfer basis. Evidence is recorded
   at evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json. The verifier
