@@ -106,7 +106,7 @@ Response time: up to 30 calendar days (access/portability); 5 business days (rec
 
 We implement the following security measures:
 
-- Encryption in transit (TLS 1.3).
+- Encryption in transit (TLS 1.2 minimum; TLS 1.3 negotiated where supported).
 - Encryption at rest (R2 + Neon).
 - Multi-factor authentication (WebAuthn FIDO2).
 - Append-only audit log with hash chain (BLAKE3).

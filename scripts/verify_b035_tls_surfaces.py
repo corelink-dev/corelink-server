@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Verify the B-035 contract inventory without mutating legal or edge state.
+"""Verify the B-035 truthful prelaunch TLS contract without mutating edge state.
 
-B-035 cannot be closed by changing the versioned, counsel-approved instruments
-in place.  The eight files therefore remain an explicit, fail-closed inventory
-until counsel publishes a superseding version or the owner raises the external
-Cloudflare floor.  ``--live`` performs one read-only GET of the Cloudflare zone
-setting; it never sends a write request and never prints credentials.
+The owner-selected prelaunch wording records TLS 1.2 as the minimum and TLS 1.3
+as negotiated where supported.  The eight source files are checked exactly and
+fail closed if an old TLS 1.3 minimum remains.  ``--live`` performs one
+read-only GET of the Cloudflare zone setting; it never sends a provider write
+request and never prints credentials.
 
 The legal lines do not name individual hostnames.  The verifier therefore
 reports the configured ingress/custom-domain and egress surfaces as an
@@ -115,20 +115,44 @@ class Instrument:
 
 
 INSTRUMENTS = (
-    Instrument("legal/dpa/v1.0.0.en-US.md", "TLS 1.3+"),
-    Instrument("legal/dpa/v1.0.0.pt-BR.md", "TLS 1.3+"),
-    Instrument("legal/dpa/v1.0.0.es-419.md", "TLS 1.3+"),
-    Instrument("legal/dpa/STANDARD-CONTRACTUAL-CLAUSES-EU.md", "TLS 1.3+"),
-    Instrument("legal/dpa/SUB-PROCESSOR-COMMITMENTS.md", "TLS 1.3+"),
-    Instrument("legal/privacy-notice/v1.0.0/en-US.md", "TLS 1.3"),
-    Instrument("legal/privacy-notice/v1.0.0/pt-BR.md", "TLS 1.3"),
-    Instrument("legal/privacy-notice/v1.0.0/es-MX.md", "TLS 1.3"),
+    Instrument(
+        "legal/dpa/v1.0.0.en-US.md",
+        "TLS 1.2 minimum; TLS 1.3 negotiated where supported",
+    ),
+    Instrument(
+        "legal/dpa/v1.0.0.pt-BR.md",
+        "TLS 1.2 mínimo; TLS 1.3 negociado quando houver suporte",
+    ),
+    Instrument(
+        "legal/dpa/v1.0.0.es-419.md",
+        "TLS 1.2 mínimo; TLS 1.3 se negocia cuando sea compatible",
+    ),
+    Instrument(
+        "legal/dpa/STANDARD-CONTRACTUAL-CLAUSES-EU.md",
+        "TLS 1.2 minimum; TLS 1.3 negotiated where supported",
+    ),
+    Instrument(
+        "legal/dpa/SUB-PROCESSOR-COMMITMENTS.md",
+        "TLS 1.2 minimum; TLS 1.3 negotiated where supported",
+    ),
+    Instrument(
+        "legal/privacy-notice/v1.0.0/en-US.md",
+        "TLS 1.2 minimum; TLS 1.3 negotiated where supported",
+    ),
+    Instrument(
+        "legal/privacy-notice/v1.0.0/pt-BR.md",
+        "TLS 1.2 mínimo; TLS 1.3 negociado quando houver suporte",
+    ),
+    Instrument(
+        "legal/privacy-notice/v1.0.0/es-MX.md",
+        "TLS 1.2 mínimo; TLS 1.3 se negocia cuando sea compatible",
+    ),
 )
 
-# The claim is intentionally anchored to the exact protocol token.  A broad
-# ``TLS 1.3`` grep would count a corrected ``TLS 1.2 minimum; 1.3 preferred``
-# line as if it still promised 1.3-only.
-CLAIM_RE = re.compile(r"TLS 1\.3(?:\+|(?=[).,;\s]))")
+# Each source must contain its exact locale-specific floor sentence once and
+# exactly one TLS 1.3 mention.  This rejects any additional unqualified TLS 1.3
+# promise while allowing the new negotiated-where-supported wording.
+PROTOCOL_1_3_RE = re.compile(r"TLS 1\.3(?:\+)?")
 
 
 def _read(root: Path, relative: str) -> str:
@@ -239,7 +263,8 @@ def inventory(
         text = instrument_overrides.get(instrument.path)
         if text is None:
             text = _read(root, instrument.path)
-        matches = list(CLAIM_RE.finditer(text))
+        matches = list(re.finditer(re.escape(instrument.claim), text))
+        protocol_mentions = list(PROTOCOL_1_3_RE.finditer(text))
         lines = [_line_number(text, match) for match in matches]
         rows.append(
             {
@@ -247,8 +272,9 @@ def inventory(
                 "promised_claim": instrument.claim,
                 "claim_count": len(matches),
                 "claim_lines": lines,
+                "protocol_1_3_mention_count": len(protocol_mentions),
                 "claim_matches_expected": len(matches) == 1
-                and matches[0].group(0) == instrument.claim,
+                and len(protocol_mentions) == 1,
             }
         )
 
@@ -259,7 +285,7 @@ def inventory(
     return {
         "instrument_count": len(rows),
         "instruments": rows,
-        "status": "open_exact_inventory" if complete else "drift_or_incomplete",
+        "status": "truthful_exact_inventory" if complete else "drift_or_incomplete",
         "external_surface": {
             "zone": ZONE_NAME,
             "zone_id": f"{ZONE_ID[:8]}…{ZONE_ID[-4:]}",
@@ -318,7 +344,7 @@ def read_live_floor(token: str) -> dict[str, Any]:
     }
 
 
-def verify(root: Path, *, live: bool, expect_open: bool) -> tuple[int, dict[str, Any]]:
+def verify(root: Path, *, live: bool) -> tuple[int, dict[str, Any]]:
     try:
         report = inventory(root)
     except VerificationError as exc:
@@ -337,10 +363,9 @@ def verify(root: Path, *, live: bool, expect_open: bool) -> tuple[int, dict[str,
             read_live_floor(token) if token else {"status": "credential_unavailable"}
         )
 
-    # The repository contract is exact in either mode.  ``--expect-open``
-    # documents why the eight stale claims are currently accepted by this gate;
-    # omitting it must not turn a partial correction or missing claim green.
-    static_ok = report["status"] == "open_exact_inventory"
+    # The repository contract is exact in either mode; all eight source claims
+    # must state the current minimum precisely.
+    static_ok = report["status"] == "truthful_exact_inventory"
     live_result = report["live_floor"]
     live_ok = not live or live_result.get("status") == "match"
     # Missing credentials are a hard failure for a requested live proof.  A
@@ -352,12 +377,12 @@ def verify(root: Path, *, live: bool, expect_open: bool) -> tuple[int, dict[str,
 def _self_test(root: Path) -> None:
     """Exercise the fail-closed inventory logic without network or mutation."""
     report = inventory(root)
-    if report["status"] != "open_exact_inventory" or report["instrument_count"] != 8:
-        raise VerificationError("current B-035 inventory is not the expected eight-line open state")
+    if report["status"] != "truthful_exact_inventory" or report["instrument_count"] != 8:
+        raise VerificationError("current B-035 inventory does not match the eight truthful TLS claims")
 
     target = root / INSTRUMENTS[0].path
     original = target.read_text(encoding="utf-8")
-    mutant = original.replace("TLS 1.3+", "TLS 1.2 minimum (TLS 1.3 preferred)", 1)
+    mutant = original.replace(INSTRUMENTS[0].claim, "TLS 1.3 minimum", 1)
     if mutant == original:
         raise VerificationError("self-test mutation did not alter a contract claim")
     target_report = inventory_from_overrides(root, {INSTRUMENTS[0].path: mutant})
@@ -408,7 +433,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--live", action="store_true", help="GET Cloudflare floor; never writes")
-    parser.add_argument("--expect-open", action="store_true", help="require all eight stale claims")
     parser.add_argument("--self-test", action="store_true", help="run bounded mutation checks")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -422,7 +446,7 @@ def main() -> int:
         print("B-035 self-test passed (read-only, fail-closed mutation check)")
         return 0
 
-    code, report = verify(args.root, live=args.live, expect_open=args.expect_open)
+    code, report = verify(args.root, live=args.live)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
