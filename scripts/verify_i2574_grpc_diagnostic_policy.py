@@ -87,8 +87,14 @@ def require_regular_tree(root: Path) -> None:
             raise ContractError(f"symlink forbidden: {path.relative_to(root)}")
         if not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
             raise ContractError(f"non-regular path forbidden: {path.relative_to(root)}")
-        if stat.S_ISREG(mode) and stat.S_IMODE(mode) != 0o644:
-            raise ContractError(f"unexpected file mode: {path.relative_to(root)}")
+
+
+def require_pinned_modes(root: Path, paths: set[str]) -> None:
+    for name in paths:
+        path = root / name
+        mode = path.lstat().st_mode
+        if not stat.S_ISREG(mode) or stat.S_IMODE(mode) != 0o644:
+            raise ContractError(f"unexpected pinned mode: {name}")
 
 
 def changed(base: Path, candidate: Path) -> set[str]:
@@ -99,6 +105,8 @@ def changed(base: Path, candidate: Path) -> set[str]:
 def validate(base: Path, candidate: Path) -> None:
     require_regular_tree(base)
     require_regular_tree(candidate)
+    require_pinned_modes(base, POLICY | POLICY_FIXTURES)
+    require_pinned_modes(candidate, set(EXPECTED) | POLICY | POLICY_FIXTURES)
     differences = changed(base, candidate)
     allowed = set(EXPECTED) - {"worker/src/lib/internal_auth.ts"}
     if differences - allowed:

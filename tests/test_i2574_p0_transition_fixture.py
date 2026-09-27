@@ -86,6 +86,14 @@ class P0TransitionFixtureTests(unittest.TestCase):
             dangling = delivery / "worker/src/dangling.ts"
             os.symlink(Path(directory) / "missing.ts", dangling)
             with self.assertRaises(policy.ContractError): policy.validate(p0, delivery)
+
+            ordinary = Path(directory) / "ordinary"
+            ordinary.mkdir()
+            executable = ordinary / "tests/test_classify_runner_failure.sh"
+            executable.parent.mkdir(parents=True, exist_ok=True)
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+            policy.require_regular_tree(ordinary)
             for name in policy.POLICY:
                 target = delivery / name
                 original = target.read_bytes(); target.write_bytes(original + b"\nmutation\n")
