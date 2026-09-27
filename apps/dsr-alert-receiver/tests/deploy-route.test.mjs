@@ -71,6 +71,13 @@ describe("B-216 protected receiver route admission", () => {
 
   it("rejects truncated or inconsistent provider inventories instead of assuming a unique target", () => {
     expect(validateInventoryPage(Object.assign([{ name: "only-db" }], { result_info: { count: 1, page: 1, per_page: 100, total_count: 1 } }), "database", { requireTotalCount: true })).toHaveLength(1);
+    const completeWorkerList = [{ id: TARGET.workerName }];
+    expect(validateInventoryPage(completeWorkerList, "worker")).toHaveLength(1);
+    expect(selectNamedResource(completeWorkerList, TARGET.workerName, "worker")).toEqual(completeWorkerList[0]);
+    errorCode(() => selectNamedResource([
+      { id: TARGET.workerName },
+      { id: TARGET.workerName },
+    ], TARGET.workerName, "worker"), "worker_duplicate_name");
     errorCode(() => validateInventoryPage(Object.assign([{ name: "first-page-db" }], { result_info: { count: 1, page: 1, per_page: 100, total_count: 101 } }), "database", { requireTotalCount: true }), "database_inventory_truncated");
     errorCode(() => validateInventoryPage(Object.assign([{ name: "only-db" }], { result_info: { count: 2, page: 1, per_page: 100, total_count: 1 } }), "database", { requireTotalCount: true }), "database_inventory_ambiguous");
     errorCode(() => validateInventoryPage([], "database", { requireTotalCount: true }), "database_inventory_ambiguous");

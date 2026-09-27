@@ -235,10 +235,10 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     if (account?.id !== TARGET.accountId) fail("account_identity_mismatch");
     const [databasePage, workerPage] = await Promise.all([
       api(`/accounts/${TARGET.accountId}/d1/database?per_page=100`),
-      api(`/accounts/${TARGET.accountId}/workers/scripts?per_page=100`),
+      api(`/accounts/${TARGET.accountId}/workers/scripts`),
     ]);
     validateInventoryPage(databasePage, "database", { requireTotalCount: true });
-    validateInventoryPage(workerPage, "worker", { requireTotalCount: true });
+    validateInventoryPage(workerPage, "worker");
     const priorDatabase = selectNamedResource(databasePage, TARGET.databaseName, "database");
     const priorWorker = selectNamedResource(workerPage, TARGET.workerName, "worker");
     if (priorWorker) {
@@ -296,8 +296,8 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     receipt.database_migration_ledger = [TARGET.migration];
 
     stage = "worker_preimage_recheck";
-    const currentWorkers = await api(`/accounts/${TARGET.accountId}/workers/scripts?per_page=100`);
-    validateInventoryPage(currentWorkers, "worker", { requireTotalCount: true });
+    const currentWorkers = await api(`/accounts/${TARGET.accountId}/workers/scripts`);
+    validateInventoryPage(currentWorkers, "worker");
     const currentWorker = selectNamedResource(currentWorkers, TARGET.workerName, "worker");
     let currentWorkerVersion = null;
     if (currentWorker) {
