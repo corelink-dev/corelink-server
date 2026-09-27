@@ -92,7 +92,10 @@ jobs:
           set -euo pipefail
           k6 inspect \
             -e DURATION=30s \
-            -e K6_AUTH_BEARER=ci-stub \
+            -e K6_STAGING_LOAD_ADMISSION_KEY=01234567890123456789012345678901 \
+            -e K6_RUN_ID=123 \
+            -e K6_STAGING_LOAD_SCENARIO=endurance-2h \
+            -e K6_TARGET_DEPLOYMENT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
             -e K6_TARGET_HOST=https://staging.corelink.humangr.com \
             tests/load/k6/scenarios/endurance-24h.js
 
@@ -101,8 +104,7 @@ jobs:
         env:
           K6_TARGET_HOST: ${{ secrets.K6_TARGET_HOST }}
           K6_TARGET_IDENTITY_RECEIPT: ${{ secrets.K6_TARGET_IDENTITY_RECEIPT }}
-          K6_STAGING_PAT: ${{ secrets.K6_STAGING_PAT }}
-          K6_STAGING_TEARDOWN_TOKEN: ${{ secrets.K6_STAGING_TEARDOWN_TOKEN }}
+          K6_STAGING_LOAD_ADMISSION_KEY: ${{ secrets.CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY }}
           DURATION: ${{ github.event.inputs.duration || '2h' }}
         run: |
           set -euo pipefail
@@ -119,11 +121,8 @@ jobs:
           test "${DURATION}" = '2h' || {
             echo "::error::DURATION must be exactly 2h"; exit 1;
           }
-          test -n "${K6_STAGING_PAT:-}" || {
-            echo "::error::K6_STAGING_PAT is required"; exit 1;
-          }
-          test -n "${K6_STAGING_TEARDOWN_TOKEN:-}" || {
-            echo "::error::K6_STAGING_TEARDOWN_TOKEN is required before load starts"; exit 1;
+          test -n "${K6_STAGING_LOAD_ADMISSION_KEY:-}" || {
+            echo "::error::CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY is required"; exit 1;
           }
           python3 scripts/validate_load_target_receipt.py \
             --target "$TARGET_HOST" \
@@ -171,8 +170,10 @@ jobs:
       - name: run k6 endurance 2h
         env:
           K6_TARGET_HOST:             ${{ steps.target_host.outputs.target_host }}
-          K6_AUTH_BEARER:             ${{ secrets.K6_STAGING_PAT }}
+          K6_STAGING_LOAD_ADMISSION_KEY: ${{ secrets.CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY }}
           K6_RUN_ID:                  ${{ github.run_id }}
+          K6_STAGING_LOAD_SCENARIO:   endurance-2h
+          K6_TARGET_DEPLOYMENT_SHA:   ${{ steps.target_host.outputs.deployment_sha }}
           K6_PROMETHEUS_RW_SERVER_URL: ${{ secrets.K6_PROMETHEUS_RW_SERVER_URL }}
           DURATION:                   ${{ github.event.inputs.duration || '2h' }}
           VUS:                        '50'
@@ -212,27 +213,41 @@ jobs:
             tests/load/k6/scenarios/endurance-24h.js
           printf '%s\n' "completed" > "$RESULTS_DIR/checkpoint-completed"
 
+      - name: seal synthetic staging state
+        id: seal
+        if: always() && steps.target_host.outcome == 'success'
+        env:
+          K6_TARGET_HOST: ${{ steps.target_host.outputs.target_host }}
+          K6_STAGING_LOAD_ADMISSION_KEY: ${{ secrets.CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY }}
+          TARGET_DEPLOYMENT_SHA: ${{ steps.target_host.outputs.deployment_sha }}
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          CREDENTIAL="$(python3 scripts/staging_load_lifecycle_auth.py --version v1 --key "$K6_STAGING_LOAD_ADMISSION_KEY" --run-id "$GITHUB_RUN_ID" --scenario endurance-2h --deployment-sha "$TARGET_DEPLOYMENT_SHA")"
+          HTTP_STATUS=$(timeout 30s curl --silent --show-error --max-redirs 0 --request POST --header "x-corelink-staging-load-admission: ${CREDENTIAL}" "${K6_TARGET_HOST}/_internal/staging/load-tests/endurance-2h/seal" --output "${RUNNER_TEMP}/seal-receipt.json" --write-out '%{http_code}')
+          test "$HTTP_STATUS" = 200
+          python3 scripts/staging_load_lifecycle_auth.py --validate-seal --receipt "${RUNNER_TEMP}/seal-receipt.json" --run-id "$GITHUB_RUN_ID" --scenario endurance-2h --deployment-sha "$TARGET_DEPLOYMENT_SHA"
+          cp "${RUNNER_TEMP}/seal-receipt.json" "tests/load/results/endurance-2h/seal-receipt-${GITHUB_RUN_ID}.json"
+
       - name: teardown synthetic staging state
         id: teardown
         if: always() && steps.target_host.outcome == 'success'
         env:
           K6_TARGET_HOST: ${{ steps.target_host.outputs.target_host }}
-          K6_STAGING_TEARDOWN_TOKEN: ${{ secrets.K6_STAGING_TEARDOWN_TOKEN }}
+          K6_STAGING_LOAD_ADMISSION_KEY: ${{ secrets.CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY }}
           TARGET_DEPLOYMENT_SHA: ${{ steps.target_host.outputs.deployment_sha }}
         timeout-minutes: 1
         run: |
           set -euo pipefail
-          test -n "${K6_STAGING_TEARDOWN_TOKEN:-}" || {
-            echo "::error::K6_STAGING_TEARDOWN_TOKEN is required; refusing unmanaged synthetic state"
+          test -n "${K6_STAGING_LOAD_ADMISSION_KEY:-}" || {
+            echo "::error::admission key is required; refusing unmanaged synthetic state"
             exit 1
           }
-          payload=$(printf '{"run_id":"%s","scenario":"endurance-2h"}' "${GITHUB_RUN_ID}")
-          HTTP_STATUS=$(timeout 30s curl --fail --silent --show-error \
+          CREDENTIAL="$(python3 scripts/staging_load_lifecycle_auth.py --version v1 --key "$K6_STAGING_LOAD_ADMISSION_KEY" --run-id "$GITHUB_RUN_ID" --scenario endurance-2h --deployment-sha "$TARGET_DEPLOYMENT_SHA")"
+          HTTP_STATUS=$(timeout 30s curl --silent --show-error --max-redirs 0 \
             --request POST \
-            --header "Authorization: Bearer ${K6_STAGING_TEARDOWN_TOKEN}" \
-            --header 'Content-Type: application/json' \
-            --data "$payload" \
-            "${K6_TARGET_HOST}/_internal/load-test/teardown" \
+            --header "x-corelink-staging-load-admission: ${CREDENTIAL}" \
+            "${K6_TARGET_HOST}/_internal/staging/load-tests/endurance-2h/teardown" \
             --output "${RUNNER_TEMP}/teardown-receipt.json" \
             --write-out '%{http_code}')
           test "${HTTP_STATUS}" = '200' || {

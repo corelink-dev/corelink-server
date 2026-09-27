@@ -32,6 +32,7 @@ import http from 'k6/http';
 import crypto from 'k6/crypto';
 import { check } from 'k6';
 import { Counter } from 'k6/metrics';
+import { admissionHeaders, requireAdmissionConfig } from './lib/staging_load_admission.js';
 
 const TARGET_HOST = __ENV.K6_TARGET_HOST || 'https://staging.corelink.humangr.com';
 const STRIPE_WHSEC = __ENV.K6_STRIPE_WHSEC || '';
@@ -43,6 +44,7 @@ export function setup() {
   if (!STRIPE_WHSEC) {
     throw new Error('K6_STRIPE_WHSEC env required (staging-only webhook secret)');
   }
+  requireAdmissionConfig();
   return {};
 }
 
@@ -115,11 +117,11 @@ export default function main() {
     `${TARGET_HOST}/v1/billing/stripe-webhook`,
     body,
     {
-      headers: {
+      headers: admissionHeaders({
         'content-type': 'application/json',
         'stripe-signature': signature,
         'x-corelink-load-test': 'r3-prep',
-      },
+      }),
       tags: { endpoint: 'webhook' },
     },
   );
