@@ -243,7 +243,7 @@ class Issue1700RouteGrammarTests(unittest.TestCase):
             ".github/workflows/issue-1700-container-staging-deploy.yml"
         ).read_text()
         self.assertEqual(
-            workflow.count("python3 scripts/verify_issue_1700_route_inventory.py"), 2
+            workflow.count("python3 scripts/verify_issue_1700_route_inventory.py"), 3
         )
         self.assertNotIn("def canonical(route)", workflow)
 
