@@ -126,7 +126,7 @@ EXPECTED_RECEIVER_SETTINGS = {
     "workers_dev": False,
     "compatibility_date": "2026-04-01",
     "compatibility_flags": [],
-    "crons": ["59 23 * * 0"],
+    "crons": ["59 23 * * 1"],
     "vars": {
         "ENVIRONMENT": "staging",
         "SYNTHETIC_DRILL_ENABLED": "false",
@@ -143,8 +143,7 @@ EXPECTED_SECRETS = {
     },
     "corelink-signup-staging": {
         "CLERK_SECRET_KEY", "CLERK_WEBHOOK_SECRET", "CORELINK_ERASE_AUTH_KEY",
-        "CORELINK_INTERNAL_AUTH_KEY", "DSR_DLQ_ALERT_AUTH_TOKEN", "DSR_DLQ_ALERT_ENDPOINT",
-        "DSR_DLQ_REDRIVE_AUTH_KEY", "ERASURE_SALT_KEY",
+        "CORELINK_INTERNAL_AUTH_KEY", "DSR_DLQ_REDRIVE_AUTH_KEY", "ERASURE_SALT_KEY",
     },
     "corelink-synthetic-pager-staging": set(),
     "github_environment_staging": {

@@ -328,7 +328,7 @@ describe("synthetic receiver contract", () => {
     const pagerDutyFetch = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(null, { status: 503 }))
       .mockResolvedValueOnce(new Response(null, { status: 202 }));
-    const controller = { cron: "59 23 * * 0", scheduledTime: 1_788_134_340_000, noRetry: vi.fn() } as ScheduledController;
+    const controller = { cron: "59 23 * * 1", scheduledTime: 1_788_134_340_000, noRetry: vi.fn() } as ScheduledController;
     const acceptedAt = 1_788_134_345_000;
     await expect(runDeferredDeliveries(controller, receiver.value, pagerDutyFetch)).rejects.toThrow("PagerDuty delivery failed");
     await expect(runDeferredDeliveries(controller, receiver.value, pagerDutyFetch, () => acceptedAt)).resolves.toBeUndefined();
@@ -345,7 +345,7 @@ describe("synthetic receiver contract", () => {
       region: "boundary_handoff", emit_ts_ms: 1_788_134_340_000, scheduled_at_ms: 1_787_580_000_000,
       correlation_id: deferredCorrelation, delivery_mode: "deferred", delivered_at_ms: null }] });
     const pagerDutyFetch = vi.fn<typeof fetch>();
-    await expect(runDeferredDeliveries({ cron: "59 23 * * 0", scheduledTime: 1_788_134_340_000 } as ScheduledController,
+    await expect(runDeferredDeliveries({ cron: "59 23 * * 1", scheduledTime: 1_788_134_340_000 } as ScheduledController,
       receiver.value, pagerDutyFetch)).resolves.toBeUndefined();
     expect(receiver.database.prepare).not.toHaveBeenCalled();
     expect(pagerDutyFetch).not.toHaveBeenCalled();

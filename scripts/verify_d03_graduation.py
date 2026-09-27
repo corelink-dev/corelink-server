@@ -85,7 +85,7 @@ COMMAND_CONTRACTS: dict[str, dict[str, Any]] = {
     },
     "B-072": {
         "owner_packet": "docs/handoff/2026-09-05-owner-action-packets-b008-b154.json#B-072",
-        "profiles": ["0 14 * * 1", "59 23 * * 0"], "sample_count": 1,
+        "profiles": ["0 14 * * 1", "59 23 * * 1"], "sample_count": 1,
         "required": ["SCHEDULED_DRILL_DELIVERY", "corelink-synthetic-pager-staging", "correlation", "PagerDuty", "synthetic_page_drills"],
         "safety": ["receiver", "202", "SCHEDULED_DRILL_RECEIVER_DEPLOYED"],
         "forbidden": ["PAGERDUTY_ROUTING_KEY=", "Authorization: Bearer"],

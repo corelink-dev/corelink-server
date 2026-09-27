@@ -463,6 +463,58 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "candidate workflow policy"):
             backlog_verify.validate_candidate_workflow(self.candidate)
 
+    def test_concurrency_group_migration_is_monotonic_and_exact(self) -> None:
+        legacy_group = "ci-backlog-verify-${{ github.event_name }}-${{ github.ref }}"
+        pr_number_group = (
+            "ci-backlog-verify-${{ github.event_name }}-"
+            "${{ github.event.pull_request.number || github.ref }}"
+        )
+        workflow = self.candidate / ".github" / "workflows" / "backlog-verify.yml"
+        baseline = workflow.read_text(encoding="utf-8")
+        legacy_count = baseline.count(legacy_group)
+        pr_number_count = baseline.count(pr_number_group)
+        self.assertEqual(legacy_count + pr_number_count, 1)
+        if pr_number_count == 1:
+            baseline = baseline.replace(pr_number_group, legacy_group, 1)
+        workflow.write_text(baseline, encoding="utf-8")
+        trusted = Path(self.temp.name) / "trusted"
+        trusted_workflow = trusted / ".github" / "workflows" / "backlog-verify.yml"
+        trusted_workflow.parent.mkdir(parents=True)
+
+        def set_group(root: Path, source: str, target: str) -> None:
+            root_workflow = root / ".github" / "workflows" / "backlog-verify.yml"
+            root_text = root_workflow.read_text(encoding="utf-8")
+            self.assertEqual(root_text.count(source), 1)
+            root_workflow.write_text(root_text.replace(source, target), encoding="utf-8")
+
+        trusted_workflow.write_text(baseline, encoding="utf-8")
+        # An old BASE admits the unchanged group during rollout or the exact PR-keyed group.
+        backlog_verify.validate_candidate_workflow(self.candidate, trusted)
+        set_group(self.candidate, legacy_group, pr_number_group)
+        backlog_verify.validate_candidate_workflow(self.candidate, trusted)
+
+        # Once BASE has the new group, the old value is no longer accepted.
+        set_group(trusted, legacy_group, pr_number_group)
+        backlog_verify.validate_candidate_workflow(self.candidate, trusted)
+        set_group(self.candidate, pr_number_group, legacy_group)
+        with self.assertRaisesRegex(RuntimeError, "unexpected concurrency settings"):
+            backlog_verify.validate_candidate_workflow(self.candidate, trusted)
+
+        # No third group or relaxed cancellation setting is admitted.
+        set_group(self.candidate, legacy_group, "ci-backlog-verify-${{ github.ref }}")
+        with self.assertRaisesRegex(RuntimeError, "unexpected concurrency settings"):
+            backlog_verify.validate_candidate_workflow(self.candidate, trusted)
+        set_group(self.candidate, "ci-backlog-verify-${{ github.ref }}", pr_number_group)
+        candidate_text = workflow.read_text(encoding="utf-8")
+        self.assertEqual(candidate_text.count("cancel-in-progress: true"), 1)
+        workflow.write_text(
+            candidate_text.replace("cancel-in-progress: true", "cancel-in-progress: false"),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(RuntimeError, "unexpected concurrency settings"):
+            backlog_verify.validate_candidate_workflow(self.candidate, trusted)
+        workflow.write_text(baseline, encoding="utf-8")
+
     def test_both_jobs_require_the_approved_hosted_runner(self) -> None:
         workflow = self.candidate / ".github" / "workflows" / "backlog-verify.yml"
         baseline = workflow.read_text(encoding="utf-8")

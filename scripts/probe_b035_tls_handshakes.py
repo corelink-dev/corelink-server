@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Capture a bounded, read-only TLS handshake matrix for B-035 ingress sources.
+"""Capture bounded, read-only TLS and client-operation evidence for B-035.
 
-The probe reads Cloudflare's zone setting once through the existing verifier,
-then performs TLS handshakes only. It sends no HTTP request and has no write
-path. A handshake proves TLS negotiation for that client runtime and hostname;
-it does not prove application authentication or a cache operation.
+The probe reads Cloudflare's zone setting once, performs TLS negotiation on
+source-bound ingress hosts, and makes three bounded authenticated read-only
+client operations. No cache writes or provider writes are performed.
 """
 
 from __future__ import annotations
@@ -99,9 +98,9 @@ def _securetransport_handshake(hostname: str, label: str) -> dict[str, Any]:
     try:
         result = subprocess.run(
             [
-                str(curl), "--connect-only", "--silent", "--show-error", "--verbose",
-                "--max-time", str(TIMEOUT_SECONDS), version_flag, "--tls-max", max_version,
-                f"https://{hostname}/",
+                str(curl), "--silent", "--show-error", "--verbose", "--output", "/dev/null",
+                "--write-out", "HTTP_STATUS:%{http_code}\\n", "--max-time", str(TIMEOUT_SECONDS),
+                version_flag, "--tls-max", max_version, f"https://{hostname}/",
             ],
             capture_output=True,
             text=True,
@@ -110,23 +109,75 @@ def _securetransport_handshake(hostname: str, label: str) -> dict[str, Any]:
         )
     except subprocess.TimeoutExpired:
         return {"client": client, "requested": label, "status": "timeout", "application_data_sent": False}
-    match = re.search(r"SSL connection using ([^\r\n]+)", result.stderr)
-    if result.returncode == 0 and match:
+    match = re.search(r"(?:SSL connection using|SSL connection:) ([^\r\n]+)", result.stderr)
+    http_status = re.search(r"HTTP_STATUS:(\d{3})", result.stdout)
+    if result.returncode == 0 and match and http_status:
         return {
             "client": client,
             "requested": label,
             "status": "success",
             "negotiated": match.group(1).split(" / ", 1)[0],
             "certificate_verified": True,
-            "application_data_sent": False,
+            "http_status": int(http_status.group(1)),
+            "application_data_sent": True,
         }
     return {
         "client": client,
         "requested": label,
         "status": "handshake_error",
-        "error": (result.stderr.strip().splitlines()[-1][:240] if result.stderr.strip() else f"exit_{result.returncode}"),
-        "application_data_sent": False,
+        "error": _safe_curl_error(result.stderr, result.returncode),
+        "application_data_sent": bool(http_status),
     }
+
+
+def _safe_curl_error(stderr: str, returncode: int) -> str:
+    """Return a bounded diagnostic without emitting verbose headers or tokens."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    safe = [line for line in lines if not re.search(r"authorization|bearer|cookie", line, re.I)]
+    return (safe[-1][:180] if safe else f"curl_exit_{returncode}")
+
+
+def _read_only_client_operations() -> list[dict[str, Any]]:
+    """Exercise authenticated, source-bound read routes; never write cache data."""
+    token_sccache = os.environ.get("CORELINK_SCCACHE_TOKEN")
+    token_canary = os.environ.get("CORELINK_CANARY_PAT")
+    sccache_tenant = "ee30f7ba-fc25-4d71-939e-ebe130b4c6a3"
+    canary_tenant = "93da3f7a-984d-4ef9-86e0-b0bd9fd0252e"
+    operations = [
+        ("sccache", "PROPFIND", f"https://corelink-api.humangr.com/cargo/{sccache_tenant}/b035-tls-probe-never-written", token_sccache, (200, 404)),
+        ("bazel_reapi", "GET", f"https://corelink-api.humangr.com/bazel/v2/{canary_tenant}/blobs/" + "0" * 64 + "/0", token_canary, (200, 404)),
+        ("turborepo", "POST", "https://corelink-api.humangr.com/v8/artifacts/status", token_canary, (200,)),
+    ]
+    results = []
+    curl = Path("/usr/bin/curl")
+    for client, method, url, token, expected in operations:
+        if not token:
+            results.append({"client": client, "status": "credential_unavailable", "operation": method, "application_data_sent": False})
+            continue
+        try:
+            result = subprocess.run(
+                [str(curl), "--silent", "--show-error", "--verbose", "--output", "/dev/null",
+                 "--write-out", "HTTP_STATUS:%{http_code}\\n", "--max-time", str(TIMEOUT_SECONDS),
+                 "--request", method, "--config", "-", url],
+                input=f'header = "Authorization: Bearer {token}"\n', capture_output=True,
+                text=True, timeout=TIMEOUT_SECONDS + 2, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            results.append({"client": client, "operation": method, "status": "timeout", "application_data_sent": True})
+            continue
+        status_match = re.search(r"HTTP_STATUS:(\d{3})", result.stdout)
+        negotiated = re.search(r"(?:SSL connection using|SSL connection:) ([^\r\n]+)", result.stderr)
+        status_code = int(status_match.group(1)) if status_match else None
+        results.append({
+            "client": client, "operation": method,
+            "status": "success" if result.returncode == 0 and status_code in expected and negotiated else "operation_error",
+            "http_status": status_code,
+            "negotiated_tls": negotiated.group(1).split(" / ", 1)[0] if negotiated else None,
+            "certificate_verified": bool(negotiated and result.returncode == 0),
+            "application_data_sent": bool(status_code),
+            **({"error": _safe_curl_error(result.stderr, result.returncode)} if result.returncode else {}),
+        })
+    return results
 
 
 def build_report(*, live: bool, revision: str | None) -> dict[str, Any]:
@@ -148,34 +199,35 @@ def build_report(*, live: bool, revision: str | None) -> dict[str, Any]:
         "legal_claims": inventory["instruments"],
         "source_validation": source_validation,
         "handshake_probe_status": "ready" if source_validation_ok else "blocked_source_validation",
-        "handshake_scope": "TLS negotiation only; no HTTP request, authentication attempt, cache read/write, or application contract test",
+        "evidence_scope": "TLS negotiation on each concrete hostname; read-only app operations separately exercise sccache PROPFIND, Bazel REAPI GET, and Turborepo status POST",
         "ingress": [],
         "templated_ingress": [],
+        "client_operations": [],
         "client_compatibility": [
             {
                 "client": "sccache (macOS native-tls/SecureTransport)",
                 "version_in_source": "sccache >= 0.15; exact production binary version unavailable",
                 "source": "specs/03_architecture/adrs/ADR-0072-humangr-zone-min-tls-1.2.md; apps/docs/docs/integrations/sccache-cargo.md",
                 "endpoint_source": "https://corelink-api.humangr.com/cargo/<tenant> in apps/docs/docs/integrations/sccache-cargo.md",
-                "probe": "Apple SecureTransport handshake to source-bound corelink-api hostname when the runner curl backend identifies SecureTransport; not an sccache operation",
+                "probe": "Apple SecureTransport TLS handshake plus authenticated read-only PROPFIND of an absent sentinel key; not an sccache binary invocation",
                 "historic_source_result": "ADR-0072 records a TLS-1.3-only floor rejected the macOS SecureTransport client; the zone was lowered to 1.2",
-                "status": "historical_tls_1_3_only_incompatibility_recorded; current application operation not exercised",
+                "status": "historical_tls_1_3_only_incompatibility_recorded; bounded_read_operation_reported_separately",
             },
             {
                 "client": "Bazel REAPI",
                 "source": "apps/docs/docs/integrations/bazel.md",
                 "version_in_source": "stock Bazel; exact version unavailable",
                 "endpoint_source": "https://corelink-api.humangr.com/bazel/v2/<tenant>/…",
-                "probe": "host TLS negotiation only; no REAPI request, PAT, or Bazel binary invocation",
-                "status": "application_compatibility_not_exercised",
+                "probe": "authenticated read-only REAPI ByteStream GET for an absent SHA-256 sentinel blob; no Bazel binary invocation",
+                "status": "bounded_reapi_read_operation_reported_separately",
             },
             {
                 "client": "Turborepo",
                 "source": "apps/docs/docs/integrations/turborepo.md",
                 "version_in_source": "not pinned in source",
                 "endpoint_source": "https://corelink-api.humangr.com (TURBO_API)",
-                "probe": "host TLS negotiation only; no cache request, PAT, or Turborepo binary invocation",
-                "status": "application_compatibility_not_exercised",
+                "probe": "authenticated POST to the static /v8/artifacts/status route (no body/storage/billing path); no Turborepo binary invocation",
+                "status": "bounded_status_operation_reported_separately",
             },
         ],
         "cipher_boundary": "Observed negotiated cipher names are per-handshake facts only; no Cloudflare cipher-suite policy is claimed or verified.",
@@ -186,6 +238,8 @@ def build_report(*, live: bool, revision: str | None) -> dict[str, Any]:
     report["credential"] = {"available": bool(token), "source": token_source}
     if live:
         report["zone_floor"] = b035.read_live_floor(token) if token else {"status": "credential_unavailable"}
+        if report["zone_floor"].get("status") == "match" and source_validation_ok:
+            report["client_operations"] = _read_only_client_operations()
 
     grouped: dict[str, list[dict[str, Any]]] = {}
     for surface in b035.NAMED_SURFACES:
@@ -269,7 +323,7 @@ def main() -> int:
             and summary["instrument_claims_match"]
             and summary["source_validation"] == "all_markers_match"
             and not summary["source_validation_errors"]
-            and summary["source_bound_ingress_rows"] == 15
+            and summary["source_bound_ingress_rows"] == 14
             and summary["concrete_hostnames"] == 12
             and summary["templated_ingress_not_probeable"] == 1
             and summary["network_attempts"] == 0

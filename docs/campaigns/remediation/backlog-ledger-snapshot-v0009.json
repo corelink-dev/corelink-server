@@ -1,0 +1,46 @@
+{
+  "base_commit": "b312a963122e9041f8a56e10127ef20e6367aea3",
+  "catalog_sha256": {
+    "docs/campaigns/remediation/work-packages/B001-B045.md": "081c9885db8d79c18f2f31edb7864bb1ca1a18d53f408720f3f9e4f00524f9c6",
+    "docs/campaigns/remediation/work-packages/B046-B090.md": "1a164260a84f3adb406676e1505fd8379aad07b15a5c45365369dcef7b0586da",
+    "docs/campaigns/remediation/work-packages/B091-B130.md": "2875d5374471382a5422ceac83e3259fcd5780e55fa3e07f80746f7ceb2995ce",
+    "docs/campaigns/remediation/work-packages/B131-B167.md": "13805dab851c5023d7d49bc707ce0c30713a11aeca8b1e179c8710ad8d91671f"
+  },
+  "changed_ids": [
+    "B-057"
+  ],
+  "item_count": 374,
+  "ledger_sha256": "65f1d0128922d0ff4eea5f74767b181bf1e35d17ea3eeaaba9e3b2454aeccc54",
+  "open_ids": [
+    "B-008",
+    "B-032",
+    "B-035",
+    "B-065",
+    "B-086",
+    "B-089",
+    "B-097",
+    "B-111",
+    "B-154",
+    "B-170",
+    "B-314",
+    "B-316"
+  ],
+  "prior_catalog_sha256": {
+    "docs/campaigns/remediation/work-packages/B001-B045.md": "081c9885db8d79c18f2f31edb7864bb1ca1a18d53f408720f3f9e4f00524f9c6",
+    "docs/campaigns/remediation/work-packages/B046-B090.md": "1a164260a84f3adb406676e1505fd8379aad07b15a5c45365369dcef7b0586da",
+    "docs/campaigns/remediation/work-packages/B091-B130.md": "2875d5374471382a5422ceac83e3259fcd5780e55fa3e07f80746f7ceb2995ce",
+    "docs/campaigns/remediation/work-packages/B131-B167.md": "13805dab851c5023d7d49bc707ce0c30713a11aeca8b1e179c8710ad8d91671f"
+  },
+  "prior_ledger_sha256": "fcc3a03cf4a2f82996212a24d7ae1947c874441635a6a680bb4caeb6c64e58fa",
+  "prior_snapshot_sha256": "06ac9cd05acaf30b59adceb0444915d115417c238cce420d53a4209b8f2e1138",
+  "prior_source_sha256": "123bc5449b6a2eaa56ca77afafee226a5fcd6055f34a2cb6d0b35a04218bfcd7",
+  "schema_version": 3,
+  "sequence": 9,
+  "source_sha256": "a1e75e2990f92d1d10aecce8703c98410b14a9f600d8eeedcfad52975e9a31ae",
+  "status_counts": {
+    "done": 332,
+    "open": 12,
+    "parked": 30
+  },
+  "transition": "base-derived-data"
+}

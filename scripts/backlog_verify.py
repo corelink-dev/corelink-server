@@ -639,7 +639,8 @@ def validate_candidate_transitions(
     allow_v0006_reconciliation: bool = False,
     allow_v0007_reconciliation: bool = False,
     allow_v0009_reconciliation: bool = False,
-    successor_mode: bool = False,
+    allow_v0010_reconciliation: bool = False,
+    successor_mode: bool = False
 ) -> list[str]:
     """Validate the small, auditable set of BACKLOG changes a PR may make."""
     trusted_by_id = {item.id: item for item in trusted_items if item.raw}
@@ -668,6 +669,7 @@ def validate_candidate_transitions(
         }
         v0007_fields = {"B-083": {"verify-means"}}
         v0009_fields = {"B-057": {"verify-means"}}
+        v0010_fields = {"B-114": {"verify", "verify-means"}}
         for item_field in IMMUTABLE_ITEM_FIELDS:
             if old_raw.get(item_field) != new_raw.get(item_field):
                 if (
@@ -682,6 +684,10 @@ def validate_candidate_transitions(
                     allow_v0009_reconciliation
                     and item.id in v0009_fields
                     and item_field in v0009_fields[item.id]
+                ) or (
+                    allow_v0010_reconciliation
+                    and item.id in v0010_fields
+                    and item_field in v0010_fields[item.id]
                 ):
                     continue
                 # The B-089 successor may add only this already-BASE-owned
@@ -744,6 +750,8 @@ def validate_candidate_transitions(
                         and "verify-means" in v0007_fields[item.id])
                     or (allow_v0009_reconciliation and item.id in v0009_fields
                         and "verify-means" in v0009_fields[item.id])
+                    or (allow_v0010_reconciliation and item.id in v0010_fields
+                        and "verify-means" in v0010_fields[item.id])
                     or (allow_sprint3_rewrite and item.id in {
                 "B-012", "B-065", "B-087", "B-089", "B-097", "B-154", "B-170",
             }) or (allow_b154_reconciliation and item.id == "B-154")):
@@ -801,7 +809,7 @@ def validate_dense_id_population(items: list[Item]) -> list[str]:
     return errors
 
 
-def validate_candidate_workflow(candidate_root: Path) -> None:
+def validate_candidate_workflow(candidate_root: Path, trusted_root: Path | None = None) -> None:
     """Inspect workflow policy as data; never execute the candidate workflow."""
     text = _regular_control(candidate_root, ".github/workflows/backlog-verify.yml").decode("utf-8")
     try:
@@ -860,10 +868,44 @@ def validate_candidate_workflow(candidate_root: Path) -> None:
         raise RuntimeError("candidate workflow policy has unexpected schedule or dispatch trigger")
     if document.get("permissions") != {"contents": "read"}:
         raise RuntimeError("candidate workflow policy must grant contents: read only")
-    if document.get("concurrency") != {
-        "group": "ci-backlog-verify-${{ github.event_name }}-${{ github.ref }}",
-        "cancel-in-progress": True,
-    }:
+    legacy_group = "ci-backlog-verify-${{ github.event_name }}-${{ github.ref }}"
+    pr_number_group = (
+        "ci-backlog-verify-${{ github.event_name }}-"
+        "${{ github.event.pull_request.number || github.ref }}"
+    )
+    trusted_workflow_root = trusted_root or Path(__file__).resolve().parents[1]
+    trusted_text = _regular_control(
+        trusted_workflow_root, ".github/workflows/backlog-verify.yml"
+    ).decode("utf-8")
+    try:
+        trusted_document = yaml.load(trusted_text, Loader=_NoDuplicateKeysLoader) or {}
+    except yaml.YAMLError as exc:
+        raise RuntimeError(f"trusted workflow policy is not valid YAML: {exc}") from exc
+    trusted_concurrency = (
+        trusted_document.get("concurrency") if isinstance(trusted_document, dict) else None
+    )
+    trusted_group = (
+        trusted_concurrency.get("group") if isinstance(trusted_concurrency, dict) else None
+    )
+    if (
+        not isinstance(trusted_concurrency, dict)
+        or set(trusted_concurrency) != {"group", "cancel-in-progress"}
+        or trusted_concurrency.get("cancel-in-progress") is not True
+    ):
+        raise RuntimeError("trusted workflow policy has unexpected concurrency settings")
+    if trusted_group == legacy_group:
+        approved_groups = {legacy_group, pr_number_group}
+    elif trusted_group == pr_number_group:
+        approved_groups = {pr_number_group}
+    else:
+        raise RuntimeError("trusted workflow policy has unexpected concurrency settings")
+    concurrency = document.get("concurrency")
+    if (
+        not isinstance(concurrency, dict)
+        or set(concurrency) != {"group", "cancel-in-progress"}
+        or concurrency.get("group") not in approved_groups
+        or concurrency.get("cancel-in-progress") is not True
+    ):
         raise RuntimeError("candidate workflow policy has unexpected concurrency settings")
     jobs = document.get("jobs")
     if not isinstance(jobs, dict) or set(jobs) != {"verify", "trusted_semantic"}:
@@ -1040,7 +1082,7 @@ def main() -> int:
                         raise RuntimeError("candidate transition rejected:\n" + "\n".join(transition_errors))
             except ledger.LedgerError as exc:
                 raise RuntimeError(f"candidate ledger successor rejected: {exc}") from exc
-            validate_candidate_workflow(candidate_root)
+            validate_candidate_workflow(candidate_root, trusted_root)
         except (OSError, RuntimeError) as exc:
             print(f"FATAL: {exc}", file=sys.stderr)
             return 2

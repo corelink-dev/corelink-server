@@ -119,23 +119,32 @@ CoreLink does not knowingly process special-category data (GDPR Art. 9) or data 
 
 ---
 
-## Section 7 — Residency Commitment per Region
+## Section 7 — R2 and Durable Object Residency Commitment per Region
 
-CoreLink commits to storing and processing Customer's Tenant data within the following enumerated regions. The Tenant's `primary_region` is set at provisioning and may only be changed via Customer-initiated migration with 30-day advance notice.
+This template's regional statements apply to R2 objects and tenant-pinned
+Durable Object state. They do not apply to the shared D1 control plane. The
+five production Workers currently bind one D1 database whose primary Cloudflare
+reports in ENAM, with no D1 jurisdiction and automatic read replication. That
+database holds tenant, membership, PAT, quota, billing, and audit-outbox data.
+This is a prelaunch technical disclosure, not an approved transfer mechanism
+or executed customer commitment.
 
 ### 7.1 Enumerated Regions
 
 | Region Code | Geographic Area | Cloudflare Infrastructure | Data Localization Commitment |
 |---|---|---|---|
-| **WNAM** | Western North America | Cloudflare us-west infrastructure | Tenant data stored and processed in us-west facilities. |
-| **ENAM** | Eastern North America | Cloudflare us-east infrastructure | Tenant data stored and processed in us-east facilities. |
-| **WEUR** | Western Europe | Cloudflare eu-west infrastructure | Tenant data stored and processed in eu-west facilities. `jurisdictional_restriction = "eu"` enforced (WI-S14-001). |
-| **APAC** | Asia-Pacific | Cloudflare Tokyo (`nrt`) infrastructure and APAC R2 bucket | Tenant data stored and served through the provisioned APAC path. This is a physical-location commitment, not an APAC legal-jurisdiction claim. |
+| **WNAM** | Western North America | Cloudflare us-west infrastructure | R2 objects and tenant-pinned DO state use us-west facilities. |
+| **ENAM** | Eastern North America | Cloudflare us-east infrastructure | R2 objects and tenant-pinned DO state use us-east facilities. |
+| **WEUR** | Western Europe | Cloudflare eu-west infrastructure | R2 objects and tenant-pinned DO state use eu-west facilities. `jurisdictional_restriction = "eu"` enforced (WI-S14-001). |
+| **APAC** | Asia-Pacific | Cloudflare Tokyo (`nrt`) infrastructure and APAC R2 bucket | R2 objects and tenant-pinned DO state use the provisioned APAC path. This is a physical-location statement, not an APAC legal-jurisdiction claim. |
 | **SAM** | South America | **Not provisioned** | New SAM residency provisioning is rejected; this template makes no claim that SAM data is stored in Brazil. |
 
 ### 7.2 Failover Restrictions
 
-CoreLink may replicate data to a secondary region solely for high-availability purposes, subject to the following hard restrictions (enforced by INV-DATA-RESIDENCY and INV-REGION-NO-CROSS-LEAK):
+R2 objects and tenant-pinned Durable Object state may replicate to a secondary
+region solely for high-availability purposes, subject to the following hard
+restrictions (enforced by INV-DATA-RESIDENCY and INV-REGION-NO-CROSS-LEAK).
+These restrictions do not describe D1 replication or placement.
 
 | Primary Region | Permitted Failover Destinations |
 |---|---|
@@ -145,14 +154,18 @@ CoreLink may replicate data to a secondary region solely for high-availability p
 | APAC | APAC read-replica only, where provisioned |
 | SAM | Not applicable — SAM is not provisioned |
 
-**WEUR data NEVER replicates outside the EU jurisdiction.** This restriction is enforced at the infrastructure level (Cloudflare DO `jurisdictional_restriction`) and validated by `PAT-REGION-FAILOVER-001` (WI-S14-003).
+**WEUR R2/DO state NEVER replicates outside the EU jurisdiction.** This
+restriction is enforced at the infrastructure level (Cloudflare DO
+`jurisdictional_restriction`) and validated by `PAT-REGION-FAILOVER-001`
+(WI-S14-003). It is not a D1 replication claim.
 
 ### 7.3 International Transfer Mechanism
 
-For Customer tenants in WEUR: data transfers, if any, are governed by:
-- EU Standard Contractual Clauses (SCCs) per GDPR Art. 46(2)(c).
-- Schrems II Transfer Impact Assessment (`legal/tia-template.md`).
-- EDPB Recommendations 01/2020 supplementary measures (Section 12 and Appendix A).
+The repository disclosure describes the shared D1 control plane under SCC/TIA
+safeguards. This template does not establish that a transfer mechanism has been
+approved or executed. Counsel must approve the applicable transfer basis,
+safeguards, and effective date before any customer-facing residency term is
+published.
 
 SAM is not a provisioned signup region. A future SAM deployment would require a
 separate residency decision and legal review under LGPD Art. 33; this template
@@ -168,7 +181,7 @@ CoreLink engages the following Sub-processors. Customer authorises their engagem
 
 | Sub-processor | Role | Data Categories | DPA Reference | Region Scope |
 |---|---|---|---|---|
-| **Cloudflare, Inc.** | Infrastructure: Workers, R2, D1, KV, Durable Objects, Custom Domains | Blob content (encrypted), audit metadata, access logs | [cf-dpa.cloudflare.com](https://www.cloudflare.com/cloudflare-customer-dpa/) | Tenant-pinned (Section 7) |
+| **Cloudflare, Inc.** | Infrastructure: Workers, R2, D1, KV, Durable Objects, Custom Domains | Blob content (encrypted), audit metadata, access logs | [cf-dpa.cloudflare.com](https://www.cloudflare.com/cloudflare-customer-dpa/) | R2/DO tenant-pinned; shared D1 control plane is global (primary reported ENAM, no D1 jurisdiction) |
 | **Customer KMS Provider (future only)** | No current service processing; candidate BYOK CMK integration | Not applicable while BYOK is unavailable | Would require a separately enabled customer agreement | Not an active sub-processor |
 
 ### 8.2 Customer KMS Provider Options

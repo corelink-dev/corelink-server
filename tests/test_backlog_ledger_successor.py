@@ -601,9 +601,73 @@ def test_v0005_bridge_rejects_an_unreceipted_or_wrong_transition():
     )
 
 
-def test_successor_chain_replays_through_v0008():
-    """The immutable receipts include at least the unchanged v0008 chain."""
-    assert ledger.load_successor_chain()["sequence"] >= 8
+def test_successor_chain_rejects_unreceipted_post_v0008_drift():
+    """v0008 cannot silently admit the later state before the separate v0009 receipt."""
+    with pytest.raises(LedgerError, match="delivered state drifted after last successor"):
+        ledger.load_successor_chain()
+
+
+def test_v0008_historical_admission_is_byte_and_merge_pinned(monkeypatch):
+    """The exceptional v0008 admission cannot authorize another receipt or merge."""
+    policy = ledger._successor_policy()
+    root = ledger.REPO_ROOT
+    relative = ledger.SNAPSHOT_DIRECTORY / "backlog-ledger-snapshot-v0008.json"
+    raw = (root / relative).read_bytes()
+    receipt = json.loads(raw)
+    pinned = successor.V0008_HISTORICAL_ADMISSION
+
+    assert policy._v0008_historical_admission_authorized(
+        root, relative, raw, receipt,
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw + b"\n", receipt,
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, receipt,
+        [pinned["introduction_commit"]], "0" * 40,
+    )
+    assert not policy._v0008_historical_admission_authorized(
+        root, Path("BACKLOG.md"), raw, receipt,
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, {**receipt, "sequence": 9},
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, {**receipt, "base_commit": "0" * 40},
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, receipt,
+        ["0" * 40], pinned["introduction_parent"],
+    )
+    original_run = successor.subprocess.run
+
+    def deny_ancestry(args, **kwargs):
+        if args[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return subprocess.CompletedProcess(args, 1, b"", b"")
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(successor.subprocess, "run", deny_ancestry)
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, receipt,
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
+    monkeypatch.undo()
+
+    def rewrite_intro_bytes(args, **kwargs):
+        if args == ["git", "show", f"{pinned['introduction_commit']}:{relative.as_posix()}"]:
+            return subprocess.CompletedProcess(args, 0, b"rewritten", b"")
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(successor.subprocess, "run", rewrite_intro_bytes)
+    assert not policy._v0008_historical_admission_authorized(
+        root, relative, raw, receipt,
+        [pinned["introduction_commit"]], pinned["introduction_parent"],
+    )
 
 
 def test_v0006_pins_source_hash_and_exact_changed_ids():
@@ -920,7 +984,7 @@ def test_v0009_authorizes_only_the_pinned_b057_delta_and_keeps_v0008():
     "changed-base", "wrong-sequence", "wrong-previous", "changed-receipt",
     "changed-source", "extra-id", "extra-backlog-delta", "changed-ledger",
     "changed-catalog", "incomplete-receipt", "changed-anchor", "changed-history",
-    "changed-history-section", "changed-section-pin",
+    "changed-history-section", "changed-b086-history-section", "changed-section-pin",
 ])
 def test_v0009_rejects_nearby_unauthorized_b057_transitions(monkeypatch, mutation):
     policy = ledger._successor_policy()
@@ -962,6 +1026,14 @@ def test_v0009_rejects_nearby_unauthorized_b057_transitions(monkeypatch, mutatio
         sections["B-054"] = ("0" * 64, sections["B-054"][1])
         row[5] = sections
         history[0] = tuple(row)
+        monkeypatch.setitem(successor.V0009_RECONCILIATION, "history_transitions", tuple(history))
+    elif mutation == "changed-b086-history-section":
+        history = list(successor.V0009_RECONCILIATION["history_transitions"])
+        row = list(history[-1])
+        sections = dict(row[5])
+        sections["B-086"] = ("0" * 64, sections["B-086"][1])
+        row[5] = sections
+        history[-1] = tuple(row)
         monkeypatch.setitem(successor.V0009_RECONCILIATION, "history_transitions", tuple(history))
     elif mutation == "changed-section-pin":
         monkeypatch.setitem(successor.V0009_RECONCILIATION, "current_section_sha256", "0" * 64)

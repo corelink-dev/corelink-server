@@ -72,15 +72,15 @@ jobs:
       - name: Execute selected real harnesses
         shell: bash
         env:
-          # D1/R2 native adapter credentials. They are passed only after the
-          # protected environment gate and are masked by Actions automatically.
+          # D1 credentials serve the D1 and R2 profiles after protected approval.
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
-          R2_S3_ENDPOINT: ${{ secrets.R2_S3_ENDPOINT }}
-          R2_S3_ACCESS_KEY_ID: ${{ secrets.R2_S3_ACCESS_KEY_ID }}
-          R2_S3_SECRET_ACCESS_KEY: ${{ secrets.R2_S3_SECRET_ACCESS_KEY }}
-          R2_TEST_BUCKET: ${{ vars.R2_TEST_BUCKET }}
+          # Keep the sibling provider's credentials out of a D1-only run.
+          R2_S3_ENDPOINT: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.R2_S3_ENDPOINT || '' }}
+          R2_S3_ACCESS_KEY_ID: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.R2_S3_ACCESS_KEY_ID || '' }}
+          R2_S3_SECRET_ACCESS_KEY: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.R2_S3_SECRET_ACCESS_KEY || '' }}
+          R2_TEST_BUCKET: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && vars.R2_TEST_BUCKET || '' }}
           # Stripe live integration uses the wallet broker's test reference;
           # CoreLink never receives a raw Stripe secret key.
           HUGR_WALLET_BASE: ${{ vars.HUGR_WALLET_BASE }}

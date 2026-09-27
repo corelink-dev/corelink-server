@@ -246,7 +246,7 @@ A prior version of this answer described a *"**Weekly synthetic chaos drill** sc
 
 **Q:** Are you LGPD compliant?
 
-**A:** Yes — compliant as a processor (and joint controller for limited service-telemetry purposes). DPO in place (`dpo@humangr.com`). **Where Brazilian-tenant data lives today:** in the **US (ENAM)** region, processed under SCCs with supplementary measures per EDPB recommendation. **In-country Brazilian residency (`sam` — São Paulo) is on the roadmap** — note that **Cloudflare R2 has no South-America region**, so Brazilian-jurisdiction *physical* residency is not yet technically possible; it is available to Enterprise customers on request once the substrate supports it. (For reference, EU residency *is* live — EU tenants' data stays in physically-EU R2 buckets.) DSR turnaround: 5-business-day acknowledgement, 15-business-day resolution (Art. 18). Cross-border transfers: SCCs in the DPA with supplementary measures per EDPB recommendation. Breach notification: 72h to ANPD.
+**A:** Brazil/SAM physical residency is not provisioned. R2 residency statements do not apply to the shared global D1 control plane, whose primary is currently reported in ENAM with no D1 jurisdiction. Counsel approval of applicable customer-facing transfer terms remains pending; this prelaunch FAQ does not claim an executed SCC or supplementary-measures posture for D1.
 
 **Sources:** `apps/docs/docs/trust/compliance.mdx#lgpd`; `apps/docs/docs/trust/data-handling.mdx#residency`; `/residency/lgpd-brazil`.
 
@@ -254,7 +254,7 @@ A prior version of this answer described a *"**Weekly synthetic chaos drill** sc
 
 **Q:** Are you GDPR compliant?
 
-**A:** Yes — compliant as a processor (joint controller for limited service-telemetry purposes). DPA template at `legal/dpa/v1.0.0` — three locales reviewed by external counsel (English EU+UK, Portuguese Brazil, Spanish LATAM). Schrems II: SCC Modules 2/3 plus the EU-region pin as a supplementary measure. (A prior version of this answer also listed "BYOK envelope encryption" among the supplementary measures in place; BYOK is not shipped — see S1 — and must not be offered to a DPO as an existing safeguard.) **EU data residency is live:** EU (`weur`) tenants are served from a physically-EU region (served via our London/`lhr` cluster) whose CAS and AC blobs are stored in physically-EU Cloudflare R2 buckets — EU-origin data stays in the EU, so for those tenants there is no third-country transfer to assess. Breach notification 72h to supervisory authority (Art. 33) and without-undue-delay to high-risk affected data subjects (Art. 34). DSR rights (Arts. 15–22) supported with verifiable erasure (`INV-DATA-ERASURE-COMPLETE`, `INV-ERASURE-ATTESTATION-SIGNED`). Sub-processor change notice 30 calendar days advance.
+**A:** EU (`weur`) CAS and AC blobs use physically-EU R2 buckets through London/`lhr`; that is an R2 residency statement. The D1 control plane is shared globally, with its primary currently reported in ENAM and no D1 jurisdiction. Counsel approval of applicable customer-facing transfer terms remains pending, so this prelaunch FAQ does not claim an executed SCC, BYOK, or crypto-erase safeguard for D1.
 
 **Sources:** `apps/docs/docs/trust/compliance.mdx#gdpr`; `marketing/launch/BLOG-POSTS/04-multi-region-residency.md`.
 

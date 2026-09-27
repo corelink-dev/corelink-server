@@ -81,14 +81,61 @@ REQUIRED_TARGET_SOURCES = {
 # run. The self-hosted runner's PATH/toolchain remains the infrastructure trust
 # boundary; this manifest binds the repository-owned selector/source inputs.
 SOURCE_SHA256 = {
-    "crates/corelink-container/src/routes/tier_select_store.rs": "f871b8ba90348a4ae8c7f9a8421065efc7759406597976b727ef00014c11e5ea",
-    "crates/corelink-container/src/storage/d1_http.rs": "cc05e6834cee821c1f7e52041a6d5cbd7570f87618af3d3ab65d6132d3fb5a7a",
+    "crates/corelink-container/src/routes/tier_select_store.rs": "37c0cc992da7f77b95996066c25eadd39a2f92279d35dcfc8077a7bcdd187f97",
+    "crates/corelink-container/src/storage/d1_http.rs": "57df01654b44a12c57663d4543b1290125c87346e014e3b8210624a2d9cb6dd2",
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "2148abe19ae9b119dc17eca0f242e983b47f8f6100d8d6fbba0536aafcc88af7",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "1589c0bf78b5ecee786f39e71e66feb3bcd387ba1465d4ad5f22133cdcf14b4e",
     "crates/corelink-stripe-real/tests/live_integration.rs": "55e9d64edb8b35a97de82ff8f55f75ce74159d1bcf4e86d5fa73b0874105ae7a",
     "crates/corelink-audit-chain/tests/neon_shadow_real.rs": "dfd22738e96d82695b40addf64b3dbaf611fbd8026346f0b4e33b28f10fe79eb",
 }
+
+
+def safe_failure_diagnostic(raw_output: str) -> str:
+    """Map private Cargo output to a small, non-sensitive diagnostic class.
+
+    Never return a matched line, provider body, source location, URL, or test
+    payload. Every result is either a fixed label or a compiler/HTTP status
+    code selected by a narrow numeric expression.
+    """
+
+    if match := re.search(r"\berror\[(E[0-9]{4})\]", raw_output):
+        return f"rustc_{match.group(1)}"
+    if re.search(r"(?i)\bcould not compile\b", raw_output):
+        return "rust_compile_error"
+    if match := re.search(r"(?i)\b(?:d1\s+http|http\s+status|status(?:_code)?|status\s+code)\s*[:= ]\s*([1-5][0-9]{2})\b", raw_output):
+        return f"provider_http_{match.group(1)}"
+    if re.search(r"(?i)\bconnection refused\b", raw_output):
+        return "network_connection_refused"
+    if re.search(r"(?i)\b(?:timed out|timeout)\b", raw_output):
+        return "network_timeout"
+    if re.search(r"(?i)\b(?:name or service not known|temporary failure in name resolution|dns resolution failed)\b", raw_output):
+        return "network_dns_failure"
+    if re.search(r"(?i)\bpanicked at\b", raw_output):
+        return "test_panic"
+    if re.search(r"(?m)^test result:\s+FAILED\b", raw_output):
+        return "test_assertion_failure"
+    return "unclassified_failure"
+
+
+def failure_diagnostic_negative_controls() -> None:
+    """Prove classification retains no token, DSN, payload, or personal data."""
+
+    secret = "CF_DIAGNOSTIC_SENTINEL_never_emit"
+    dsn = "postgresql://private-user:private-pass@private.example.test/db"
+    personal = "private.person@example.test"
+    fixtures = (
+        (f"error[E0433]: {secret} {dsn} {personal}", "rustc_E0433"),
+        (f"D1 HTTP 503: {secret} DSN={dsn} user={personal}", "provider_http_503"),
+        (f"thread 'd1' panicked at {secret} {dsn} {personal}", "test_panic"),
+        (f"opaque provider response {secret} {dsn} {personal}", "unclassified_failure"),
+    )
+    for raw_output, expected in fixtures:
+        summary = safe_failure_diagnostic(raw_output)
+        if summary != expected:
+            fail(f"failure diagnostic fixture expected {expected}, received {summary}")
+        if any(marker in summary for marker in (secret, dsn, personal, raw_output)):
+            fail("failure diagnostic exposed private input material")
 
 CONTRACT_TRIGGER_INPUTS = (
     ".github/workflows/issue-1650-real-integration-contract.yml",
@@ -231,7 +278,7 @@ def verify_exact_manifest() -> None:
         "neon": ("corelink-audit-chain", "test/neon_shadow_real", ("neon-real",)),
     }
     expected_env = {
-        "d1": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID", "R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY"),
+        "d1": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID"),
         "r2": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID", "R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_TEST_BUCKET"),
         "stripe": ("HUGR_WALLET_BASE", "HUGR_WALLET_TOKEN", "HUGR_STRIPE_REF", "STRIPE_AUTH_MODE", "STRIPE_PRICE_ID_STARTER"),
         "neon": ("NEON_TEST_DSN",),
@@ -427,6 +474,13 @@ def assert_contract(workflow: str, runner: str) -> None:
         fail("workflow interpolates the dispatch input into shell source")
     if 'bash scripts/run-real-ignored-harnesses.sh "${{ inputs.profile }}"' in wf:
         fail("dispatch input is interpolated directly into shell source")
+    for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY"):
+        expected = f"{name}: ${{{{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.{name} || '' }}}}"
+        if expected not in wf:
+            fail(f"R2 credential is not restricted to the R2/all profile: {name}")
+    expected_bucket = "R2_TEST_BUCKET: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && vars.R2_TEST_BUCKET || '' }}"
+    if expected_bucket not in wf:
+        fail("R2 test bucket is not restricted to the R2/all profile")
     if runs.count("python3 scripts/verify_real_ignored_harnesses.py") != 1:
         fail("semantic executor guard is missing or only comment bait")
     if runs.count('bash scripts/run-real-ignored-harnesses.sh "$REAL_HARNESS_PROFILE"') != 1:
@@ -441,6 +495,12 @@ def assert_contract(workflow: str, runner: str) -> None:
         fail("raw Cargo output is copied into an uploadable artifact")
     if ' >"$raw_log" 2>&1' not in sh or 'tee "$log_file"' in sh:
         fail("raw Cargo output is not isolated from Actions logs and artifacts")
+    if 'LAST_DIAGNOSTIC_CLASS="$(python3 scripts/verify_real_ignored_harnesses.py --classify-failure "$raw_log")"' not in sh:
+        fail("failed Cargo output is not reduced to a sanitized diagnostic class")
+    if 'status=failed diagnostic_class=%s' not in sh:
+        fail("failed test artifact omits its sanitized diagnostic class")
+    if '"diagnostic_class":"%s"' not in sh:
+        fail("failed test receipt omits its sanitized diagnostic class")
     for status in ("failed", "not-discovered", "passed"):
         if f"sha=%s profile=%s test=%s status={status}" not in sh:
             fail(f"redacted test log summary is missing status: {status}")
@@ -520,7 +580,8 @@ def assert_contract(workflow: str, runner: str) -> None:
             fail(f"{profile} profile does not preflight before execution")
 
     # Environment preconditions are part of correctness: absent credentials
-    # must fail before a test can fall back to an in-memory adapter.
+    # must fail before a test can fall back to an in-memory adapter. Keep the
+    # set closed across profiles while each profile gates only its own inputs.
     for name in (
         "CLOUDFLARE_ACCOUNT_ID",
         "CF_API_TOKEN",
@@ -823,13 +884,32 @@ def mutation_checks(workflow: str, runner: str, contract_workflow: str) -> None:
     expect_rejected("PAT signing secret", workflow, runner + "\nexport CORELINK_PAT_SIGNING_KEY_HEX=unsafe\n")
     # A direct shell interpolation reintroduces command/injection ambiguity.
     expect_rejected("direct profile interpolation", workflow.replace('bash scripts/run-real-ignored-harnesses.sh "$REAL_HARNESS_PROFILE"', 'bash scripts/run-real-ignored-harnesses.sh "${{ inputs.profile }}"', 1), runner)
+    # A D1 dispatch must not receive the sibling profile's credential values.
+    expect_rejected(
+        "D1 receives R2 secret",
+        workflow.replace(
+            "R2_S3_SECRET_ACCESS_KEY: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.R2_S3_SECRET_ACCESS_KEY || '' }}",
+            "R2_S3_SECRET_ACCESS_KEY: ${{ secrets.R2_S3_SECRET_ACCESS_KEY }}",
+            1,
+        ),
+        runner,
+    )
+    expect_rejected(
+        "D1 receives R2 bucket",
+        workflow.replace(
+            "R2_TEST_BUCKET: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && vars.R2_TEST_BUCKET || '' }}",
+            "R2_TEST_BUCKET: ${{ vars.R2_TEST_BUCKET }}",
+            1,
+        ),
+        runner,
+    )
     # The Stripe mode and price are both load-bearing; accepting either missing
     # value would silently exercise another auth/price configuration.
     expect_rejected("missing wallet-broker mode", workflow, runner.replace('[[ "$STRIPE_AUTH_MODE" == wallet-broker ]]', '[[ "$STRIPE_AUTH_MODE" == any-mode ]]', 1))
     expect_rejected("missing Starter price", workflow, runner.replace('[[ "$STRIPE_PRICE_ID_STARTER" == price_* ]]', '[[ "$STRIPE_PRICE_ID_STARTER" == any_* ]]', 1))
     # A preflight that contains a cargo call can mutate the external system
     # before a later profile is checked.
-    expect_rejected("cargo in D1 preflight", workflow, runner.replace("  require_https R2_S3_ENDPOINT\n}\n\npreflight_r2", "  require_https R2_S3_ENDPOINT\n  run_cargo d1 d1_target --package corelink-server --lib\n}\n\npreflight_r2", 1))
+    expect_rejected("cargo in D1 preflight", workflow, runner.replace("  require_env CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN D1_DATABASE_ID\n}\n\npreflight_r2", "  require_env CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN D1_DATABASE_ID\n  run_cargo d1 d1_target --package corelink-server --lib\n}\n\npreflight_r2", 1))
     expect_rejected("late Neon check omitted from all", workflow, runner.replace("    preflight_neon\n    run_d1", "    run_d1", 1))
 
 
@@ -898,7 +978,7 @@ def preflight_runtime_checks() -> None:
         root = Path(temp)
         for missing in ("HUGR_WALLET_TOKEN", "STRIPE_PRICE_ID_STARTER", "NEON_TEST_DSN"):
             marker = root / f"cargo-{missing}"
-            fake_cargo = root / f"fake-cargo-{missing}"
+            fake_cargo = root / "cargo"
             fake_cargo.write_text(
                 "#!/bin/sh\n"
                 f"printf invoked > {marker}\n"
@@ -909,7 +989,7 @@ def preflight_runtime_checks() -> None:
             env = os.environ.copy()
             env.update(baseline)
             env.pop(missing, None)
-            env["CARGO_BIN"] = str(fake_cargo)
+            env["PATH"] = os.pathsep.join((str(root), env.get("PATH", "")))
             result = subprocess.run(
                 ["bash", str(RUNNER_PATH), "all"],
                 env=env,
@@ -924,8 +1004,140 @@ def preflight_runtime_checks() -> None:
             if marker.exists():
                 fail(f"missing {missing} invoked cargo before failing preflight")
 
+    for missing in ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID"):
+        with tempfile.TemporaryDirectory(prefix="b068-d1-missing-") as temp:
+            root = Path(temp)
+            marker = root / "cargo-invoked"
+            fake_cargo = root / "cargo"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                f"printf invoked > {marker}\n"
+                "exit 99\n",
+                encoding="utf-8",
+            )
+            fake_cargo.chmod(0o700)
+            env = os.environ.copy()
+            env.update(baseline)
+            env.pop(missing, None)
+            env["PATH"] = os.pathsep.join((str(root), env.get("PATH", "")))
+            result = subprocess.run(
+                ["bash", str(RUNNER_PATH), "d1"],
+                env=env,
+                cwd=ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0 or marker.exists():
+                fail(f"missing D1 prerequisite {missing} did not fail before cargo")
+
+    # The D1 profile is independent of the sibling R2 resource. Prove that
+    # its own preflight reaches the selected test command with only D1 inputs.
+    with tempfile.TemporaryDirectory(prefix="b068-d1-only-") as temp:
+        root = Path(temp)
+        marker = root / "cargo-invoked"
+        fake_cargo = root / "cargo"
+        fake_cargo.write_text(
+            "#!/bin/sh\n"
+            f"printf invoked > {marker}\n"
+            "exit 99\n",
+            encoding="utf-8",
+        )
+        fake_cargo.chmod(0o700)
+        env = os.environ.copy()
+        env.update(
+            {
+                "CLOUDFLARE_ACCOUNT_ID": "account",
+                "CF_API_TOKEN": "cf-token",
+                "D1_DATABASE_ID": "database",
+                "PATH": os.pathsep.join((str(root), os.environ.get("PATH", ""))),
+            }
+        )
+        for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_TEST_BUCKET"):
+            env.pop(name, None)
+        result = subprocess.run(
+            ["bash", str(RUNNER_PATH), "d1"],
+            env=env,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 99 or not marker.exists():
+            fail("D1-only inputs did not pass preflight without R2 credentials")
+
+
+def failure_receipt_runtime_checks() -> None:
+    """Prove fail-fast receipts expose only a sanitized error category."""
+
+    secret = "CF_DIAGNOSTIC_SENTINEL_never_emit"
+    dsn = "postgresql://private-user:private-pass@private.example.test/db"
+    personal = "private.person@example.test"
+    with tempfile.TemporaryDirectory(prefix="b068-failure-receipt-") as temp:
+        root = Path(temp)
+        cargo_calls = root / "cargo-calls"
+        artifact_dir = root / "receipt"
+        fake_cargo = root / "cargo"
+        fake_cargo.write_text(
+            "#!/bin/sh\n"
+            'printf "%s\\n" "$*" >> "$FAKE_CARGO_CALLS"\n'
+            f"printf '%s\\n' \"thread 'd1' panicked at {secret} {dsn} {personal}\" >&2\n"
+            "exit 101\n",
+            encoding="utf-8",
+        )
+        fake_cargo.chmod(0o700)
+        env = os.environ.copy()
+        env.update(
+            {
+                "CLOUDFLARE_ACCOUNT_ID": "account",
+                "CF_API_TOKEN": "cf-token",
+                "D1_DATABASE_ID": "database",
+                "GITHUB_SHA": "a" * 40,
+                "REAL_HARNESS_RECEIPT_DIR": str(artifact_dir),
+                "FAKE_CARGO_CALLS": str(cargo_calls),
+                "PATH": os.pathsep.join((str(root), env.get("PATH", ""))),
+            }
+        )
+        for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_TEST_BUCKET"):
+            env.pop(name, None)
+        result = subprocess.run(
+            ["bash", str(RUNNER_PATH), "d1"],
+            env=env,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 101:
+            fail("failed Cargo invocation did not preserve its terminal exit code")
+        calls = cargo_calls.read_text(encoding="utf-8").splitlines()
+        if len(calls) != 1 or "d1_acquire_lock_then_held_then_release" not in calls[0]:
+            fail("failed first D1 test did not fail fast before subsequent profile tests")
+        receipt = (artifact_dir / "receipt.jsonl").read_text(encoding="utf-8").splitlines()
+        entries = [json.loads(line) for line in receipt]
+        if len(entries) != 3 or [entry["status"] for entry in entries] != ["started", "failed", "failed"]:
+            fail("failed first D1 test did not leave complete started/test/profile receipts")
+        if any(entry.get("diagnostic_class") != "test_panic" for entry in entries[1:]):
+            fail("failed D1 receipts omitted the safe panic classification")
+        log_text = (artifact_dir / "d1-d1_acquire_lock_then_held_then_release.log").read_text(encoding="utf-8")
+        public_output = result.stdout + result.stderr + log_text + "\n".join(receipt)
+        if "diagnostic_class=test_panic" not in log_text:
+            fail("redacted test log omitted its diagnostic class")
+        if any(marker in public_output for marker in (secret, dsn, personal)):
+            fail("runner or artifact exposed private text from raw Cargo output")
+        if any(path.name.endswith(".log") and "private" in path.read_text(encoding="utf-8", errors="replace") for path in artifact_dir.iterdir()):
+            fail("artifact contains raw private Cargo output")
+
 
 def main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == "--classify-failure":
+        raw_output = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+        print(safe_failure_diagnostic(raw_output))
+        return 0
+
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     contract_workflow = CONTRACT_WORKFLOW_PATH.read_text(encoding="utf-8")
     campaign_workflow = CAMPAIGN_WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -936,6 +1148,8 @@ def main() -> int:
     mutation_checks(workflow, runner, contract_workflow)
     campaign_mutation_checks(campaign_workflow)
     preflight_runtime_checks()
+    failure_diagnostic_negative_controls()
+    failure_receipt_runtime_checks()
     print("B-068 executor contract: PASS (full allow-list + negative mutations)")
     return 0
 

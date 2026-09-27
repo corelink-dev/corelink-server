@@ -1,0 +1,38 @@
+name: issue-2699 Cloudflare token handoff contract
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/cloudflare-scoped-token-handoff.yml"
+      - ".github/workflows/issue-2699-cloudflare-handoff-contract.yml"
+      - "scripts/verify_issue_2699_cloudflare_handoff.py"
+      - "tests/test_issue_2699_cloudflare_handoff.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-2699-cloudflare-handoff-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  handoff-contract:
+    name: exact-head credentialless handoff controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact pull request head without write credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Assert exact head under review
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Run bounded workflow contract and negative controls
+        shell: bash
+        run: python3 -S tests/test_issue_2699_cloudflare_handoff.py

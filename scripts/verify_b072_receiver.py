@@ -98,9 +98,9 @@ def main(root: Path) -> None:
         fail("receiver version metadata binding is missing")
     if receiver_data.get("env", {}).get("prod", {}).get("routes") != []:
         fail("receiver production routes are not explicitly disabled")
-    if receiver_data.get("triggers", {}).get("crons") != ["59 23 * * 0"]:
+    if receiver_data.get("triggers", {}).get("crons") != ["59 23 * * 1"]:
         fail("receiver deferred-delivery cron is missing")
-    if receiver_data.get("env", {}).get("staging", {}).get("triggers", {}).get("crons") != ["59 23 * * 0"]:
+    if receiver_data.get("env", {}).get("staging", {}).get("triggers", {}).get("crons") != ["59 23 * * 1"]:
         fail("staging deferred-delivery cron is missing")
     if receiver_data.get("env", {}).get("prod", {}).get("triggers", {}).get("crons") != []:
         fail("receiver production cron is not explicitly disabled")
@@ -134,7 +134,7 @@ def main(root: Path) -> None:
         "webhook D1 outcome update": "SET outcome = ?, engineer_slug = ?, ack_ts_ms = ?, mtta_ms = ?, ack_vector = ?",
         "webhook persisted outcome readback": "SELECT outcome FROM synthetic_page_drills_b072 WHERE drill_id = ?",
         "webhook production gate": "validateWebhookEnvironment",
-        "receiver unknown-cron gate": 'controller.cron !== "59 23 * * 0"',
+        "receiver unknown-cron gate": 'controller.cron !== "59 23 * * 1"',
         "receiver unknown-cron no-retry": "controller.noRetry()",
     }
     for label, fragment in required_fragments.items():
