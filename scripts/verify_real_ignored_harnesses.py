@@ -575,7 +575,7 @@ def assert_contract(workflow: str, runner: str) -> None:
         'ACCOUNT = "51284495e71acdb5a7677e7383ab026b"',
         'OLD_ACCOUNT = "6a1fc1c626fc2628823e60b9db01f5cd"',
         'DB_NAME_PREFIX = "corelink-issue-2563-d1-"',
-        'old_status != 403',
+        'old_status not in (401, 403)',
         'target_status != 200',
     ):
         if required not in probe_source:

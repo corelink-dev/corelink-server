@@ -57,7 +57,7 @@ def verify_scope(
     database_id: str,
     token: str,
     fetch: Callable[[str, str], tuple[int, dict | None]] = provider_get,
-) -> None:
+) -> tuple[int, int]:
     if account != ACCOUNT:
         raise ScopeError("wrong D1 account binding")
     if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", database_id):
@@ -66,13 +66,20 @@ def verify_scope(
         raise ScopeError("missing D1 token")
 
     old_status, _ = fetch(f"{API}/accounts/{OLD_ACCOUNT}/d1/database", token)
-    if old_status != 403:
-        raise ScopeError("D1 token is not denied on the production-containing account")
+    # Cloudflare may reject an out-of-account bearer as unauthenticated (401)
+    # or unauthorized (403). Neither is sufficient alone: the same bearer must
+    # also read the exact disposable database in the isolated account below.
+    if old_status not in (401, 403):
+        raise ScopeError(
+            f"production-containing account D1 read returned HTTP {old_status}; expected 401 or 403"
+        )
 
     target_status, payload = fetch(
         f"{API}/accounts/{ACCOUNT}/d1/database/{database_id}", token
     )
-    if target_status != 200 or not isinstance(payload, dict) or payload.get("success") is not True:
+    if target_status != 200:
+        raise ScopeError(f"isolated D1 target returned HTTP {target_status}; expected 200")
+    if not isinstance(payload, dict) or payload.get("success") is not True:
         raise ScopeError("isolated D1 target is not readable")
     result = payload.get("result")
     if not isinstance(result, dict):
@@ -81,6 +88,7 @@ def verify_scope(
         raise ScopeError("isolated D1 target identifier mismatch")
     if not isinstance(result.get("name"), str) or not result["name"].startswith(DB_NAME_PREFIX):
         raise ScopeError("D1 target is not exclusive to #2563")
+    return old_status, target_status
 
 
 def self_test() -> None:
@@ -96,12 +104,21 @@ def self_test() -> None:
             raise ScopeError("unexpected fixture URL")
         return run
 
-    verify_scope(ACCOUNT, database_id, "fixture-token", fetch())
+    if verify_scope(ACCOUNT, database_id, "fixture-token", fetch()) != (403, 200):
+        raise ScopeError("403 denial fixture lost its status receipt")
+    if verify_scope(ACCOUNT, database_id, "fixture-token", fetch(old_status=401)) != (401, 200):
+        raise ScopeError("401 denial fixture lost its status receipt")
     rejected = (
         (OLD_ACCOUNT, database_id, fetch()),
         (ACCOUNT, database_id, fetch(old_status=200)),
-        (ACCOUNT, database_id, fetch(old_status=401)),
+        (ACCOUNT, database_id, fetch(old_status=302)),
+        (ACCOUNT, database_id, fetch(old_status=404)),
+        (ACCOUNT, database_id, fetch(old_status=500)),
         (ACCOUNT, database_id, fetch(target_status=403)),
+        (ACCOUNT, database_id, fetch(old_status=401, target_status=401)),
+        (ACCOUNT, database_id, fetch(old_status=403, target_status=404)),
+        (ACCOUNT, database_id, fetch(old_status=401, target_status=500)),
+        (ACCOUNT, database_id, fetch(target_status=302)),
         (ACCOUNT, database_id, fetch(target_data={"success": True, "result": {"uuid": database_id, "name": "shared"}})),
         (ACCOUNT, database_id, fetch(target_data={"success": True, "result": {"uuid": "wrong", "name": DB_NAME_PREFIX + "fixture"}})),
     )
@@ -118,7 +135,7 @@ def main() -> int:
         if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
             self_test()
         elif len(sys.argv) == 1:
-            verify_scope(
+            old_status, target_status = verify_scope(
                 os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""),
                 os.environ.get("D1_DATABASE_ID", ""),
                 os.environ.get("CF_API_TOKEN", ""),
@@ -128,7 +145,10 @@ def main() -> int:
     except ScopeError as error:
         print(f"i2563 D1 scope: FAIL: {error}", file=sys.stderr)
         return 1
-    print("i2563 D1 scope: PASS")
+    if len(sys.argv) == 1:
+        print(f"i2563 D1 scope: PASS: old_account_http={old_status} target_http={target_status}")
+    else:
+        print("i2563 D1 scope: PASS")
     return 0
 
 
