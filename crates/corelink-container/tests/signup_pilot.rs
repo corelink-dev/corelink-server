@@ -68,6 +68,7 @@ fn build_state() -> (
         store: store.clone() as Arc<dyn SignupStore>,
         wall_clock: wall_clock.clone(),
         activation_url_base: Arc::new(DEFAULT_ACTIVATION_URL_BASE.to_owned()),
+        staging_admission: None,
     };
     (state, audit_sink, store, wall_clock)
 }
