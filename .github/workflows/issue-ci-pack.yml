@@ -116,7 +116,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4
-          path: canonical-source
+          path: candidate/canonical-source
           fetch-depth: 0
           persist-credentials: false
 
@@ -130,8 +130,8 @@ jobs:
           TARGET_BASE_SHA: ${{ inputs.target_base_sha }}
         run: |
           set -euo pipefail
-          python3 -I scripts/issue_2568_sla_credit_real.py verify-source --source-root ../canonical-source
-          python3 -I scripts/issue_2568_sla_credit_real.py verify-wrapper --source-root ../canonical-source
+          python3 -I scripts/issue_2568_sla_credit_real.py verify-source --source-root canonical-source
+          python3 -I scripts/issue_2568_sla_credit_real.py verify-wrapper --source-root canonical-source
           python3 -I scripts/verify_issue_2568_sla_credit_real.py --self-test
           python3 -I scripts/verify_issue_2568_sla_credit_real.py             --candidate-diff-base "$TARGET_BASE_SHA" --candidate-sha "$EXPECTED_SHA"
           python3 -I tests/test_issue_2568_sla_credit_real.py
