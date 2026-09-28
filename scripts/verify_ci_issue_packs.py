@@ -78,12 +78,15 @@ def validate_workflow_contract(workflow_text: str) -> list[str]:
         "path: candidate",
         'ACTUAL_SHA="$(git -C candidate rev-parse HEAD)"',
         "issue-2440-ci-scoping|issue-2437-worker-three-arm|issue-1948-mutants-receipt|issue-2457-mutants-shards|issue-1677-b170-owner-actions|issue-1667-phase-regions|issue-2568-sla-credit-real",
+        'git archive "$TRUSTED_MAIN_SHA" | tar -x -C "$base_tree"',
+        'git -C candidate archive "$EXPECTED_SHA" | tar -x -C "$candidate_tree"',
+        'git init -q "$candidate_tree"',
         "id: sla-credit-authorization",
         "id: python-sla-credit-real",
         "--pack-id issue-2568-sla-credit-real --candidate-root candidate --run-self-test",
-        "python3 -I scripts/backlog_verify.py",
-        "python3 -I scripts/verify_i2176_grpc_deny_gate.py",
-        "python3 -I scripts/verify_i2574_grpc_diagnostic_policy.py",
+        'env -u PYTHONPATH python3 -B "$base_tree/scripts/backlog_verify.py"',
+        'python3 -B -I "$base_tree/scripts/verify_i2176_grpc_deny_gate.py"',
+        'python3 -B -I "$base_tree/scripts/verify_i2574_grpc_diagnostic_policy.py"',
         "ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4",
         "path: canonical-source",
         "verify-source --source-root ../canonical-source",
@@ -333,9 +336,9 @@ def self_test(catalog: dict) -> list[str]:
         failures.append("canonical workflow failed its static contract")
     for marker in (
         "id: sla-credit-authorization",
-        "python3 -I scripts/backlog_verify.py",
-        "python3 -I scripts/verify_i2176_grpc_deny_gate.py",
-        "python3 -I scripts/verify_i2574_grpc_diagnostic_policy.py",
+        'env -u PYTHONPATH python3 -B "$base_tree/scripts/backlog_verify.py"',
+        'python3 -B -I "$base_tree/scripts/verify_i2176_grpc_deny_gate.py"',
+        'python3 -B -I "$base_tree/scripts/verify_i2574_grpc_diagnostic_policy.py"',
         "ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4",
     ):
         if not validate_workflow_contract(canonical_workflow.replace(marker, "removed-control", 1)):
