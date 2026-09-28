@@ -14,6 +14,7 @@ on:
           - issue-2457-mutants-shards
           - issue-1677-b170-owner-actions
           - issue-1667-phase-regions
+          - issue-2568-sla-credit-real
       candidate_sha:
         description: Exact candidate head SHA for this dispatch ref
         required: true
@@ -79,12 +80,53 @@ jobs:
           fi
           [[ "$TARGET_BASE_SHA" == "$EXPECTED_BASE" ]]
           case "$PACK_ID" in
-            issue-2440-ci-scoping|issue-2437-worker-three-arm|issue-1948-mutants-receipt|issue-2457-mutants-shards|issue-1677-b170-owner-actions|issue-1667-phase-regions) ;;
+            issue-2440-ci-scoping|issue-2437-worker-three-arm|issue-1948-mutants-receipt|issue-2457-mutants-shards|issue-1677-b170-owner-actions|issue-1667-phase-regions|issue-2568-sla-credit-real) ;;
             *) echo "::error::unknown issue CI pack ID" >&2; exit 1 ;;
           esac
 
+      - name: Authorize the exact eight SLA credit files before candidate execution
+        id: sla-credit-authorization
+        if: inputs.pack_id == 'issue-2568-sla-credit-real'
+        env:
+          EXPECTED_SHA: ${{ inputs.candidate_sha }}
+          TARGET_BASE_SHA: ${{ inputs.target_base_sha }}
+          TRUSTED_MAIN_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I scripts/verify_ci_issue_packs.py             --candidate-sha "$EXPECTED_SHA" --actual-sha "$(git -C candidate rev-parse HEAD)"             --target-base-sha "$TARGET_BASE_SHA" --trusted-main-sha "$TRUSTED_MAIN_SHA"             --pack-id issue-2568-sla-credit-real --candidate-root candidate --run-self-test
+          python3 -I scripts/backlog_verify.py             --candidate-file candidate/BACKLOG.md --trusted-file BACKLOG.md             --candidate-root candidate --trusted-root .
+          python3 -I scripts/verify_i2176_grpc_deny_gate.py             --trusted-base . --candidate candidate --expected-head "$EXPECTED_SHA"
+          python3 -I scripts/verify_i2574_grpc_diagnostic_policy.py             --trusted-base . --candidate candidate
+
+      - name: Check out the immutable SLA credit source
+        if: inputs.pack_id == 'issue-2568-sla-credit-real'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4
+          path: canonical-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run the credentialless SLA credit operator pack
+        id: python-sla-credit-real
+        if: inputs.pack_id == 'issue-2568-sla-credit-real'
+        timeout-minutes: 12
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.candidate_sha }}
+          TARGET_BASE_SHA: ${{ inputs.target_base_sha }}
+        run: |
+          set -euo pipefail
+          python3 -I scripts/issue_2568_sla_credit_real.py verify-source --source-root ../canonical-source
+          python3 -I scripts/issue_2568_sla_credit_real.py verify-wrapper --source-root ../canonical-source
+          python3 -I scripts/verify_issue_2568_sla_credit_real.py --self-test
+          python3 -I scripts/verify_issue_2568_sla_credit_real.py             --candidate-diff-base "$TARGET_BASE_SHA" --candidate-sha "$EXPECTED_SHA"
+          python3 -I tests/test_issue_2568_sla_credit_real.py
+        working-directory: candidate
+
       - name: Install pinned actionlint
-        if: inputs.pack_id == 'issue-2440-ci-scoping' || inputs.pack_id == 'issue-2437-worker-three-arm' || inputs.pack_id == 'issue-1948-mutants-receipt' || inputs.pack_id == 'issue-2457-mutants-shards' || inputs.pack_id == 'issue-1667-phase-regions'
+        if: inputs.pack_id == 'issue-2440-ci-scoping' || inputs.pack_id == 'issue-2437-worker-three-arm' || inputs.pack_id == 'issue-1948-mutants-receipt' || inputs.pack_id == 'issue-2457-mutants-shards' || inputs.pack_id == 'issue-1667-phase-regions' || inputs.pack_id == 'issue-2568-sla-credit-real'
         shell: bash
         run: |
           set -euo pipefail
@@ -100,7 +142,7 @@ jobs:
 
       - name: Validate declared workflow surface
         id: actionlint
-        if: inputs.pack_id == 'issue-2440-ci-scoping' || inputs.pack_id == 'issue-2437-worker-three-arm' || inputs.pack_id == 'issue-1948-mutants-receipt' || inputs.pack_id == 'issue-2457-mutants-shards' || inputs.pack_id == 'issue-1667-phase-regions'
+        if: inputs.pack_id == 'issue-2440-ci-scoping' || inputs.pack_id == 'issue-2437-worker-three-arm' || inputs.pack_id == 'issue-1948-mutants-receipt' || inputs.pack_id == 'issue-2457-mutants-shards' || inputs.pack_id == 'issue-1667-phase-regions' || inputs.pack_id == 'issue-2568-sla-credit-real'
         env:
           PACK_ID: ${{ inputs.pack_id }}
         shell: bash
@@ -112,6 +154,7 @@ jobs:
             issue-1948-mutants-receipt) workflows=(.github/workflows/issue-1863-mutants-contract.yml .github/workflows/issue-ci-pack.yml) ;;
             issue-2457-mutants-shards) workflows=(.github/workflows/issue-1863-mutants-hosted.yml .github/workflows/issue-1863-mutants-contract.yml .github/workflows/issue-1666-mutants-evidence-contract.yml .github/workflows/issue-ci-pack.yml) ;;
             issue-1667-phase-regions) workflows=(.github/workflows/issue-ci-pack.yml) ;;
+            issue-2568-sla-credit-real) workflows=(.github/workflows/issue-2568-sla-credit-real.yml) ;;
             *) echo "::error::no workflow surface for this pack" >&2; exit 1 ;;
           esac
           "${RUNNER_TEMP}/actionlint/actionlint" -color "${workflows[@]}"

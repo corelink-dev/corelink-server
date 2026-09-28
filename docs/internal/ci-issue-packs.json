@@ -401,6 +401,82 @@
         "one independent cold-review verdict",
         "no production observation or cargo-mutants dispatch"
       ]
+    },
+    {
+      "pack_id": "issue-2568-sla-credit-real",
+      "issue": 2568,
+      "changed_surfaces": [
+        ".actionlint.yaml",
+        ".github/workflows/issue-2568-sla-credit-real.yml",
+        "docs/campaigns/remediation/wp150-workflow-ownership.md",
+        "docs/internal/secrets-checklist.md",
+        "scripts/issue_2568_sla_credit_real.py",
+        "scripts/issue_2568_sla_credit_worker.ts",
+        "scripts/verify_issue_2568_sla_credit_real.py",
+        "tests/test_issue_2568_sla_credit_real.py"
+      ],
+      "workflow_files_to_lint": [
+        ".github/workflows/issue-2568-sla-credit-real.yml"
+      ],
+      "required_focused_jobs": [
+        "issue-pack"
+      ],
+      "focused_checks": [
+        "actionlint",
+        "ci-pack-contract",
+        "python-sla-credit-real"
+      ],
+      "admission_checks": [
+        "DCO check on the exact pull request head",
+        "credentialless checkout",
+        "changed-file boundary"
+      ],
+      "negative_controls": [
+        "BASE three verifiers reject untrusted changes before execution",
+        "exact eight hashes and regular modes reject any candidate substitution",
+        "fixed source5fab plus 20 operator controls and self-test",
+        "no provider mode, credentials, or broad suite"
+      ],
+      "exact_sha": {
+        "source": "required workflow_dispatch input candidate_sha",
+        "binding": "must equal HEAD of the isolated candidate checkout, controlled by the protected-main workflow",
+        "target_base_source": "required workflow_dispatch input target_base_sha",
+        "target_base_sha": "required workflow_dispatch input target_base_sha; must equal merge-base(candidate_sha, trusted_main_sha) and differ from candidate_sha; bootstrap when candidate_sha equals trusted_main_sha uses candidate first parent"
+      },
+      "budget": {
+        "runner": "ubuntu-24.04",
+        "job_timeout_minutes": 15,
+        "step_timeout_minutes": 12,
+        "max_billable_minutes_per_dispatch": 15,
+        "matrix_limit": 1,
+        "max_concurrent_dispatches_per_pack_and_sha": 1
+      },
+      "escalation_policy": {
+        "critical_surfaces": [
+          "workflow",
+          "security",
+          "release",
+          "core"
+        ],
+        "required_jobs_for_this_pack": [
+          "issue-pack"
+        ],
+        "protected_main_full_suite_required_after_merge": true
+      },
+      "global_suite_escalation_triggers": [
+        "shared dependency manifests, workspace configuration, or central test infrastructure changes",
+        "authentication, authorization, cryptographic, or protocol boundary changes",
+        "cross-service migrations or shared data contracts",
+        "release, signing, deployment, secrets, or provider mutation controls change",
+        "the pack cannot bound affected consumers"
+      ],
+      "merge_evidence": [
+        "Exact candidate/base/main and readonly central run conclusion",
+        "Fixed source and private dry-run wrapper proof",
+        "Operator self-test and 20 focused tests",
+        "Exact-head DCO and fmt plus independent cold review",
+        "Actual provider acceptance remains post-merge in protected stripe-test environment"
+      ]
     }
   ]
 }
