@@ -86,8 +86,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          if git diff --name-only "$BASE_SHA...HEAD" | grep -Eqv '^(apps/dsr-alert-receiver/|\.github/workflows/(issue-2730-dsr-alert-receiver|b216-receiver-deploy-nonprod)\.yml$|docs/campaigns/remediation/wp150-workflow-ownership\.md$|docs/internal/secrets-checklist\.md$)'; then exit 1; fi
-          ! rg -n 'console\.(log|error|warn)|DSR_DLQ_ALERT_AUTH_TOKEN|tenant_id|subject_id|raw body' apps/dsr-alert-receiver/src
+          python3 scripts/verify_i2574_grpc_diagnostic_policy.py --check-receiver-path-boundary --base-sha "$BASE_SHA"
       - name: Lint exact changed receiver workflows
         run: |
           set -euo pipefail
