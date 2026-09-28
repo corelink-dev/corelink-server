@@ -93,7 +93,7 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         )
         self.assertEqual(
             verify.STAGING_D1_PROXY_DELIVERY_TREE_SHA256,
-            "d4113f29103530aaf660a54e593599115296671dffb05de206e6f220b660fc74",
+            "05e9e3c71a7073146ced7fbcf52afaf8acae88ee6ffc621710921a0eb1f6ec0e",
         )
         self.assertEqual(
             verify.STAGING_D1_PROXY_TARGETS[
