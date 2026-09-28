@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -34,9 +35,70 @@ class WorkflowControls(unittest.TestCase):
         )
         original = yaml.load(baseline, Loader=yaml.BaseLoader)['jobs']['build-push']
         commands = {step['name']: step['run'] for step in original['steps'] if 'run' in step}
+        current = {step['name']: step['run'] for step in self.document['jobs']['hosted-b063']['steps'] if 'run' in step}
         for name, digest in guard.SHARED_STEP_SHA256.items():
             with self.subTest(gate=name):
-                self.assertEqual(hashlib.sha256(commands[name].encode()).hexdigest(), digest)
+                expected = commands[name]
+                for binary in ('gc_sweep', 'corelink-gc-sweep-production'):
+                    old_probe = f'[ -x "$B/rootfs/usr/local/bin/{binary}" ] || {{'
+                    new_probe = f"""  # The exported rootfs is root-owned; runc executes under the same sudo boundary.
+  sudo stat -c 'rootfs executable probe: mode=%a uid=%u gid=%g path=%n' \\
+    "$B/rootfs" "$B/rootfs/usr" "$B/rootfs/usr/local" "$B/rootfs/usr/local/bin" \\
+    "$B/rootfs/usr/local/bin/{binary}"
+  sudo test -x "$B/rootfs/usr/local/bin/{binary}" || {{"""
+                    new_probe = "\n".join(line[2:] if line.startswith("  ") else line for line in new_probe.split("\n"))
+                    expected = expected.replace(old_probe, new_probe)
+                # The exact baseline remainder includes every runc/GC oracle.
+                self.assertEqual(current[name], expected)
+                self.assertEqual(hashlib.sha256(expected.encode()).hexdigest(), digest)
+
+    def test_gc_permission_boundary_cannot_be_weakened(self):
+        for name, binary in (
+            ('Gate 4 — embedded GC binary is forced dry-run (daemonless)', 'gc_sweep'),
+            ('Gate 4b — native production GC binary is present and fail-closed', 'corelink-gc-sweep-production'),
+        ):
+            for replacement in ('test -x', 'sudo test -e', 'sudo test -f', 'echo'):
+                with self.subTest(gate=name, probe=replacement):
+                    def mutate(d):
+                        step = next(s for s in d['jobs']['hosted-b063']['steps'] if s['name'] == name)
+                        step['run'] = step['run'].replace('sudo test -x', replacement, 1)
+                    self.reject(mutate, 'command hash')
+
+    def permission_fixture(self):
+        step = next(s for s in self.document['jobs']['hosted-b063']['steps'] if s['name'] == 'Install canonical checksum-pinned BuildKit and runc')
+        return step['run'].split('# B063_PERMISSION_FIXTURE_BEGIN:', 1)[1].split('# B063_PERMISSION_FIXTURE_END', 1)[0].split('\n', 1)[1]
+
+    def test_permission_fixture_requires_positive_and_both_negatives(self):
+        fixture = self.permission_fixture()
+        for required in (
+            'sudo install -d -o 0 -g 0 -m 0700',
+            'sudo install -o 0 -g 0 -m 0755',
+            'sudo install -o 0 -g 0 -m 0644',
+            'if test -x "$fixture/rootfs/executable"; then',
+            'sudo test -x "$fixture/rootfs/executable"',
+            'sudo test -x "$fixture/rootfs/nonexecutable" || sudo test -x "$fixture/rootfs/missing"',
+            "trap 'sudo rm -rf -- \"$fixture\"' EXIT",
+        ):
+            self.assertIn(required, fixture)
+        name = 'Install canonical checksum-pinned BuildKit and runc'
+        def mutate(d):
+            step = next(s for s in d['jobs']['hosted-b063']['steps'] if s['name'] == name)
+            step['run'] = step['run'].replace('sudo test -x "$fixture/rootfs/executable"', 'true', 1)
+        self.reject(mutate, 'command hash')
+
+    def test_actual_root_owned_permission_fixture_on_hosted_linux(self):
+        # macOS has no passwordless sudo. The hosted build independently runs
+        # this same fixture before compiling or minting registry credentials.
+        if sys.platform != 'linux' or os.geteuid() == 0:
+            self.skipTest('requires the unprivileged hosted Linux runner')
+        if subprocess.run(['sudo', '-n', 'true'], capture_output=True).returncode:
+            self.skipTest('requires the hosted runner passwordless sudo boundary')
+        with tempfile.TemporaryDirectory(prefix='b063-permission-test-') as directory:
+            result = subprocess.run(['bash', '-euo', 'pipefail', '-c', self.permission_fixture()],
+                                    env={**os.environ, 'RUNNER_TEMP': directory}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn('host denied; executable accepted; missing/nonexec denied', result.stdout)
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_event_ref_and_exact_sha_guards(self):
         for name in self.document['jobs']:

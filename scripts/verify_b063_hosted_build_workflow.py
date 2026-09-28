@@ -3,7 +3,8 @@
 
 The root-reviewed candidate and protected environment authorize execution.
 This checker proves shape and negative controls, not an actual image build.
-Canonical shared step hashes are from protected main 5fabd93e, not a fixture.
+Shared commands preserve protected main 5fabd93e; the two GC host probes use
+the same rootful boundary as runc, with a pre-build permission fixture.
 """
 from __future__ import annotations
 
@@ -39,8 +40,8 @@ SHARED_STEP_SHA256 = {'Preflight — BuildKit + runc must be baked in the runner
  'Gate 1 — image size (CF Containers 2 GiB ceiling, daemonless)': 'e591579182927b75f3fea1f5d791146d5a79e5cce52c15cc6b4c0c684d34edce',
  'Gate 2 — CTRL-CRED-001, no credentials in image layers (daemonless)': 'd9b26cf325b321b476b4d9eb378f69a9027a3cd75a09022bd1d17c86880a0d37',
  'Gate 3 — binary smoke (runc on the extracted rootfs, daemonless)': '3bd86e0c0235cdcde48ed69d6783bee8a921939965a6c46070db5c5a0e7438c0',
- 'Gate 4 — embedded GC binary is forced dry-run (daemonless)': '3cd350aba6abcab005dcfde4c25f4cfc2dab8aedaa3fa24737b91e3296323a67',
- 'Gate 4b — native production GC binary is present and fail-closed': 'de47ef9b70bb0975adfcc61d2b32dd017da1cb6409a99f1ac54b704a9fdacbff',
+ 'Gate 4 — embedded GC binary is forced dry-run (daemonless)': 'b7efb802e6dac8813622f1a53b3906b2ef8630d2ba49ac5d99e834b7b840752e',
+ 'Gate 4b — native production GC binary is present and fail-closed': '06ba0c492702425bfe0b8dc79b1fe5148b0a14e5c515a1fbfab281170433cdaf',
  'ADR-0015 reproducibility attestation (reminder)': 'bbb37713279a35ad00a80f9b092d0c31255c3c9880af923609e864e205f284e6'}
 EXTRA_STEP_SHA256 = {'build-push': {'Confirm intent': '5964bca75b8ca3492bc300540bac8847f32baebe8e2ed8861ae84d9891dbeb64',
                 'Push image to the 5 CF Containers registries (daemonless, wrangler cred)': '1bfa54a757258808f0ce3d2dfee66f9842b3712a294b13db9185d11a0a4e49ab',
@@ -49,7 +50,7 @@ EXTRA_STEP_SHA256 = {'build-push': {'Confirm intent': '5964bca75b8ca3492bc300540
  'hosted-b063': {'Confirm intent': '5964bca75b8ca3492bc300540bac8847f32baebe8e2ed8861ae84d9891dbeb64',
                  'Bind reviewed workflow to frozen protected image source': 'f49ba11b285aec37bf2827ae65e5eaa930b91f9aa092f71073e787ba49b59f17',
                  'Read-only exact production registry target preflight': '1dd7bd32ef7c466773981cbfeaa8a133f8d76b273cba582a078777442a954b5a',
-                 'Install canonical checksum-pinned BuildKit and runc': 'ee917d5fbf1f09f457c70f4a5870cc91ff4f45fb4a67b9617328ef2fdea0bd20',
+                 'Install canonical checksum-pinned BuildKit and runc': '2a41f45ff6ca5fd9463408623a3f6d4d5c107f94db6afe995ffcf5de7bc81bcc',
                  'Push image to the 5 CF Containers registries (daemonless, wrangler cred)': '45e1743c11cd0924f55992c3ce7fb17c0a7ab639be3a2702bb1343772daefa34',
                  'Next step (repin + deploy)': '140b684dcb037d038c019a0595ff74b8756f2fd93ca662cd2164a55be86eefc4',
                  'Emit redacted source and registry digest receipt': '61bf5d051952ce0b68de2f45866278d4ce41f4801f0a98ae8d53bbe13743cbfb',

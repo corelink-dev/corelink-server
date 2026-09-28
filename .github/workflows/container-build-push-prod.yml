@@ -223,7 +223,11 @@ jobs:
         run: |
           set -euo pipefail
           B="$RUNNER_TEMP/smoke"
-          [ -x "$B/rootfs/usr/local/bin/gc_sweep" ] || { echo "::error::gc_sweep is absent or not executable in the runtime image"; exit 1; }
+          # The exported rootfs is root-owned; runc executes under the same sudo boundary.
+          sudo stat -c 'rootfs executable probe: mode=%a uid=%u gid=%g path=%n' \
+            "$B/rootfs" "$B/rootfs/usr" "$B/rootfs/usr/local" "$B/rootfs/usr/local/bin" \
+            "$B/rootfs/usr/local/bin/gc_sweep"
+          sudo test -x "$B/rootfs/usr/local/bin/gc_sweep" || { echo "::error::gc_sweep is absent or not executable in the runtime image"; exit 1; }
           runc spec -b "$B"
           jq \
             '.process.args=["/usr/local/bin/gc_sweep"]
@@ -249,7 +253,11 @@ jobs:
         run: |
           set -euo pipefail
           B="$RUNNER_TEMP/smoke"
-          [ -x "$B/rootfs/usr/local/bin/corelink-gc-sweep-production" ] || {
+          # The exported rootfs is root-owned; runc executes under the same sudo boundary.
+          sudo stat -c 'rootfs executable probe: mode=%a uid=%u gid=%g path=%n' \
+            "$B/rootfs" "$B/rootfs/usr" "$B/rootfs/usr/local" "$B/rootfs/usr/local/bin" \
+            "$B/rootfs/usr/local/bin/corelink-gc-sweep-production"
+          sudo test -x "$B/rootfs/usr/local/bin/corelink-gc-sweep-production" || {
             echo "::error::native production GC binary is absent from the runtime image"
             exit 1
           }
@@ -415,6 +423,26 @@ jobs:
           buildkitd --version | grep -F 'v0.31.2'
           buildctl --version | grep -F 'v0.31.2'
           runc --version | grep -F 'runc version 1.5.1'
+          # B063_PERMISSION_FIXTURE_BEGIN: host traverse differs from rootful runc.
+          fixture=$(mktemp -d "$RUNNER_TEMP/b063-rootfs-permission.XXXXXX")
+          trap 'sudo rm -rf -- "$fixture"' EXIT
+          sudo install -d -o 0 -g 0 -m 0700 "$fixture/rootfs"
+          sudo install -o 0 -g 0 -m 0755 /bin/true "$fixture/rootfs/executable"
+          sudo install -o 0 -g 0 -m 0644 /bin/true "$fixture/rootfs/nonexecutable"
+          if test -x "$fixture/rootfs/executable"; then
+            echo '::error::permission fixture does not isolate the unprivileged host probe'
+            exit 1
+          fi
+          sudo test -x "$fixture/rootfs/executable"
+          if sudo test -x "$fixture/rootfs/nonexecutable" || sudo test -x "$fixture/rootfs/missing"; then
+            echo '::error::rootful executable probe accepted a missing or nonexecutable file'
+            exit 1
+          fi
+          sudo stat -c 'permission fixture: mode=%a uid=%u gid=%g path=%n' "$fixture/rootfs"
+          sudo rm -rf -- "$fixture"
+          trap - EXIT
+          echo 'rootful executable permission fixture: PASS (host denied; executable accepted; missing/nonexec denied)'
+          # B063_PERMISSION_FIXTURE_END
 
       - name: Preflight — BuildKit + runc must be baked in the runner image
         run: *b063-tool-preflight
@@ -542,7 +570,11 @@ jobs:
         run: |
           set -euo pipefail
           B="$RUNNER_TEMP/smoke"
-          [ -x "$B/rootfs/usr/local/bin/gc_sweep" ] || { echo "::error::gc_sweep is absent or not executable in the runtime image"; exit 1; }
+          # The exported rootfs is root-owned; runc executes under the same sudo boundary.
+          sudo stat -c 'rootfs executable probe: mode=%a uid=%u gid=%g path=%n' \
+            "$B/rootfs" "$B/rootfs/usr" "$B/rootfs/usr/local" "$B/rootfs/usr/local/bin" \
+            "$B/rootfs/usr/local/bin/gc_sweep"
+          sudo test -x "$B/rootfs/usr/local/bin/gc_sweep" || { echo "::error::gc_sweep is absent or not executable in the runtime image"; exit 1; }
           runc spec -b "$B"
           jq \
             '.process.args=["/usr/local/bin/gc_sweep"]
@@ -568,7 +600,11 @@ jobs:
         run: |
           set -euo pipefail
           B="$RUNNER_TEMP/smoke"
-          [ -x "$B/rootfs/usr/local/bin/corelink-gc-sweep-production" ] || {
+          # The exported rootfs is root-owned; runc executes under the same sudo boundary.
+          sudo stat -c 'rootfs executable probe: mode=%a uid=%u gid=%g path=%n' \
+            "$B/rootfs" "$B/rootfs/usr" "$B/rootfs/usr/local" "$B/rootfs/usr/local/bin" \
+            "$B/rootfs/usr/local/bin/corelink-gc-sweep-production"
+          sudo test -x "$B/rootfs/usr/local/bin/corelink-gc-sweep-production" || {
             echo "::error::native production GC binary is absent from the runtime image"
             exit 1
           }
