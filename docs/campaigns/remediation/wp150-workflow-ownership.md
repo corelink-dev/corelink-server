@@ -4,8 +4,8 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 273
-workflow-paths-sha256: d8392f6c8f78032855fbfef055f79b23bbe417806961c7dc6f8bd994a8a5382d
+workflow-count: 274
+workflow-paths-sha256: 5a4fa6c9315c4df862e037b88af775a6d29192d9c87917bfd370ebc920821bfa
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -186,6 +186,7 @@ workflow-paths-sha256: d8392f6c8f78032855fbfef055f79b23bbe417806961c7dc6f8bd994a
 .github/workflows/issue-2414-b057-sli.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2418-rustup-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2496-b216-verifier.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2568-sla-credit-real.yml | #2568 | owned
 .github/workflows/issue-2574-staging-grpc-diagnostic.yml | #2574 | owned
 .github/workflows/issue-2576-admission.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2579-cas-ownership.yml | LEAD-BLOCKED | blocked

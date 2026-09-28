@@ -1,0 +1,208 @@
+name: Issue 2568 B-089 real test credit proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Run credentialless contract checks or the protected real test-mode operation
+        required: true
+        type: choice
+        options:
+          - credentialless
+          - full-real
+      expected_sha:
+        description: Exact candidate commit SHA; must equal the selected branch head
+        required: true
+        type: string
+      confirmation:
+        description: Type run-i2568-sla-credit-test-mode for the protected provider operation
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-2568-sla-credit-real-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  static:
+    name: Credentialless contract and negative controls
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.repository_id == '1232040291' &&
+      github.event_name == 'workflow_dispatch' &&
+      ((inputs.mode == 'credentialless' && github.ref == 'refs/heads/codex/support03-issue-2568') ||
+       (inputs.mode == 'full-real' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert exact candidate identity
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_SHA" == "$EXPECTED_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          case "$GITHUB_REF" in
+            refs/heads/codex/support03-issue-2568|refs/heads/main) ;;
+            *) echo "workflow ref is outside the admitted branches" >&2; exit 1 ;;
+          esac
+
+      - name: Require current main ancestor and only frozen leaf paths for pre-merge checks
+        if: inputs.mode == 'credentialless'
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags https://github.com/HuGR-dev/corelink-server.git refs/heads/main:refs/remotes/trusted/main
+          main_sha="$(git rev-parse refs/remotes/trusted/main)"
+          test "$(git merge-base "$main_sha" "$EXPECTED_SHA")" = "$main_sha"
+          python3 -I scripts/verify_issue_2568_sla_credit_real.py \
+            --candidate-diff-base "$main_sha" --candidate-sha "$EXPECTED_SHA"
+
+      - name: Require exact fresh protected main for post-merge provider mode
+        if: inputs.mode == 'full-real'
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          git fetch --no-tags https://github.com/HuGR-dev/corelink-server.git refs/heads/main:refs/remotes/trusted/main
+          main_sha="$(git rev-parse refs/remotes/trusted/main)"
+          [[ "$main_sha" == "$EXPECTED_SHA" ]]
+
+      - name: Check out the frozen canonical source separately
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
+        with:
+          repository: HuGR-dev/corelink-server
+          ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4
+          path: canonical-source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable canonical source files
+        run: python3 -I scripts/issue_2568_sla_credit_real.py verify-source --source-root canonical-source
+
+      - name: Compile private Worker wrapper against frozen canonical source
+        run: python3 -I scripts/issue_2568_sla_credit_real.py verify-wrapper --source-root canonical-source
+
+      - name: Install pinned actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/actionlint_1.7.12_linux_amd64.tar.gz"
+          curl --fail --location --silent --show-error \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz" \
+            --output "$archive"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $archive" | sha256sum --check --status
+          mkdir -p "${RUNNER_TEMP}/actionlint"
+          tar -xzf "$archive" -C "${RUNNER_TEMP}/actionlint" actionlint
+
+      - name: Lint the owned workflow
+        run: >-
+          "${RUNNER_TEMP}/actionlint/actionlint" -color
+          .github/workflows/issue-2568-sla-credit-real.yml
+
+      - name: Verify operator contract and redaction negatives
+        run: |
+          set -euo pipefail
+          python3 -I scripts/verify_issue_2568_sla_credit_real.py --self-test
+          python3 -I tests/test_issue_2568_sla_credit_real.py
+
+  provider:
+    name: Complete bounded real Stripe and D1 test operation
+    needs: static
+    if: >-
+      inputs.mode == 'full-real' &&
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.repository_id == '1232040291' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: stripe-test
+    steps:
+      - name: Check out exact candidate without write credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out exact frozen canonical source separately
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
+        with:
+          repository: HuGR-dev/corelink-server
+          ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4
+          path: canonical-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Bind selected branch, exact head and canonical source
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_SHA" == "$EXPECTED_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          python3 -I scripts/issue_2568_sla_credit_real.py verify-source --source-root canonical-source
+          python3 -I scripts/issue_2568_sla_credit_real.py verify-wrapper --source-root canonical-source
+
+      - name: Require exact fresh protected main before provider work
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags https://github.com/HuGR-dev/corelink-server.git refs/heads/main:refs/remotes/trusted/main
+          main_sha="$(git rev-parse refs/remotes/trusted/main)"
+          [[ "$main_sha" == "$EXPECTED_SHA" ]]
+
+      - name: Run all provider work packages with exact test-only authority
+        env:
+          CLOUDFLARE_ACCOUNT_ID: "51284495e71acdb5a7677e7383ab026b"
+          CF_I2568_API_TOKEN: ${{ secrets.CF_I2568_API_TOKEN }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_TEST_ACCOUNT_ID: ${{ vars.STRIPE_TEST_ACCOUNT_ID }}
+          I2568_PROVIDER_APPROVED: ${{ vars.I2568_PROVIDER_APPROVED }}
+          I2568_CONFIRMATION: ${{ inputs.confirmation }}
+          I2568_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          I2568_RUN_ID: ${{ github.run_id }}
+          I2568_RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          python3 -I scripts/issue_2568_sla_credit_real.py run-all \
+            --expected-sha "$I2568_EXPECTED_SHA" \
+            --run-id "$I2568_RUN_ID-$I2568_RUN_ATTEMPT" \
+            --source-root canonical-source \
+            --output evidence/owner-actions/B-089/sla-credit-real-receipt.json
+
+      - name: Require a complete closure-ready actual provider receipt
+        if: success()
+        run: >-
+          python3 -I scripts/verify_issue_2568_sla_credit_real.py
+          --receipt evidence/owner-actions/B-089/sla-credit-real-receipt.json
+
+      - name: Upload only the redacted operator receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v4.6.2
+        with:
+          name: issue-2568-sla-credit-real-receipt-${{ github.run_id }}
+          path: evidence/owner-actions/B-089/sla-credit-real-receipt.json
+          if-no-files-found: warn
+          retention-days: 7
