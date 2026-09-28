@@ -210,6 +210,7 @@ STAGING_D1_BINDING_PROXY_PREIMAGES: dict[str, tuple[int, str] | None] = {
     'scripts/tests/issue_1700_runtime_probe.test.mjs': None,
     'scripts/verify_staging_provider_preflight.py': (0o644, '30c5e7fca9151d5a5147cc37b0ea49ced0100bd0dce5392eec4faa9e53afbfe0'),
     'scripts/verify_staging_topology_contract.py': (0o644, '18a70767b543a5ea8cadda94a216c068de41a8a294182ef255067126a9fa0e27'),
+    'tests/test_issue_1700_route_inventory.py': (0o644, '216a00df6c5b67d78c90d5a9d1c78043a56985c230d7ede72e0270186eb6ef56'),
     'tests/test_staging_bootstrap_provider.py': (0o644, '189efec0ef4b61b5a5efbea105ad56c210196c4b051fc9c1119645ec3758f5f7'),
     'tests/test_staging_custom_domain.py': (0o644, 'ebca7d9b0e46763cac025dfc79bda65291d1e77f2132176527f28c9f8238e3a2'),
     'tests/test_staging_quarantine_apply_contract.py': (0o644, 'ceb689591b8a5e380ce34f91bc598262c8f9051aaa84b7e0d05c088f194dffe6'),
@@ -232,8 +233,8 @@ STAGING_D1_BINDING_PROXY_TARGETS: dict[str, tuple[int, str] | None] = {
     '.github/workflows/issue-1700-container-staging-deploy.yml': (0o644, 'c31908be992a6727e124e9b87160708af44fa2f1a042be2bd142b930abf15199'),
     '.github/workflows/staging-quarantine-apply.yml': (0o644, '24d901a61e2b45af71fc5ec0632455956690725f8f05f9959c0baf213deb1594'),
     'crates/corelink-container/src/main.rs': (0o644, '44c28a9a8387212b156ce05aa65918b0c34454453d7fcd85e79fd29f9a5518db'),
-    'crates/corelink-container/src/routes.rs': (0o644, '5d0db886c9e8fc5c087e041f84b0c9f92c0de1a94079fccef84c990d8274a99d'),
-    'crates/corelink-container/src/routes/staging_d1_binding_probe.rs': (0o644, 'efe92ead9f103c8ee2e60a343c17fc828c291bc3f4bbc5130c00b38f4c50adc1'),
+    'crates/corelink-container/src/routes.rs': (0o644, '04a84d7be655fd25ee6d05d1b5c598c169be1aae381a255533ffeda0aad1ec2f'),
+    'crates/corelink-container/src/routes/staging_d1_binding_probe.rs': (0o644, '79126b422e7102d5d9dc2786dd04b76143dbc4146f0613b338b8fffeb097b67f'),
     'crates/corelink-container/src/storage.rs': (0o644, 'ee16e0155fae72ddfe01fedb4b7d29bff087467b2a23c42c830a42f3aeb9b78e'),
     'crates/corelink-container/src/storage/d1_http.rs': (0o644, '258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5'),
     'docs/internal/secrets-checklist.md': (0o644, '6157f5653e1a4ebea7be4a11e69e04abd36f59eb5fed6fa23997bb48f18f45b8'),
@@ -245,11 +246,12 @@ STAGING_D1_BINDING_PROXY_TARGETS: dict[str, tuple[int, str] | None] = {
     'scripts/tests/issue_1700_runtime_probe.test.mjs': (0o644, '48e3b316bd716f112e682636a8e9dd3f3f759aedf8809e6d7535c40b966187ab'),
     'scripts/verify_staging_provider_preflight.py': (0o644, 'ddc9d57aa31cbee273dabc923b23a3ef33fb11b40bbd3b746ad7dcaca0633b62'),
     'scripts/verify_staging_topology_contract.py': (0o644, '48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9'),
+    'tests/test_issue_1700_route_inventory.py': (0o644, 'd9dc1e4012f590ef6b3e76eb1e342ac43d513a14ef16f3ee8db8cffb9ef2b734'),
     'tests/test_staging_bootstrap_provider.py': (0o644, 'ec4633c038fd4ae1553464e00ba2ce6dfe79e10562f79243e0fb629d1d93e219'),
     'tests/test_staging_custom_domain.py': (0o644, 'cfc063496302c06c8bc879c380c7f24e13088fdf8f2a5412def3e6e60b115afc'),
     'tests/test_staging_quarantine_apply_contract.py': (0o644, 'b90d143271b96038ce2f51a23bc62b3be3fee546a231f003b9bcfbfb79a497bf'),
     'worker/package.json': (0o644, '96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34'),
-    'worker/src/durable_object.ts': (0o644, 'f2185d824862738ed428b92fb914b1a47e79c2b1ee3a0cc679d0d90d14214105'),
+    'worker/src/durable_object.ts': (0o644, '5a58a02b11f8b3707bfdd6b22d5eca72447d261080f6238e65ffd13f3e279d05'),
     'worker/src/durable_object_start.ts': (0o644, '7f8c28ac7b93628f4c4767efd1bb68bb75d2df9ea85442e92d9a6097c500ce4c'),
     'worker/src/index.ts': (0o644, '18b960a74833284f953bd28818cd7260798d9570c17bce459502f7b7ca50f3cd'),
     'worker/src/index_schedule.ts': (0o644, 'ea754a50aaa088694167f45b0b8c53fc43641c250d54ac1de35743ae8f46bdc1'),
@@ -263,8 +265,7 @@ STAGING_D1_BINDING_PROXY_TARGETS: dict[str, tuple[int, str] | None] = {
     'worker/tests/staging_runtime_d1_probe.test.ts': (0o644, '8277e7d58e32feaa8514c972f155d9dafaafe1788364a10bb5290a9c9ce2241b'),
     'worker/vitest.config.mts': (0o644, 'e2c2f0e46d4a45d5e789f920f95b73ffd44e6a14a9450e11817426995feda506'),
 }
-
-STAGING_D1_BINDING_PROXY_MANIFEST_SHA256 = "4c29964fb1b46800a4dd281aebd97670d664e5bced4cf68c5ac5e9887cbae43c"
+STAGING_D1_BINDING_PROXY_MANIFEST_SHA256 = "4bc25dda3fcb99e38a519098acd32bfdc3cd64216825700f5f090dda4cfc1e7f"
 
 # Exact follow-on ownership transitions sealed with the #1700 base.
 STAGING_I1648_PREIMAGES = {
@@ -303,11 +304,13 @@ def _preauthorized_exact_staging_transition(candidate_root: Path, trusted_root: 
     paths = set(preimages)
     if not paths or set(targets) != paths:
         return False
+    cumulative_base_pins: dict[str, tuple[int, str]] = {}
     for pins in required_base:
-        for path, pin in pins.items():
-            entry = trusted.get(path)
-            if entry is None or entry[0] != "file" or entry[1:] != pin:
-                return False
+        cumulative_base_pins.update(pins)
+    for path, pin in cumulative_base_pins.items():
+        entry = trusted.get(path)
+        if entry is None or entry[0] != "file" or entry[1:] != pin:
+            return False
     changes = {path for path in set(candidate) | set(trusted) if candidate.get(path) != trusted.get(path)}
     if changes != paths:
         return False
@@ -965,14 +968,14 @@ def _preauthorized_staging_custom_domain(candidate_root: Path, trusted_root: Pat
 
 
 def _preauthorized_staging_d1_binding_proxy(candidate_root: Path, trusted_root: Path) -> bool:
-    """Recognize only the frozen 33-path #1700 runtime-probe successor tree."""
+    """Recognize only the frozen 34-path #1700 runtime-probe successor tree."""
     try:
         candidate_entries = _candidate_tree_entries(candidate_root)
         trusted_entries = _candidate_tree_entries(trusted_root)
     except (OSError, RuntimeError):
         return False
     paths = set(STAGING_D1_BINDING_PROXY_PREIMAGES)
-    if len(paths) != 33 or set(STAGING_D1_BINDING_PROXY_TARGETS) != paths:
+    if len(paths) != 34 or set(STAGING_D1_BINDING_PROXY_TARGETS) != paths:
         return False
     changed = {
         path for path in set(candidate_entries) | set(trusted_entries)

@@ -359,7 +359,7 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         manifest_sha = hashlib.sha256("".join(sorted(manifest_rows, key=lambda row: row.split(" ", 2)[2])).encode()).hexdigest()
         return trusted, candidate, preimages, targets, manifest_sha
 
-    def test_1700_d1_binding_proxy_transition_accepts_only_exact_33_path_tree(self) -> None:
+    def test_1700_d1_binding_proxy_transition_accepts_only_exact_34_path_tree(self) -> None:
         trusted, candidate, preimages, targets, manifest_sha = self._staging_d1_proxy_fixture()
         with patch.object(backlog_verify, "STAGING_D1_BINDING_PROXY_PREIMAGES", preimages), patch.object(
             backlog_verify, "STAGING_D1_BINDING_PROXY_TARGETS", targets
@@ -414,9 +414,46 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
             (trusted / "prior/path.txt").write_bytes(b"stale predecessor\n")
             self.assertFalse(backlog_verify._preauthorized_exact_staging_transition(candidate, trusted, pre, targets, required))
 
+    def test_follow_on_base_pins_compose_in_frozen_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            trusted, candidate = Path(temporary) / "trusted", Path(temporary) / "candidate"
+            trusted.mkdir(); candidate.mkdir()
+            relative = "stage/path.txt"
+            shared = "docs/internal/secrets-checklist.md"
+            old, new = b"before\n", b"after\n"
+            superseded, final = b"native checklist\n", b"B216 checklist\n"
+            self._write(trusted, relative, old)
+            self._write(candidate, relative, new)
+            self._write(trusted, shared, final)
+            self._write(candidate, shared, final)
+            preimages = {relative: (0o644, hashlib.sha256(old).hexdigest())}
+            targets = {relative: (0o644, hashlib.sha256(new).hexdigest())}
+            ordered = (
+                {shared: (0o644, hashlib.sha256(superseded).hexdigest())},
+                {shared: (0o644, hashlib.sha256(final).hexdigest())},
+            )
+            self.assertTrue(backlog_verify._preauthorized_exact_staging_transition(
+                candidate, trusted, preimages, targets, ordered
+            ))
+            self.assertFalse(backlog_verify._preauthorized_exact_staging_transition(
+                candidate, trusted, preimages, targets, tuple(reversed(ordered))
+            ))
+
     def test_1700_d1_binding_proxy_constants_match_frozen_transition(self) -> None:
-        self.assertEqual(len(backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS), 33)
-        self.assertEqual(backlog_verify.STAGING_D1_BINDING_PROXY_MANIFEST_SHA256, "4c29964fb1b46800a4dd281aebd97670d664e5bced4cf68c5ac5e9887cbae43c")
+        self.assertEqual(len(backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS), 34)
+        self.assertEqual(backlog_verify.STAGING_D1_BINDING_PROXY_MANIFEST_SHA256, "4bc25dda3fcb99e38a519098acd32bfdc3cd64216825700f5f090dda4cfc1e7f")
+        self.assertEqual(
+            backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
+                "tests/test_issue_1700_route_inventory.py"
+            ],
+            (0o644, "d9dc1e4012f590ef6b3e76eb1e342ac43d513a14ef16f3ee8db8cffb9ef2b734"),
+        )
+        self.assertEqual(
+            backlog_verify.STAGING_D1_BINDING_PROXY_PREIMAGES[
+                "tests/test_issue_1700_route_inventory.py"
+            ],
+            (0o644, "216a00df6c5b67d78c90d5a9d1c78043a56985c230d7ede72e0270186eb6ef56"),
+        )
         self.assertEqual(
             backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
                 "infra/staging/topology.json"
