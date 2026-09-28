@@ -27,7 +27,7 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         lock = Path("pnpm-lock.yaml")
         paths = frozenset({package, lock} | {
             Path(f"tests/fixture/staging-proxy-{index:02}.txt")
-            for index in range(32)
+            for index in range(35)
         })
         originals = {path: f"trusted preimage {path}\n".encode() for path in paths}
         targets = {path: f"reviewed target {path}\n".encode() for path in paths}
@@ -118,7 +118,7 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         )
         self.assertEqual(
             verify.I2568_TARGETS[Path("scripts/verify_issue_2568_sla_credit_real.py")][1],
-            "e9c30b1f93860d737743155fb41384eea43c478dfdc5d7435d9891bfe481f182",
+            "bca4fc394e00694eb2bf95e2418a5f90005cace3c426133e862eae868d20bab4",
         )
 
     def test_follow_on_base_pins_compose_in_frozen_order(self) -> None:
