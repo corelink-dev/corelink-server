@@ -208,7 +208,9 @@ def verify(root: Path) -> int:
         (r"(?m)^\s*console\.error\s*\([^\n]*\bdelivery_binding_unavailable\b", "delivery_binding_unavailable", True),
         (r"(?m)^\s*console\.error\s*\([^\n]*\bdelivery_exception\b", "delivery_exception", True),
         (r"(?m)^\s*console\.error\s*\([^\n]*\bdelivery_status\b", "delivery_status", True),
-        (r"\bcontroller\.noRetry\s*\(\s*\)", "controller.noRetry()", False),
+        # The weekly unknown-cron guard must own its noRetry call; a separate
+        # staging-probe rejection must not mask removal of this guard.
+        (r"\bif\s*\(\s*drill\s*===\s*undefined\s*\)\s*\{[^{}]*\bcontroller\.noRetry\s*\(\s*\)", "controller.noRetry()", False),
         (r"\bawait\s+delivery\.fetch\s*\(", "await delivery.fetch(...)", False),
         (r"(?m)^\s*if\s*\(\s*!response\.ok\s*\)\s*\{", "non-2xx response guard", False),
         (r"\bsynthetic_page\s*:\s*\{", "synthetic_page payload", False),
