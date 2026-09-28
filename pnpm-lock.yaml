@@ -441,6 +441,9 @@ importers:
       '@clerk/backend':
         specifier: 3.11.6
         version: 3.11.6(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      '@cloudflare/containers':
+        specifier: 0.3.7
+        version: 0.3.7
       '@sentry/cloudflare':
         specifier: ^10.65.0
         version: 10.66.0(@cloudflare/workers-types@4.20260619.1)(@opentelemetry/core@2.9.0(@opentelemetry/api@1.9.1))
@@ -1517,6 +1520,9 @@ packages:
         optional: true
       cypress:
         optional: true
+
+  '@cloudflare/containers@0.3.7':
+    resolution: {integrity: sha512-DM9dm3FnIBSyiSJ1FLavKwl/lk3oAmTaynCzZQ9pZR0ncRPquSxkxd8Nu2MFILxmDDsPkxKsSNEh9mHHMty4Fw==}
 
   '@cloudflare/kv-asset-handler@0.5.0':
     resolution: {integrity: sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg==}
@@ -12706,6 +12712,8 @@ snapshots:
     transitivePeerDependencies:
       - react
       - react-dom
+
+  '@cloudflare/containers@0.3.7': {}
 
   '@cloudflare/kv-asset-handler@0.5.0': {}
 

@@ -28,7 +28,10 @@ export interface StartContainerContext {
   armInactivityTimeout(container: Container, requestId: string): Promise<void>;
   waitForContainerHealth(requestId: string, container: Container): Promise<boolean>;
   destroyContainer(requestId: string): Promise<void>;
+  installStagingD1BindingProxy(): Promise<void>;
   setAlarm(when: number): Promise<void>;
+  /** Internal one-shot staging probe only; ordinary lifecycle events remain enabled. */
+  readonly suppressLifecycleTelemetry?: boolean;
 }
 
 const CONTAINER_PORT = 50051;
@@ -73,23 +76,31 @@ export async function startContainer(
     const tenantHash = await hashForLog(ctx.getLifecycleState().tenantId ?? "_unknown");
     const newColdStartCount = ctx.getLifecycleState().coldStartCount + 1;
 
-    // AUDIT BEFORE MUTATION
-    await emitLifecycleEvent(
-      ctx.env.PAGERDUTY_ROUTING_KEY ?? "",
-      "corelink.do.cold_start.v1",
-      `CoreLink DO cold start #${newColdStartCount} for tenant ${tenantHash}`,
-      "info",
-      tenantHash,
-      ctx.doIdHash,
-      newColdStartCount,
-      ctx.env.ENVIRONMENT,
-    );
+    // AUDIT BEFORE MUTATION. The dedicated staging proof DO suppresses this
+    // external PagerDuty side effect; its protected run receipt is its audit.
+    if (!ctx.suppressLifecycleTelemetry) {
+      await emitLifecycleEvent(
+        ctx.env.PAGERDUTY_ROUTING_KEY ?? "",
+        "corelink.do.cold_start.v1",
+        `CoreLink DO cold start #${newColdStartCount} for tenant ${tenantHash}`,
+        "info",
+        tenantHash,
+        ctx.doIdHash,
+        newColdStartCount,
+        ctx.env.ENVIRONMENT,
+      );
+    }
 
     // Persist the "starting" status (the in-memory flip above already closed the
     // concurrent-start race; this durably records it across DO eviction).
     await ctx.transitionStatus("starting", requestId);
 
     try {
+      if (ctx.env.ENVIRONMENT === "staging") {
+        // Fail the boot before it creates sockets if the internal D1 binding
+        // interceptor cannot be installed. Staging never uses an API-token fallback.
+        await ctx.installStagingD1BindingProxy();
+      }
       // Start container — returns void; container begins asynchronously
       container.start({
         // Egress required (P0-5): the native container reaches R2 (S3 API) and
@@ -108,7 +119,8 @@ export async function startContainer(
           R2_S3_ACCESS_KEY_ID: ctx.env.R2_S3_ACCESS_KEY_ID ?? "",
           R2_S3_SECRET_ACCESS_KEY: ctx.env.R2_S3_SECRET_ACCESS_KEY ?? "",
           CLOUDFLARE_ACCOUNT_ID: ctx.env.CLOUDFLARE_ACCOUNT_ID ?? "",
-          CF_API_TOKEN: ctx.env.CF_API_TOKEN ?? "",
+          CF_API_TOKEN: ctx.env.ENVIRONMENT === "staging" ? "" : (ctx.env.CF_API_TOKEN ?? ""),
+          D1_BINDING_PROXY: ctx.env.ENVIRONMENT === "staging" ? "1" : "",
           D1_DATABASE_ID: ctx.env.D1_DATABASE_ID ?? "",
           // Stream-5: internal PAT mint route gate secrets.
           // Container mounts `/_internal/pat/mint` only when both are non-empty.
@@ -417,7 +429,7 @@ export async function startContainer(
       // Poll health until container is responsive or timeout
       const healthy = await ctx.waitForContainerHealth(requestId, container);
       if (!healthy) {
-        await emitLifecycleEvent(
+        if (!ctx.suppressLifecycleTelemetry) await emitLifecycleEvent(
           ctx.env.PAGERDUTY_ROUTING_KEY ?? "",
           "corelink.do.container_died.v1",
           `CoreLink container failed health check on start for tenant ${tenantHash}`,
@@ -447,7 +459,7 @@ export async function startContainer(
       });
 
       // AUDIT AFTER SUCCESSFUL START
-      await emitLifecycleEvent(
+      if (!ctx.suppressLifecycleTelemetry) await emitLifecycleEvent(
         ctx.env.PAGERDUTY_ROUTING_KEY ?? "",
         "corelink.do.container_started.v1",
         `CoreLink container started for tenant ${tenantHash}`,
@@ -494,7 +506,7 @@ export async function startContainer(
 
       console.error(`[${requestId}] container start error: ${msg}`);
 
-      await emitLifecycleEvent(
+      if (!ctx.suppressLifecycleTelemetry) await emitLifecycleEvent(
         ctx.env.PAGERDUTY_ROUTING_KEY ?? "",
         "corelink.do.container_died.v1",
         `CoreLink container start threw for tenant ${tenantHash}`,

@@ -239,7 +239,6 @@
   },
   "required_secret_names": {
     "corelink-staging": [
-      "CF_API_TOKEN",
       "CLERK_ISSUER_URL",
       "CLERK_SECRET_KEY",
       "CLOUDFLARE_ACCOUNT_ID",

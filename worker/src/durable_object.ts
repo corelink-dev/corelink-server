@@ -24,6 +24,7 @@
  *   - Constant-time PAT compare via crypto.subtle.timingSafeEqual.
  *   - Container is started fresh per cold-start; idle timeout triggers stop.
  */
+import { DurableObject as CloudflareDurableObject } from "cloudflare:workers";
 import {
   emitLifecycleEvent,
   hashForLog,
@@ -36,6 +37,11 @@ import {
   unavailablePath,
 } from "./durable_object_probes.js";
 import { startContainer as runStartContainer } from "./durable_object_start.js";
+import { installD1BindingProxy } from "./staging_d1_binding_proxy.js";
+import {
+  STAGING_D1_RUNTIME_PROBE_PATH,
+  type StagingD1RuntimeProbeReceipt,
+} from "./staging_runtime_d1_probe.js";
 import type {
   D1ProbeBinding,
   D1PathProbeResult,
@@ -44,13 +50,13 @@ import type {
 export { timingSafeEqual };
 import type {
   DurableObject,
-  DurableObjectState,
   DurableObjectStorage,
   Container,
   Fetcher,
   KVNamespace,
 } from "@cloudflare/workers-types";
 import type { Env } from "./index.js";
+type CoreLinkDurableObjectState = ConstructorParameters<typeof CloudflareDurableObject<Env>>[0];
 import {
   enforcePatIssueRateLimit,
   PAT_ISSUE_AUTHORIZED_HEADER,
@@ -165,15 +171,48 @@ const STARTUP_TIMEOUT_MS = 90_000;
  * so a legitimately in-flight cold start is never pre-empted.
  */
 const STALE_STARTING_MS = STARTUP_TIMEOUT_MS + 30_000;
+const STAGING_D1_PROBE_CRON = "* * 28 9 *";
+const STAGING_D1_PROBE_EXPIRES_AT_MS = Date.parse("2026-09-28T09:00:00Z");
+const STAGING_D1_PROBE_RECEIPT_KEY = "staging-d1-binding-probe-receipt-v1";
+const STAGING_D1_PROBE_STATE_KEY = "staging-d1-binding-probe-state-v1";
+const STAGING_D1_PROBE_STARTS_AT_MS = Date.parse("2026-09-28T00:00:00Z");
+
+function validStagingD1ProbeTime(scheduledTime: number, now: number): boolean {
+  return Number.isSafeInteger(scheduledTime) &&
+    scheduledTime % 60_000 === 0 &&
+    scheduledTime >= STAGING_D1_PROBE_STARTS_AT_MS &&
+    scheduledTime < STAGING_D1_PROBE_EXPIRES_AT_MS &&
+    now >= STAGING_D1_PROBE_STARTS_AT_MS &&
+    now < STAGING_D1_PROBE_EXPIRES_AT_MS;
+}
+
+function isStagingD1RuntimeProbeReceipt(
+  value: unknown,
+  release: string,
+  scheduledTime: number,
+): value is StagingD1RuntimeProbeReceipt {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const receipt = value as Record<string, unknown>;
+  return receipt["contract"] === "corelink-staging-d1-binding-runtime-v1" &&
+    receipt["outcome"] === "pass" &&
+    receipt["worker_release"] === release &&
+    receipt["scheduled_time_ms"] === scheduledTime &&
+    receipt["parameterized_select"] === true &&
+    receipt["failed_batch_observed"] === true &&
+    receipt["rollback_absence_verified"] === true &&
+    receipt["probe_table_dropped"] === true &&
+    receipt["d1_binding_intercepted"] === true &&
+    receipt["authorization_absent"] === true &&
+    receipt["cf_api_token_absent"] === true;
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Hashing helpers (INV-NO-PII-IN-LOGS)
 // ──────────────────────────────────────────────────────────────────────────────
 
-export class CoreLinkServer implements DurableObject {
-  private readonly state: DurableObjectState;
+export class CoreLinkServer extends CloudflareDurableObject<Env> implements DurableObject {
+  private readonly state: CoreLinkDurableObjectState;
   private readonly storage: DurableObjectStorage;
-  private readonly env: Env;
   private readonly now: () => number;
   private lifecycleState: LifecycleState = {
     containerStatus: "stopped",
@@ -184,10 +223,10 @@ export class CoreLinkServer implements DurableObject {
   private healthFailures = 0;
   private doIdHash = "";
 
-  constructor(state: DurableObjectState, env: Env, now: () => number = Date.now) {
+  constructor(state: CoreLinkDurableObjectState, env: Env, now: () => number = Date.now) {
+    super(state, env);
     this.state = state;
     this.storage = state.storage;
-    this.env = env;
     this.now = now;
 
     // Restore persisted lifecycle state on DO wakeup
@@ -198,6 +237,89 @@ export class CoreLinkServer implements DurableObject {
       }
       this.doIdHash = await hashForLog(state.id.toString());
     });
+  }
+
+  /**
+   * One-shot RPC reachable only through the Worker's scheduled handler. The
+   * corresponding HTTP path is explicitly rejected in `fetch` below.
+   */
+  async runStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt> {
+    const release = this.env.SENTRY_RELEASE ?? "";
+    if (
+      this.env.ENVIRONMENT !== "staging" ||
+      !/^[0-9a-f]{40}$/.test(release) ||
+      this.env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
+      this.env.D1_DATABASE_ID !== "d72a6b39-6a48-4338-bfda-1111dda98604" ||
+      this.env.R2_S3_ENDPOINT !== "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com" ||
+      !validStagingD1ProbeTime(scheduledTime, this.now())
+    ) {
+      throw new Error("staging D1 runtime probe guard rejected");
+    }
+
+    const previous = await this.storage.get<StagingD1RuntimeProbeReceipt>(STAGING_D1_PROBE_RECEIPT_KEY);
+    if (previous !== undefined) {
+      if (!isStagingD1RuntimeProbeReceipt(previous, release, previous.scheduled_time_ms) ||
+          previous.scheduled_time_ms > scheduledTime) {
+        throw new Error("staging D1 runtime probe stored receipt rejected");
+      }
+      return previous;
+    }
+    const state = await this.storage.get<string>(STAGING_D1_PROBE_STATE_KEY);
+    if (state !== undefined) throw new Error("staging D1 runtime probe is already claimed");
+    await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "running");
+
+    const requestId = "staging-d1-binding-runtime-probe";
+    const started = await this.ensureContainerRunning(requestId, true);
+    if (!started.ok) {
+      await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
+      throw new Error("staging D1 runtime probe container unavailable");
+    }
+    const container = this.state.container;
+    if (container === undefined || !container.running) {
+      await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
+      throw new Error("staging D1 runtime probe container not running");
+    }
+
+    let body: unknown;
+    try {
+      const response = await container.getTcpPort(CONTAINER_PORT).fetch(new Request(
+        `http://localhost:${CONTAINER_PORT}${STAGING_D1_RUNTIME_PROBE_PATH}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            cron: STAGING_D1_PROBE_CRON,
+            scheduled_time_ms: scheduledTime,
+            worker_release: release,
+          }),
+        },
+      ));
+      if (!response.ok) throw new Error("staging D1 runtime probe endpoint failed");
+      body = await response.json();
+    } catch {
+      await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
+      throw new Error("staging D1 runtime probe request failed");
+    } finally {
+      // This dedicated DO never retains an always-on probe Container. Suppress
+      // provider lifecycle events above; destroy and persist stopped state here.
+      try {
+        if (container.running) await container.destroy();
+        if (container.running) throw new Error("Container remained active");
+        await this.storage.deleteAlarm();
+        await this.transitionStatus("stopped", requestId);
+      } catch {
+        await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "unknown");
+        throw new Error("staging D1 runtime probe cleanup is unknown");
+      }
+    }
+
+    if (!isStagingD1RuntimeProbeReceipt(body, release, scheduledTime)) {
+      await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
+      throw new Error("staging D1 runtime probe receipt rejected");
+    }
+    await this.storage.put(STAGING_D1_PROBE_RECEIPT_KEY, body);
+    await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "complete");
+    return body;
   }
   private enforcePatIssueRateLimit(requestId: string, tenantId: string | null) {
     return enforcePatIssueRateLimit(
@@ -272,9 +394,15 @@ export class CoreLinkServer implements DurableObject {
   // fetch — DO entry point
   // ──────────────────────────────────────────────────────────────────────────
 
-  async fetch(request: Request): Promise<Response> {
+  override async fetch(request: Request): Promise<Response> {
     const requestId = request.headers.get("x-request-id") ?? crypto.randomUUID();
     const url = new URL(request.url);
+
+    // The runtime probe is callable only through the one-shot scheduled RPC
+    // above; never let a normal/public DO fetch reach its native endpoint.
+    if (url.pathname === STAGING_D1_RUNTIME_PROBE_PATH) {
+      return new Response("not_found", { status: 404, headers: { "cache-control": "no-store" } });
+    }
 
     // The staging transport probe must never enter tenant resolution, durable
     // rate limiting, cache routing, or normal response transforms. Its service
@@ -447,6 +575,7 @@ export class CoreLinkServer implements DurableObject {
   /** Ensure the container is running, starting it if necessary. */
   private async ensureContainerRunning(
     requestId: string,
+    suppressLifecycleTelemetry = false,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
     const container = this.state.container;
 
@@ -471,14 +600,14 @@ export class CoreLinkServer implements DurableObject {
         `[${requestId}] lifecycleState=running but container is not — treating as stopped`,
       );
       await this.transitionStatus("stopped", requestId);
-      return this.startContainer(requestId);
+      return this.startContainer(requestId, suppressLifecycleTelemetry);
     }
 
     if (
       this.lifecycleState.containerStatus === "degraded" ||
       this.lifecycleState.containerStatus === "stopped"
     ) {
-      return this.startContainer(requestId);
+      return this.startContainer(requestId, suppressLifecycleTelemetry);
     }
 
     if (this.lifecycleState.containerStatus === "starting") {
@@ -497,7 +626,7 @@ export class CoreLinkServer implements DurableObject {
           `[${requestId}] lifecycleState=starting but stale (>${STALE_STARTING_MS}ms, no live start) — treating as stopped`,
         );
         await this.transitionStatus("stopped", requestId);
-        return this.startContainer(requestId);
+        return this.startContainer(requestId, suppressLifecycleTelemetry);
       }
       return this.waitForContainerReady(requestId);
     }
@@ -506,7 +635,10 @@ export class CoreLinkServer implements DurableObject {
   }
 
   /** Delegate container boot orchestration to the lifecycle domain module. */
-  private startContainer(requestId: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  private startContainer(
+    requestId: string,
+    suppressLifecycleTelemetry = false,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
     return runStartContainer(
       {
         container: this.state.container,
@@ -522,10 +654,22 @@ export class CoreLinkServer implements DurableObject {
         armInactivityTimeout: (container, id) => this.armInactivityTimeout(container, id),
         waitForContainerHealth: (id, container) => this.waitForContainerHealth(id, container),
         destroyContainer: (id) => this.destroyContainer(id),
+        installStagingD1BindingProxy: () => this.installStagingD1BindingProxy(),
         setAlarm: (when) => this.storage.setAlarm(when),
+        suppressLifecycleTelemetry,
       },
       requestId,
     );
+  }
+
+  private async installStagingD1BindingProxy(): Promise<void> {
+    const localExports = (this.ctx as unknown as {
+      exports: {
+        StagingD1BindingProxy: (options: { props: Record<string, never> }) => Fetcher;
+      };
+    }).exports;
+    const worker = localExports.StagingD1BindingProxy({ props: {} });
+    await installD1BindingProxy(this.state.container, worker);
   }
 
   /** Wait briefly for a container in "starting" state to become ready. */
@@ -850,7 +994,7 @@ export class CoreLinkServer implements DurableObject {
   // ──────────────────────────────────────────────────────────────────────────
   // Alarm — periodic health check
   // ──────────────────────────────────────────────────────────────────────────
-  async alarm(): Promise<void> {
+  override async alarm(): Promise<void> {
     // The alarm is the SOLE owner of both the health chain and the reaper, so
     // losing a link is losing the reaper — the immortal container re-entered
     // through a third door. Any throw below (a storage.put fault, the

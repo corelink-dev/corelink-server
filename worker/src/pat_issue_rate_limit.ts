@@ -74,7 +74,7 @@ function validTenantId(tenantId: string | null): tenantId is string {
  * restarts. Any malformed or unavailable durable state fails closed.
  */
 export async function enforcePatIssueRateLimit(
-  state: DurableObjectState,
+  state: Pick<DurableObjectState, "blockConcurrencyWhile">,
   storage: DurableObjectStorage,
   currentTenantId: string | null,
   requestId: string,

@@ -93,7 +93,7 @@ export async function prepareRunnerCredential(
 export async function handleRunnerPrepare(
   request: Request,
   env: Env,
-  state: DurableObjectState,
+  state: Pick<DurableObjectState, "id">,
   storage: DurableObjectStorage,
   requestId: string,
 ): Promise<Response> {
