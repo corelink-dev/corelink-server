@@ -1,9 +1,13 @@
 """Adversarial static controls. Synthetic receipts here are never build evidence."""
 from copy import deepcopy
 import hashlib
+import json
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -71,7 +75,7 @@ class WorkflowControls(unittest.TestCase):
             ('Push image to the 5 CF Containers registries (daemonless, wrangler cred)', '::add-mask::$P', 'unmasked:$P'),
             ('Push image to the 5 CF Containers registries (daemonless, wrangler cred)', '"$RUNNER_TEMP/dockercfg"', '"$GITHUB_WORKSPACE/dockercfg"'),
             ('Push image to the 5 CF Containers registries (daemonless, wrangler cred)', 'CONFIG_DIGEST" ==', 'CONFIG_DIGEST" !='),
-            ('Read-only exact production registry target preflight', 'if not expected <= actual:', 'if False:'),
+            ('Read-only exact production registry target preflight', "if not missing <= {'corelink-prod-syd-corelinkserver-prod'}:", 'if False:'),
         ]
         for name, old, new in mutations:
             with self.subTest(control=name, mutation=old):
@@ -90,6 +94,33 @@ class WorkflowControls(unittest.TestCase):
         self.reject(lambda d: d['jobs']['b063-contract']['steps'][2].__setitem__('run', 'echo PASS'), 'command bypass')
         self.reject(lambda d: d['jobs']['b063-contract']['steps'][2].__setitem__('shell', 'bash +e {0}'), 'modifier')
 
+    def run_inventory_preflight(self, inventory):
+        step = next(s for s in self.document['jobs']['hosted-b063']['steps'] if s['name'] == 'Read-only exact production registry target preflight')
+        code = step['run'].split("<<'PYTARGET'\n", 1)[1].rsplit('\nPYTARGET', 1)[0]
+        # Execute only the inert Python inventory check, never the npx provider read.
+        with tempfile.TemporaryDirectory(prefix='b063-inventory-test-') as directory:
+            root = Path(directory)
+            (root / 'b063-registry-inventory.json').write_text(json.dumps(inventory))
+            with patch.dict(os.environ, {'RUNNER_TEMP': directory}):
+                exec(compile(code, '<inert-b063-inventory>', 'exec'), {})
+            return json.loads((root / 'b063-created-repo-expectation.json').read_text())
+
+    def test_inventory_existing_all_or_exact_syd_creation_only(self):
+        inventory = [{'name': name, 'tags': ['historical-test-tag']} for name in guard.IMAGES]
+        self.assertEqual(self.run_inventory_preflight(inventory), [])
+        self.assertEqual(self.run_inventory_preflight(inventory[:-1]), [guard.IMAGES[-1]])
+
+    def test_inventory_denies_other_missing_duplicate_or_malformed(self):
+        inventory = [{'name': name, 'tags': ['historical-test-tag']} for name in guard.IMAGES]
+        bad_inventories = [
+            inventory[1:], [], {}, inventory + [inventory[0]],
+            [{'name': None, 'tags': []}], [{'name': guard.IMAGES[0], 'tags': None}],
+            [dict(item, unexpected='field') for item in inventory],
+        ]
+        for bad in bad_inventories:
+            with self.subTest(inventory=bad), self.assertRaises(SystemExit):
+                self.run_inventory_preflight(bad)
+
 
 class ReceiptControls(unittest.TestCase):
     def setUp(self):
@@ -103,6 +134,7 @@ class ReceiptControls(unittest.TestCase):
             'images': [{'name': name, 'tag': guard.SOURCE[:7] + '-r1',
                         'digest': 'sha256:' + 'c' * 64, 'config_digest': 'sha256:' + 'b' * 64}
                        for name in guard.IMAGES],
+            'created_repo_expectation': [guard.IMAGES[-1]],
             'gates': list(guard.GATES), 'verdict': 'PASS',
             'deployed': False, 'archive_invoked': False, 'd1_written': False,
         }
@@ -121,6 +153,7 @@ class ReceiptControls(unittest.TestCase):
         self.reject(lambda r: r.__setitem__('source_sha', 'a' * 40), 'frozen')
         self.reject(lambda r: r.__setitem__('workflow_candidate_sha', guard.SOURCE), 'distinct')
         self.reject(lambda r: r.__setitem__('account_id', 'foreign'), 'account')
+        self.reject(lambda r: r.__setitem__('created_repo_expectation', [guard.IMAGES[0]]), 'unapproved')
         self.reject(lambda r: r.__setitem__('run_id', True), 'actual run')
         self.reject(lambda r: r.__setitem__('captured_at', '2026-09-27T04:00:00+01:00'), 'UTC')
         self.reject(lambda r: r['gates'].pop(), 'complete build gates')

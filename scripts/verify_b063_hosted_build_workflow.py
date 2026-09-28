@@ -48,11 +48,11 @@ EXTRA_STEP_SHA256 = {'build-push': {'Confirm intent': '5964bca75b8ca3492bc300540
                 'Remove temporary registry credential file': '85f4dea3c07336e14f76b1472c68c1da702f129775286aa84f6efd09b7be9a9f'},
  'hosted-b063': {'Confirm intent': '5964bca75b8ca3492bc300540bac8847f32baebe8e2ed8861ae84d9891dbeb64',
                  'Bind reviewed workflow to frozen protected image source': 'f49ba11b285aec37bf2827ae65e5eaa930b91f9aa092f71073e787ba49b59f17',
-                 'Read-only exact production registry target preflight': '8c3539ce678c32e639e3fbbafd8e28a2e70482e31debd36c4cad35615d767055',
+                 'Read-only exact production registry target preflight': '1dd7bd32ef7c466773981cbfeaa8a133f8d76b273cba582a078777442a954b5a',
                  'Install canonical checksum-pinned BuildKit and runc': 'ee917d5fbf1f09f457c70f4a5870cc91ff4f45fb4a67b9617328ef2fdea0bd20',
                  'Push image to the 5 CF Containers registries (daemonless, wrangler cred)': '45e1743c11cd0924f55992c3ce7fb17c0a7ab639be3a2702bb1343772daefa34',
                  'Next step (repin + deploy)': '140b684dcb037d038c019a0595ff74b8756f2fd93ca662cd2164a55be86eefc4',
-                 'Emit redacted source and registry digest receipt': 'bdcb8193174678e6d461846530a003c8323e09d819bd70adbb0a641bb34b875c',
+                 'Emit redacted source and registry digest receipt': '61bf5d051952ce0b68de2f45866278d4ce41f4801f0a98ae8d53bbe13743cbfb',
                  'Remove temporary registry credential file': '85f4dea3c07336e14f76b1472c68c1da702f129775286aa84f6efd09b7be9a9f'}}
 
 CONTRACT_STEP_SHA256 = {'Install inert YAML parser': '2889628c3078cf81c8264402e1b1165f16b8c574d8b260ad934f5973c2766f37',
@@ -167,13 +167,14 @@ def validate_workflow(text: str) -> None:
 
 
 def validate_receipt(receipt: dict, wrangler: str) -> None:
-    fields = {'schema_version', 'captured_at', 'issue', 'source_sha', 'workflow_candidate_sha', 'run_id', 'run_attempt', 'account_id', 'tool_bundle_version', 'tool_bundle_sha256', 'gated_oci_config_digest', 'images', 'gates', 'verdict', 'deployed', 'archive_invoked', 'd1_written'}
+    fields = {'schema_version', 'captured_at', 'issue', 'source_sha', 'workflow_candidate_sha', 'run_id', 'run_attempt', 'account_id', 'tool_bundle_version', 'tool_bundle_sha256', 'gated_oci_config_digest', 'images', 'created_repo_expectation', 'gates', 'verdict', 'deployed', 'archive_invoked', 'd1_written'}
     require(set(receipt) == fields, 'closed receipt schema drift')
     require(receipt['schema_version'] == 1 and receipt['issue'] == 1648, 'receipt schema/issue mismatch')
     require(receipt['source_sha'] == SOURCE, 'receipt does not bind frozen protected image source')
     candidate = receipt['workflow_candidate_sha']
     require(isinstance(candidate, str) and SHA.fullmatch(candidate) is not None and candidate != SOURCE, 'workflow candidate must be distinct exact SHA')
     require(receipt['account_id'] == ACCOUNT, 'receipt account mismatch')
+    require(receipt['created_repo_expectation'] in ([], [IMAGES[-1]]), 'unapproved registry repository creation expectation')
     require(receipt['tool_bundle_version'] == '2.3.5' and receipt['tool_bundle_sha256'] == BUNDLE_SHA256, 'receipt toolchain pin mismatch')
     for key in ('run_id', 'run_attempt'):
         require(type(receipt[key]) is int and receipt[key] > 0, key + ': positive actual run identifier required')

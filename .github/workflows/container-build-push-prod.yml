@@ -375,11 +375,24 @@ jobs:
           import json, os
           from pathlib import Path
           inventory = json.loads((Path(os.environ['RUNNER_TEMP']) / 'b063-registry-inventory.json').read_text())
-          actual = {item['name'] for item in inventory}
+          if not isinstance(inventory, list) or not inventory:
+              raise SystemExit('malformed registry inventory; no mint/push permitted')
+          names = []
+          for item in inventory:
+              if not isinstance(item, dict) or set(item) != {'name', 'tags'} or not isinstance(item['name'], str) or not item['name'] or not isinstance(item['tags'], list) or not all(isinstance(tag, str) and tag for tag in item['tags']):
+                  raise SystemExit('malformed registry inventory item; no mint/push permitted')
+              names.append(item['name'])
+          if len(names) != len(set(names)):
+              raise SystemExit('duplicate registry inventory name; no mint/push permitted')
           expected = {'corelink-prod-corelinkserver-prod', 'corelink-prod-sam-corelinkserver-prod', 'corelink-prod-lhr-corelinkserver-prod', 'corelink-prod-nrt-corelinkserver-prod', 'corelink-prod-syd-corelinkserver-prod'}
-          if not expected <= actual:
-              raise SystemExit('exact registry target inventory incomplete; no mint/push permitted')
-          print('read-only target preflight: five exact production repositories present')
+          missing = expected - set(names)
+          # Root recharter: first image push may create this one canonical repository.
+          # No new Worker, Container application, deployment or D1 operation is authorized.
+          if not missing <= {'corelink-prod-syd-corelinkserver-prod'}:
+              raise SystemExit('unapproved missing registry target; no mint/push permitted')
+          expectation = Path(os.environ['RUNNER_TEMP']) / 'b063-created-repo-expectation.json'
+          expectation.write_text(json.dumps(sorted(missing)) + '\n')
+          print('read-only target preflight: four required repositories present; SYD creation expectation=' + json.dumps(sorted(missing)))
           PYTARGET
 
       - name: Install canonical checksum-pinned BuildKit and runc
@@ -656,7 +669,7 @@ jobs:
                      'source_sha': source, 'workflow_candidate_sha': os.environ['GITHUB_SHA'], 'run_id': int(os.environ['GITHUB_RUN_ID']),
                      'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']), 'account_id': os.environ['CLOUDFLARE_ACCOUNT_ID'],
                      'tool_bundle_version': '2.3.5', 'tool_bundle_sha256': 'b697295c623639734aaab737523c808fd3cc8d3046039fd94fff1744e4c317aa',
-                     'gated_oci_config_digest': config, 'images': images, 'gates': ['size', 'credential-scan', 'runc-smoke', 'gc-dry-run', 'production-gc-fail-closed'],
+                     'gated_oci_config_digest': config, 'images': images, 'created_repo_expectation': json.loads((Path(os.environ['RUNNER_TEMP']) / 'b063-created-repo-expectation.json').read_text()), 'gates': ['size', 'credential-scan', 'runc-smoke', 'gc-dry-run', 'production-gc-fail-closed'],
                      'verdict': 'PASS', 'deployed': False, 'archive_invoked': False, 'd1_written': False}
           output = Path('artifacts/b063-production-image-build-receipt.json')
           output.parent.mkdir(parents=True, exist_ok=True)
