@@ -5,7 +5,7 @@ import { scheduledDrillForCron, scheduledWeekNumber, syntheticRegionForWeek, syn
 import { runStagingD1BindingRuntimeProbe } from "./staging_runtime_d1_probe.js";
 
 export const STAGING_D1_RUNTIME_PROBE_CRON = "* * 28 9 *";
-export const STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS = Date.parse("2026-09-28T06:00:00Z");
+export const STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS = Date.parse("2026-09-28T09:00:00Z");
 
 export async function runScheduled(controller: ScheduledController, env: Env): Promise<void> {
     if (controller.cron === STAGING_D1_RUNTIME_PROBE_CRON) {

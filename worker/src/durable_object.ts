@@ -50,13 +50,13 @@ import type {
 export { timingSafeEqual };
 import type {
   DurableObject,
-  DurableObjectState,
   DurableObjectStorage,
   Container,
   Fetcher,
   KVNamespace,
 } from "@cloudflare/workers-types";
 import type { Env } from "./index.js";
+type CoreLinkDurableObjectState = ConstructorParameters<typeof CloudflareDurableObject<Env>>[0];
 import {
   enforcePatIssueRateLimit,
   PAT_ISSUE_AUTHORIZED_HEADER,
@@ -172,7 +172,7 @@ const STARTUP_TIMEOUT_MS = 90_000;
  */
 const STALE_STARTING_MS = STARTUP_TIMEOUT_MS + 30_000;
 const STAGING_D1_PROBE_CRON = "* * 28 9 *";
-const STAGING_D1_PROBE_EXPIRES_AT_MS = Date.parse("2026-09-28T06:00:00Z");
+const STAGING_D1_PROBE_EXPIRES_AT_MS = Date.parse("2026-09-28T09:00:00Z");
 const STAGING_D1_PROBE_RECEIPT_KEY = "staging-d1-binding-probe-receipt-v1";
 const STAGING_D1_PROBE_STATE_KEY = "staging-d1-binding-probe-state-v1";
 const STAGING_D1_PROBE_STARTS_AT_MS = Date.parse("2026-09-28T00:00:00Z");
@@ -211,7 +211,7 @@ function isStagingD1RuntimeProbeReceipt(
 // ──────────────────────────────────────────────────────────────────────────────
 
 export class CoreLinkServer extends CloudflareDurableObject<Env> implements DurableObject {
-  private readonly state: DurableObjectState;
+  private readonly state: CoreLinkDurableObjectState;
   private readonly storage: DurableObjectStorage;
   private readonly now: () => number;
   private lifecycleState: LifecycleState = {
@@ -223,7 +223,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   private healthFailures = 0;
   private doIdHash = "";
 
-  constructor(state: DurableObjectState, env: Env, now: () => number = Date.now) {
+  constructor(state: CoreLinkDurableObjectState, env: Env, now: () => number = Date.now) {
     super(state, env);
     this.state = state;
     this.storage = state.storage;

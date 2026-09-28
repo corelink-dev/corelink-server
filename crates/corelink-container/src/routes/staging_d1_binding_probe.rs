@@ -22,7 +22,7 @@ use crate::storage::{
 
 const EXPECTED_CRON: &str = "* * 28 9 *";
 const PROBE_START_MS: u64 = 1_790_553_600_000; // 2026-09-28T00:00:00Z
-const PROBE_EXPIRY_MS: u64 = 1_790_575_200_000; // 2026-09-28T06:00:00Z
+const PROBE_EXPIRY_MS: u64 = 1_790_586_000_000; // 2026-09-28T09:00:00Z
 const EXPECTED_ACCOUNT: &str = "6a1fc1c626fc2628823e60b9db01f5cd";
 const EXPECTED_DATABASE: &str = "d72a6b39-6a48-4338-bfda-1111dda98604";
 
@@ -207,6 +207,10 @@ mod tests {
     #[test]
     fn accepts_only_exact_timed_staging_probe_contract() {
         assert!(valid_request(&input(), TIME));
+        let mut last_valid = input();
+        last_valid.scheduled_time_ms = PROBE_EXPIRY_MS - 60_000;
+        assert!(valid_request(&last_valid, PROBE_EXPIRY_MS - 1));
+        assert!(!valid_request(&last_valid, PROBE_EXPIRY_MS));
         assert!(!valid_request(&input(), PROBE_EXPIRY_MS));
         let mut bad = input();
         bad.cron = "0 0 * * *".to_owned();

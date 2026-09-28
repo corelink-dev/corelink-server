@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScheduledController } from "@cloudflare/workers-types";
-import { runScheduled, STAGING_D1_RUNTIME_PROBE_CRON } from "../src/index_schedule.js";
+import { runScheduled, STAGING_D1_RUNTIME_PROBE_CRON, STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS } from "../src/index_schedule.js";
 import type { Env } from "../src/index_common.js";
 
 const RELEASE = "0123456789abcdef0123456789abcdef01234567";
@@ -72,6 +72,11 @@ describe("temporary staging native D1 runtime Cron", () => {
     vi.useFakeTimers();
     const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
     const target = env(stub);
+    vi.setSystemTime(new Date(STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS - 1));
+    await expect(runScheduled(controller(), target)).resolves.toBeUndefined();
+    expect(stub.runStagingD1RuntimeProbe).toHaveBeenCalledOnce();
+
+    stub.runStagingD1RuntimeProbe.mockClear();
     const badTarget = { ...target, ENVIRONMENT: "production" } as Env;
     const before = controller();
     vi.setSystemTime(new Date("2026-09-28T00:01:05Z"));
@@ -80,7 +85,7 @@ describe("temporary staging native D1 runtime Cron", () => {
     expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
 
     const expired = controller();
-    vi.setSystemTime(new Date("2026-09-28T06:00:00Z"));
+    vi.setSystemTime(new Date(STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS));
     await expect(runScheduled(expired, target)).rejects.toThrow("staging D1 runtime probe guard rejected");
     expect(expired.noRetry).toHaveBeenCalledOnce();
     expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();

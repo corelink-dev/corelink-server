@@ -9,7 +9,7 @@ export const WORKER_NAME = "corelink-staging";
 export const CONTAINER_APP_ID = "a033fb81-6388-47d9-9049-0b6942778055";
 export const CONTAINER_APP_NAME = "corelink-staging-corelinkserver";
 export const PROBE_CRON = "* * 28 9 *";
-export const PROBE_EXPIRY = Date.parse("2026-09-28T06:00:00Z");
+export const PROBE_EXPIRY = Date.parse("2026-09-28T09:00:00Z");
 export const RECEIPT_PREFIX = "[staging_d1_runtime_probe] receipt=";
 
 const apiBase = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}`;
