@@ -19,9 +19,10 @@ type ProxyEnv = Pick<Env,
 
 /** Install before container.start; a rejected install aborts the boot path. */
 export async function installD1BindingProxy(
-  container: Pick<Container, "interceptOutboundHttp">,
+  container: Pick<Container, "interceptOutboundHttp"> | undefined,
   binding: Fetcher,
 ): Promise<void> {
+  if (container === undefined) throw new Error("staging D1 Container is unavailable");
   await container.interceptOutboundHttp(D1_PROXY_HOST, binding);
 }
 
@@ -72,7 +73,7 @@ export async function handleStagingD1BindingRequest(
     if (bytes.byteLength === 0 || bytes.byteLength > MAX_BODY_BYTES) {
       return jsonError(413, "D1 binding proxy body size rejected");
     }
-    input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    input = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
   } catch {
     return jsonError(400, "D1 binding proxy body is malformed");
   }
@@ -99,11 +100,11 @@ async function executeD1Input(
       errors: [],
     };
   }
-  if (Object.keys(record).length === 1 && "batch" in record && Array.isArray(record.batch)) {
-    if (record.batch.length === 0 || record.batch.length > MAX_BATCH_STATEMENTS) {
+  if (Object.keys(record).length === 1 && "batch" in record && Array.isArray(record["batch"])) {
+    if (record["batch"].length === 0 || record["batch"].length > MAX_BATCH_STATEMENTS) {
       throw new Error("batch size rejected");
     }
-    const statements = record.batch.map((item) => prepare(db, parseStatement(exactRecord(item))));
+    const statements = record["batch"].map((item) => prepare(db, parseStatement(exactRecord(item))));
     // D1Database.batch is transactional: any failed statement rolls back all.
     const results = await db.batch(statements);
     return {
@@ -119,17 +120,17 @@ function parseStatement(value: Record<string, unknown> | null): StatementInput {
   if (
     value === null ||
     Object.keys(value).length !== 2 ||
-    typeof value.sql !== "string" ||
-    value.sql.length === 0 ||
-    new TextEncoder().encode(value.sql).byteLength > MAX_SQL_BYTES ||
-    value.sql.includes("\0") ||
-    !Array.isArray(value.params) ||
-    value.params.length > MAX_PARAMS
+    typeof value["sql"] !== "string" ||
+    value["sql"].length === 0 ||
+    new TextEncoder().encode(value["sql"]).byteLength > MAX_SQL_BYTES ||
+    value["sql"].includes("\0") ||
+    !Array.isArray(value["params"]) ||
+    value["params"].length > MAX_PARAMS
   ) {
     throw new Error("statement rejected");
   }
-  const params = value.params.map(parseParam);
-  return { sql: value.sql, params };
+  const params = value["params"].map(parseParam);
+  return { sql: value["sql"], params };
 }
 
 function parseParam(value: unknown): D1Param {

@@ -43,6 +43,46 @@ describe("staging D1 binding proxy", () => {
     expect(interceptOutboundHttp).toHaveBeenCalledExactlyOnceWith("corelink-d1-proxy.invalid", binding);
   });
 
+  it("rejects an absent Container before installing an interceptor", async () => {
+    const fetch = vi.fn();
+    await expect(installD1BindingProxy(undefined, { fetch } as unknown as Fetcher))
+      .rejects.toThrow("staging D1 Container is unavailable");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "overlong", bytes: [0xc0, 0xaf] },
+    { label: "surrogate", bytes: [0xed, 0xa0, 0x80] },
+    { label: "outside Unicode", bytes: [0xf4, 0x90, 0x80, 0x80] },
+    { label: "truncated", bytes: [0xe2, 0x82] },
+    { label: "continuation", bytes: [0x80] },
+  ])("rejects malformed UTF-8 before touching D1 ($label)", async ({ bytes: invalid }) => {
+    const { env, prepare, batch } = makeEnv();
+    const prefix = new TextEncoder().encode('{"sql":"SELECT ?","params":["');
+    const suffix = new TextEncoder().encode('"]}');
+    const bytes = new Uint8Array([...prefix, ...invalid, ...suffix]);
+    const req = new Request(URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", host: "corelink-d1-proxy.invalid" },
+      body: bytes,
+    });
+    expect((await handleStagingD1BindingRequest(req, env)).status).toBe(400);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("preserves valid UTF-8 with optional leading BOM (%s)", async (bom) => {
+    const { env, bind } = makeEnv();
+    const json = new TextEncoder().encode(JSON.stringify({ sql: "SELECT ?", params: ["ação 🙂"] }));
+    const req = new Request(URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", host: "corelink-d1-proxy.invalid" },
+      body: new Uint8Array([...(bom ? [0xef, 0xbb, 0xbf] : []), ...json]),
+    });
+    expect((await handleStagingD1BindingRequest(req, env)).status).toBe(200);
+    expect(bind).toHaveBeenCalledWith("ação 🙂");
+  });
+
   it("executes a parameterized query on the fixed CONFIG_DB binding and returns the REST envelope", async () => {
     const { env, prepare, bind } = makeEnv();
     const response = await handleStagingD1BindingRequest(

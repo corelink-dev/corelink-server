@@ -193,17 +193,17 @@ function isStagingD1RuntimeProbeReceipt(
 ): value is StagingD1RuntimeProbeReceipt {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const receipt = value as Record<string, unknown>;
-  return receipt.contract === "corelink-staging-d1-binding-runtime-v1" &&
-    receipt.outcome === "pass" &&
-    receipt.worker_release === release &&
-    receipt.scheduled_time_ms === scheduledTime &&
-    receipt.parameterized_select === true &&
-    receipt.failed_batch_observed === true &&
-    receipt.rollback_absence_verified === true &&
-    receipt.probe_table_dropped === true &&
-    receipt.d1_binding_intercepted === true &&
-    receipt.authorization_absent === true &&
-    receipt.cf_api_token_absent === true;
+  return receipt["contract"] === "corelink-staging-d1-binding-runtime-v1" &&
+    receipt["outcome"] === "pass" &&
+    receipt["worker_release"] === release &&
+    receipt["scheduled_time_ms"] === scheduledTime &&
+    receipt["parameterized_select"] === true &&
+    receipt["failed_batch_observed"] === true &&
+    receipt["rollback_absence_verified"] === true &&
+    receipt["probe_table_dropped"] === true &&
+    receipt["d1_binding_intercepted"] === true &&
+    receipt["authorization_absent"] === true &&
+    receipt["cf_api_token_absent"] === true;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
