@@ -43,14 +43,14 @@ SHARED_STEP_SHA256 = {'Preflight — BuildKit + runc must be baked in the runner
  'Gate 4b — native production GC binary is present and fail-closed': 'de47ef9b70bb0975adfcc61d2b32dd017da1cb6409a99f1ac54b704a9fdacbff',
  'ADR-0015 reproducibility attestation (reminder)': 'bbb37713279a35ad00a80f9b092d0c31255c3c9880af923609e864e205f284e6'}
 EXTRA_STEP_SHA256 = {'build-push': {'Confirm intent': '5964bca75b8ca3492bc300540bac8847f32baebe8e2ed8861ae84d9891dbeb64',
-                'Push image to the 5 CF Containers registries (daemonless, wrangler cred)': '219d2465bb8f75bb362571e972f02274b45130359ed1ba7fa97e5c6874d1a9ea',
+                'Push image to the 5 CF Containers registries (daemonless, wrangler cred)': '1bfa54a757258808f0ce3d2dfee66f9842b3712a294b13db9185d11a0a4e49ab',
                 'Next step (repin + deploy)': '140b684dcb037d038c019a0595ff74b8756f2fd93ca662cd2164a55be86eefc4',
                 'Remove temporary registry credential file': '85f4dea3c07336e14f76b1472c68c1da702f129775286aa84f6efd09b7be9a9f'},
  'hosted-b063': {'Confirm intent': '5964bca75b8ca3492bc300540bac8847f32baebe8e2ed8861ae84d9891dbeb64',
                  'Bind reviewed workflow to frozen protected image source': 'f49ba11b285aec37bf2827ae65e5eaa930b91f9aa092f71073e787ba49b59f17',
                  'Read-only exact production registry target preflight': '8c3539ce678c32e639e3fbbafd8e28a2e70482e31debd36c4cad35615d767055',
                  'Install canonical checksum-pinned BuildKit and runc': 'ee917d5fbf1f09f457c70f4a5870cc91ff4f45fb4a67b9617328ef2fdea0bd20',
-                 'Push image to the 5 CF Containers registries (daemonless, wrangler cred)': '9a37b26b4e243627163caba85c6f385eaf3ea653930eeaa18db3d991df91ae76',
+                 'Push image to the 5 CF Containers registries (daemonless, wrangler cred)': '45e1743c11cd0924f55992c3ce7fb17c0a7ab639be3a2702bb1343772daefa34',
                  'Next step (repin + deploy)': '140b684dcb037d038c019a0595ff74b8756f2fd93ca662cd2164a55be86eefc4',
                  'Emit redacted source and registry digest receipt': 'bdcb8193174678e6d461846530a003c8323e09d819bd70adbb0a641bb34b875c',
                  'Remove temporary registry credential file': '85f4dea3c07336e14f76b1472c68c1da702f129775286aa84f6efd09b7be9a9f'}}

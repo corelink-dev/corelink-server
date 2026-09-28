@@ -276,7 +276,7 @@ jobs:
 
       - name: Push image to the 5 CF Containers registries (daemonless, wrangler cred)
         run: |
-          set -uo pipefail
+          set -euo pipefail
           TAG="${{ steps.meta.outputs.short_sha }}-r1"
           ACCT="$CLOUDFLARE_ACCOUNT_ID"
           [ -n "$ACCT" ] || { echo "::error::CLOUDFLARE_ACCOUNT_ID unset"; exit 1; }
@@ -284,9 +284,11 @@ jobs:
           # One short-lived push credential for the whole registry host (all 5
           # image repos live under the same account on registry.cloudflare.com).
           CRED="$(npx -y wrangler@4.111.0 containers registries credentials registry.cloudflare.com --push --expiration-minutes 30 --json 2>/dev/null)"
-          U=$(echo "$CRED" | jq -r '.username'); P=$(echo "$CRED" | jq -r '.password')
+          U=$(printf '%s' "$CRED" | jq -er '.username | select(type == "string" and length > 0)')
+          P=$(printf '%s' "$CRED" | jq -er '.password | select(type == "string" and length > 0)')
           [ -n "$U" ] && [ -n "$P" ] || { echo "::error::failed to mint a registry push credential"; exit 1; }
           echo "::add-mask::$U"; echo "::add-mask::$P"
+          umask 077 # credential file is private from creation, before chmod
           CFG="$RUNNER_TEMP/dockercfg"; mkdir -p "$CFG"
           AUTH=$(printf '%s:%s' "$U" "$P" | base64 | tr -d '\n')
           printf '{"auths":{"registry.cloudflare.com":{"auth":"%s"}}}' "$AUTH" > "$CFG/config.json"
@@ -580,7 +582,7 @@ jobs:
 
       - name: Push image to the 5 CF Containers registries (daemonless, wrangler cred)
         run: |
-          set -uo pipefail
+          set -euo pipefail
           TAG="${{ steps.meta.outputs.short_sha }}-r1"
           ACCT="$CLOUDFLARE_ACCOUNT_ID"
           [ -n "$ACCT" ] || { echo "::error::CLOUDFLARE_ACCOUNT_ID unset"; exit 1; }
@@ -589,9 +591,11 @@ jobs:
           # One short-lived push credential for the whole registry host (all 5
           # image repos live under the same account on registry.cloudflare.com).
           CRED="$(npx -y wrangler@4.111.0 containers registries credentials registry.cloudflare.com --push --expiration-minutes 30 --json 2>/dev/null)"
-          U=$(echo "$CRED" | jq -r '.username'); P=$(echo "$CRED" | jq -r '.password')
+          U=$(printf '%s' "$CRED" | jq -er '.username | select(type == "string" and length > 0)')
+          P=$(printf '%s' "$CRED" | jq -er '.password | select(type == "string" and length > 0)')
           [ -n "$U" ] && [ -n "$P" ] || { echo "::error::failed to mint a registry push credential"; exit 1; }
           echo "::add-mask::$U"; echo "::add-mask::$P"
+          umask 077 # credential file is private from creation, before chmod
           CFG="$RUNNER_TEMP/dockercfg"; mkdir -p "$CFG"
           AUTH=$(printf '%s:%s' "$U" "$P" | base64 | tr -d '\n')
           printf '{"auths":{"registry.cloudflare.com":{"auth":"%s"}}}' "$AUTH" > "$CFG/config.json"

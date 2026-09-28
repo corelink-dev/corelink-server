@@ -66,6 +66,8 @@ class WorkflowControls(unittest.TestCase):
             ('Bind reviewed workflow to frozen protected image source', guard.ACCOUNT, 'foreign-account'),
             ('Install canonical checksum-pinned BuildKit and runc', guard.BUNDLE_SHA256, '0' * 64),
             ('Push image to the 5 CF Containers registries (daemonless, wrangler cred)', 'chmod 0600', 'chmod 0644'),
+            ('Push image to the 5 CF Containers registries (daemonless, wrangler cred)', 'umask 077', 'umask 022'),
+            ('Push image to the 5 CF Containers registries (daemonless, wrangler cred)', 'select(type == \"string\" and length > 0)', '.'),
             ('Push image to the 5 CF Containers registries (daemonless, wrangler cred)', '::add-mask::$P', 'unmasked:$P'),
             ('Push image to the 5 CF Containers registries (daemonless, wrangler cred)', '"$RUNNER_TEMP/dockercfg"', '"$GITHUB_WORKSPACE/dockercfg"'),
             ('Push image to the 5 CF Containers registries (daemonless, wrangler cred)', 'CONFIG_DIGEST" ==', 'CONFIG_DIGEST" !='),
