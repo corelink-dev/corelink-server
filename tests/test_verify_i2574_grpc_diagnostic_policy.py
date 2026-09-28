@@ -11,10 +11,10 @@ import verify_i2574_grpc_diagnostic_policy as policy
 
 class PolicyTests(unittest.TestCase):
     def test_1700_final_runtime_pins_are_exact_and_complete(self) -> None:
-        self.assertEqual(len(policy.STAGING_D1_PROXY_TARGETS), 34)
+        self.assertEqual(len(policy.STAGING_D1_PROXY_TARGETS), 37)
         self.assertEqual(
             policy.STAGING_D1_PROXY_TARGETS["worker/src/durable_object.ts"][1],
-            "5a58a02b11f8b3707bfdd6b22d5eca72447d261080f6238e65ffd13f3e279d05",
+            "5c9af7c31ce1ef00a9123819f81d5053705ee01423bfebef20ee94186baf92a2",
         )
         self.assertEqual(
             policy.STAGING_D1_PROXY_TARGETS["worker/src/durable_object_start.ts"][1],
@@ -22,7 +22,7 @@ class PolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             policy.STAGING_D1_PROXY_MANIFEST_SHA256,
-            "4bc25dda3fcb99e38a519098acd32bfdc3cd64216825700f5f090dda4cfc1e7f",
+            "d4113f29103530aaf660a54e593599115296671dffb05de206e6f220b660fc74",
         )
         self.assertEqual(
             policy.STAGING_D1_PROXY_TARGETS[
@@ -34,7 +34,7 @@ class PolicyTests(unittest.TestCase):
     def test_follow_on_successor_maps_are_frozen_and_ordered(self) -> None:
         self.assertEqual(len(policy.STAGING_I1648_TARGETS), 5)
         self.assertEqual(len(policy.STAGING_B216_TARGETS), 4)
-        self.assertEqual(len(policy.STAGING_I2568_TARGETS), 7)
+        self.assertEqual(len(policy.STAGING_I2568_TARGETS), 8)
         self.assertEqual(
             policy.STAGING_B216_TARGETS["docs/internal/secrets-checklist.md"],
             (0o644, "acc1debc7f96d7b38b03743f6c905e882655dc0a370ab4b7c97d7b37b5e00196"),

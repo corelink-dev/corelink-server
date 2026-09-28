@@ -359,7 +359,7 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         manifest_sha = hashlib.sha256("".join(sorted(manifest_rows, key=lambda row: row.split(" ", 2)[2])).encode()).hexdigest()
         return trusted, candidate, preimages, targets, manifest_sha
 
-    def test_1700_d1_binding_proxy_transition_accepts_only_exact_34_path_tree(self) -> None:
+    def test_1700_d1_binding_proxy_transition_accepts_only_exact_37_path_tree(self) -> None:
         trusted, candidate, preimages, targets, manifest_sha = self._staging_d1_proxy_fixture()
         with patch.object(backlog_verify, "STAGING_D1_BINDING_PROXY_PREIMAGES", preimages), patch.object(
             backlog_verify, "STAGING_D1_BINDING_PROXY_TARGETS", targets
@@ -393,7 +393,7 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
     def test_ordered_i1648_b216_i2568_successors_are_exact_and_predecessor_bound(self) -> None:
         self.assertEqual(len(backlog_verify.STAGING_I1648_TARGETS), 5)
         self.assertEqual(len(backlog_verify.STAGING_B216_TARGETS), 4)
-        self.assertEqual(len(backlog_verify.STAGING_I2568_TARGETS), 7)
+        self.assertEqual(len(backlog_verify.STAGING_I2568_TARGETS), 8)
         self.assertEqual(backlog_verify.STAGING_I2568_TARGETS["docs/campaigns/remediation/wp150-workflow-ownership.md"], (0o644, "cb9bb10177faf2fd578e1cc23163015f8c2913e360e8f2880dcd2afc71904e15"))
         with tempfile.TemporaryDirectory() as temporary:
             trusted, candidate = Path(temporary) / "trusted", Path(temporary) / "candidate"
@@ -440,8 +440,8 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
             ))
 
     def test_1700_d1_binding_proxy_constants_match_frozen_transition(self) -> None:
-        self.assertEqual(len(backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS), 34)
-        self.assertEqual(backlog_verify.STAGING_D1_BINDING_PROXY_MANIFEST_SHA256, "4bc25dda3fcb99e38a519098acd32bfdc3cd64216825700f5f090dda4cfc1e7f")
+        self.assertEqual(len(backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS), 37)
+        self.assertEqual(backlog_verify.STAGING_D1_BINDING_PROXY_MANIFEST_SHA256, "d4113f29103530aaf660a54e593599115296671dffb05de206e6f220b660fc74")
         self.assertEqual(
             backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
                 "tests/test_issue_1700_route_inventory.py"

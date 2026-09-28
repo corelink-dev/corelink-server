@@ -27,7 +27,7 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         lock = Path("pnpm-lock.yaml")
         paths = frozenset({package, lock} | {
             Path(f"tests/fixture/staging-proxy-{index:02}.txt")
-            for index in range(32)
+            for index in range(35)
         })
         originals = {path: f"trusted preimage {path}\n".encode() for path in paths}
         targets = {path: f"reviewed target {path}\n".encode() for path in paths}
@@ -75,8 +75,8 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         trusted, candidate, _paths, _originals, _targets = self._staging_d1_proxy_fixture()
         verify.validate(candidate, trusted)
 
-    def test_1700_package_lock_exception_constants_bind_exact_34_path_tree(self) -> None:
-        self.assertEqual(len(verify.STAGING_D1_PROXY_DELIVERY_PATHS), 34)
+    def test_1700_package_lock_exception_constants_bind_exact_37_path_tree(self) -> None:
+        self.assertEqual(len(verify.STAGING_D1_PROXY_DELIVERY_PATHS), 37)
         self.assertEqual(
             verify.STAGING_D1_PROXY_PACKAGE_LOCK_PREIMAGES,
             {
@@ -93,7 +93,7 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         )
         self.assertEqual(
             verify.STAGING_D1_PROXY_DELIVERY_TREE_SHA256,
-            "4bc25dda3fcb99e38a519098acd32bfdc3cd64216825700f5f090dda4cfc1e7f",
+            "d4113f29103530aaf660a54e593599115296671dffb05de206e6f220b660fc74",
         )
         self.assertEqual(
             verify.STAGING_D1_PROXY_TARGETS[
@@ -111,14 +111,14 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
     def test_follow_on_maps_are_ordered_and_package_paths_keep_predecessor_pins(self) -> None:
         self.assertEqual(len(verify.I1648_PATHS), 5)
         self.assertEqual(len(verify.B216_PATHS), 4)
-        self.assertEqual(len(verify.I2568_PATHS), 7)
+        self.assertEqual(len(verify.I2568_PATHS), 8)
         self.assertEqual(
             verify.I2568_TARGETS[Path("docs/campaigns/remediation/wp150-workflow-ownership.md")],
             (0o644, "cb9bb10177faf2fd578e1cc23163015f8c2913e360e8f2880dcd2afc71904e15"),
         )
         self.assertEqual(
             verify.I2568_TARGETS[Path("scripts/verify_issue_2568_sla_credit_real.py")][1],
-            "e9c30b1f93860d737743155fb41384eea43c478dfdc5d7435d9891bfe481f182",
+            "bca4fc394e00694eb2bf95e2418a5f90005cace3c426133e862eae868d20bab4",
         )
 
     def test_follow_on_base_pins_compose_in_frozen_order(self) -> None:
