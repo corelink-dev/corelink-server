@@ -506,7 +506,7 @@ class_name = "CoreLinkServer"
 # WP-S1.2 real AC R2 handler + WP-S1.2 real D1 Admin handler + cas.rs
 # block_in_place fix. Once 2aa2be6f's Dockerfile cache invalidation fix proves
 # itself end-to-end in CI, revert to "./Dockerfile".
-image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-corelinkserver-prod:9308f4aa8-r1"
+image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-corelinkserver-prod:46e2d1cbe-r1"
 # Cap 20→200 (2026-08-19). 1 `basic` container (0.25 vCPU) per active tenant; idle
 # scales to zero so a high ceiling is free when idle. The BINDING account limit is
 # vCPU, NOT instance count: CF RESERVES max_instances × per-instance-vCPU against
@@ -775,7 +775,7 @@ class_name = "RequestMeterShardDO"
 
 [[env.prod-sam.containers]]
 class_name = "CoreLinkServer"
-image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-sam-corelinkserver-prod:9308f4aa8-r1"
+image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-sam-corelinkserver-prod:46e2d1cbe-r1"
 # Cap raised 10→200 (2026-08-19) — see the iad block (account vCPU is the binding limit).
 max_instances = 200
 instance_type = "basic"
@@ -952,7 +952,7 @@ class_name = "RequestMeterShardDO"
 
 [[env.prod-lhr.containers]]
 class_name = "CoreLinkServer"
-image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-lhr-corelinkserver-prod:9308f4aa8-r1"
+image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-lhr-corelinkserver-prod:46e2d1cbe-r1"
 # Cap raised 10→200 (2026-08-19) — see the iad block (account vCPU is the binding limit).
 max_instances = 200
 instance_type = "basic"
@@ -1123,7 +1123,7 @@ class_name = "RequestMeterShardDO"
 
 [[env.prod-nrt.containers]]
 class_name = "CoreLinkServer"
-image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-nrt-corelinkserver-prod:9308f4aa8-r1"
+image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-nrt-corelinkserver-prod:46e2d1cbe-r1"
 # Cap raised 10→200 (2026-08-19) — see the iad block (account vCPU is the binding limit).
 max_instances = 200
 instance_type = "basic"
@@ -1290,7 +1290,7 @@ class_name = "RequestMeterShardDO"
 
 [[env.prod-syd.containers]]
 class_name = "CoreLinkServer"
-image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-syd-corelinkserver-prod:9308f4aa8-r1"
+image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-syd-corelinkserver-prod:46e2d1cbe-r1"
 # Cap raised 10→200 (2026-08-19) — see the iad block (account vCPU is the binding limit).
 max_instances = 200
 instance_type = "basic"
