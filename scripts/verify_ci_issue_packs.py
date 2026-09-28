@@ -340,12 +340,15 @@ def self_test(catalog: dict) -> list[str]:
     ):
         if not validate_workflow_contract(canonical_workflow.replace(marker, "removed-control", 1)):
             failures.append(f"SLA credit missing trusted control was accepted: {marker}")
-    authorization = canonical_workflow.index("id: sla-credit-authorization")
-    execution = canonical_workflow.index("id: python-sla-credit-real")
-    wrong_order = canonical_workflow[:authorization] + canonical_workflow[authorization:].replace(
-        "id: sla-credit-authorization", "id: python-sla-credit-real", 1)
-    wrong_order = wrong_order[:execution] + wrong_order[execution:].replace(
-        "id: python-sla-credit-real", "id: sla-credit-authorization", 1)
+    sentinel = "id: sla-credit-swap-sentinel"
+    assert sentinel not in canonical_workflow
+    wrong_order = canonical_workflow.replace(
+        "id: sla-credit-authorization", sentinel, 1
+    ).replace(
+        "id: python-sla-credit-real", "id: sla-credit-authorization", 1
+    ).replace(sentinel, "id: python-sla-credit-real", 1)
+    assert wrong_order.count("id: sla-credit-authorization") == 1
+    assert wrong_order.count("id: python-sla-credit-real") == 1
     if not validate_workflow_contract(wrong_order):
         failures.append("SLA credit execution before authorization was accepted")
     for trigger in ("push", "schedule"):
