@@ -27,7 +27,7 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         lock = Path("pnpm-lock.yaml")
         paths = frozenset({package, lock} | {
             Path(f"tests/fixture/staging-proxy-{index:02}.txt")
-            for index in range(21)
+            for index in range(31)
         })
         originals = {path: f"trusted preimage {path}\n".encode() for path in paths}
         targets = {path: f"reviewed target {path}\n".encode() for path in paths}
@@ -49,16 +49,21 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
             path: hashlib.sha256(targets[path]).hexdigest()
             for path in (package, lock)
         }
+        frozen_preimages = {
+            path: (0o644, hashlib.sha256(content).hexdigest())
+            for path, content in originals.items()
+        }
         rows = []
         for path in sorted(paths, key=str):
             rows.append(
-                f"{path}\t0644\t{hashlib.sha256(targets[path]).hexdigest()}\n"
+                f"100644 {hashlib.sha256(targets[path]).hexdigest()} {path}\n"
             )
         tree_digest = hashlib.sha256("".join(rows).encode()).hexdigest()
         patches = (
             patch.object(verify, "STAGING_D1_PROXY_PACKAGE_LOCK_PREIMAGES", package_lock_preimages),
             patch.object(verify, "STAGING_D1_PROXY_PACKAGE_LOCK_TARGETS", package_lock_targets),
             patch.object(verify, "STAGING_D1_PROXY_DELIVERY_PATHS", paths),
+            patch.object(verify, "STAGING_D1_PROXY_PREIMAGES", frozen_preimages),
             patch.object(verify, "STAGING_D1_PROXY_DELIVERY_TREE_SHA256", tree_digest),
         )
         for item in patches:
@@ -70,8 +75,8 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         trusted, candidate, _paths, _originals, _targets = self._staging_d1_proxy_fixture()
         verify.validate(candidate, trusted)
 
-    def test_1700_package_lock_exception_constants_bind_exact_23_path_tree(self) -> None:
-        self.assertEqual(len(verify.STAGING_D1_PROXY_DELIVERY_PATHS), 23)
+    def test_1700_package_lock_exception_constants_bind_exact_33_path_tree(self) -> None:
+        self.assertEqual(len(verify.STAGING_D1_PROXY_DELIVERY_PATHS), 33)
         self.assertEqual(
             verify.STAGING_D1_PROXY_PACKAGE_LOCK_PREIMAGES,
             {
@@ -88,8 +93,49 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         )
         self.assertEqual(
             verify.STAGING_D1_PROXY_DELIVERY_TREE_SHA256,
-            "c3be4d5980841b0a05a339d43ae184d8cd5477afbcc19f7a9f7a1e42dc02284b",
+            "4c29964fb1b46800a4dd281aebd97670d664e5bced4cf68c5ac5e9887cbae43c",
         )
+
+    def test_follow_on_maps_are_ordered_and_package_paths_keep_predecessor_pins(self) -> None:
+        self.assertEqual(len(verify.I1648_PATHS), 5)
+        self.assertEqual(len(verify.B216_PATHS), 4)
+        self.assertEqual(len(verify.I2568_PATHS), 7)
+        self.assertEqual(
+            verify.I2568_TARGETS[Path("docs/campaigns/remediation/wp150-workflow-ownership.md")],
+            (0o644, "cb9bb10177faf2fd578e1cc23163015f8c2913e360e8f2880dcd2afc71904e15"),
+        )
+        self.assertEqual(
+            verify.I2568_TARGETS[Path("scripts/verify_issue_2568_sla_credit_real.py")][1],
+            "e9c30b1f93860d737743155fb41384eea43c478dfdc5d7435d9891bfe481f182",
+        )
+
+    def test_exact_follow_on_transition_requires_complete_predecessor_and_rejects_mixed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary) / "base"
+            candidate = Path(temporary) / "candidate"
+            base.mkdir(); candidate.mkdir()
+            rel = Path("follow/on.txt")
+            prior = Path("prior/stage.txt")
+            old, new, prior_bytes = b"old\n", b"target\n", b"prior target\n"
+            verify.write(base, rel, old.decode())
+            verify.write(candidate, rel, new.decode())
+            verify.write(base, prior, prior_bytes.decode())
+            verify.write(candidate, prior, prior_bytes.decode())
+            preimages = {rel: (0o644, hashlib.sha256(old).hexdigest())}
+            targets = {rel: (0o644, hashlib.sha256(new).hexdigest())}
+            predecessor = {prior: (0o644, hashlib.sha256(prior_bytes).hexdigest())}
+            self.assertTrue(verify.preauthorized_exact_transition(
+                candidate, base, {rel}, frozenset({rel}), preimages, targets, (predecessor,)
+            ))
+            verify.write(candidate, Path("foreign.txt"), "foreign\n")
+            self.assertFalse(verify.preauthorized_exact_transition(
+                candidate, base, {rel, Path("foreign.txt")}, frozenset({rel}), preimages, targets, (predecessor,)
+            ))
+            (candidate / "foreign.txt").unlink()
+            verify.write(base, prior, "stale predecessor\n")
+            self.assertFalse(verify.preauthorized_exact_transition(
+                candidate, base, {rel}, frozenset({rel}), preimages, targets, (predecessor,)
+            ))
 
     def test_1700_package_lock_exception_rejects_partial_foreign_mixed_and_downgrade(self) -> None:
         for mutation in ("partial", "foreign", "mixed", "downgrade", "grpc"):

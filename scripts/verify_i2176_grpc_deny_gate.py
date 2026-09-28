@@ -198,12 +198,15 @@ LOCKED_PERIMETER_PATHS = (
     Path("package.json"),
     Path("pnpm-lock.yaml"),
     Path(".github/workflows/container-build-push-prod.yml"),
+    Path(".github/workflows/issue-2730-dsr-alert-receiver.yml"),
+    Path(".github/workflows/issue-2568-sla-credit-real.yml"),
+    Path(".actionlint.yaml"),
+    Path(".actionlint.yaml"),
 )
 
-# Exact #1700 transition needed to load the already-reviewed ContainerProxy
-# export. This exception is available only when the whole protected 23-path
-# delivery tree matches its aggregate pin; the package and lockfile must both
-# move from these exact preimages to these exact successors.
+# Exact #1700 transition needed to load the reviewed ContainerProxy export and
+# its private runtime probe. The exception covers only the frozen 33-path tree.
+# Separate exact successors below admit #1648 and B216 after their own bases.
 STAGING_D1_PROXY_PACKAGE_LOCK_PREIMAGES = {
     Path("worker/package.json"): "7b20dc56684526ad90f3b5998aa995f41b750e304397714ab34b6ece2e162348",
     Path("pnpm-lock.yaml"): "b2b79225204fbce1b33e64f03987f0b894b1f7a187daef51078411d6285e0278",
@@ -213,14 +216,20 @@ STAGING_D1_PROXY_PACKAGE_LOCK_TARGETS = {
     Path("pnpm-lock.yaml"): "7d8509a802bad9c700070722a8e834c98aef18c925768fb9c763a90a5a10c6cc",
 }
 STAGING_D1_PROXY_DELIVERY_PATHS = frozenset(map(Path, (
+    ".github/workflows/issue-1700-container-staging-deploy.yml",
     ".github/workflows/staging-quarantine-apply.yml",
+    "crates/corelink-container/src/main.rs",
+    "crates/corelink-container/src/routes.rs",
+    "crates/corelink-container/src/routes/staging_d1_binding_probe.rs",
     "crates/corelink-container/src/storage.rs",
     "crates/corelink-container/src/storage/d1_http.rs",
     "docs/internal/secrets-checklist.md",
     "infra/staging/README.md",
     "infra/staging/topology.json",
     "pnpm-lock.yaml",
+    "scripts/issue_1700_runtime_probe.mjs",
     "scripts/staging_bootstrap_provider.py",
+    "scripts/tests/issue_1700_runtime_probe.test.mjs",
     "scripts/verify_staging_provider_preflight.py",
     "scripts/verify_staging_topology_contract.py",
     "tests/test_staging_bootstrap_provider.py",
@@ -230,14 +239,162 @@ STAGING_D1_PROXY_DELIVERY_PATHS = frozenset(map(Path, (
     "worker/src/durable_object.ts",
     "worker/src/durable_object_start.ts",
     "worker/src/index.ts",
+    "worker/src/index_schedule.ts",
     "worker/src/staging_d1_binding_proxy.ts",
     "worker/src/staging_d1_binding_proxy_entrypoint.ts",
+    "worker/src/staging_runtime_d1_probe.ts",
     "worker/tests/cloudflare_workers_node_stub.ts",
+    "worker/tests/durable_object.test.ts",
     "worker/tests/staging_d1_binding_proxy.test.ts",
     "worker/tests/staging_d1_binding_start_gate.test.ts",
+    "worker/tests/staging_runtime_d1_probe.test.ts",
     "worker/vitest.config.mts",
 )))
-STAGING_D1_PROXY_DELIVERY_TREE_SHA256 = "c3be4d5980841b0a05a339d43ae184d8cd5477afbcc19f7a9f7a1e42dc02284b"
+STAGING_D1_PROXY_DELIVERY_TREE_SHA256 = "4c29964fb1b46800a4dd281aebd97670d664e5bced4cf68c5ac5e9887cbae43c"
+STAGING_D1_PROXY_TARGETS = {
+    Path('.github/workflows/issue-1700-container-staging-deploy.yml'): (0o644, "c31908be992a6727e124e9b87160708af44fa2f1a042be2bd142b930abf15199"),
+    Path('.github/workflows/staging-quarantine-apply.yml'): (0o644, "24d901a61e2b45af71fc5ec0632455956690725f8f05f9959c0baf213deb1594"),
+    Path('crates/corelink-container/src/main.rs'): (0o644, "44c28a9a8387212b156ce05aa65918b0c34454453d7fcd85e79fd29f9a5518db"),
+    Path('crates/corelink-container/src/routes.rs'): (0o644, "5d0db886c9e8fc5c087e041f84b0c9f92c0de1a94079fccef84c990d8274a99d"),
+    Path('crates/corelink-container/src/routes/staging_d1_binding_probe.rs'): (0o644, "efe92ead9f103c8ee2e60a343c17fc828c291bc3f4bbc5130c00b38f4c50adc1"),
+    Path('crates/corelink-container/src/storage.rs'): (0o644, "ee16e0155fae72ddfe01fedb4b7d29bff087467b2a23c42c830a42f3aeb9b78e"),
+    Path('crates/corelink-container/src/storage/d1_http.rs'): (0o644, "258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5"),
+    Path('docs/internal/secrets-checklist.md'): (0o644, "6157f5653e1a4ebea7be4a11e69e04abd36f59eb5fed6fa23997bb48f18f45b8"),
+    Path('infra/staging/README.md'): (0o644, "5f3daac1edba6320bcfc6663d57bece16a9c63b7977156c0fc3a3b562276a435"),
+    Path('infra/staging/topology.json'): (0o644, "a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14"),
+    Path('pnpm-lock.yaml'): (0o644, "7d8509a802bad9c700070722a8e834c98aef18c925768fb9c763a90a5a10c6cc"),
+    Path('scripts/issue_1700_runtime_probe.mjs'): (0o644, "814381b0a7854d24e65cb1aa9881c1f6753fa57b4e61d1e870f858adedd0fb78"),
+    Path('scripts/staging_bootstrap_provider.py'): (0o644, "8a77837893f2bd094f1fd834042361e69375e1453ec1d4dde9c20c605d00ccdb"),
+    Path('scripts/tests/issue_1700_runtime_probe.test.mjs'): (0o644, "48e3b316bd716f112e682636a8e9dd3f3f759aedf8809e6d7535c40b966187ab"),
+    Path('scripts/verify_staging_provider_preflight.py'): (0o644, "ddc9d57aa31cbee273dabc923b23a3ef33fb11b40bbd3b746ad7dcaca0633b62"),
+    Path('scripts/verify_staging_topology_contract.py'): (0o644, "48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9"),
+    Path('tests/test_staging_bootstrap_provider.py'): (0o644, "ec4633c038fd4ae1553464e00ba2ce6dfe79e10562f79243e0fb629d1d93e219"),
+    Path('tests/test_staging_custom_domain.py'): (0o644, "cfc063496302c06c8bc879c380c7f24e13088fdf8f2a5412def3e6e60b115afc"),
+    Path('tests/test_staging_quarantine_apply_contract.py'): (0o644, "b90d143271b96038ce2f51a23bc62b3be3fee546a231f003b9bcfbfb79a497bf"),
+    Path('worker/package.json'): (0o644, "96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34"),
+    Path('worker/src/durable_object.ts'): (0o644, "f2185d824862738ed428b92fb914b1a47e79c2b1ee3a0cc679d0d90d14214105"),
+    Path('worker/src/durable_object_start.ts'): (0o644, "7f8c28ac7b93628f4c4767efd1bb68bb75d2df9ea85442e92d9a6097c500ce4c"),
+    Path('worker/src/index.ts'): (0o644, "18b960a74833284f953bd28818cd7260798d9570c17bce459502f7b7ca50f3cd"),
+    Path('worker/src/index_schedule.ts'): (0o644, "ea754a50aaa088694167f45b0b8c53fc43641c250d54ac1de35743ae8f46bdc1"),
+    Path('worker/src/staging_d1_binding_proxy.ts'): (0o644, "01e5ac58773118bae44c9d11ff2b3cdd0ba376579f43317af8b4fd2138b7a92d"),
+    Path('worker/src/staging_d1_binding_proxy_entrypoint.ts'): (0o644, "af759d84e63a2016737c899cfba045f52c1fcf20061678a3612ddeec6c18bdab"),
+    Path('worker/src/staging_runtime_d1_probe.ts'): (0o644, "3758098dd2419314fd006fdb8478f5b5043b1b80dd6679a31e2043323355f132"),
+    Path('worker/tests/cloudflare_workers_node_stub.ts'): (0o644, "0237103e747517298fea07261598d250e25edff6f412cd1df33695c1585cfcf7"),
+    Path('worker/tests/durable_object.test.ts'): (0o644, "53f07e0929c957a4e804e2f9063e01359e382fea74b7c0322c2a41f47bbd16a2"),
+    Path('worker/tests/staging_d1_binding_proxy.test.ts'): (0o644, "6eb924bbe1aff66f9d223adb9c490c1500a6a9dfa3a3160182ffda45c72f4e78"),
+    Path('worker/tests/staging_d1_binding_start_gate.test.ts'): (0o644, "2377e10e46528888f60f711820a931f8358d214ac53b8c822bfac9c2d9f2da66"),
+    Path('worker/tests/staging_runtime_d1_probe.test.ts'): (0o644, "8277e7d58e32feaa8514c972f155d9dafaafe1788364a10bb5290a9c9ce2241b"),
+    Path('worker/vitest.config.mts'): (0o644, "e2c2f0e46d4a45d5e789f920f95b73ffd44e6a14a9450e11817426995feda506"),
+}
+STAGING_D1_PROXY_PREIMAGES = {
+    Path('.github/workflows/issue-1700-container-staging-deploy.yml'): (0o644, "9970b7ae60d825c8d5f5deaa1e82a84a58f96352312f9f8faa699621ccc38e76"),
+    Path('.github/workflows/staging-quarantine-apply.yml'): (0o644, "11937887c2dc88942e0c35e7b3824c9835c0f484e6ae1f0fdd8de4066a83c9da"),
+    Path('crates/corelink-container/src/main.rs'): (0o644, "f1150ff53657179a26373bea5d009a732d1a9bccea8c820936858c460ae4b46c"),
+    Path('crates/corelink-container/src/routes.rs'): (0o644, "d1909aefc3f99b981eebb10d018b8fdb21ce739f05c834257f7412c85d88a7ef"),
+    Path('crates/corelink-container/src/routes/staging_d1_binding_probe.rs'): None,
+    Path('crates/corelink-container/src/storage.rs'): (0o644, "89bd546ac229e17454dc27457e306662f8dbc3babab440c889ab2c485e9bf361"),
+    Path('crates/corelink-container/src/storage/d1_http.rs'): (0o644, "57df01654b44a12c57663d4543b1290125c87346e014e3b8210624a2d9cb6dd2"),
+    Path('docs/internal/secrets-checklist.md'): (0o644, "24d0e59ee398a92a1bfd037daf4482d619129118e6236c1bea974b76b4ef3b22"),
+    Path('infra/staging/README.md'): (0o644, "4689c4a43dda1d69ecbb60cdc8a65b4e2f2e5e017f5783f06f567d70ff8ab0ea"),
+    Path('infra/staging/topology.json'): (0o644, "586665e34c11bf91a34fb83247fdbafec9fdfb8e7a336ba4da6f5bda8266dd99"),
+    Path('pnpm-lock.yaml'): (0o644, "b2b79225204fbce1b33e64f03987f0b894b1f7a187daef51078411d6285e0278"),
+    Path('scripts/issue_1700_runtime_probe.mjs'): None,
+    Path('scripts/staging_bootstrap_provider.py'): (0o644, "4684063fe7acbbc781ea177e029ea6d6ac7b7d4b906a814cf0c41b67eda8abf4"),
+    Path('scripts/tests/issue_1700_runtime_probe.test.mjs'): None,
+    Path('scripts/verify_staging_provider_preflight.py'): (0o644, "30c5e7fca9151d5a5147cc37b0ea49ced0100bd0dce5392eec4faa9e53afbfe0"),
+    Path('scripts/verify_staging_topology_contract.py'): (0o644, "18a70767b543a5ea8cadda94a216c068de41a8a294182ef255067126a9fa0e27"),
+    Path('tests/test_staging_bootstrap_provider.py'): (0o644, "189efec0ef4b61b5a5efbea105ad56c210196c4b051fc9c1119645ec3758f5f7"),
+    Path('tests/test_staging_custom_domain.py'): (0o644, "ebca7d9b0e46763cac025dfc79bda65291d1e77f2132176527f28c9f8238e3a2"),
+    Path('tests/test_staging_quarantine_apply_contract.py'): (0o644, "ceb689591b8a5e380ce34f91bc598262c8f9051aaa84b7e0d05c088f194dffe6"),
+    Path('worker/package.json'): (0o644, "7b20dc56684526ad90f3b5998aa995f41b750e304397714ab34b6ece2e162348"),
+    Path('worker/src/durable_object.ts'): (0o644, "5be00eb88931adf4b2789c15ff3e715407dcd3e67e176de370c0922b175356a7"),
+    Path('worker/src/durable_object_start.ts'): (0o644, "26d78fadfb89ca7327f698696ec15c53c455823f3f2c1ae3c282af16b4cab244"),
+    Path('worker/src/index.ts'): (0o644, "627c97d894c9d02521e279b1721a9b0a4346ab1050a586706321b94931fbee8c"),
+    Path('worker/src/index_schedule.ts'): (0o644, "1dab69b8d54f53129631f2135a23ade52fa2772c384e785f4e356c035e4888da"),
+    Path('worker/src/staging_d1_binding_proxy.ts'): None,
+    Path('worker/src/staging_d1_binding_proxy_entrypoint.ts'): None,
+    Path('worker/src/staging_runtime_d1_probe.ts'): None,
+    Path('worker/tests/cloudflare_workers_node_stub.ts'): None,
+    Path('worker/tests/durable_object.test.ts'): (0o644, "ae533b3614615a5ca908922af6082f8e504986947f4db22d52b6dbe65018a669"),
+    Path('worker/tests/staging_d1_binding_proxy.test.ts'): None,
+    Path('worker/tests/staging_d1_binding_start_gate.test.ts'): None,
+    Path('worker/tests/staging_runtime_d1_probe.test.ts'): None,
+    Path('worker/vitest.config.mts'): (0o644, "0ee4c1a03685a300e6ead7720901ab0ae9103da8ffb359a34c5b10e7d3e46a44"),
+}
+
+# Ordered, isolated successor transitions. These are not mixed with the #1700
+# tree: #1648 follows the merged #1700 base; B216 follows #1700 and its exact
+# checklist preimage. Each transition is exact-path and exact mode/hash only.
+I1648_PREIMAGES = {
+    Path(".github/workflows/container-build-push-prod.yml"): (0o644, "db7124deb092eb309e3d3421ab304e2b53267dbcbdd5547dd2f86b87273a5b2f"),
+    Path("scripts/verify_b063_hosted_build_workflow.py"): None,
+    Path("scripts/test_verify_b063_hosted_build_workflow.py"): None,
+    Path("wrangler.toml"): (0o644, "d9aeb0fab1790d37fc6511c0760a812921e8405bafc039a046947dd565576ddc"),
+    Path("evidence/owner-actions/B-063/production-image-build-receipt.json"): None,
+}
+I1648_TARGETS = {
+    Path(".github/workflows/container-build-push-prod.yml"): (0o644, "580f96fa6f2d72c59fbecf868428618a4252dbc5120dbc7b4b114b687eb03401"),
+    Path("scripts/verify_b063_hosted_build_workflow.py"): (0o644, "2dc079336ff1f8211efac1641dbd5657fe6484952e397c655ad52a4bb9d92bb9"),
+    Path("scripts/test_verify_b063_hosted_build_workflow.py"): (0o644, "6d9649d5666c946dc6d01802c6757de3c774f502dea1937b467e9c01fff9195d"),
+    Path("wrangler.toml"): (0o644, "b1ac8db9531da83792576bbc5342845079cf223d3e86aac8eb0bf065e2747ea5"),
+    Path("evidence/owner-actions/B-063/production-image-build-receipt.json"): (0o644, "5eebd2bf9a5882766c46d613e85ab7e7330f0011ce4d5e6d5ff5d8cc49ae45fa"),
+}
+I1648_PATHS = frozenset(I1648_PREIMAGES)
+B216_PREIMAGES = {
+    Path(".github/workflows/b216-receiver-deploy-nonprod.yml"): (0o644, "1d0e94cd0ba53fccc4b8aaf225a81b180192136f4bee99b8b9d6f69a7b78eeb0"),
+    Path("apps/dsr-alert-receiver/scripts/deploy-route.mjs"): (0o644, "c83ac8b06826940a49faca93ef192bf5acdd44adaed3088a29b4f7df97117557"),
+    Path("apps/dsr-alert-receiver/tests/deploy-route.test.mjs"): (0o644, "7f0511864d5deced20c2352ed23da7d436761f1d0a422750fb06e94feaac65d8"),
+    Path("docs/internal/secrets-checklist.md"): (0o644, "6157f5653e1a4ebea7be4a11e69e04abd36f59eb5fed6fa23997bb48f18f45b8"),
+}
+B216_TARGETS = {
+    Path(".github/workflows/b216-receiver-deploy-nonprod.yml"): (0o644, "1a3c849443f1ded6e0a8791797d906640121b753f8e5a0043b1dec78ac1c941d"),
+    Path("apps/dsr-alert-receiver/scripts/deploy-route.mjs"): (0o644, "3245267227c49d3ffaa84136f5f3230d559c63d96df25eb34bf75fe773bc5f5b"),
+    Path("apps/dsr-alert-receiver/tests/deploy-route.test.mjs"): (0o644, "6fceb91d40fd574836fd9c28d6ad6083d2c7a812f05aaf9729413fde9d3580fb"),
+    Path("docs/internal/secrets-checklist.md"): (0o644, "acc1debc7f96d7b38b03743f6c905e882655dc0a370ab4b7c97d7b37b5e00196"),
+}
+B216_PATHS = frozenset(B216_PREIMAGES)
+I2568_PREIMAGES = {
+    Path(".actionlint.yaml"): (0o644, "8e119ec23c53aa981bbfea4d909637d76f79956bee8d7aee30f4d6cfbbc48099"),
+    Path(".github/workflows/issue-2568-sla-credit-real.yml"): None,
+    Path("scripts/issue_2568_sla_credit_real.py"): None,
+    Path("scripts/issue_2568_sla_credit_worker.ts"): None,
+    Path("scripts/verify_issue_2568_sla_credit_real.py"): None,
+    Path("tests/test_issue_2568_sla_credit_real.py"): None,
+    Path("docs/campaigns/remediation/wp150-workflow-ownership.md"): (0o644, "d8ea8a8c5b19ca5b5fdae2ea8fd46664d9e860d47a7ddaaf318855e89fb6c210"),
+}
+I2568_TARGETS = {
+    Path(".actionlint.yaml"): (0o644, "2e1ad216236818322adb7baed2e25dcc836cd7a030493fd799f4d4fc06702576"),
+    Path(".github/workflows/issue-2568-sla-credit-real.yml"): (0o644, "67031ad29cdcbef2efa7d6385c298f3aa240440545db81e53d490b9df58ee195"),
+    Path("scripts/issue_2568_sla_credit_real.py"): (0o644, "3a41577dec203d3fa4f18924de6af92224ca5ae35f5b2231551e25a00b8ca0d2"),
+    Path("scripts/issue_2568_sla_credit_worker.ts"): (0o644, "4cf891a4ba1030e03db9401df4a312c75204a08bf7be774a8f634a1bc89e2d62"),
+    Path("scripts/verify_issue_2568_sla_credit_real.py"): (0o644, "e9c30b1f93860d737743155fb41384eea43c478dfdc5d7435d9891bfe481f182"),
+    Path("tests/test_issue_2568_sla_credit_real.py"): (0o644, "09824712019694b2d61b1a70f4bfe1906a9dc2ba1a9d59b1ecd712e146ae66d3"),
+    Path("docs/campaigns/remediation/wp150-workflow-ownership.md"): (0o644, "cb9bb10177faf2fd578e1cc23163015f8c2913e360e8f2880dcd2afc71904e15"),
+}
+I2568_PATHS = frozenset(I2568_PREIMAGES)
+
+
+
+def _tree_matches_pins(root: Path, pins: dict[Path, tuple[int, str]]) -> bool:
+    return all(is_regular_digest(root, path, digest) and root.joinpath(path).lstat().st_mode & 0o777 == mode for path, (mode, digest) in pins.items())
+
+
+def preauthorized_exact_transition(candidate: Path, trusted_base: Path, changes: set[Path], paths: frozenset[Path], preimages: dict[Path, tuple[int, str] | None], targets: dict[Path, tuple[int, str]], required_base: tuple[dict[Path, tuple[int, str]], ...] = ()) -> bool:
+    if not paths or changes != paths or set(preimages) != paths or set(targets) != paths:
+        return False
+    if any(not _tree_matches_pins(trusted_base, pins) for pins in required_base):
+        return False
+    for relative in paths:
+        old = preimages[relative]
+        new = targets[relative]
+        if new is None or not is_regular_digest(candidate, relative, new[1]) or (candidate / relative).lstat().st_mode & 0o777 != new[0]:
+            return False
+        if old is None:
+            if not is_absent(trusted_base, relative):
+                return False
+        elif not is_regular_digest(trusted_base, relative, old[1]) or (trusted_base / relative).lstat().st_mode & 0o777 != old[0]:
+            return False
+    return True
 
 # The hosted-runner campaign owns these CI-only workflow files in a separate,
 # closed-world contract.  Their runner and checkout settings cannot change the
@@ -402,7 +559,7 @@ def preauthorized_staging_d1_proxy_tree(
     trusted_base: Path,
     changes: set[Path],
 ) -> bool:
-    if len(STAGING_D1_PROXY_DELIVERY_PATHS) != 23 or changes != STAGING_D1_PROXY_DELIVERY_PATHS:
+    if len(STAGING_D1_PROXY_DELIVERY_PATHS) != 33 or changes != STAGING_D1_PROXY_DELIVERY_PATHS:
         return False
     if set(STAGING_D1_PROXY_PACKAGE_LOCK_PREIMAGES) != set(STAGING_D1_PROXY_PACKAGE_LOCK_TARGETS):
         return False
@@ -413,7 +570,15 @@ def preauthorized_staging_d1_proxy_tree(
         if not is_regular_digest(candidate, relative, target):
             return False
     rows: list[str] = []
+    if set(STAGING_D1_PROXY_PREIMAGES) != STAGING_D1_PROXY_DELIVERY_PATHS:
+        return False
     for relative in sorted(STAGING_D1_PROXY_DELIVERY_PATHS, key=str):
+        preimage = STAGING_D1_PROXY_PREIMAGES[relative]
+        if preimage is None:
+            if not is_absent(trusted_base, relative):
+                return False
+        elif not is_regular_digest(trusted_base, relative, preimage[1]) or (trusted_base / relative).lstat().st_mode & 0o777 != preimage[0]:
+            return False
         if node_kind(candidate / relative) != "regular":
             return False
         mode = (candidate / relative).lstat().st_mode & 0o777
@@ -422,7 +587,7 @@ def preauthorized_staging_d1_proxy_tree(
         digest = sha256_file(candidate, relative)
         if digest is None:
             return False
-        rows.append(f"{relative}\t{mode:04o}\t{digest}\n")
+        rows.append(f"{(0o100000 | mode):06o} {digest} {relative}\n")
     tree_digest = hashlib.sha256("".join(rows).encode("utf-8")).hexdigest()
     return tree_digest == STAGING_D1_PROXY_DELIVERY_TREE_SHA256
 
@@ -490,8 +655,11 @@ def validate(candidate: Path, trusted_base: Path) -> None:
     staging_d1_proxy_tree = preauthorized_staging_d1_proxy_tree(
         candidate, trusted_base, changes
     )
+    staging_i1648_tree = preauthorized_exact_transition(candidate, trusted_base, changes, I1648_PATHS, I1648_PREIMAGES, I1648_TARGETS, (STAGING_D1_PROXY_TARGETS,))
+    staging_b216_tree = preauthorized_exact_transition(candidate, trusted_base, changes, B216_PATHS, B216_PREIMAGES, B216_TARGETS, (STAGING_D1_PROXY_TARGETS, I1648_TARGETS))
+    staging_i2568_tree = preauthorized_exact_transition(candidate, trusted_base, changes, I2568_PATHS, I2568_PREIMAGES, I2568_TARGETS, (STAGING_D1_PROXY_TARGETS, I1648_TARGETS, B216_TARGETS))
     for relative in LOCKED_PERIMETER_PATHS:
-        if staging_d1_proxy_tree and relative in STAGING_D1_PROXY_DELIVERY_PATHS:
+        if (staging_d1_proxy_tree and relative in STAGING_D1_PROXY_DELIVERY_PATHS) or (staging_i1648_tree and relative in I1648_PATHS) or (staging_i2568_tree and relative in I2568_PATHS):
             continue
         require_exact(candidate, trusted_base, relative)
 
@@ -505,11 +673,16 @@ def validate(candidate: Path, trusted_base: Path) -> None:
         frozen_policy = {Path(path) for path in policy.POLICY | policy.POLICY_FIXTURES}
         frozen_policy.add(B141_TEST)
         for relative in frozen_policy:
-            if staging_d1_proxy_tree and relative in STAGING_D1_PROXY_DELIVERY_PATHS:
+            if (staging_d1_proxy_tree and relative in STAGING_D1_PROXY_DELIVERY_PATHS) or (staging_b216_tree and relative == Path("docs/internal/secrets-checklist.md")) or (staging_i2568_tree and relative in I2568_PATHS):
                 continue
             require_regular_mode(trusted_base, relative)
             require_regular_mode(candidate, relative)
             require_exact(candidate, trusted_base, relative)
+
+    if staging_i1648_tree or staging_b216_tree or staging_i2568_tree:
+        # Only the exact separately reviewed follow-on file set may move. All
+        # Worker gRPC surfaces remain covered by the closed changed-path set.
+        return
 
     # Inspect the full union before selecting an admission branch.  This is
     # deliberately closed-world: a candidate cannot use a partial delivery or
