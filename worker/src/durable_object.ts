@@ -213,7 +213,6 @@ function isStagingD1RuntimeProbeReceipt(
 export class CoreLinkServer extends CloudflareDurableObject<Env> implements DurableObject {
   private readonly state: DurableObjectState;
   private readonly storage: DurableObjectStorage;
-  private readonly env: Env;
   private readonly now: () => number;
   private lifecycleState: LifecycleState = {
     containerStatus: "stopped",
@@ -228,7 +227,6 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     super(state, env);
     this.state = state;
     this.storage = state.storage;
-    this.env = env;
     this.now = now;
 
     // Restore persisted lifecycle state on DO wakeup
@@ -396,7 +394,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   // fetch — DO entry point
   // ──────────────────────────────────────────────────────────────────────────
 
-  async fetch(request: Request): Promise<Response> {
+  override async fetch(request: Request): Promise<Response> {
     const requestId = request.headers.get("x-request-id") ?? crypto.randomUUID();
     const url = new URL(request.url);
 
@@ -996,7 +994,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   // ──────────────────────────────────────────────────────────────────────────
   // Alarm — periodic health check
   // ──────────────────────────────────────────────────────────────────────────
-  async alarm(): Promise<void> {
+  override async alarm(): Promise<void> {
     // The alarm is the SOLE owner of both the health chain and the reaper, so
     // losing a link is losing the reaper — the immortal container re-entered
     // through a third door. Any throw below (a storage.put fault, the
