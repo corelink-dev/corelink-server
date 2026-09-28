@@ -30,7 +30,7 @@ class WorkflowControls(unittest.TestCase):
     def test_valid_candidate_and_baseline_gate_bytes(self):
         guard.validate_workflow(self.text)
         baseline = subprocess.check_output(
-            ['git', '-C', str(guard.ROOT), 'show', guard.SOURCE + ':' + str(guard.WORKFLOW)],
+            ['git', '-C', str(guard.ROOT), 'show', guard.BASELINE_SOURCE + ':' + str(guard.WORKFLOW)],
             text=True,
         )
         original = yaml.load(baseline, Loader=yaml.BaseLoader)['jobs']['build-push']
@@ -55,6 +55,10 @@ class WorkflowControls(unittest.TestCase):
                         "  echo '::error::GC spec is missing, a symlink, or not owned by the runner'\n"
                         '  exit 1\n}\n'
                         'rm -- "$B/config.json"\nrunc spec -b "$B"\n')
+                if name.startswith(('Gate 4 —', 'Gate 4b —')):
+                    old_guard = 'test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json"'
+                    expected = expected.replace(old_guard + ' || {', 'if ! { ' + old_guard + '; }; then')
+                    expected = expected.replace("  exit 1\n}\nrm --", "  exit 1\nfi\nrm --")
                 # The exact baseline remainder includes every runc/GC oracle.
                 self.assertEqual(current[name], expected)
                 self.assertEqual(hashlib.sha256(expected.encode()).hexdigest(), digest)
@@ -91,7 +95,7 @@ class WorkflowControls(unittest.TestCase):
             for gate in ('Gate 4 — embedded GC binary is forced dry-run (daemonless)',
                          'Gate 4b — native production GC binary is present and fail-closed'):
                 command = next(s['run'] for s in self.document['jobs'][job]['steps'] if s['name'] == gate)
-                code = command[command.index('test -f "$B/config.json"'):command.index('runc spec -b "$B"')]
+                code = command[command.index('if ! { test -f "$B/config.json"'):command.index('runc spec -b "$B"')]
                 for kind in ('owned-regular', 'missing', 'symlink'):
                     with self.subTest(job=job, gate=gate, config=kind), tempfile.TemporaryDirectory(prefix='b063-owned-config-') as directory:
                         root = Path(directory)

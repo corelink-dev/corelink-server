@@ -3,7 +3,7 @@
 
 The root-reviewed candidate and protected environment authorize execution.
 This checker proves shape and negative controls, not an actual image build.
-Shared commands preserve protected main 5fabd93e; the two GC host probes use
+Shared commands preserve the historical protected baseline; source46e2 is built; the two GC host probes use
 the same rootful boundary as runc, with a pre-build permission fixture.
 """
 from __future__ import annotations
@@ -21,7 +21,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = Path('.github/workflows/container-build-push-prod.yml')
 RECEIPT = Path('evidence/owner-actions/B-063/production-image-build-receipt.json')
-SOURCE = '5fabd93e98d805a39319fcb6a22c9ee5267fafd4'
+SOURCE = '46e2d1cbe7c00a303c0942e8f46751dce75e5c14'
+BASELINE_SOURCE = '5fabd93e98d805a39319fcb6a22c9ee5267fafd4'
 ACCOUNT = '6a1fc1c626fc2628823e60b9db01f5cd'
 BRANCH = 'refs/heads/codex/issue-1648-hosted-build'
 BUNDLE_SHA256 = 'b697295c623639734aaab737523c808fd3cc8d3046039fd94fff1744e4c317aa'
@@ -40,20 +41,20 @@ SHARED_STEP_SHA256 = {'Preflight — BuildKit + runc must be baked in the runner
  'Gate 1 — image size (CF Containers 2 GiB ceiling, daemonless)': 'e591579182927b75f3fea1f5d791146d5a79e5cce52c15cc6b4c0c684d34edce',
  'Gate 2 — CTRL-CRED-001, no credentials in image layers (daemonless)': 'd9b26cf325b321b476b4d9eb378f69a9027a3cd75a09022bd1d17c86880a0d37',
  'Gate 3 — binary smoke (runc on the extracted rootfs, daemonless)': '3bd86e0c0235cdcde48ed69d6783bee8a921939965a6c46070db5c5a0e7438c0',
- 'Gate 4 — embedded GC binary is forced dry-run (daemonless)': '88e206fcea75fc11715c789c970822a045039f400017bf2d2dbc4ee29c1d0312',
- 'Gate 4b — native production GC binary is present and fail-closed': 'daece8782fc60db68d249e64cafb6308577c578d714ac65d2b671739504eef73',
+ 'Gate 4 — embedded GC binary is forced dry-run (daemonless)': '92ea281d5b76160807d26958316e112ff80af7b0d9111da0d88a520c6180c06e',
+ 'Gate 4b — native production GC binary is present and fail-closed': '6fe65e6be08ed9c8997acbf5bad9df4d643a73f6f3ff5038d7a86f443f7c1a84',
  'ADR-0015 reproducibility attestation (reminder)': 'bbb37713279a35ad00a80f9b092d0c31255c3c9880af923609e864e205f284e6'}
 EXTRA_STEP_SHA256 = {'build-push': {'Confirm intent': '5964bca75b8ca3492bc300540bac8847f32baebe8e2ed8861ae84d9891dbeb64',
-                'Push image to the 5 CF Containers registries (daemonless, wrangler cred)': '1bfa54a757258808f0ce3d2dfee66f9842b3712a294b13db9185d11a0a4e49ab',
+                'Push image to the 5 CF Containers registries (daemonless, wrangler cred)': '05d7ce50578182e2e33c160f8a05992ac0e34b439a281d1b8362eb0051a08476',
                 'Next step (repin + deploy)': '140b684dcb037d038c019a0595ff74b8756f2fd93ca662cd2164a55be86eefc4',
                 'Remove temporary registry credential file': '85f4dea3c07336e14f76b1472c68c1da702f129775286aa84f6efd09b7be9a9f'},
  'hosted-b063': {'Confirm intent': '5964bca75b8ca3492bc300540bac8847f32baebe8e2ed8861ae84d9891dbeb64',
-                 'Bind reviewed workflow to frozen protected image source': 'f49ba11b285aec37bf2827ae65e5eaa930b91f9aa092f71073e787ba49b59f17',
+                 'Bind reviewed workflow to frozen protected image source': '5a7170c154db72fd0e542e247c89041275e86f5787f6c0284bef555a814d6435',
                  'Read-only exact production registry target preflight': '1dd7bd32ef7c466773981cbfeaa8a133f8d76b273cba582a078777442a954b5a',
-                 'Install canonical checksum-pinned BuildKit and runc': 'c303545d3ca8d4f89ba22879e3cc5f7f8ed510c8944c7adfe6ed4c81624324e2',
-                 'Push image to the 5 CF Containers registries (daemonless, wrangler cred)': '45e1743c11cd0924f55992c3ce7fb17c0a7ab639be3a2702bb1343772daefa34',
+                 'Install canonical checksum-pinned BuildKit and runc': 'acf4e8cb17f7460b28558ef07f5492dd923289a3b4e991d93c43d32b700dde72',
+                 'Push image to the 5 CF Containers registries (daemonless, wrangler cred)': 'fd365764d37e14b140c0771286ccce59eeca7c10cd0e38da1a86bae70c197021',
                  'Next step (repin + deploy)': '140b684dcb037d038c019a0595ff74b8756f2fd93ca662cd2164a55be86eefc4',
-                 'Emit redacted source and registry digest receipt': '61bf5d051952ce0b68de2f45866278d4ce41f4801f0a98ae8d53bbe13743cbfb',
+                 'Emit redacted source and registry digest receipt': '1711a8147dc34a4a100a79e11b02d8bfb7cf8f34354e686cd6ce7db43e6cde1c',
                  'Remove temporary registry credential file': '85f4dea3c07336e14f76b1472c68c1da702f129775286aa84f6efd09b7be9a9f'}}
 
 CONTRACT_STEP_SHA256 = {'Install inert YAML parser': '2889628c3078cf81c8264402e1b1165f16b8c574d8b260ad934f5973c2766f37',

@@ -83,7 +83,7 @@ jobs:
           persist-credentials: false
 
       - name: Preflight — BuildKit + runc must be baked in the runner image
-        run: &b063-tool-preflight |
+        run: |
           set -uo pipefail
           missing=0
           for t in buildkitd buildctl runc; do
@@ -229,10 +229,10 @@ jobs:
             "$B/rootfs/usr/local/bin/gc_sweep"
           sudo test -x "$B/rootfs/usr/local/bin/gc_sweep" || { echo "::error::gc_sweep is absent or not executable in the runtime image"; exit 1; }
           # Regenerate only the runner-owned spec left by the preceding smoke gate.
-          test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json" || {
+          if ! { test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json"; }; then
             echo '::error::GC spec is missing, a symlink, or not owned by the runner'
             exit 1
-          }
+          fi
           rm -- "$B/config.json"
           runc spec -b "$B"
           jq \
@@ -268,10 +268,10 @@ jobs:
             exit 1
           }
           # Regenerate only the runner-owned spec left by the preceding smoke gate.
-          test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json" || {
+          if ! { test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json"; }; then
             echo '::error::GC spec is missing, a symlink, or not owned by the runner'
             exit 1
-          }
+          fi
           rm -- "$B/config.json"
           runc spec -b "$B"
           jq \
@@ -306,7 +306,7 @@ jobs:
           CRED="$(npx -y wrangler@4.111.0 containers registries credentials registry.cloudflare.com --push --expiration-minutes 30 --json 2>/dev/null)"
           U=$(printf '%s' "$CRED" | jq -er '.username | select(type == "string" and length > 0)')
           P=$(printf '%s' "$CRED" | jq -er '.password | select(type == "string" and length > 0)')
-          [ -n "$U" ] && [ -n "$P" ] || { echo "::error::failed to mint a registry push credential"; exit 1; }
+          if ! { [ -n "$U" ] && [ -n "$P" ]; }; then echo "::error::failed to mint a registry push credential"; exit 1; fi
           echo "::add-mask::$U"; echo "::add-mask::$P"
           umask 077 # credential file is private from creation, before chmod
           CFG="$RUNNER_TEMP/dockercfg"; mkdir -p "$CFG"
@@ -371,7 +371,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4
+          ref: 46e2d1cbe7c00a303c0942e8f46751dce75e5c14
           fetch-depth: 0 # the image source is protected main, not the workflow candidate
           persist-credentials: false
 
@@ -384,7 +384,7 @@ jobs:
           [[ "$GITHUB_SHA" == "$EXPECTED_WORKFLOW_SHA" ]]
           [[ "$GITHUB_REF" == refs/heads/codex/issue-1648-hosted-build ]]
           [[ "$CLOUDFLARE_ACCOUNT_ID" == 6a1fc1c626fc2628823e60b9db01f5cd ]]
-          [[ "$(git rev-parse HEAD)" == 5fabd93e98d805a39319fcb6a22c9ee5267fafd4 ]]
+          [[ "$(git rev-parse HEAD)" == 46e2d1cbe7c00a303c0942e8f46751dce75e5c14 ]]
           git merge-base --is-ancestor 49c01640d36244b1789f1cf60eda8833f2f7ac66 HEAD
 
       - name: Read-only exact production registry target preflight
@@ -466,7 +466,7 @@ jobs:
           fi
           grep -F 'File config.json exists. Remove it first' "$spec_error"
           regenerate_owned_spec() {
-            test -f "$spec_fixture/config.json" && test ! -L "$spec_fixture/config.json" && test -O "$spec_fixture/config.json" || return 1
+            if ! { test -f "$spec_fixture/config.json" && test ! -L "$spec_fixture/config.json" && test -O "$spec_fixture/config.json"; }; then return 1; fi
             rm -- "$spec_fixture/config.json"
             runc spec -b "$spec_fixture"
           }
@@ -496,7 +496,22 @@ jobs:
           # B063_RUNC_SPEC_FIXTURE_END
 
       - name: Preflight — BuildKit + runc must be baked in the runner image
-        run: *b063-tool-preflight
+        run: |
+          set -uo pipefail
+          missing=0
+          for t in buildkitd buildctl runc; do
+            if ! command -v "$t" >/dev/null 2>&1; then echo "::error::'$t' not on PATH"; missing=1; fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "::error::This lane needs BuildKit + runc baked in the corelink runner image."
+            echo "::error::Roll the runner image that bakes them first (corelink-runners deploy/runner/Dockerfile)."
+            exit 1
+          fi
+          # `|| true`: version logging only, and it is the LAST statement of the
+          # step, so its status IS the step's status. `runc --version` prints
+          # several lines; `head -1` closing the pipe under pipefail failed the
+          # build over a log line (B-040).
+          buildkitd --version; buildctl --version; runc --version | head -1 || true
 
       - name: Compute short SHA + reproducible-build args
         id: meta
@@ -627,10 +642,10 @@ jobs:
             "$B/rootfs/usr/local/bin/gc_sweep"
           sudo test -x "$B/rootfs/usr/local/bin/gc_sweep" || { echo "::error::gc_sweep is absent or not executable in the runtime image"; exit 1; }
           # Regenerate only the runner-owned spec left by the preceding smoke gate.
-          test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json" || {
+          if ! { test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json"; }; then
             echo '::error::GC spec is missing, a symlink, or not owned by the runner'
             exit 1
-          }
+          fi
           rm -- "$B/config.json"
           runc spec -b "$B"
           jq \
@@ -666,10 +681,10 @@ jobs:
             exit 1
           }
           # Regenerate only the runner-owned spec left by the preceding smoke gate.
-          test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json" || {
+          if ! { test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json"; }; then
             echo '::error::GC spec is missing, a symlink, or not owned by the runner'
             exit 1
-          }
+          fi
           rm -- "$B/config.json"
           runc spec -b "$B"
           jq \
@@ -705,7 +720,7 @@ jobs:
           CRED="$(npx -y wrangler@4.111.0 containers registries credentials registry.cloudflare.com --push --expiration-minutes 30 --json 2>/dev/null)"
           U=$(printf '%s' "$CRED" | jq -er '.username | select(type == "string" and length > 0)')
           P=$(printf '%s' "$CRED" | jq -er '.password | select(type == "string" and length > 0)')
-          [ -n "$U" ] && [ -n "$P" ] || { echo "::error::failed to mint a registry push credential"; exit 1; }
+          if ! { [ -n "$U" ] && [ -n "$P" ]; }; then echo "::error::failed to mint a registry push credential"; exit 1; fi
           echo "::add-mask::$U"; echo "::add-mask::$P"
           umask 077 # credential file is private from creation, before chmod
           CFG="$RUNNER_TEMP/dockercfg"; mkdir -p "$CFG"
@@ -753,7 +768,7 @@ jobs:
           import datetime, hashlib, json, os, re, subprocess
           from pathlib import Path
           source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
-          if source != '5fabd93e98d805a39319fcb6a22c9ee5267fafd4':
+          if source != '46e2d1cbe7c00a303c0942e8f46751dce75e5c14':
               raise SystemExit('frozen image source mismatch')
           names = ['corelink-prod-corelinkserver-prod', 'corelink-prod-sam-corelinkserver-prod', 'corelink-prod-lhr-corelinkserver-prod', 'corelink-prod-nrt-corelinkserver-prod', 'corelink-prod-syd-corelinkserver-prod']
           config = json.loads((Path(os.environ['OCI_DIR']) / 'manifest.json').read_text())['config']['digest']
