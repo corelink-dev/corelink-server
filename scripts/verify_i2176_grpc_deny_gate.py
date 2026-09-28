@@ -362,7 +362,7 @@ B216_PREIMAGES = {
 B216_TARGETS = {
     Path(".github/workflows/b216-receiver-deploy-nonprod.yml"): (0o644, "1a3c849443f1ded6e0a8791797d906640121b753f8e5a0043b1dec78ac1c941d"),
     Path("apps/dsr-alert-receiver/scripts/deploy-route.mjs"): (0o644, "3245267227c49d3ffaa84136f5f3230d559c63d96df25eb34bf75fe773bc5f5b"),
-    Path("apps/dsr-alert-receiver/tests/deploy-route.test.mjs"): (0o644, "6fceb91d40fd574836fd9c28d6ad6083d2c7a812f05aaf9729413fde9d3580fb"),
+    Path("apps/dsr-alert-receiver/tests/deploy-route.test.mjs"): (0o644, "a2ec944dbb5e9bf54ff1a7cceeb7e26b55427eda6e24b9d4c83730607e32c755"),
     Path("docs/internal/secrets-checklist.md"): (0o644, "acc1debc7f96d7b38b03743f6c905e882655dc0a370ab4b7c97d7b37b5e00196"),
 }
 B216_PATHS = frozenset(B216_PREIMAGES)
