@@ -95,9 +95,21 @@ jobs:
         run: |
           set -euo pipefail
           python3 -I scripts/verify_ci_issue_packs.py             --candidate-sha "$EXPECTED_SHA" --actual-sha "$(git -C candidate rev-parse HEAD)"             --target-base-sha "$TARGET_BASE_SHA" --trusted-main-sha "$TRUSTED_MAIN_SHA"             --pack-id issue-2568-sla-credit-real --candidate-root candidate --run-self-test
-          python3 -I scripts/backlog_verify.py             --candidate-file candidate/BACKLOG.md --trusted-file BACKLOG.md             --candidate-root candidate --trusted-root .
-          python3 -I scripts/verify_i2176_grpc_deny_gate.py             --trusted-base . --candidate candidate --expected-head "$EXPECTED_SHA"
-          python3 -I scripts/verify_i2574_grpc_diagnostic_policy.py             --trusted-base . --candidate candidate
+          base_tree="${RUNNER_TEMP}/sla-credit-base"
+          candidate_tree="${RUNNER_TEMP}/sla-credit-candidate"
+          mkdir "$base_tree" "$candidate_tree"
+          git archive "$TRUSTED_MAIN_SHA" | tar -x -C "$base_tree"
+          git -C candidate archive "$EXPECTED_SHA" | tar -x -C "$candidate_tree"
+          git init -q "$candidate_tree"
+          printf '%s\n' "$EXPECTED_SHA" > "$candidate_tree/.git/HEAD"
+          env -u PYTHONPATH python3 -B "$base_tree/scripts/backlog_verify.py" \
+            --candidate-file "$candidate_tree/BACKLOG.md" --trusted-file "$base_tree/BACKLOG.md" \
+            --candidate-root "$candidate_tree" --trusted-root "$base_tree"
+          python3 -B -I "$base_tree/scripts/verify_i2176_grpc_deny_gate.py" \
+            --trusted-base "$base_tree" --candidate "$candidate_tree" --expected-head "$EXPECTED_SHA"
+          python3 -B -I "$base_tree/scripts/verify_i2574_grpc_diagnostic_policy.py" \
+            --trusted-base "$base_tree" --candidate "$candidate_tree"
+
 
       - name: Check out the immutable SLA credit source
         if: inputs.pack_id == 'issue-2568-sla-credit-real'
