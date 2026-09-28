@@ -162,11 +162,11 @@ STAGING_I1648_PREIMAGES = {
     'wrangler.toml': (0o644, 'd9aeb0fab1790d37fc6511c0760a812921e8405bafc039a046947dd565576ddc'),
 }
 STAGING_I1648_TARGETS = {
-    '.github/workflows/container-build-push-prod.yml': (0o644, '580f96fa6f2d72c59fbecf868428618a4252dbc5120dbc7b4b114b687eb03401'),
-    'evidence/owner-actions/B-063/production-image-build-receipt.json': (0o644, '5eebd2bf9a5882766c46d613e85ab7e7330f0011ce4d5e6d5ff5d8cc49ae45fa'),
-    'scripts/test_verify_b063_hosted_build_workflow.py': (0o644, '6d9649d5666c946dc6d01802c6757de3c774f502dea1937b467e9c01fff9195d'),
-    'scripts/verify_b063_hosted_build_workflow.py': (0o644, '2dc079336ff1f8211efac1641dbd5657fe6484952e397c655ad52a4bb9d92bb9'),
-    'wrangler.toml': (0o644, 'b1ac8db9531da83792576bbc5342845079cf223d3e86aac8eb0bf065e2747ea5'),
+    '.github/workflows/container-build-push-prod.yml': (0o644, '8ee0d29eff20ef5d473e4a712279a727fcdc6c881ba2bb46433f7659802f598f'),
+    'evidence/owner-actions/B-063/production-image-build-receipt.json': (0o644, '6fdc47bb51354a0e7675b9f19c21864a23e89562751944386525e966e957dd27'),
+    'scripts/test_verify_b063_hosted_build_workflow.py': (0o644, '3dae07bc590c83f50d03c5194d8db3a71cb15a3c2eabbd68c1ef059ebcedb748'),
+    'scripts/verify_b063_hosted_build_workflow.py': (0o644, '09617a685bb467ed749dadd0e6d5155e08e901733393223f825b34e2b2c22157'),
+    'wrangler.toml': (0o644, '568d0e6994ce1156542e350520a9750924a0f3f416e67af07c7275682e24c7a6'),
 }
 STAGING_B216_PREIMAGES = {
     '.github/workflows/b216-receiver-deploy-nonprod.yml': (0o644, '1d0e94cd0ba53fccc4b8aaf225a81b180192136f4bee99b8b9d6f69a7b78eeb0'),
