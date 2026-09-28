@@ -111,25 +111,25 @@ STAGING_D1_PROXY_TARGETS = {
     'tests/test_staging_custom_domain.py': (420, 'cfc063496302c06c8bc879c380c7f24e13088fdf8f2a5412def3e6e60b115afc'),
     'tests/test_staging_quarantine_apply_contract.py': (420, 'b90d143271b96038ce2f51a23bc62b3be3fee546a231f003b9bcfbfb79a497bf'),
     'worker/package.json': (420, '96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34'),
-    'worker/src/durable_object.ts': (420, '5c9af7c31ce1ef00a9123819f81d5053705ee01423bfebef20ee94186baf92a2'),
+    'worker/src/durable_object.ts': (420, 'c4046c2008acedecc7d1404bfad2fecbda58131e66927b58c5d56d82ca9febb9'),
     'worker/src/durable_object_start.ts': (420, '7f8c28ac7b93628f4c4767efd1bb68bb75d2df9ea85442e92d9a6097c500ce4c'),
     'worker/src/index.ts': (420, '18b960a74833284f953bd28818cd7260798d9570c17bce459502f7b7ca50f3cd'),
     'worker/src/index_schedule.ts': (420, 'fa2385df3e6ec121de862845fac0a66e48edb506912a95f2c7d3a02dae671678'),
     'worker/src/lib/devenv_cleanup_route.ts': (420, 'e279cb99a585388fbf4483313a80c042df3c14bf1ca5ef52c31dc451e329907c'),
     'worker/src/lib/runner_credential_routes.ts': (420, '6cd7af8c032dd8315c619f6830c3ef63df1a459152f197ca6a7faedf847b5731'),
     'worker/src/pat_issue_rate_limit.ts': (420, 'ff4ca0814c40f128fed4650b2041660670bcc985037b975cb6f29b177d3c1afb'),
-    'worker/src/staging_d1_binding_proxy.ts': (420, '01e5ac58773118bae44c9d11ff2b3cdd0ba376579f43317af8b4fd2138b7a92d'),
+    'worker/src/staging_d1_binding_proxy.ts': (420, '1e5d940b240a4bef9daba0e360758793ab7b11a165f5b1bc8ccb7eae658a348d'),
     'worker/src/staging_d1_binding_proxy_entrypoint.ts': (420, 'af759d84e63a2016737c899cfba045f52c1fcf20061678a3612ddeec6c18bdab'),
     'worker/src/staging_runtime_d1_probe.ts': (420, '3758098dd2419314fd006fdb8478f5b5043b1b80dd6679a31e2043323355f132'),
     'worker/tests/cloudflare_workers_node_stub.ts': (420, '0237103e747517298fea07261598d250e25edff6f412cd1df33695c1585cfcf7'),
     'worker/tests/durable_object.test.ts': (420, '53f07e0929c957a4e804e2f9063e01359e382fea74b7c0322c2a41f47bbd16a2'),
-    'worker/tests/staging_d1_binding_proxy.test.ts': (420, '6eb924bbe1aff66f9d223adb9c490c1500a6a9dfa3a3160182ffda45c72f4e78'),
+    'worker/tests/staging_d1_binding_proxy.test.ts': (420, '5710f974898de4c88a1ddca3f9815589d7c805faa4481f44d9005054d10796cc'),
     'worker/tests/staging_d1_binding_start_gate.test.ts': (420, '2377e10e46528888f60f711820a931f8358d214ac53b8c822bfac9c2d9f2da66'),
     'worker/tests/staging_runtime_d1_probe.test.ts': (420, '05bfc2224d8db3ab72946332bcb41b4667e5e628da30a24a237ed57f7163f639'),
     'worker/vitest.config.mts': (420, 'e2c2f0e46d4a45d5e789f920f95b73ffd44e6a14a9450e11817426995feda506'),
 }
 
-STAGING_D1_PROXY_MANIFEST_SHA256 = "d4113f29103530aaf660a54e593599115296671dffb05de206e6f220b660fc74"
+STAGING_D1_PROXY_MANIFEST_SHA256 = "05e9e3c71a7073146ced7fbcf52afaf8acae88ee6ffc621710921a0eb1f6ec0e"
 
 
 def exact_staging_d1_proxy_transition(base: Path, candidate: Path) -> bool:
