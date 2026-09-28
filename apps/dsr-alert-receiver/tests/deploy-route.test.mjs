@@ -9,6 +9,8 @@ import {
   normalizeDeploymentList,
   normalizeVersionList,
   runRoute,
+  runBootstrapUpload,
+  runBootstrapFinalize,
   selectNamedResource,
   selectPriorRevision,
   validateDatabaseIdentity,
@@ -16,12 +18,21 @@ import {
   validateIntakeDisabled,
   validateInventoryPage,
   validateDispatch,
+  validateBootstrapDispatch,
+  validateBootstrapFinalizeDispatch,
+  validateBootstrapFinalizeInventory,
+  validateBootstrapDeployedInventory,
+  validateBootstrapWorkerPreimage,
+  validateBootstrapWorkerScriptInventory,
+  validateBootstrapWorkerScriptInventory,
+  preparePrivateBootstrapConfig,
   validateD1InventoryPage,
   validateMigrationLedger,
   validatePostflight,
   validateReceiptSchema,
   validateRollbackReadback,
   validateTrackedInputs,
+  queryBootstrapDatabase,
 } from "../scripts/deploy-route.mjs";
 
 const goodContext = {
@@ -42,6 +53,89 @@ const errorCode = (fn, code) => {
   }
   throw new Error(`expected route rejection: ${code}`);
 };
+
+function bootstrapHarness({ migration, sha, failDeploy = false, preexistingWorkerNames = [] }) {
+  const sourceId = "123e4567-e89b-42d3-a456-426614174000";
+  const finalId = "223e4567-e89b-42d3-a456-426614174000";
+  const sourceTag = `b216-source-${sha}`;
+  const finalTag = `b216-${sha}`;
+  const state = { script: false, versions: [], versionDetails: new Map(), deployments: [], commands: [], requests: [] };
+  const receiptSql = migration.replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE");
+  const workerRows = () => [
+    ...preexistingWorkerNames.map((id) => ({ id, routes: [] })),
+    ...(state.script ? [{ id: TARGET.workerName, routes: [] }] : []),
+  ];
+  const d1Tables = [
+    { name: "_cf_KV", sql: "CREATE TABLE _cf_KV (key TEXT PRIMARY KEY, value BLOB)" },
+    { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)" },
+    { name: "dsr_alert_receipts", sql: receiptSql },
+  ];
+  const fetchImpl = async (url, options = {}) => {
+    const parsed = new URL(url);
+    const path = parsed.pathname.replace(/^\/client\/v4(?=\/)/, "");
+    state.requests.push({ path, method: options.method ?? "GET", authorization: options.headers?.authorization });
+    const json = (result, status = 200) => Response.json({ success: true, result }, { status });
+    if (path === `/accounts/${TARGET.accountId}`) return json({ id: TARGET.accountId });
+    if (path === `/accounts/${TARGET.accountId}/d1/database`) return json([{ name: TARGET.databaseName, uuid: TARGET.databaseId, account_id: TARGET.accountId }]);
+    if (path.endsWith(`/d1/database/${TARGET.databaseId}/query`)) {
+      const sql = JSON.parse(options.body).sql;
+      const rows = sql.includes("sqlite_master") ? d1Tables : [{ name: TARGET.migration }];
+      return json([{ success: true, results: rows }]);
+    }
+    if (path === `/accounts/${TARGET.accountId}/workers/scripts`) {
+      return json(workerRows());
+    }
+    const workerPath = `/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`;
+    if (path === `${workerPath}/versions` || path === `${workerPath}/versions/${sourceId}` || path === `${workerPath}/versions/${finalId}`) {
+      if (!state.script) return new Response("{}", { status: 404 });
+      if (path.endsWith("/versions")) return json({ items: state.versions });
+      const id = path.endsWith(sourceId) ? sourceId : finalId;
+      const detail = state.versionDetails.get(id);
+      return detail ? json(detail) : new Response("{}", { status: 404 });
+    }
+    if (path === `${workerPath}/deployments`) return state.script ? json({ deployments: state.deployments }) : new Response("{}", { status: 404 });
+    if (path === `${workerPath}/secrets`) return json(state.script && state.versionDetails.has(finalId) ? [{ name: TARGET.workerSecret }] : []);
+    if (path === `${workerPath}/subdomain`) return new Response("{}", { status: 404 });
+    if (path === `${workerPath}/versions`) return json({ items: state.versions });
+    if (path === `${workerPath}/deployments`) return json({ deployments: state.deployments });
+    throw new Error(`unexpected mocked route ${path}`);
+  };
+  const command = (args, options = {}) => {
+    state.commands.push({ args, options });
+    if (args[0] === "versions" && args[1] === "upload") {
+      state.script = true;
+      state.versions = [{ id: sourceId, metadata: { annotations: { "workers/tag": sourceTag } } }];
+      state.versionDetails.set(sourceId, {
+        id: sourceId,
+        metadata: { annotations: { "workers/tag": sourceTag } },
+        resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: TARGET.databaseId }] },
+      });
+      return "";
+    }
+    if (args[0] === "versions" && args[1] === "secret" && args[2] === "put") {
+      state.versions = [
+        ...state.versions,
+        { id: finalId, metadata: { annotations: { "workers/tag": finalTag } } },
+      ];
+      state.versionDetails.set(finalId, {
+        id: finalId,
+        metadata: { annotations: { "workers/tag": finalTag } },
+        resources: { bindings: [
+          { type: "d1", name: TARGET.databaseBinding, database_id: TARGET.databaseId },
+          { type: "secret_text", name: TARGET.workerSecret },
+        ] },
+      });
+      return "";
+    }
+    if (args[0] === "versions" && args[1] === "deploy") {
+      if (failDeploy) throw new RouteError("provider_command_failed", { provider_failure_class: "process_exit", process_exit_code: 1 });
+      state.deployments = [{ id: "323e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: finalId, percentage: 100 }] }];
+      return "";
+    }
+    throw new Error("unexpected mocked command");
+  };
+  return { state, fetchImpl, command, sourceId, sourceTag, finalId, finalTag };
+}
 
 describe("B-216 protected receiver route admission", () => {
   it("classifies Wrangler failures into bounded numeric-only receipt fields", () => {
@@ -114,6 +208,256 @@ describe("B-216 protected receiver route admission", () => {
     errorCode(() => validateDispatch({ ...goodContext, apiToken: "" }), "provider_token_missing");
     errorCode(() => validateDispatch({ ...goodContext, receiverToken: "" }), "receiver_secret_missing");
     errorCode(() => validateDispatch({ ...goodContext, receiverToken: "short" }), "receiver_secret_missing");
+  });
+
+  it("keeps bootstrap credentials stage-separated and binds Stage B to this run's exact Stage A receipt", () => {
+    const bootstrapContext = {
+      repository: TARGET.repository,
+      ref: "refs/heads/main",
+      sha: "c".repeat(40),
+      checkoutSha: "c".repeat(40),
+      bootstrapToken: "bootstrap-token",
+      runId: "12345",
+      runAttempt: "1",
+    };
+    expect(validateBootstrapDispatch(bootstrapContext)).toBe(bootstrapContext.sha);
+    errorCode(() => validateBootstrapDispatch({ ...bootstrapContext, bootstrapToken: "" }), "bootstrap_token_missing");
+    errorCode(() => validateBootstrapDispatch({ ...bootstrapContext, receiverToken: "must-not-cross-stage" }), "bootstrap_context_credential_mismatch");
+    const handoff = {
+      schema_version: 1,
+      status: "private_version_uploaded",
+      repository: TARGET.repository,
+      reviewed_main_sha: bootstrapContext.sha,
+      account_id: TARGET.accountId,
+      worker_name: TARGET.workerName,
+      database_name: TARGET.databaseName,
+      database_id: TARGET.databaseId,
+      binding: TARGET.databaseBinding,
+      migration: TARGET.migration,
+      migration_sha256: TARGET.migrationSha256,
+      preexisting_worker_names: [],
+      worker_inventory_count_preimage: 0,
+      worker_inventory_count_postflight: 1,
+      run_id: "12345",
+      run_attempt: "1",
+      workers_dev: false,
+      secret_provisioned: false,
+      custom_routes_status: "unknown",
+      worker_revision: "123e4567-e89b-42d3-a456-426614174000",
+      worker_revision_tag: `b216-source-${bootstrapContext.sha}`,
+      deployments_postflight: "absent",
+      subdomain_postflight: "absent",
+    };
+    const finalizeContext = { ...goodContext, ...bootstrapContext, bootstrapToken: undefined, apiToken: "editor-token", receiverToken: "r".repeat(40), runId: "12345", runAttempt: "1" };
+    delete finalizeContext.bootstrapToken;
+    expect(validateBootstrapFinalizeDispatch({ ...finalizeContext, bootstrapReceipt: handoff })).toBe(bootstrapContext.sha);
+    errorCode(() => validateBootstrapFinalizeDispatch({ ...finalizeContext, bootstrapToken: "must-not-cross-stage", bootstrapReceipt: handoff }), "bootstrap_token_forbidden_in_finalize");
+    errorCode(() => validateBootstrapFinalizeDispatch({ ...finalizeContext, bootstrapReceipt: { ...handoff, run_id: "other" } }), "bootstrap_handoff_mismatch");
+    errorCode(() => validateBootstrapFinalizeDispatch({ ...finalizeContext, bootstrapReceipt: { ...handoff, database_id: "123e4567-e89b-42d3-a456-426614174000" } }), "bootstrap_handoff_mismatch");
+    errorCode(() => validateBootstrapFinalizeDispatch({ ...finalizeContext, bootstrapReceipt: { ...handoff, worker_revision_tag: `b216-source-${"d".repeat(40)}` } }), "bootstrap_handoff_mismatch");
+  });
+
+  it("pins private bootstrap config and admits only the exact Stage A upload-only preimage", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const privateConfig = preparePrivateBootstrapConfig(config, migration, TARGET.databaseId, "/runner/work/corelink-server/apps/dsr-alert-receiver");
+    expect(privateConfig).toContain(`database_id = "${TARGET.databaseId}"`);
+    expect(privateConfig).toContain("workers_dev = false");
+    expect(privateConfig).not.toMatch(/^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im);
+
+    const absent = {
+      status: "complete",
+      worker: { exists: false, inventory_count: 0 },
+      versions: { status: "absent" },
+      deployments: { status: "absent" },
+      subdomain: { status: "absent" },
+      routes: { status: "unknown" },
+      inventory_consistency: "worker_absent",
+    };
+    expect(validateBootstrapWorkerPreimage(absent, [])).toEqual({
+      worker: "absent",
+      routes: "unknown",
+      worker_inventory_count: 0,
+      preexisting_worker_names: [],
+    });
+    const allowedName = "corelink-i2568-sla-credit-test-20260928";
+    expect(validateBootstrapWorkerScriptInventory([])).toEqual({ count: 0, preexisting_worker_names: [], target_exists: false });
+    expect(validateBootstrapWorkerScriptInventory([{ id: allowedName }])).toEqual({ count: 1, preexisting_worker_names: [allowedName], target_exists: false });
+    expect(validateBootstrapWorkerPreimage({ ...absent, worker: { exists: false, inventory_count: 1 } }, [{ id: allowedName }])).toEqual({
+      worker: "absent",
+      routes: "unknown",
+      worker_inventory_count: 1,
+      preexisting_worker_names: [allowedName],
+    });
+    for (const partial of [
+      { ...absent, versions: { status: "known", count: 1, items: [{ id: "123e4567-e89b-42d3-a456-426614174000" }] }, inventory_consistency: "partial_version_only" },
+      { ...absent, worker: { exists: true, inventory_count: 1 } },
+      { ...absent, routes: { status: "known", count: 1 } },
+      { ...absent, subdomain: { status: "known", enabled: true, previews_enabled: false } },
+    ]) errorCode(() => validateBootstrapWorkerPreimage(partial, []), partial.routes?.count ? "worker_custom_route_present" : "worker_bootstrap_target_not_absent");
+    errorCode(() => validateBootstrapWorkerScriptInventory([{ id: TARGET.workerName }]), "worker_bootstrap_target_not_absent");
+    errorCode(() => validateBootstrapWorkerScriptInventory([{ id: "unowned-worker-name" }]), "worker_inventory_unexpected_name");
+    errorCode(() => validateBootstrapWorkerScriptInventory(Object.assign([{ id: allowedName }], {
+      result_info: { page: 1, per_page: 1, count: 1, total_count: 2 },
+    })), "worker_inventory_truncated");
+    errorCode(() => validateBootstrapWorkerScriptInventory([{ id: allowedName }, { id: allowedName }]), "worker_duplicate_name");
+    errorCode(() => validateBootstrapWorkerScriptInventory(Object.assign([{ id: allowedName }], {
+      result_info: { page: 1, per_page: 1, count: 1, total_count: 0 },
+    })), "worker_inventory_truncated");
+  });
+
+  it.each([[], ["corelink-i2568-sla-credit-test-20260928"]])("simulates Stage A→B with private credentials and preexisting Workers %j", async (preexistingWorkerNames) => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const sha = "e".repeat(40);
+    const bootstrapToken = "bootstrap-admin-token";
+    const editorToken = "editor-token";
+    const bearer = "receiver-bearer-never-logged-0000000000000000";
+    const uploadContext = {
+      repository: TARGET.repository,
+      ref: "refs/heads/main",
+      sha,
+      checkoutSha: sha,
+      bootstrapToken,
+      runId: "987654321",
+      runAttempt: "1",
+    };
+    const finalizeContext = {
+      repository: TARGET.repository,
+      ref: "refs/heads/main",
+      sha,
+      checkoutSha: sha,
+      apiToken: editorToken,
+      receiverToken: bearer,
+      runId: "987654321",
+      runAttempt: "1",
+    };
+    const harness = bootstrapHarness({ migration, sha, preexistingWorkerNames });
+    const handoff = await runBootstrapUpload({ context: uploadContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" });
+    expect(handoff.status).toBe("private_version_uploaded");
+    expect(handoff.secret_provisioned).toBe(false);
+    expect(handoff.deployments_postflight).toBe("absent");
+    expect(handoff.worker_revision).toBe(harness.sourceId);
+    expect(handoff.worker_inventory_count_preimage).toBe(preexistingWorkerNames.length);
+    expect(handoff.worker_inventory_count_postflight).toBe(preexistingWorkerNames.length + 1);
+    expect(handoff.preexisting_worker_names).toEqual(preexistingWorkerNames);
+    expect(harness.state.commands.map(({ args }) => args.slice(0, 2))).toEqual([["versions", "upload"]]);
+    expect(harness.state.commands[0].options.apiToken).toBe(bootstrapToken);
+    expect(harness.state.commands[0].options.input).toBeUndefined();
+
+    const deployed = await runBootstrapFinalize({ context: finalizeContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, bootstrapReceipt: handoff, worktree: "/runner/work/corelink-server" });
+    expect(deployed.status).toBe("private_worker_deployed_and_verified");
+    expect(deployed.run_id).toBe("987654321");
+    expect(deployed.run_attempt).toBe("1");
+    expect(deployed.database_migration_ledger).toEqual([TARGET.migration]);
+    expect(deployed.deployment_revision).toBe(harness.finalId);
+    expect(deployed.worker_inventory_count_preimage).toBe(preexistingWorkerNames.length);
+    expect(deployed.worker_inventory_count_postflight).toBe(preexistingWorkerNames.length + 1);
+    expect(deployed.preexisting_worker_names).toEqual(preexistingWorkerNames);
+    expect(harness.state.commands.map(({ args }) => args[1])).toEqual(["upload", "secret", "deploy"]);
+    expect(harness.state.commands[1].options.apiToken).toBe(editorToken);
+    expect(harness.state.commands[1].options.input).toBe(bearer);
+    expect(harness.state.commands[2].options.apiToken).toBe(editorToken);
+    for (const request of harness.state.requests) {
+      if (request.path.endsWith("/query")) expect(request.method).toBe("POST");
+      else expect(request.method).toBe("GET");
+    }
+    expect(new Set(harness.state.requests.map(({ authorization }) => authorization))).toEqual(new Set([`Bearer ${bootstrapToken}`, `Bearer ${editorToken}`]));
+    expect(harness.state.requests.some(({ path }) => path.includes("corelink-i2568-sla-credit-test-20260928"))).toBe(false);
+    expect(JSON.stringify({ handoff, deployed })).not.toContain(bearer);
+  });
+
+  it("stops after one ambiguous Stage B deploy failure without retrying or deleting resources", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const sha = "f".repeat(40);
+    const uploadContext = {
+      repository: TARGET.repository,
+      ref: "refs/heads/main",
+      sha,
+      checkoutSha: sha,
+      bootstrapToken: "bootstrap-admin-token",
+      runId: "987654322",
+      runAttempt: "1",
+    };
+    const finalizeContext = {
+      repository: TARGET.repository,
+      ref: "refs/heads/main",
+      sha,
+      checkoutSha: sha,
+      apiToken: "editor-token",
+      receiverToken: "receiver-bearer-never-logged-0000000000000000",
+      runId: "987654322",
+      runAttempt: "1",
+    };
+    const harness = bootstrapHarness({ migration, sha, failDeploy: true });
+    const handoff = await runBootstrapUpload({ context: uploadContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" });
+    await expect(runBootstrapFinalize({ context: finalizeContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, bootstrapReceipt: handoff, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "provider_command_failed" });
+    expect(harness.state.commands.map(({ args }) => args[1])).toEqual(["upload", "secret", "deploy"]);
+    expect(harness.state.commands.filter(({ args }) => args[1] === "secret")).toHaveLength(1);
+    expect(harness.state.commands.filter(({ args }) => args[1] === "deploy")).toHaveLength(1);
+    expect(harness.state.requests.some(({ method }) => method === "DELETE")).toBe(false);
+  });
+
+  it("accepts only the Stage A private version, with no secret, deployment, or public ingress", () => {
+    const handoff = {
+      worker_revision: "123e4567-e89b-42d3-a456-426614174000",
+      worker_revision_tag: `b216-source-${"a".repeat(40)}`,
+    };
+    const inventory = {
+      status: "complete",
+      worker: { exists: true, inventory_count: 1 },
+      versions: { status: "known", count: 1, items: [{ id: handoff.worker_revision, tag: handoff.worker_revision_tag }] },
+      deployments: { status: "known", count: 0, active: null },
+      subdomain: { status: "absent" },
+      routes: { status: "unknown" },
+    };
+    expect(validateBootstrapFinalizeInventory(inventory, handoff)).toBe(true);
+    for (const invalid of [
+      { ...inventory, versions: { ...inventory.versions, count: 2, items: [...inventory.versions.items, { id: "223e4567-e89b-42d3-a456-426614174000", tag: "extra" }] } },
+      { ...inventory, versions: { ...inventory.versions, items: [{ id: "223e4567-e89b-42d3-a456-426614174000", tag: handoff.worker_revision_tag }] } },
+      { ...inventory, deployments: { status: "known", count: 1, active: { id: "323e4567-e89b-42d3-a456-426614174000" } } },
+      { ...inventory, subdomain: { status: "known", enabled: true, previews_enabled: false } },
+      { ...inventory, routes: { status: "known", count: 1 } },
+    ]) errorCode(() => validateBootstrapFinalizeInventory(invalid, handoff), "worker_bootstrap_handoff_mismatch");
+  });
+
+  it("allows only SELECT statements in bootstrap D1 checks and never issues DDL", async () => {
+    const calls = [];
+    const api = async (path, options) => {
+      calls.push({ path, options });
+      return [{ success: true, results: [] }];
+    };
+    await expect(queryBootstrapDatabase(api, TARGET.databaseId, "SELECT name FROM d1_migrations ORDER BY name")).resolves.toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].path).toContain(`/d1/database/${TARGET.databaseId}/query`);
+    expect(calls[0].options.method).toBe("POST");
+    expect(calls[0].options.body.sql).toMatch(/^SELECT\b/);
+    for (const sql of [
+      "CREATE TABLE extra (id TEXT)",
+      "DROP TABLE dsr_alert_receipts",
+      "ALTER TABLE dsr_alert_receipts ADD COLUMN extra TEXT",
+      "INSERT INTO d1_migrations (name) VALUES ('other.sql')",
+      "SELECT name FROM d1_migrations; DELETE FROM d1_migrations",
+    ]) await expect(queryBootstrapDatabase(api, TARGET.databaseId, sql)).rejects.toMatchObject({ code: "bootstrap_database_query_not_read_only" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("validates the documented readback deployment active shape before recording Stage B", () => {
+    const versionId = "123e4567-e89b-42d3-a456-426614174000";
+    const inventory = {
+      worker: { exists: true },
+      deployments: {
+        status: "known",
+        count: 1,
+        active: { id: "223e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: versionId, percentage: 100 }] },
+      },
+      routes: { status: "unknown" },
+      subdomain: { status: "known", enabled: false, previews_enabled: false },
+    };
+    expect(validateBootstrapDeployedInventory(inventory, versionId)).toBe(true);
+    errorCode(() => validateBootstrapDeployedInventory({ ...inventory, deployments: { ...inventory.deployments, active: null } }, versionId), "worker_revision_readback_mismatch");
+    errorCode(() => validateBootstrapDeployedInventory({ ...inventory, deployments: { ...inventory.deployments, active: { deployments: inventory.deployments.active } } }, versionId), "worker_revision_readback_mismatch");
   });
 
   it("pins config and sole migration bytes and rejects placeholder or target drift", async () => {
@@ -416,6 +760,7 @@ describe("B-216 protected receiver route admission", () => {
     const route = await readFile(new URL("../scripts/deploy-route.mjs", import.meta.url), "utf8");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("readback_only:");
+    expect(workflow).toContain("bootstrap_once:");
     expect(workflow).toContain("default: false");
     expect(workflow).toContain("type: boolean");
     expect(workflow).not.toContain("inputs.target");
@@ -432,7 +777,28 @@ describe("B-216 protected receiver route admission", () => {
     expect(workflow).not.toMatch(/^  (push|pull_request|schedule):/m);
     const inputReferences = [...workflow.matchAll(/\$\{\{\s*!?inputs\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g)].map((match) => match[1]);
     expect(inputReferences.length).toBeGreaterThan(0);
-    expect(new Set(inputReferences)).toEqual(new Set(["readback_only"]));
+    expect(new Set(inputReferences)).toEqual(new Set(["readback_only", "bootstrap_once"]));
+    const uploadJob = workflow.split("  bootstrap_upload:")[1]?.split("  bootstrap_finalize:")[0] ?? "";
+    const finalizeJob = workflow.split("  bootstrap_finalize:")[1] ?? "";
+    expect(uploadJob).toContain("name: b216-receiver-bootstrap");
+    expect(uploadJob).toContain("B216_BOOTSTRAP_STAGE: upload");
+    expect(uploadJob).toContain("secrets.B216_CF_RECEIVER_BOOTSTRAP_TOKEN");
+    expect(uploadJob).not.toContain("B216_DSR_ALERT_RECEIVER_TOKEN");
+    expect(uploadJob).not.toContain("B216_CF_RECEIVER_WRITE_TOKEN");
+    expect(uploadJob).not.toContain("versions deploy");
+    expect(finalizeJob).toContain("name: b216-receiver-nonprod");
+    expect(finalizeJob).toContain("B216_BOOTSTRAP_STAGE: finalize");
+    expect(finalizeJob).toContain("secrets.B216_CF_RECEIVER_WRITE_TOKEN");
+    expect(finalizeJob).toContain("secrets.B216_DSR_ALERT_RECEIVER_TOKEN");
+    expect(finalizeJob).not.toContain("B216_CF_RECEIVER_BOOTSTRAP_TOKEN");
+    expect(finalizeJob).toContain("needs: [validate_dispatch_mode, bootstrap_upload]");
+    const stageA = route.slice(route.indexOf("export async function runBootstrapUpload"), route.indexOf("export async function runBootstrapFinalize"));
+    const stageB = route.slice(route.indexOf("export async function runBootstrapFinalize"), route.indexOf("async function queryDatabase"));
+    expect(stageA).not.toContain('"versions", "secret", "put"');
+    expect(stageA).not.toContain('"versions", "deploy"');
+    expect(stageB.indexOf('"versions", "secret", "put"')).toBeGreaterThanOrEqual(0);
+    expect(stageB.indexOf('"versions", "secret", "put"')).toBeLessThan(stageB.indexOf('"versions", "deploy"'));
+    expect(stageA + stageB).not.toContain("d1 migrations apply");
     expect(workflow).not.toContain("secrets." + "CF_API_TOKEN");
     expect(workflow).not.toContain("secrets." + "CLOUDFLARE_API_TOKEN");
     expect(workflow).not.toContain("env.CLOUDFLARE_API_TOKEN");
