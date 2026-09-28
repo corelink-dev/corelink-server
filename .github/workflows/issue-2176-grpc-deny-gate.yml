@@ -43,7 +43,6 @@ on:
       - "tests/test_pull_request_target_spawn_boundary.py"
       - "scripts/verify_i2574_grpc_diagnostic_policy.py"
       - ".github/workflows/issue-2730-dsr-alert-receiver.yml"
-      - ".github/workflows/issue-2568-sla-credit-real.yml"
       - ".actionlint.yaml"
       - "tests/test_verify_i2574_grpc_diagnostic_policy.py"
       - "tests/test_i2574_p0_transition_fixture.py"
