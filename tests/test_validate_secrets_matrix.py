@@ -63,6 +63,12 @@ GC_UNCLASSIFIED_NAMES = {
 NON_SECRET_CONFIG_NAMES = {
     "D1_DATABASE_ID",
     "R2_S3_ENDPOINT",
+    "EXPECTED_CONTAINER_APP_VERSION",
+    "EXPECTED_CONTAINER_IMAGE_DIGEST",
+    "EXPECTED_SHA",
+    "IMAGE_DIGEST",
+    "MIN_CONTAINER_APP_VERSION",
+    "PREIMAGE_CONTAINER_IMAGE",
 }
 
 I2193_MATRIX_BOUND_NAMES = {
@@ -266,6 +272,8 @@ def test_non_secret_config_names_are_allowlisted_by_both_validators() -> None:
     assert not gate.ALLOWLIST_REGEX.match("D1_DATABASE_TOKEN")
     assert not gate.ALLOWLIST_REGEX.match("R2_S3_SECRET_ACCESS_KEY")
     assert not gate.ALLOWLIST_REGEX.match("CORELINK_HTTP_SECRET_FILE")
+    assert not gate.ALLOWLIST_REGEX.fullmatch("EXPECTED_SHA_TOKEN")
+    assert not gate.ALLOWLIST_REGEX.fullmatch("IMAGE_DIGEST_SECRET")
 
 
 def test_i2193_matrix_bindings_remain_fail_closed() -> None:

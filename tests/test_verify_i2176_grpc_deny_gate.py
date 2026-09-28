@@ -27,7 +27,7 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         lock = Path("pnpm-lock.yaml")
         paths = frozenset({package, lock} | {
             Path(f"tests/fixture/staging-proxy-{index:02}.txt")
-            for index in range(31)
+            for index in range(32)
         })
         originals = {path: f"trusted preimage {path}\n".encode() for path in paths}
         targets = {path: f"reviewed target {path}\n".encode() for path in paths}
@@ -75,8 +75,8 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         trusted, candidate, _paths, _originals, _targets = self._staging_d1_proxy_fixture()
         verify.validate(candidate, trusted)
 
-    def test_1700_package_lock_exception_constants_bind_exact_33_path_tree(self) -> None:
-        self.assertEqual(len(verify.STAGING_D1_PROXY_DELIVERY_PATHS), 33)
+    def test_1700_package_lock_exception_constants_bind_exact_34_path_tree(self) -> None:
+        self.assertEqual(len(verify.STAGING_D1_PROXY_DELIVERY_PATHS), 34)
         self.assertEqual(
             verify.STAGING_D1_PROXY_PACKAGE_LOCK_PREIMAGES,
             {
@@ -93,7 +93,19 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
         )
         self.assertEqual(
             verify.STAGING_D1_PROXY_DELIVERY_TREE_SHA256,
-            "4c29964fb1b46800a4dd281aebd97670d664e5bced4cf68c5ac5e9887cbae43c",
+            "4bc25dda3fcb99e38a519098acd32bfdc3cd64216825700f5f090dda4cfc1e7f",
+        )
+        self.assertEqual(
+            verify.STAGING_D1_PROXY_TARGETS[
+                Path("tests/test_issue_1700_route_inventory.py")
+            ],
+            (0o644, "d9dc1e4012f590ef6b3e76eb1e342ac43d513a14ef16f3ee8db8cffb9ef2b734"),
+        )
+        self.assertEqual(
+            verify.STAGING_D1_PROXY_PREIMAGES[
+                Path("tests/test_issue_1700_route_inventory.py")
+            ],
+            (0o644, "216a00df6c5b67d78c90d5a9d1c78043a56985c230d7ede72e0270186eb6ef56"),
         )
 
     def test_follow_on_maps_are_ordered_and_package_paths_keep_predecessor_pins(self) -> None:
@@ -108,6 +120,32 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
             verify.I2568_TARGETS[Path("scripts/verify_issue_2568_sla_credit_real.py")][1],
             "e9c30b1f93860d737743155fb41384eea43c478dfdc5d7435d9891bfe481f182",
         )
+
+    def test_follow_on_base_pins_compose_in_frozen_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary) / "base"
+            candidate = Path(temporary) / "candidate"
+            base.mkdir(); candidate.mkdir()
+            relative = Path("stage/path.txt")
+            shared = Path("docs/internal/secrets-checklist.md")
+            old, new = b"before\n", b"after\n"
+            superseded, final = b"native checklist\n", b"B216 checklist\n"
+            verify.write(base, relative, old.decode())
+            verify.write(candidate, relative, new.decode())
+            verify.write(base, shared, final.decode())
+            verify.write(candidate, shared, final.decode())
+            preimages = {relative: (0o644, hashlib.sha256(old).hexdigest())}
+            targets = {relative: (0o644, hashlib.sha256(new).hexdigest())}
+            ordered = (
+                {shared: (0o644, hashlib.sha256(superseded).hexdigest())},
+                {shared: (0o644, hashlib.sha256(final).hexdigest())},
+            )
+            self.assertTrue(verify.preauthorized_exact_transition(
+                candidate, base, {relative}, frozenset({relative}), preimages, targets, ordered
+            ))
+            self.assertFalse(verify.preauthorized_exact_transition(
+                candidate, base, {relative}, frozenset({relative}), preimages, targets, tuple(reversed(ordered))
+            ))
 
     def test_exact_follow_on_transition_requires_complete_predecessor_and_rejects_mixed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -162,6 +200,41 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
                     ))
                 with self.assertRaises(verify.ContractError):
                     verify.validate(candidate, trusted)
+
+    def test_future_i2568_workflow_is_optional_only_when_absent_on_both_sides(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            trusted = root / "trusted"
+            candidate = root / "candidate"
+            verify.write_fixture_base(trusted)
+            shutil.copytree(trusted, candidate, dirs_exist_ok=True, symlinks=True)
+            relative = verify.FUTURE_I2568_WORKFLOW
+
+            (trusted / relative).unlink()
+            (candidate / relative).unlink()
+            verify.validate(candidate, trusted)
+
+            verify.write(candidate, relative, "future workflow\n")
+            with self.assertRaisesRegex(verify.ContractError, "one-sided presence"):
+                verify.validate(candidate, trusted)
+            (candidate / relative).unlink()
+
+            verify.write(trusted, relative, "future workflow\n")
+            with self.assertRaisesRegex(verify.ContractError, "one-sided presence"):
+                verify.validate(candidate, trusted)
+            verify.write(candidate, relative, "future workflow\n")
+            verify.validate(candidate, trusted)
+
+            (candidate / relative).chmod(0o755)
+            with self.assertRaisesRegex(verify.ContractError, "protected bytes or mode drift"):
+                verify.validate(candidate, trusted)
+            (candidate / relative).chmod(0o644)
+            (candidate / relative).unlink()
+            target = candidate / "future-target"
+            target.write_text("future workflow\n", encoding="utf-8")
+            (candidate / relative).symlink_to(target)
+            with self.assertRaisesRegex(verify.ContractError, "symlink"):
+                verify.validate(candidate, trusted)
 
     def test_2578_mount_is_exactly_the_reviewed_ten_path_transition(self) -> None:
         expected = {

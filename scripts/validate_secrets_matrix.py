@@ -212,6 +212,14 @@ ALLOWLIST_REGEX = re.compile(
     # BYOK revocation scheduling is an explicit fail-closed boolean deployment
     # control; KMS credentials remain separate matrix entries.
     r"|CORELINK_BYOK_REVOCATION_SCHEDULER_ENABLED$"
+    # #1700 protected runtime proof carries exact deployment/image versions and
+    # digests as non-secret receipt metadata; the API tokens remain matrix-bound.
+    r"|EXPECTED_CONTAINER_APP_VERSION$"
+    r"|EXPECTED_CONTAINER_IMAGE_DIGEST$"
+    r"|EXPECTED_SHA$"
+    r"|IMAGE_DIGEST$"
+    r"|MIN_CONTAINER_APP_VERSION$"
+    r"|PREIMAGE_CONTAINER_IMAGE$"
     # WP-3 dashboard revival (2026-06-10) — Stripe billing-portal return_url
     # override (public dashboard URL; default hardcoded in source). No
     # credential material — STRIPE_SECRET_KEY (matrix row) is the actual

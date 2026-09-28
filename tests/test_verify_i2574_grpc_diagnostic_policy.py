@@ -1,5 +1,6 @@
 """Adversarial regressions for the protected #2574 delivery predicate."""
 import sys
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,10 +11,10 @@ import verify_i2574_grpc_diagnostic_policy as policy
 
 class PolicyTests(unittest.TestCase):
     def test_1700_final_runtime_pins_are_exact_and_complete(self) -> None:
-        self.assertEqual(len(policy.STAGING_D1_PROXY_TARGETS), 33)
+        self.assertEqual(len(policy.STAGING_D1_PROXY_TARGETS), 34)
         self.assertEqual(
             policy.STAGING_D1_PROXY_TARGETS["worker/src/durable_object.ts"][1],
-            "f2185d824862738ed428b92fb914b1a47e79c2b1ee3a0cc679d0d90d14214105",
+            "5a58a02b11f8b3707bfdd6b22d5eca72447d261080f6238e65ffd13f3e279d05",
         )
         self.assertEqual(
             policy.STAGING_D1_PROXY_TARGETS["worker/src/durable_object_start.ts"][1],
@@ -21,8 +22,57 @@ class PolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             policy.STAGING_D1_PROXY_MANIFEST_SHA256,
-            "4c29964fb1b46800a4dd281aebd97670d664e5bced4cf68c5ac5e9887cbae43c",
+            "4bc25dda3fcb99e38a519098acd32bfdc3cd64216825700f5f090dda4cfc1e7f",
         )
+        self.assertEqual(
+            policy.STAGING_D1_PROXY_TARGETS[
+                "tests/test_issue_1700_route_inventory.py"
+            ][1],
+            "d9dc1e4012f590ef6b3e76eb1e342ac43d513a14ef16f3ee8db8cffb9ef2b734",
+        )
+
+    def test_follow_on_successor_maps_are_frozen_and_ordered(self) -> None:
+        self.assertEqual(len(policy.STAGING_I1648_TARGETS), 5)
+        self.assertEqual(len(policy.STAGING_B216_TARGETS), 4)
+        self.assertEqual(len(policy.STAGING_I2568_TARGETS), 7)
+        self.assertEqual(
+            policy.STAGING_B216_TARGETS["docs/internal/secrets-checklist.md"],
+            (0o644, "acc1debc7f96d7b38b03743f6c905e882655dc0a370ab4b7c97d7b37b5e00196"),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            base, candidate = Path(temporary) / "base", Path(temporary) / "candidate"
+            base.mkdir(); candidate.mkdir()
+            source = "future/file.txt"
+            shared = "docs/internal/secrets-checklist.md"
+            old, target = b"old successor\n", b"exact successor\n"
+            native, b216 = b"native checklist\n", b"B216 checklist\n"
+            (base / source).parent.mkdir(parents=True)
+            (candidate / source).parent.mkdir(parents=True)
+            (base / source).write_bytes(old)
+            (candidate / source).write_bytes(target)
+            (base / shared).parent.mkdir(parents=True)
+            (candidate / shared).parent.mkdir(parents=True)
+            (base / shared).write_bytes(b216)
+            (candidate / shared).write_bytes(b216)
+            pre = {source: (0o644, hashlib.sha256(old).hexdigest())}
+            targets = {source: (0o644, hashlib.sha256(target).hexdigest())}
+            predecessor = (
+                {shared: (0o644, hashlib.sha256(native).hexdigest())},
+                {shared: (0o644, hashlib.sha256(b216).hexdigest())},
+            )
+            self.assertTrue(policy.exact_staging_successor(base, candidate, pre, targets, predecessor))
+            self.assertFalse(policy.exact_staging_successor(base, candidate, pre, targets, tuple(reversed(predecessor))))
+            (candidate / "foreign.txt").write_text("unapproved\n")
+            self.assertFalse(policy.exact_staging_successor(base, candidate, pre, targets, predecessor))
+            (candidate / "foreign.txt").unlink()
+            (candidate / source).chmod(0o755)
+            self.assertFalse(policy.exact_staging_successor(base, candidate, pre, targets, predecessor))
+            (candidate / source).chmod(0o644)
+            (candidate / shared).write_bytes(native)
+            self.assertFalse(policy.exact_staging_successor(base, candidate, pre, targets, predecessor))
+            (candidate / shared).write_bytes(b216)
+            (candidate / source).write_bytes(old)
+            self.assertFalse(policy.exact_staging_successor(base, candidate, pre, targets, predecessor))
 
     def test_closed_world_and_self_alteration_fail(self) -> None:
         policy.self_test()
