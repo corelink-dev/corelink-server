@@ -132,7 +132,17 @@ impl StorageEnv {
         let r2_access_key_id = non_empty_env("R2_S3_ACCESS_KEY_ID")?;
         let r2_secret_access_key = non_empty_env("R2_S3_SECRET_ACCESS_KEY")?;
         let cloudflare_account_id = non_empty_env("CLOUDFLARE_ACCOUNT_ID")?;
-        let cf_api_token = non_empty_env("CF_API_TOKEN")?;
+        let binding_proxy = staging_d1_binding_proxy_enabled().ok()?;
+        if binding_proxy && non_empty_env("CF_API_TOKEN").is_some() {
+            // Proxy mode must not silently retain or fall back to an account
+            // API token inside the container.
+            return None;
+        }
+        let cf_api_token = if binding_proxy {
+            String::new()
+        } else {
+            non_empty_env("CF_API_TOKEN")?
+        };
         let d1_database_id = non_empty_env("D1_DATABASE_ID")?;
         Some(Self {
             r2_endpoint,
@@ -142,6 +152,27 @@ impl StorageEnv {
             cf_api_token,
             d1_database_id,
         })
+    }
+}
+
+/// Enable the internal D1 binding only for the explicitly marked staging image.
+/// Any flag in production or another environment fails closed at the caller.
+pub(crate) fn staging_d1_binding_proxy_enabled() -> Result<bool, String> {
+    parse_staging_d1_binding_proxy_mode(
+        std::env::var("D1_BINDING_PROXY").ok().as_deref(),
+        std::env::var("ENVIRONMENT").ok().as_deref(),
+    )
+}
+
+fn parse_staging_d1_binding_proxy_mode(
+    flag: Option<&str>,
+    environment: Option<&str>,
+) -> Result<bool, String> {
+    match flag {
+        None | Some("") => Ok(false),
+        Some("1") if environment == Some("staging") => Ok(true),
+        Some("1") => Err("D1_BINDING_PROXY is only allowed in staging".to_owned()),
+        Some(_) => Err("D1_BINDING_PROXY must be empty or exactly 1".to_owned()),
     }
 }
 
@@ -217,7 +248,7 @@ mod tests {
 
 #[cfg(test)]
 mod env_or_tests {
-    use super::pick_non_empty;
+    use super::{parse_staging_d1_binding_proxy_mode, pick_non_empty};
 
     /// The 2026-06-05 prod incident contract: absent AND empty AND
     /// whitespace-only all mean "use the default"; set means the value.
@@ -230,5 +261,19 @@ mod env_or_tests {
             pick_non_empty(Some("corelink-ac-iad".to_owned()), "dflt"),
             "corelink-ac-iad"
         );
+    }
+
+    #[test]
+    fn d1_binding_proxy_is_staging_only_and_requires_exact_flag() {
+        assert_eq!(
+            parse_staging_d1_binding_proxy_mode(None, Some("staging")),
+            Ok(false)
+        );
+        assert_eq!(
+            parse_staging_d1_binding_proxy_mode(Some("1"), Some("staging")),
+            Ok(true)
+        );
+        assert!(parse_staging_d1_binding_proxy_mode(Some("1"), Some("prod")).is_err());
+        assert!(parse_staging_d1_binding_proxy_mode(Some("true"), Some("staging")).is_err());
     }
 }

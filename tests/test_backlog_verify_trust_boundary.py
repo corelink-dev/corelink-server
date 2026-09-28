@@ -352,13 +352,18 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
                 if old is not None:
                     self._write(trusted, relative, old)
                 self._write(candidate, relative, target)
-        return trusted, candidate, preimages, targets
+        manifest_rows = [
+            f"{(0o100000 | target[0]):06o} {target[1]} {path}\n"
+            for path, target in targets.items()
+        ]
+        manifest_sha = hashlib.sha256("".join(sorted(manifest_rows, key=lambda row: row.split(" ", 2)[2])).encode()).hexdigest()
+        return trusted, candidate, preimages, targets, manifest_sha
 
-    def test_1700_d1_binding_proxy_transition_accepts_only_exact_23_path_tree(self) -> None:
-        trusted, candidate, preimages, targets = self._staging_d1_proxy_fixture()
+    def test_1700_d1_binding_proxy_transition_accepts_only_exact_37_path_tree(self) -> None:
+        trusted, candidate, preimages, targets, manifest_sha = self._staging_d1_proxy_fixture()
         with patch.object(backlog_verify, "STAGING_D1_BINDING_PROXY_PREIMAGES", preimages), patch.object(
             backlog_verify, "STAGING_D1_BINDING_PROXY_TARGETS", targets
-        ):
+        ), patch.object(backlog_verify, "STAGING_D1_BINDING_PROXY_MANIFEST_SHA256", manifest_sha):
             self.assertTrue(
                 backlog_verify._preauthorized_staging_d1_binding_proxy(candidate, trusted)
             )
@@ -368,7 +373,7 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
     def test_1700_d1_binding_proxy_transition_rejects_partial_foreign_mode_and_downgrade(self) -> None:
         for mutation in ("partial", "foreign", "mode", "downgrade"):
             with self.subTest(mutation=mutation):
-                trusted, candidate, preimages, targets = self._staging_d1_proxy_fixture(
+                trusted, candidate, preimages, targets, manifest_sha = self._staging_d1_proxy_fixture(
                     delivered=mutation == "downgrade"
                 )
                 path = sorted(targets)[0]
@@ -380,13 +385,75 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
                     (candidate / path).chmod(0o600)
                 with patch.object(backlog_verify, "STAGING_D1_BINDING_PROXY_PREIMAGES", preimages), patch.object(
                     backlog_verify, "STAGING_D1_BINDING_PROXY_TARGETS", targets
-                ):
+                ), patch.object(backlog_verify, "STAGING_D1_BINDING_PROXY_MANIFEST_SHA256", manifest_sha):
                     self.assertFalse(
                         backlog_verify._preauthorized_staging_d1_binding_proxy(candidate, trusted)
                     )
 
+    def test_ordered_i1648_b216_i2568_successors_are_exact_and_predecessor_bound(self) -> None:
+        self.assertEqual(len(backlog_verify.STAGING_I1648_TARGETS), 5)
+        self.assertEqual(len(backlog_verify.STAGING_B216_TARGETS), 4)
+        self.assertEqual(len(backlog_verify.STAGING_I2568_TARGETS), 8)
+        self.assertEqual(backlog_verify.STAGING_I2568_TARGETS["docs/campaigns/remediation/wp150-workflow-ownership.md"], (0o644, "cb9bb10177faf2fd578e1cc23163015f8c2913e360e8f2880dcd2afc71904e15"))
+        with tempfile.TemporaryDirectory() as temporary:
+            trusted, candidate = Path(temporary) / "trusted", Path(temporary) / "candidate"
+            trusted.mkdir(); candidate.mkdir()
+            old, new = b"preimage\n", b"frozen target\n"
+            prior = b"required predecessor\n"
+            self._write(trusted, "stage/path.txt", old)
+            self._write(candidate, "stage/path.txt", new)
+            self._write(trusted, "prior/path.txt", prior)
+            self._write(candidate, "prior/path.txt", prior)
+            pre = {"stage/path.txt": (0o644, hashlib.sha256(old).hexdigest())}
+            targets = {"stage/path.txt": (0o644, hashlib.sha256(new).hexdigest())}
+            required = ({"prior/path.txt": (0o644, hashlib.sha256(prior).hexdigest())},)
+            self.assertTrue(backlog_verify._preauthorized_exact_staging_transition(candidate, trusted, pre, targets, required))
+            self._write(candidate, "foreign/path.txt", b"foreign\n")
+            self.assertFalse(backlog_verify._preauthorized_exact_staging_transition(candidate, trusted, pre, targets, required))
+            (candidate / "foreign/path.txt").unlink()
+            (trusted / "prior/path.txt").write_bytes(b"stale predecessor\n")
+            self.assertFalse(backlog_verify._preauthorized_exact_staging_transition(candidate, trusted, pre, targets, required))
+
+    def test_follow_on_base_pins_compose_in_frozen_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            trusted, candidate = Path(temporary) / "trusted", Path(temporary) / "candidate"
+            trusted.mkdir(); candidate.mkdir()
+            relative = "stage/path.txt"
+            shared = "docs/internal/secrets-checklist.md"
+            old, new = b"before\n", b"after\n"
+            superseded, final = b"native checklist\n", b"B216 checklist\n"
+            self._write(trusted, relative, old)
+            self._write(candidate, relative, new)
+            self._write(trusted, shared, final)
+            self._write(candidate, shared, final)
+            preimages = {relative: (0o644, hashlib.sha256(old).hexdigest())}
+            targets = {relative: (0o644, hashlib.sha256(new).hexdigest())}
+            ordered = (
+                {shared: (0o644, hashlib.sha256(superseded).hexdigest())},
+                {shared: (0o644, hashlib.sha256(final).hexdigest())},
+            )
+            self.assertTrue(backlog_verify._preauthorized_exact_staging_transition(
+                candidate, trusted, preimages, targets, ordered
+            ))
+            self.assertFalse(backlog_verify._preauthorized_exact_staging_transition(
+                candidate, trusted, preimages, targets, tuple(reversed(ordered))
+            ))
+
     def test_1700_d1_binding_proxy_constants_match_frozen_transition(self) -> None:
-        self.assertEqual(len(backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS), 23)
+        self.assertEqual(len(backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS), 37)
+        self.assertEqual(backlog_verify.STAGING_D1_BINDING_PROXY_MANIFEST_SHA256, "05e9e3c71a7073146ced7fbcf52afaf8acae88ee6ffc621710921a0eb1f6ec0e")
+        self.assertEqual(
+            backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
+                "tests/test_issue_1700_route_inventory.py"
+            ],
+            (0o644, "d9dc1e4012f590ef6b3e76eb1e342ac43d513a14ef16f3ee8db8cffb9ef2b734"),
+        )
+        self.assertEqual(
+            backlog_verify.STAGING_D1_BINDING_PROXY_PREIMAGES[
+                "tests/test_issue_1700_route_inventory.py"
+            ],
+            (0o644, "216a00df6c5b67d78c90d5a9d1c78043a56985c230d7ede72e0270186eb6ef56"),
+        )
         self.assertEqual(
             backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
                 "infra/staging/topology.json"
@@ -411,13 +478,13 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
             backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
                 "worker/src/staging_d1_binding_proxy.ts"
             ],
-            (0o644, "01e5ac58773118bae44c9d11ff2b3cdd0ba376579f43317af8b4fd2138b7a92d"),
+            (0o644, "1e5d940b240a4bef9daba0e360758793ab7b11a165f5b1bc8ccb7eae658a348d"),
         )
         self.assertEqual(
             backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
                 "worker/tests/staging_d1_binding_proxy.test.ts"
             ],
-            (0o644, "6eb924bbe1aff66f9d223adb9c490c1500a6a9dfa3a3160182ffda45c72f4e78"),
+            (0o644, "5710f974898de4c88a1ddca3f9815589d7c805faa4481f44d9005054d10796cc"),
         )
 
     def test_b068_d1_source_pin_is_paired_with_exact_topology_state(self) -> None:

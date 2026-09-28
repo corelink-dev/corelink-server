@@ -53,7 +53,7 @@ export async function drainCredentialCleanupObligations(
 export async function handleDevenvCleanupRequest(
   request: Request,
   env: Env,
-  state: DurableObjectState,
+  state: Pick<DurableObjectState, "id">,
   storage: DurableObjectStorage,
   requestId: string,
   action: "prepare" | "adopt" | "revoke",

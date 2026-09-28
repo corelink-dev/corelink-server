@@ -2,6 +2,8 @@
 //!
 //! D1 is accessible outside a CF Worker via the Cloudflare REST API:
 //! `https://api.cloudflare.com/client/v4/accounts/{account_id}/d1/database/{db_id}/query`
+//! In staging, the same path is sent to the reserved `.invalid` hostname and
+//! intercepted by the Worker before the internet-enabled container starts.
 //!
 //! This module provides [`D1HttpClient`] — an async `reqwest`-based
 //! client for running parameterised SQL queries against a D1 database
@@ -27,6 +29,16 @@ use std::{net::IpAddr, str::FromStr};
 use tracing::{debug, warn};
 
 use super::StorageEnv;
+
+fn runtime_d1_credential() -> Result<String, String> {
+    if super::staging_d1_binding_proxy_enabled()? {
+        if super::non_empty_env("CF_API_TOKEN").is_some() {
+            return Err("CF_API_TOKEN must be absent in D1 binding proxy mode".to_owned());
+        }
+        return Ok(String::new());
+    }
+    super::non_empty_env("CF_API_TOKEN").ok_or_else(|| "CF_API_TOKEN is required".to_owned())
+}
 
 /// Async D1 HTTP API client.
 ///
@@ -130,8 +142,7 @@ impl D1HttpClient {
             .ok_or_else(|| "CLOUDFLARE_ACCOUNT_ID is required".to_owned())?;
         let database_id = super::non_empty_env("D1_DATABASE_ID")
             .ok_or_else(|| "D1_DATABASE_ID is required".to_owned())?;
-        let api_token = super::non_empty_env("CF_API_TOKEN")
-            .ok_or_else(|| "CF_API_TOKEN is required".to_owned())?;
+        let api_token = runtime_d1_credential()?;
         Self::from_d1_parts(account_id, database_id, api_token, true)
     }
 
@@ -145,8 +156,7 @@ impl D1HttpClient {
             .ok_or_else(|| "CLOUDFLARE_ACCOUNT_ID is required".to_owned())?;
         let database_id = super::non_empty_env("D1_DATABASE_ID")
             .ok_or_else(|| "D1_DATABASE_ID is required".to_owned())?;
-        let api_token = super::non_empty_env("CF_API_TOKEN")
-            .ok_or_else(|| "CF_API_TOKEN is required".to_owned())?;
+        let api_token = runtime_d1_credential()?;
         Self::from_d1_parts(account_id, database_id, api_token, false)
     }
 
@@ -159,8 +169,7 @@ impl D1HttpClient {
             .ok_or_else(|| "CLOUDFLARE_ACCOUNT_ID is required".to_owned())?;
         let database_id = super::non_empty_env("D1_DATABASE_ID")
             .ok_or_else(|| "D1_DATABASE_ID is required".to_owned())?;
-        let api_token = super::non_empty_env("CF_API_TOKEN")
-            .ok_or_else(|| "CF_API_TOKEN is required".to_owned())?;
+        let api_token = runtime_d1_credential()?;
         Self::from_d1_parts(account_id, database_id, api_token, false)
     }
 
@@ -185,8 +194,13 @@ impl D1HttpClient {
         api_token: String,
         read_only: bool,
     ) -> Result<Self, String> {
+        let (scheme, host) = if api_token.is_empty() {
+            ("http", "corelink-d1-proxy.invalid")
+        } else {
+            ("https", "api.cloudflare.com")
+        };
         let query_url = format!(
-            "https://api.cloudflare.com/client/v4/accounts/{}/d1/database/{}/query",
+            "{scheme}://{host}/client/v4/accounts/{}/d1/database/{}/query",
             account_id, database_id,
         );
         // Bound EVERY D1-over-HTTP call. A single erase drives ~15 serial D1
@@ -251,11 +265,11 @@ impl D1HttpClient {
             params: params.to_vec(),
         };
 
-        let resp = self
-            .http
-            .post(&self.query_url)
-            .bearer_auth(&self.api_token)
-            .json(&body)
+        let mut request = self.http.post(&self.query_url).json(&body);
+        if !self.api_token.is_empty() {
+            request = request.bearer_auth(&self.api_token);
+        }
+        let resp = request
             .send()
             .await
             .map_err(|e| format!("D1 HTTP request failed: {e}"))?;
@@ -299,17 +313,14 @@ impl D1HttpClient {
         }
         debug!(statements = expected, "D1HttpClient::batch");
         let body = D1BatchRequest { batch: statements };
-        let resp = self
-            .http
-            .post(&self.query_url)
-            .bearer_auth(&self.api_token)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| D1BatchError {
-                statement: None,
-                message: format!("D1 HTTP batch request failed: {e}"),
-            })?;
+        let mut request = self.http.post(&self.query_url).json(&body);
+        if !self.api_token.is_empty() {
+            request = request.bearer_auth(&self.api_token);
+        }
+        let resp = request.send().await.map_err(|e| D1BatchError {
+            statement: None,
+            message: format!("D1 HTTP batch request failed: {e}"),
+        })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -1082,6 +1093,85 @@ mod tests {
             client.query_url.contains("db456"),
             "URL must include database_id"
         );
+    }
+
+    #[test]
+    fn empty_runtime_token_selects_non_routable_proxy_host() {
+        let client = D1HttpClient::from_d1_parts(
+            "account".to_owned(),
+            "database".to_owned(),
+            String::new(),
+            false,
+        )
+        .expect("build tokenless staging proxy client");
+        assert_eq!(
+            client.query_url,
+            "http://corelink-d1-proxy.invalid/client/v4/accounts/account/d1/database/database/query",
+        );
+        assert!(client.api_token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tokenless_proxy_client_sends_no_authorization_header() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        let address = listener.local_addr().expect("loopback address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept client");
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("set read timeout");
+            let mut request_bytes = [0_u8; 4096];
+            let read = stream
+                .read(&mut request_bytes)
+                .expect("read request headers");
+            let headers = String::from_utf8_lossy(&request_bytes[..read]).to_ascii_lowercase();
+            assert!(!headers.contains("authorization:"));
+            assert!(headers.starts_with("post /d1 http/1.1"));
+            let body = r#"{"result":[{"results":[{"value":1}],"success":true}],"success":true,"errors":[]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write response");
+        });
+        let env = StorageEnv {
+            r2_endpoint: "https://localhost:1".to_owned(),
+            r2_access_key_id: "test".to_owned(),
+            r2_secret_access_key: "test".to_owned(),
+            cloudflare_account_id: "account".to_owned(),
+            cf_api_token: String::new(),
+            d1_database_id: "database".to_owned(),
+        };
+        let client = D1HttpClient::new_for_loopback_test(&env, &format!("http://{address}/d1"))
+            .expect("build tokenless proxy test client");
+        let rows = client.query("SELECT 1", &[]).await.expect("query succeeds");
+        assert_eq!(rows.len(), 1);
+        server.join().expect("server assertions");
+    }
+
+    #[tokio::test]
+    async fn missing_staging_interceptor_cannot_fall_back_to_cloudflare() {
+        let client = D1HttpClient::from_d1_parts(
+            "account".to_owned(),
+            "database".to_owned(),
+            String::new(),
+            false,
+        )
+        .expect("build tokenless staging proxy client");
+        assert!(client
+            .query_url
+            .starts_with("http://corelink-d1-proxy.invalid/"));
+        // RFC 2606 reserves .invalid; with no Container host interception the
+        // request must fail DNS rather than reach Cloudflare over the internet.
+        let error = client
+            .query("SELECT 1", &[])
+            .await
+            .expect_err("unintercepted .invalid request must not reach a provider");
+        assert!(error.contains("D1 HTTP request failed"));
     }
 
     #[test]
