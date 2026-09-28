@@ -228,6 +228,12 @@ jobs:
             "$B/rootfs" "$B/rootfs/usr" "$B/rootfs/usr/local" "$B/rootfs/usr/local/bin" \
             "$B/rootfs/usr/local/bin/gc_sweep"
           sudo test -x "$B/rootfs/usr/local/bin/gc_sweep" || { echo "::error::gc_sweep is absent or not executable in the runtime image"; exit 1; }
+          # Regenerate only the runner-owned spec left by the preceding smoke gate.
+          test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json" || {
+            echo '::error::GC spec is missing, a symlink, or not owned by the runner'
+            exit 1
+          }
+          rm -- "$B/config.json"
           runc spec -b "$B"
           jq \
             '.process.args=["/usr/local/bin/gc_sweep"]
@@ -261,6 +267,12 @@ jobs:
             echo "::error::native production GC binary is absent from the runtime image"
             exit 1
           }
+          # Regenerate only the runner-owned spec left by the preceding smoke gate.
+          test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json" || {
+            echo '::error::GC spec is missing, a symlink, or not owned by the runner'
+            exit 1
+          }
+          rm -- "$B/config.json"
           runc spec -b "$B"
           jq \
             '.process.args=["/usr/local/bin/corelink-gc-sweep-production"]
@@ -443,6 +455,45 @@ jobs:
           trap - EXIT
           echo 'rootful executable permission fixture: PASS (host denied; executable accepted; missing/nonexec denied)'
           # B063_PERMISSION_FIXTURE_END
+          # B063_RUNC_SPEC_FIXTURE_BEGIN: consecutive gates need a fresh owned spec.
+          spec_fixture=$(mktemp -d "$RUNNER_TEMP/b063-runc-spec.XXXXXX")
+          spec_error="$spec_fixture/refusal.log"
+          trap 'rm -rf -- "$spec_fixture"' EXIT
+          runc spec -b "$spec_fixture"
+          if runc spec -b "$spec_fixture" >"$spec_error" 2>&1; then
+            echo '::error::runc fixture unexpectedly overwrote an existing spec'
+            exit 1
+          fi
+          grep -F 'File config.json exists. Remove it first' "$spec_error"
+          regenerate_owned_spec() {
+            test -f "$spec_fixture/config.json" && test ! -L "$spec_fixture/config.json" && test -O "$spec_fixture/config.json" || return 1
+            rm -- "$spec_fixture/config.json"
+            runc spec -b "$spec_fixture"
+          }
+          regenerate_owned_spec
+          regenerate_owned_spec
+          sudo chown 0:0 "$spec_fixture/config.json"
+          if regenerate_owned_spec; then
+            echo '::error::runc fixture accepted a foreign-owned spec'
+            exit 1
+          fi
+          sudo chown "$(id -u):$(id -g)" "$spec_fixture/config.json"
+          jq -e '.ociVersion | type == "string" and length > 0' "$spec_fixture/config.json" >/dev/null
+          mv "$spec_fixture/config.json" "$spec_fixture/retained-spec.json"
+          if regenerate_owned_spec; then
+            echo '::error::runc fixture accepted a missing spec'
+            exit 1
+          fi
+          ln -s "$spec_fixture/retained-spec.json" "$spec_fixture/config.json"
+          if regenerate_owned_spec; then
+            echo '::error::runc fixture accepted a symlink spec'
+            exit 1
+          fi
+          test -L "$spec_fixture/config.json" && test -f "$spec_fixture/retained-spec.json"
+          rm -rf -- "$spec_fixture"
+          trap - EXIT
+          echo 'runc spec lifecycle fixture: PASS (existing refused; regenerated twice; foreign-owned/missing/symlink denied)'
+          # B063_RUNC_SPEC_FIXTURE_END
 
       - name: Preflight — BuildKit + runc must be baked in the runner image
         run: *b063-tool-preflight
@@ -575,6 +626,12 @@ jobs:
             "$B/rootfs" "$B/rootfs/usr" "$B/rootfs/usr/local" "$B/rootfs/usr/local/bin" \
             "$B/rootfs/usr/local/bin/gc_sweep"
           sudo test -x "$B/rootfs/usr/local/bin/gc_sweep" || { echo "::error::gc_sweep is absent or not executable in the runtime image"; exit 1; }
+          # Regenerate only the runner-owned spec left by the preceding smoke gate.
+          test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json" || {
+            echo '::error::GC spec is missing, a symlink, or not owned by the runner'
+            exit 1
+          }
+          rm -- "$B/config.json"
           runc spec -b "$B"
           jq \
             '.process.args=["/usr/local/bin/gc_sweep"]
@@ -608,6 +665,12 @@ jobs:
             echo "::error::native production GC binary is absent from the runtime image"
             exit 1
           }
+          # Regenerate only the runner-owned spec left by the preceding smoke gate.
+          test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json" || {
+            echo '::error::GC spec is missing, a symlink, or not owned by the runner'
+            exit 1
+          }
+          rm -- "$B/config.json"
           runc spec -b "$B"
           jq \
             '.process.args=["/usr/local/bin/corelink-gc-sweep-production"]

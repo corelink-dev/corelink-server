@@ -48,6 +48,13 @@ class WorkflowControls(unittest.TestCase):
   sudo test -x "$B/rootfs/usr/local/bin/{binary}" || {{"""
                     new_probe = "\n".join(line[2:] if line.startswith("  ") else line for line in new_probe.split("\n"))
                     expected = expected.replace(old_probe, new_probe)
+                if name.startswith(('Gate 4 —', 'Gate 4b —')):
+                    expected = expected.replace('runc spec -b "$B"\n',
+                        '# Regenerate only the runner-owned spec left by the preceding smoke gate.\n'
+                        'test -f "$B/config.json" && test ! -L "$B/config.json" && test -O "$B/config.json" || {\n'
+                        "  echo '::error::GC spec is missing, a symlink, or not owned by the runner'\n"
+                        '  exit 1\n}\n'
+                        'rm -- "$B/config.json"\nrunc spec -b "$B"\n')
                 # The exact baseline remainder includes every runc/GC oracle.
                 self.assertEqual(current[name], expected)
                 self.assertEqual(hashlib.sha256(expected.encode()).hexdigest(), digest)
@@ -63,6 +70,76 @@ class WorkflowControls(unittest.TestCase):
                         step = next(s for s in d['jobs']['hosted-b063']['steps'] if s['name'] == name)
                         step['run'] = step['run'].replace('sudo test -x', replacement, 1)
                     self.reject(mutate, 'command hash')
+
+    def test_gc_spec_regeneration_is_owned_and_exact(self):
+        for name in ('Gate 4 — embedded GC binary is forced dry-run (daemonless)',
+                     'Gate 4b — native production GC binary is present and fail-closed'):
+            for old, new in (
+                ('test ! -L "$B/config.json"', 'true'),
+                ('test -O "$B/config.json"', 'true'),
+                ('rm -- "$B/config.json"', 'rm -rf -- "$B/rootfs"'),
+                ('rm -- "$B/config.json"', 'true'),
+            ):
+                with self.subTest(gate=name, mutation=old):
+                    def mutate(d):
+                        step = next(s for s in d['jobs']['hosted-b063']['steps'] if s['name'] == name)
+                        step['run'] = step['run'].replace(old, new, 1)
+                    self.reject(mutate, 'command hash')
+
+    def test_actual_gc_spec_guard_refuses_missing_or_symlink_before_removal(self):
+        for job in ('build-push', 'hosted-b063'):
+            for gate in ('Gate 4 — embedded GC binary is forced dry-run (daemonless)',
+                         'Gate 4b — native production GC binary is present and fail-closed'):
+                command = next(s['run'] for s in self.document['jobs'][job]['steps'] if s['name'] == gate)
+                code = command[command.index('test -f "$B/config.json"'):command.index('runc spec -b "$B"')]
+                for kind in ('owned-regular', 'missing', 'symlink'):
+                    with self.subTest(job=job, gate=gate, config=kind), tempfile.TemporaryDirectory(prefix='b063-owned-config-') as directory:
+                        root = Path(directory)
+                        retained = root / 'retained.json'
+                        retained.write_text('{}')
+                        config = root / 'config.json'
+                        if kind == 'owned-regular':
+                            config.write_text('{}')
+                        elif kind == 'symlink':
+                            config.symlink_to(retained)
+                        result = subprocess.run(['bash', '-euo', 'pipefail', '-c', code],
+                            env={**os.environ, 'B': directory}, capture_output=True, text=True)
+                        self.assertEqual(result.returncode == 0, kind == 'owned-regular')
+                        self.assertTrue(retained.is_file())
+                        self.assertEqual(config.is_symlink(), kind == 'symlink')
+                        if kind == 'owned-regular':
+                            self.assertFalse(config.exists())
+
+    def spec_fixture(self):
+        step = next(s for s in self.document['jobs']['hosted-b063']['steps'] if s['name'] == 'Install canonical checksum-pinned BuildKit and runc')
+        return step['run'].split('# B063_RUNC_SPEC_FIXTURE_BEGIN:', 1)[1].split('# B063_RUNC_SPEC_FIXTURE_END', 1)[0].split('\n', 1)[1]
+
+    def test_spec_fixture_proves_regeneration_and_unsafe_path_negatives(self):
+        fixture = self.spec_fixture()
+        self.assertIn('regenerate_owned_spec\nregenerate_owned_spec\n', fixture)
+        for marker in ('File config.json exists. Remove it first', 'test ! -L', 'test -O',
+                       'foreign-owned spec', 'missing spec', 'symlink spec', 'retained-spec.json'):
+            self.assertIn(marker, fixture)
+        name = 'Install canonical checksum-pinned BuildKit and runc'
+        def mutate(d):
+            step = next(s for s in d['jobs']['hosted-b063']['steps'] if s['name'] == name)
+            step['run'] = step['run'].replace('regenerate_owned_spec\nregenerate_owned_spec\n', 'true\ntrue\n')
+        self.reject(mutate, 'command hash')
+
+    def test_actual_spec_regeneration_fixture_on_hosted_linux(self):
+        if sys.platform != 'linux' or os.geteuid() == 0:
+            self.skipTest('requires the unprivileged hosted Linux runner with pinned runc')
+        if subprocess.run(['sudo', '-n', 'true'], capture_output=True).returncode:
+            self.skipTest('requires the hosted runner passwordless sudo boundary')
+        # Credentialless contract job does not install the privileged runtime.
+        if not __import__('shutil').which('runc'):
+            self.skipTest('actual fixture runs before build after checksum-pinned runc installation')
+        with tempfile.TemporaryDirectory(prefix='b063-spec-test-') as directory:
+            result = subprocess.run(['bash', '-euo', 'pipefail', '-c', self.spec_fixture()],
+                                    env={**os.environ, 'RUNNER_TEMP': directory}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn('existing refused; regenerated twice; foreign-owned/missing/symlink denied', result.stdout)
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def permission_fixture(self):
         step = next(s for s in self.document['jobs']['hosted-b063']['steps'] if s['name'] == 'Install canonical checksum-pinned BuildKit and runc')
