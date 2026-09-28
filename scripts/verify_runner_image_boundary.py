@@ -288,6 +288,20 @@ def self_test() -> int:
 
     for mutation in MUTATIONS:
         old, new = mutation.mutate
+        mutation_source = build_workflow
+        scoped_span = None
+        if mutation.name == "remove-tool-preflight" or mutation.target in {"build-comments", "build-echo-bait"}:
+            legacy_job = re.search(r"(?ms)^  build-push:\n.*?(?=^  [A-Za-z0-9_-]+:\n|\Z)", build_workflow)
+            if legacy_job is None:
+                raise ContractError(f"{mutation.name}: legacy build job missing")
+            steps = list(re.finditer(
+                rf"(?ms)^      - name: {re.escape(PREFLIGHT_TITLE)}\n.*?(?=^      - name: |\Z)",
+                legacy_job.group(0),
+            ))
+            if len(steps) != 1:
+                raise ContractError(f"{mutation.name}: legacy preflight count is not one")
+            scoped_span = (legacy_job.start() + steps[0].start(), legacy_job.start() + steps[0].end())
+            mutation_source = build_workflow[scoped_span[0]:scoped_span[1]]
         mutated_backlog = backlog
         mutated_holds = holds
         mutated_build = build_workflow
@@ -317,9 +331,9 @@ def self_test() -> int:
                 raise ContractError(f"{mutation.name}: mutation target count is not one")
             mutated_holds = holds.replace(old, new, 1)
         elif mutation.target == "build":
-            if build_workflow.count(old) != 1:
+            if mutation_source.count(old) != 1:
                 raise ContractError(f"{mutation.name}: mutation target count is not one")
-            mutated_build = build_workflow.replace(old, new, 1)
+            mutated_build = mutation_source.replace(old, new, 1)
         elif mutation.target == "build-order":
             preflight = re.search(
                 rf"(?ms)^      - name: {re.escape(PREFLIGHT_TITLE)}\n.*?(?=^      - name: |\Z)",
@@ -347,9 +361,9 @@ def self_test() -> int:
             )
         elif mutation.target == "build-comments":
             old_loop, new_loop = mutation.mutate
-            if build_workflow.count(old_loop) != 1:
+            if mutation_source.count(old_loop) != 1:
                 raise ContractError(f"{mutation.name}: mutation target count is not one")
-            mutated_build = build_workflow.replace(
+            mutated_build = mutation_source.replace(
                 f"          {old_loop}\n",
                 f"          {new_loop}\n",
                 1,
@@ -364,9 +378,9 @@ def self_test() -> int:
             )
         elif mutation.target == "build-echo-bait":
             old_loop, new_loop = mutation.mutate
-            if build_workflow.count(old_loop) != 1:
+            if mutation_source.count(old_loop) != 1:
                 raise ContractError(f"{mutation.name}: mutation target count is not one")
-            mutated_build = build_workflow.replace(
+            mutated_build = mutation_source.replace(
                 f"          {old_loop}\n",
                 f"          {new_loop}\n",
                 1,
@@ -381,6 +395,8 @@ def self_test() -> int:
             )
         elif mutation.target == "workflows":
             mutated_workflows = (workflow_texts[0] + "\ncorelink-runner-devenv",) + workflow_texts[1:]
+        if scoped_span is not None:
+            mutated_build = build_workflow[:scoped_span[0]] + mutated_build + build_workflow[scoped_span[1]:]
         try:
             verify_files(mutated_backlog, mutated_holds, mutated_build, mutated_workflows, mutated_receipt)
         except ContractError as error:
