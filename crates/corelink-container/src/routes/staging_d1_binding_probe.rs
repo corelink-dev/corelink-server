@@ -15,7 +15,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::storage::{d1_http::{D1BatchStatement, D1HttpClient}, StorageEnv};
+use crate::storage::{
+    d1_http::{D1BatchStatement, D1HttpClient},
+    StorageEnv,
+};
 
 const EXPECTED_CRON: &str = "* * 28 9 *";
 const PROBE_START_MS: u64 = 1_790_553_600_000; // 2026-09-28T00:00:00Z
@@ -50,20 +53,23 @@ struct ProbeReceipt {
 pub fn enabled() -> bool {
     std::env::var("ENVIRONMENT").ok().as_deref() == Some("staging")
         && std::env::var("D1_BINDING_PROXY").ok().as_deref() == Some("1")
-        && std::env::var("CF_API_TOKEN").unwrap_or_default().trim().is_empty()
+        && std::env::var("CF_API_TOKEN")
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
         && std::env::var("CLOUDFLARE_ACCOUNT_ID").ok().as_deref() == Some(EXPECTED_ACCOUNT)
         && std::env::var("D1_DATABASE_ID").ok().as_deref() == Some(EXPECTED_DATABASE)
 }
 
 /// Internal endpoint; do not mount unless [`enabled`] is true.
 pub fn router() -> Router {
-    Router::new().route("/_internal/staging/d1-binding-runtime-probe", post(run_probe))
+    Router::new().route(
+        "/_internal/staging/d1-binding-runtime-probe",
+        post(run_probe),
+    )
 }
 
-async fn run_probe(
-    headers: HeaderMap,
-    Json(input): Json<ProbeRequest>,
-) -> impl IntoResponse {
+async fn run_probe(headers: HeaderMap, Json(input): Json<ProbeRequest>) -> impl IntoResponse {
     if !enabled()
         || headers.contains_key("authorization")
         || headers.contains_key("cookie")
@@ -73,8 +79,14 @@ async fn run_probe(
     }
 
     match execute_probe(&input).await {
-        Ok(receipt) => (StatusCode::OK, Json(serde_json::to_value(receipt).unwrap_or(Value::Null))),
-        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"outcome":"failed"}))),
+        Ok(receipt) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(receipt).unwrap_or(Value::Null)),
+        ),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"outcome":"failed"})),
+        ),
     }
 }
 
@@ -84,16 +96,26 @@ fn valid_request(input: &ProbeRequest, now: u64) -> bool {
         && (PROBE_START_MS..PROBE_EXPIRY_MS).contains(&input.scheduled_time_ms)
         && (PROBE_START_MS..PROBE_EXPIRY_MS).contains(&now)
         && input.worker_release.len() == 40
-        && input.worker_release.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && input
+            .worker_release
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 async fn execute_probe(input: &ProbeRequest) -> Result<ProbeReceipt, ()> {
-    if std::env::var("CF_API_TOKEN").map(|value| !value.trim().is_empty()).unwrap_or(false) {
+    if std::env::var("CF_API_TOKEN")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
         return Err(());
     }
     let storage = StorageEnv::from_env().ok_or(())?;
     let client = D1HttpClient::new(&storage).map_err(|_| ())?;
-    let table = format!("corelink_staging_d1_probe_{}_{}", &input.worker_release[..16], input.scheduled_time_ms);
+    let table = format!(
+        "corelink_staging_d1_probe_{}_{}",
+        &input.worker_release[..16],
+        input.scheduled_time_ms
+    );
     let probe_id = format!("{}:{}", input.worker_release, input.scheduled_time_ms);
     let mut table_created = false;
     let outcome = async {
@@ -134,7 +156,11 @@ async fn execute_probe(input: &ProbeRequest) -> Result<ProbeReceipt, ()> {
     }.await;
 
     let cleanup = if table_created {
-        client.query(&format!("DROP TABLE IF EXISTS {table}"), &[]).await.map(|_| ()).map_err(|_| ())
+        client
+            .query(&format!("DROP TABLE IF EXISTS {table}"), &[])
+            .await
+            .map(|_| ())
+            .map_err(|_| ())
     } else {
         Ok(())
     };
@@ -171,24 +197,33 @@ mod tests {
     const TIME: u64 = 1_790_553_660_000;
 
     fn input() -> ProbeRequest {
-        ProbeRequest { cron: EXPECTED_CRON.to_owned(), scheduled_time_ms: TIME, worker_release: RELEASE.to_owned() }
+        ProbeRequest {
+            cron: EXPECTED_CRON.to_owned(),
+            scheduled_time_ms: TIME,
+            worker_release: RELEASE.to_owned(),
+        }
     }
 
     #[test]
     fn accepts_only_exact_timed_staging_probe_contract() {
         assert!(valid_request(&input(), TIME));
         assert!(!valid_request(&input(), PROBE_EXPIRY_MS));
-        let mut bad = input(); bad.cron = "0 0 * * *".to_owned();
+        let mut bad = input();
+        bad.cron = "0 0 * * *".to_owned();
         assert!(!valid_request(&bad, TIME));
-        let mut bad = input(); bad.worker_release.push('x');
+        let mut bad = input();
+        bad.worker_release.push('x');
         assert!(!valid_request(&bad, TIME));
-        let mut bad = input(); bad.scheduled_time_ms += 1;
+        let mut bad = input();
+        bad.scheduled_time_ms += 1;
         assert!(!valid_request(&bad, TIME));
     }
 
     #[test]
     fn probe_table_identifier_is_derived_only_from_hex_release_and_time() {
-        assert_eq!(format!("corelink_staging_d1_probe_{}_{}", &RELEASE[..16], TIME),
-            "corelink_staging_d1_probe_0123456789abcdef_1790553660000");
+        assert_eq!(
+            format!("corelink_staging_d1_probe_{}_{}", &RELEASE[..16], TIME),
+            "corelink_staging_d1_probe_0123456789abcdef_1790553660000"
+        );
     }
 }
