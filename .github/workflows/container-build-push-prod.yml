@@ -1,3 +1,6 @@
+# Default build: protected-main SELF-HOSTED `corelink`; B-063 opt-in: reviewed hosted build.
+# The hosted job builds frozen protected-main source, not the workflow candidate.
+# Both jobs retain the canonical Dockerfile/cache design and OCI/runc/GC gates.
 # Build + push the prod container image on the SELF-HOSTED `corelink` fleet —
 # daemonless (BuildKit + runc), $0 GitHub billing, off the founder's dev Mac AND
 # off GitHub-hosted runners.
@@ -35,6 +38,17 @@ on:
         description: 'Type "build" to confirm building + pushing the prod container image to the CF registries.'
         required: true
         default: ''
+      runner_route:
+        description: 'corelink is protected-main only; hosted-b063 is the reviewed #1648 recovery build; contract has no provider access'
+        required: true
+        type: choice
+        default: corelink
+        options: [corelink, hosted-b063, contract]
+      expected_sha:
+        description: 'Exact reviewed workflow candidate SHA (hosted-b063/contract only; image source stays frozen independently)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -43,6 +57,11 @@ jobs:
   build-push:
     name: build + push prod container (fat-LTO SOTA, daemonless on corelink)
     runs-on: corelink
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.runner_route == 'corelink' && inputs.confirm == 'build' &&
+      github.ref == 'refs/heads/main' && github.ref_protected == true
     timeout-minutes: 60
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -55,14 +74,16 @@ jobs:
           if [ "$CONFIRM_INPUT" != "build" ]; then
             echo "::error::Type 'build' in the confirm input to proceed."; exit 1
           fi
+          [ "$CLOUDFLARE_ACCOUNT_ID" = 6a1fc1c626fc2628823e60b9db01f5cd ] || { echo "::error::production registry account mismatch"; exit 1; }
 
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0 # full history so `git rev-parse --short HEAD` resolves the image tag
+          persist-credentials: false
 
       - name: Preflight — BuildKit + runc must be baked in the runner image
-        run: |
+        run: &b063-tool-preflight |
           set -uo pipefail
           missing=0
           for t in buildkitd buildctl runc; do
@@ -265,9 +286,12 @@ jobs:
           CRED="$(npx -y wrangler@4.111.0 containers registries credentials registry.cloudflare.com --push --expiration-minutes 30 --json 2>/dev/null)"
           U=$(echo "$CRED" | jq -r '.username'); P=$(echo "$CRED" | jq -r '.password')
           [ -n "$U" ] && [ -n "$P" ] || { echo "::error::failed to mint a registry push credential"; exit 1; }
+          echo "::add-mask::$U"; echo "::add-mask::$P"
           CFG="$RUNNER_TEMP/dockercfg"; mkdir -p "$CFG"
           AUTH=$(printf '%s:%s' "$U" "$P" | base64 | tr -d '\n')
           printf '{"auths":{"registry.cloudflare.com":{"auth":"%s"}}}' "$AUTH" > "$CFG/config.json"
+          chmod 0600 "$CFG/config.json"
+          echo "::add-mask::$AUTH"
 
           # (env, image-name) pairs — must match wrangler.toml [[env.X.containers]].
           IMAGES="corelink-prod-corelinkserver-prod corelink-prod-sam-corelinkserver-prod corelink-prod-lhr-corelinkserver-prod corelink-prod-nrt-corelinkserver-prod corelink-prod-syd-corelinkserver-prod"
@@ -293,3 +317,389 @@ jobs:
         run: |
           echo "Built+pushed corelink-server:${{ steps.meta.outputs.short_sha }}-r1 to the 5 CF registries (daemonless, on corelink)."
           echo "NEXT: repin wrangler.toml [[env.*.containers]] image= to the new tag, then run cf-deploy-prod."
+
+      - name: Remove temporary registry credential file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dockercfg/config.json"
+
+  hosted-b063:
+    name: B-063 reviewed hosted image build (no deploy)
+    runs-on: ubuntu-24.04
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.runner_route == 'hosted-b063' && inputs.confirm == 'build' &&
+      github.ref == 'refs/heads/codex/issue-1648-hosted-build' &&
+      github.sha == inputs.expected_sha
+    environment: production-image-build
+    timeout-minutes: 60
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+    steps:
+      - name: Confirm intent
+        env:
+          CONFIRM_INPUT: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM_INPUT" != "build" ]; then
+            echo "::error::Type 'build' in the confirm input to proceed."; exit 1
+          fi
+          [ "$CLOUDFLARE_ACCOUNT_ID" = 6a1fc1c626fc2628823e60b9db01f5cd ] || { echo "::error::production registry account mismatch"; exit 1; }
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4
+          fetch-depth: 0 # the image source is protected main, not the workflow candidate
+          persist-credentials: false
+
+      - name: Bind reviewed workflow to frozen protected image source
+        env:
+          EXPECTED_WORKFLOW_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_SHA" == "$EXPECTED_WORKFLOW_SHA" ]]
+          [[ "$GITHUB_REF" == refs/heads/codex/issue-1648-hosted-build ]]
+          [[ "$CLOUDFLARE_ACCOUNT_ID" == 6a1fc1c626fc2628823e60b9db01f5cd ]]
+          [[ "$(git rev-parse HEAD)" == 5fabd93e98d805a39319fcb6a22c9ee5267fafd4 ]]
+          git merge-base --is-ancestor 49c01640d36244b1789f1cf60eda8833f2f7ac66 HEAD
+
+      - name: Read-only exact production registry target preflight
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4.111.0 containers images list --json > "$RUNNER_TEMP/b063-registry-inventory.json"
+          python3 - <<'PYTARGET'
+          import json, os
+          from pathlib import Path
+          inventory = json.loads((Path(os.environ['RUNNER_TEMP']) / 'b063-registry-inventory.json').read_text())
+          actual = {item['name'] for item in inventory}
+          expected = {'corelink-prod-corelinkserver-prod', 'corelink-prod-sam-corelinkserver-prod', 'corelink-prod-lhr-corelinkserver-prod', 'corelink-prod-nrt-corelinkserver-prod', 'corelink-prod-syd-corelinkserver-prod'}
+          if not expected <= actual:
+              raise SystemExit('exact registry target inventory incomplete; no mint/push permitted')
+          print('read-only target preflight: five exact production repositories present')
+          PYTARGET
+
+      - name: Install canonical checksum-pinned BuildKit and runc
+        run: |
+          set -euo pipefail
+          # Same bundle as corelink-runners@c18e18dd927caa2f802c60c85eeba929cedaa357
+          # deploy/runner/Dockerfile: BuildKit 0.31.2 and runc 1.5.1.
+          archive="$RUNNER_TEMP/b063-nerdctl-full.tar.gz"
+          curl --fail --location --silent --show-error \
+            https://github.com/containerd/nerdctl/releases/download/v2.3.5/nerdctl-full-2.3.5-linux-amd64.tar.gz \
+            --output "$archive"
+          echo "b697295c623639734aaab737523c808fd3cc8d3046039fd94fff1744e4c317aa  $archive" | sha256sum --check --status
+          tools="$RUNNER_TEMP/b063-build-tools"
+          mkdir -p "$tools"
+          tar -xzf "$archive" -C "$tools" bin/buildkitd bin/buildctl bin/runc
+          for tool in buildkitd buildctl runc; do
+            test -f "$tools/bin/$tool" && test ! -L "$tools/bin/$tool"
+            sudo install -m 0755 "$tools/bin/$tool" "/usr/local/bin/$tool"
+          done
+          buildkitd --version | grep -F 'v0.31.2'
+          buildctl --version | grep -F 'v0.31.2'
+          runc --version | grep -F 'runc version 1.5.1'
+
+      - name: Preflight — BuildKit + runc must be baked in the runner image
+        run: *b063-tool-preflight
+
+      - name: Compute short SHA + reproducible-build args
+        id: meta
+        run: |
+          # ADR-0015: SOURCE_DATE_EPOCH from HEAD commit timestamp. RUST_VERSION
+          # mirrors the prior lane; both passed as build-args for fidelity (the
+          # Dockerfile hardcodes FROM rust:1.91 + does not declare the ARGs, so
+          # BuildKit ignores undeclared args — passed anyway for parity + to stay
+          # correct if the Dockerfile later wires them).
+          {
+            echo "short_sha=$(git rev-parse --short HEAD)"
+            echo "source_date_epoch=$(git log -1 --format=%ct)"
+            echo "rust_version=1.91"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Start buildkitd (rootful; the microVM is the isolation boundary)
+        run: |
+          set -uo pipefail
+          ADDR="unix://$RUNNER_TEMP/bk.sock"
+          echo "BUILDKIT_ADDR=$ADDR" >> "$GITHUB_ENV"
+          # redirect inside the root shell (SC2024: sudo does not affect a redirect
+          # done by the invoking user); background the daemon, poll the socket.
+          sudo sh -c "buildkitd --addr '$ADDR' --oci-worker-snapshotter=overlayfs --root '$RUNNER_TEMP/bkroot' >'$RUNNER_TEMP/bk.log' 2>&1 &"
+          for i in $(seq 1 40); do sudo buildctl --addr "$ADDR" debug workers >/dev/null 2>&1 && { echo "buildkitd up after ${i}s"; break; }; sleep 1; done
+          sudo buildctl --addr "$ADDR" debug workers >/dev/null 2>&1 || { echo "::error::buildkitd did not come up"; sudo sed -n '1,60p' "$RUNNER_TEMP/bk.log"; exit 1; }
+
+      - name: Build prod image (buildctl → OCI) — fat-LTO, cache-mounts, native amd64
+        run: |
+          set -uo pipefail
+          # One REAL build to an OCI archive. The 3 gates run against this; the
+          # push steps below re-export from BuildKit's warm cache (instant), so
+          # the fat-LTO link happens exactly once.
+          sudo buildctl --addr "$BUILDKIT_ADDR" build \
+            --frontend dockerfile.v0 \
+            --local context=. --local dockerfile=. \
+            --opt build-arg:RUST_VERSION=${{ steps.meta.outputs.rust_version }} \
+            --opt build-arg:SOURCE_DATE_EPOCH=${{ steps.meta.outputs.source_date_epoch }} \
+            --output type=oci,dest="$RUNNER_TEMP/image.tar" 2>&1 | tail -40
+          [ -s "$RUNNER_TEMP/image.tar" ] || { echo "::error::build produced no OCI archive"; exit 1; }
+          echo "OCI archive: $(du -h "$RUNNER_TEMP/image.tar" | cut -f1)"
+
+      # ── the OCI archive → manifest.json + config.json (shared by the gates) ──
+      - name: Extract OCI manifest + config
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/oci"; mkdir -p "$D/x"
+          tar -xf "$RUNNER_TEMP/image.tar" -C "$D/x"
+          md=$(jq -r '.manifests[0].digest' "$D/x/index.json" | cut -d: -f2)
+          cp "$D/x/blobs/sha256/$md" "$D/manifest.json"
+          cd=$(jq -r '.config.digest' "$D/manifest.json" | cut -d: -f2)
+          cp "$D/x/blobs/sha256/$cd" "$D/config.json"
+          echo "OCI_DIR=$D" >> "$GITHUB_ENV"
+
+      - name: Gate 1 — image size (CF Containers 2 GiB ceiling, daemonless)
+        run: |
+          set -euo pipefail
+          SIZE=$(jq '([.layers[].size] + [.config.size]) | add' "$OCI_DIR/manifest.json")
+          MAX=$(( 2 * 1024 * 1024 * 1024 ))
+          echo "Image registry size: ${SIZE} bytes (limit ${MAX})"
+          if [ -z "$SIZE" ] || [ "$SIZE" -le 0 ]; then echo "::error::could not measure image size"; exit 1; fi
+          if [ "$SIZE" -gt "$MAX" ]; then echo "::error::HARD FAIL: image size ${SIZE}B exceeds the 2 GiB CF Containers limit."; exit 1; fi
+          echo "Size gate: PASS"
+
+      - name: Gate 2 — CTRL-CRED-001, no credentials in image layers (daemonless)
+        run: |
+          set -euo pipefail
+          BLOB=$(jq -r '([.history[]?.created_by] + [.config.Env[]?]) | join("\n")' "$OCI_DIR/config.json")
+          PATTERNS='API_TOKEN|API_KEY|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|ACCESS_KEY|CF_API|STRIPE_|CLERK_|PAGERDUTY|NEON_|DATABASE_URL'
+          if echo "$BLOB" | grep -iE "$PATTERNS" >/dev/null; then
+            echo "::error::CTRL-CRED-001 VIOLATION: a credential pattern is present in the image config/history."
+            # `|| true`: the branch already ends in an explicit `exit 1`; this
+            # line is the evidence dump. Under pipefail a SIGPIPE from `head`
+            # aborted the script BEFORE that exit, losing the message (B-040).
+            echo "$BLOB" | grep -iE "$PATTERNS" | sed -E 's/=.*/=<redacted>/' | head || true
+            exit 1
+          fi
+          echo "CTRL-CRED-001 scan: PASS (0 credential patterns)."
+
+      - name: Gate 3 — binary smoke (runc on the extracted rootfs, daemonless)
+        run: |
+          set -uo pipefail
+          # ROOT-CAUSE FIX (the original "2h build" hang): the server IGNORES
+          # --version/--help and BOOTS the gRPC server (blocks forever). So we do
+          # NOT run a blocking invocation unbounded. Instead: extract the image
+          # rootfs, run its ENTRYPOINT under runc with a hard timeout. A healthy
+          # server boots its listener (storage degrades to in-memory, no panic) and
+          # is still alive at the deadline → runc is SIGKILLed (124/137) → UP. A
+          # broken/stub binary panics/exits fast with its own code → DOWN.
+          B="$RUNNER_TEMP/smoke"; rm -rf "$B"; mkdir -p "$B"
+          sudo buildctl --addr "$BUILDKIT_ADDR" build \
+            --frontend dockerfile.v0 --local context=. --local dockerfile=. \
+            --opt build-arg:RUST_VERSION=${{ steps.meta.outputs.rust_version }} \
+            --opt build-arg:SOURCE_DATE_EPOCH=${{ steps.meta.outputs.source_date_epoch }} \
+            --output type=local,dest="$B/rootfs" >/dev/null 2>&1
+          EP=$(jq -c '(.config.Entrypoint // []) + (.config.Cmd // [])' "$OCI_DIR/config.json")
+          echo "entrypoint: $EP"
+          # `runc spec` + the jq edit + mv need no root (only `runc run` does), so
+          # no sudo here — avoids the SC2024 "sudo doesn't affect redirect" class.
+          runc spec -b "$B"
+          # args=entrypoint; no tty; rootfs writable (the server writes on boot);
+          # runc spec's default mounts already give a writable /tmp + /proc + /dev.
+          jq --argjson a "$EP" '.process.args=$a | .process.terminal=false | .root.readonly=false' "$B/config.json" > "$B/c2"
+          mv "$B/c2" "$B/config.json"
+          cid="corelink-smoke-${{ steps.meta.outputs.short_sha }}"
+          # GitHub runs this step under `bash -e`, and `set -uo pipefail` above does
+          # NOT clear that errexit. A healthy server is SIGKILLed at the deadline
+          # (ec=137/124) — the UP signal — but a bare `runc run …; ec=$?` lets errexit
+          # abort the step on that 137 BEFORE the branch runs (the whole step then
+          # exits 137, a false failure). `|| ec=$?` makes the command errexit-exempt
+          # AND captures the code, so the 124/137=UP branch below actually runs.
+          ec=0
+          timeout -s KILL 6 sudo runc run --bundle "$B" "$cid" >/dev/null 2>&1 || ec=$?
+          sudo runc delete -f "$cid" >/dev/null 2>&1 || true
+          if [ "$ec" = "124" ] || [ "$ec" = "137" ]; then
+            echo "Smoke probe: PASS (binary booted + stayed up to the deadline; ec=$ec)"
+          else
+            echo "::error::HARD FAIL: the entrypoint exited on its own (ec=$ec) within 6s — binary smoke failed."
+            exit 1
+          fi
+
+      - name: Gate 4 — embedded GC binary is forced dry-run (daemonless)
+        run: |
+          set -euo pipefail
+          B="$RUNNER_TEMP/smoke"
+          [ -x "$B/rootfs/usr/local/bin/gc_sweep" ] || { echo "::error::gc_sweep is absent or not executable in the runtime image"; exit 1; }
+          runc spec -b "$B"
+          jq \
+            '.process.args=["/usr/local/bin/gc_sweep"]
+             | .process.terminal=false
+             | .process.env=["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "GC_LIVE_DELETE=false"]
+             | .root.readonly=false' \
+            "$B/config.json" > "$B/gc-config.json"
+          mv "$B/gc-config.json" "$B/config.json"
+          cid="corelink-gc-dry-run-${{ steps.meta.outputs.short_sha }}"
+          out="$RUNNER_TEMP/gc-dry-run.out"
+          ec=0
+          timeout -s KILL 10 sudo runc run --bundle "$B" "$cid" >"$out" 2>&1 || ec=$?
+          sudo runc delete -f "$cid" >/dev/null 2>&1 || true
+          cat "$out"
+          [ "$ec" = "0" ] || { echo "::error::embedded gc_sweep dry-run failed (ec=$ec)"; exit 1; }
+          grep -F 'mode               = dry_run' "$out"
+          grep -F 'reclaimable_count         = 1' "$out"
+          grep -F 'reclaimable_bytes         = 4096' "$out"
+          grep -F 'deleted_count             = 0' "$out"
+          grep -F 'deleted_bytes             = 0' "$out"
+
+      - name: Gate 4b — native production GC binary is present and fail-closed
+        run: |
+          set -euo pipefail
+          B="$RUNNER_TEMP/smoke"
+          [ -x "$B/rootfs/usr/local/bin/corelink-gc-sweep-production" ] || {
+            echo "::error::native production GC binary is absent from the runtime image"
+            exit 1
+          }
+          runc spec -b "$B"
+          jq \
+            '.process.args=["/usr/local/bin/corelink-gc-sweep-production"]
+             | .process.terminal=false
+             | .process.env=["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "GC_OBSERVATION_ONLY=true", "GC_LIVE_DELETE=false"]
+             | .root.readonly=false' \
+            "$B/config.json" > "$B/gc-production-config.json"
+          mv "$B/gc-production-config.json" "$B/config.json"
+          cid="corelink-gc-production-fail-closed-${{ steps.meta.outputs.short_sha }}"
+          out="$RUNNER_TEMP/gc-production-fail-closed.out"
+          ec=0
+          timeout -s KILL 10 sudo runc run --bundle "$B" "$cid" >"$out" 2>&1 || ec=$?
+          sudo runc delete -f "$cid" >/dev/null 2>&1 || true
+          cat "$out"
+          [ "$ec" != "0" ] || { echo "::error::native production GC exited zero without durable scope configuration"; exit 1; }
+          grep -F 'gc_sweep FAILED (fail-closed)' "$out"
+
+      - name: ADR-0015 reproducibility attestation (reminder)
+        run: |
+          echo "ADR-0015: to verify reproducibility, rebuild on the same HEAD and compare the OCI manifest digest."
+
+      - name: Push image to the 5 CF Containers registries (daemonless, wrangler cred)
+        run: |
+          set -uo pipefail
+          TAG="${{ steps.meta.outputs.short_sha }}-r1"
+          ACCT="$CLOUDFLARE_ACCOUNT_ID"
+          [ -n "$ACCT" ] || { echo "::error::CLOUDFLARE_ACCOUNT_ID unset"; exit 1; }
+
+          mkdir -p "$RUNNER_TEMP/b063-push-metadata"
+          # One short-lived push credential for the whole registry host (all 5
+          # image repos live under the same account on registry.cloudflare.com).
+          CRED="$(npx -y wrangler@4.111.0 containers registries credentials registry.cloudflare.com --push --expiration-minutes 30 --json 2>/dev/null)"
+          U=$(echo "$CRED" | jq -r '.username'); P=$(echo "$CRED" | jq -r '.password')
+          [ -n "$U" ] && [ -n "$P" ] || { echo "::error::failed to mint a registry push credential"; exit 1; }
+          echo "::add-mask::$U"; echo "::add-mask::$P"
+          CFG="$RUNNER_TEMP/dockercfg"; mkdir -p "$CFG"
+          AUTH=$(printf '%s:%s' "$U" "$P" | base64 | tr -d '\n')
+          printf '{"auths":{"registry.cloudflare.com":{"auth":"%s"}}}' "$AUTH" > "$CFG/config.json"
+          chmod 0600 "$CFG/config.json"
+          echo "::add-mask::$AUTH"
+
+          # (env, image-name) pairs — must match wrangler.toml [[env.X.containers]].
+          IMAGES="corelink-prod-corelinkserver-prod corelink-prod-sam-corelinkserver-prod corelink-prod-lhr-corelinkserver-prod corelink-prod-nrt-corelinkserver-prod corelink-prod-syd-corelinkserver-prod"
+          N=0; TOTAL=5
+          for img in $IMAGES; do
+            N=$((N+1))
+            REF="registry.cloudflare.com/${ACCT}/${img}:${TAG}"
+            echo "[$N/$TOTAL] push → $REF"
+            # Re-export from BuildKit's warm cache (no rebuild) straight to the
+            # registry — daemonless. Same inputs ⇒ cache hit ⇒ instant.
+            if ! sudo DOCKER_CONFIG="$CFG" buildctl --addr "$BUILDKIT_ADDR" build \
+                 --frontend dockerfile.v0 --local context=. --local dockerfile=. \
+                 --opt build-arg:RUST_VERSION=${{ steps.meta.outputs.rust_version }} \
+                 --opt build-arg:SOURCE_DATE_EPOCH=${{ steps.meta.outputs.source_date_epoch }} \
+                 --metadata-file "$RUNNER_TEMP/b063-push-metadata/$img.json" \
+                 --output type=image,name="$REF",push=true 2>&1 | tail -8; then
+              echo "::error::[$N/$TOTAL] push failed for $img"; exit 1
+            fi
+            DIGEST="$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/b063-push-metadata/$img.json")"
+            CONFIG_DIGEST="$(jq -r '."containerimage.config.digest"' "$RUNNER_TEMP/b063-push-metadata/$img.json")"
+            [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::missing immutable registry digest"; exit 1; }
+            [[ "$CONFIG_DIGEST" == "$(jq -r '.config.digest' "$OCI_DIR/manifest.json")" ]] || { echo "::error::pushed config differs from gated OCI config"; exit 1; }
+            echo "[$N/$TOTAL] $img :: $TAG :: $DIGEST OK"
+          done
+          echo "All $TOTAL pushes COMPLETE (daemonless)."
+
+      - name: Next step (repin + deploy)
+        run: |
+          echo "Built+pushed corelink-server:${{ steps.meta.outputs.short_sha }}-r1 to the 5 CF registries (daemonless, on corelink)."
+          echo "NEXT: repin wrangler.toml [[env.*.containers]] image= to the new tag, then run cf-deploy-prod."
+
+      - name: Emit redacted source and registry digest receipt
+        env:
+          B063_IMAGE_TAG: ${{ steps.meta.outputs.short_sha }}-r1
+        run: |
+          set -euo pipefail
+          python3 - <<'PYRECEIPT'
+          import datetime, hashlib, json, os, re, subprocess
+          from pathlib import Path
+          source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if source != '5fabd93e98d805a39319fcb6a22c9ee5267fafd4':
+              raise SystemExit('frozen image source mismatch')
+          names = ['corelink-prod-corelinkserver-prod', 'corelink-prod-sam-corelinkserver-prod', 'corelink-prod-lhr-corelinkserver-prod', 'corelink-prod-nrt-corelinkserver-prod', 'corelink-prod-syd-corelinkserver-prod']
+          config = json.loads((Path(os.environ['OCI_DIR']) / 'manifest.json').read_text())['config']['digest']
+          images = []
+          for name in names:
+              metadata = json.loads((Path(os.environ['RUNNER_TEMP']) / 'b063-push-metadata' / (name + '.json')).read_text())
+              digest = metadata.get('containerimage.digest', '')
+              if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest) or metadata.get('containerimage.config.digest') != config:
+                  raise SystemExit('registry digest/config attribution failed')
+              images.append({'name': name, 'tag': os.environ['B063_IMAGE_TAG'], 'digest': digest, 'config_digest': config})
+          receipt = {'schema_version': 1, 'captured_at': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'issue': 1648,
+                     'source_sha': source, 'workflow_candidate_sha': os.environ['GITHUB_SHA'], 'run_id': int(os.environ['GITHUB_RUN_ID']),
+                     'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']), 'account_id': os.environ['CLOUDFLARE_ACCOUNT_ID'],
+                     'tool_bundle_version': '2.3.5', 'tool_bundle_sha256': 'b697295c623639734aaab737523c808fd3cc8d3046039fd94fff1744e4c317aa',
+                     'gated_oci_config_digest': config, 'images': images, 'gates': ['size', 'credential-scan', 'runc-smoke', 'gc-dry-run', 'production-gc-fail-closed'],
+                     'verdict': 'PASS', 'deployed': False, 'archive_invoked': False, 'd1_written': False}
+          output = Path('artifacts/b063-production-image-build-receipt.json')
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(receipt, indent=2) + '\n')
+          print('redacted receipt sha256=' + hashlib.sha256(output.read_bytes()).hexdigest())
+          PYRECEIPT
+
+      - name: Upload redacted build receipt only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: b063-production-image-build-${{ github.run_id }}
+          path: artifacts/b063-production-image-build-receipt.json
+          if-no-files-found: error
+
+      - name: Remove temporary registry credential file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dockercfg/config.json"
+
+  b063-contract:
+    name: B-063 credentialless build contract
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' && inputs.runner_route == 'contract' &&
+      github.ref == 'refs/heads/codex/issue-1648-hosted-build' && github.sha == inputs.expected_sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact candidate without credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install inert YAML parser
+        run: python3 -m pip install --disable-pip-version-check --no-input PyYAML==6.0.3
+      - name: Verify workflow guard and meaningful negatives
+        run: |
+          python3 scripts/verify_b063_hosted_build_workflow.py
+          python3 -m unittest scripts/test_verify_b063_hosted_build_workflow.py
+          python3 scripts/verify_runner_image_boundary.py --self-test
+      - name: Install checksum-pinned actionlint and lint only owned workflow
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/b063-actionlint.tar.gz"
+          curl --fail --location --silent --show-error \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $archive" | sha256sum --check --status
+          mkdir -p "$RUNNER_TEMP/b063-actionlint"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/b063-actionlint" actionlint
+          "$RUNNER_TEMP/b063-actionlint/actionlint" -shellcheck= .github/workflows/container-build-push-prod.yml
