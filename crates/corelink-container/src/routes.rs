@@ -267,6 +267,8 @@ pub mod residency;
 pub mod signup;
 /// Dedicated authenticated exact-run inventory-seal route.
 pub mod staging_load_test_seal;
+/// Protected one-shot native D1 binding-proxy runtime proof for staging.
+pub mod staging_d1_binding_probe;
 /// Dedicated authenticated exact-run teardown route.  Router composition stays
 /// with the boot owner; this module supplies the bounded route and service seam.
 pub mod staging_load_test_teardown;

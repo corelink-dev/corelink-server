@@ -30,6 +30,8 @@ export interface StartContainerContext {
   destroyContainer(requestId: string): Promise<void>;
   installStagingD1BindingProxy(): Promise<void>;
   setAlarm(when: number): Promise<void>;
+  /** Internal one-shot staging probe only; ordinary lifecycle events remain enabled. */
+  readonly suppressLifecycleTelemetry?: boolean;
 }
 
 const CONTAINER_PORT = 50051;
@@ -74,17 +76,20 @@ export async function startContainer(
     const tenantHash = await hashForLog(ctx.getLifecycleState().tenantId ?? "_unknown");
     const newColdStartCount = ctx.getLifecycleState().coldStartCount + 1;
 
-    // AUDIT BEFORE MUTATION
-    await emitLifecycleEvent(
-      ctx.env.PAGERDUTY_ROUTING_KEY ?? "",
-      "corelink.do.cold_start.v1",
-      `CoreLink DO cold start #${newColdStartCount} for tenant ${tenantHash}`,
-      "info",
-      tenantHash,
-      ctx.doIdHash,
-      newColdStartCount,
-      ctx.env.ENVIRONMENT,
-    );
+    // AUDIT BEFORE MUTATION. The dedicated staging proof DO suppresses this
+    // external PagerDuty side effect; its protected run receipt is its audit.
+    if (!ctx.suppressLifecycleTelemetry) {
+      await emitLifecycleEvent(
+        ctx.env.PAGERDUTY_ROUTING_KEY ?? "",
+        "corelink.do.cold_start.v1",
+        `CoreLink DO cold start #${newColdStartCount} for tenant ${tenantHash}`,
+        "info",
+        tenantHash,
+        ctx.doIdHash,
+        newColdStartCount,
+        ctx.env.ENVIRONMENT,
+      );
+    }
 
     // Persist the "starting" status (the in-memory flip above already closed the
     // concurrent-start race; this durably records it across DO eviction).
@@ -424,7 +429,7 @@ export async function startContainer(
       // Poll health until container is responsive or timeout
       const healthy = await ctx.waitForContainerHealth(requestId, container);
       if (!healthy) {
-        await emitLifecycleEvent(
+        if (!ctx.suppressLifecycleTelemetry) await emitLifecycleEvent(
           ctx.env.PAGERDUTY_ROUTING_KEY ?? "",
           "corelink.do.container_died.v1",
           `CoreLink container failed health check on start for tenant ${tenantHash}`,
@@ -454,7 +459,7 @@ export async function startContainer(
       });
 
       // AUDIT AFTER SUCCESSFUL START
-      await emitLifecycleEvent(
+      if (!ctx.suppressLifecycleTelemetry) await emitLifecycleEvent(
         ctx.env.PAGERDUTY_ROUTING_KEY ?? "",
         "corelink.do.container_started.v1",
         `CoreLink container started for tenant ${tenantHash}`,
@@ -501,7 +506,7 @@ export async function startContainer(
 
       console.error(`[${requestId}] container start error: ${msg}`);
 
-      await emitLifecycleEvent(
+      if (!ctx.suppressLifecycleTelemetry) await emitLifecycleEvent(
         ctx.env.PAGERDUTY_ROUTING_KEY ?? "",
         "corelink.do.container_died.v1",
         `CoreLink container start threw for tenant ${tenantHash}`,

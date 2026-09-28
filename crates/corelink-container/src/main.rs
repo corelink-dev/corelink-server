@@ -345,6 +345,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             GLOBAL_BODY_LIMIT_BYTES,
         ));
 
+    // The temporary #1700 Cron probe is mounted only in the explicit staging
+    // native D1-binding mode. Its Worker caller invokes the container port
+    // directly from a scheduled-only DO RPC; ordinary DO fetches reject it.
+    if corelink_server::routes::staging_d1_binding_probe::enabled() {
+        app = app.merge(corelink_server::routes::staging_d1_binding_probe::router());
+    }
+
     // The diagnostic is absent unless every protected staging binding is valid.
     // `axum::serve` negotiates native HTTP/2 on this listener; tonic's Routes
     // preserves the gRPC response status and trailers without an HTTP/1 or

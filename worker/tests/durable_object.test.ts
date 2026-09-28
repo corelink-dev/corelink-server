@@ -198,6 +198,19 @@ describe("CoreLinkServer constructor", () => {
   });
 });
 
+describe("staging D1 runtime probe exposure", () => {
+  it("rejects the native probe path through ordinary Durable Object fetch", async () => {
+    const state = makeMockState("public-probe-path-test");
+    const do_ = new CoreLinkServer(state, makeEnv());
+    const response = await do_.fetch(new Request(
+      "https://worker.invalid/_internal/staging/d1-binding-runtime-probe",
+      { method: "POST", body: "{}" },
+    ));
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("not_found");
+  });
+});
+
 // ──────────────────────────────────────────────────────────────────────────────
 // DO health probe
 // ──────────────────────────────────────────────────────────────────────────────

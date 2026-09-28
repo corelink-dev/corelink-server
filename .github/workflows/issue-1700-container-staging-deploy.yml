@@ -54,16 +54,17 @@ jobs:
       inputs.confirm == 'deploy-container-staging-1700'
     runs-on: ubuntu-latest
     environment: staging
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-      STAGING_R2_S3_ENDPOINT: ${{ secrets.STAGING_R2_S3_ENDPOINT }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
     steps:
       - name: Confirm exact protected route-free operation
         env:
           OPERATION: ${{ inputs.operation }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           CONFIRM: ${{ inputs.confirm }}
+          ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
+          R2_S3_ENDPOINT: ${{ secrets.STAGING_R2_S3_ENDPOINT }}
         run: |
           set -euo pipefail
           test "$OPERATION" = 'deploy'
@@ -71,7 +72,9 @@ jobs:
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$EXPECTED_SHA" = "$GITHUB_SHA"
           test -n "$CLOUDFLARE_API_TOKEN"
-          test -n "$STAGING_R2_S3_ENDPOINT"
+          test -n "$ROUTE_READ_TOKEN"
+          test "$CLOUDFLARE_API_TOKEN" != "$ROUTE_READ_TOKEN"
+          test -n "$R2_S3_ENDPOINT"
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.sha }}
@@ -86,6 +89,8 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging/settings" \
             | python3 -c 'import json,sys; assert json.load(sys.stdin).get("success") is True'
       - name: Fail closed when a canonical staging route exists
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
         run: |
           set -euo pipefail
           python3 scripts/verify_issue_1700_route_inventory.py \
@@ -124,6 +129,11 @@ jobs:
             --deployments "$RUNNER_TEMP/staging-deployments-before.json" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+          pnpm exec wrangler containers list --json \
+            > "$RUNNER_TEMP/staging-containers-before.json"
+          node scripts/issue_1700_runtime_probe.mjs capture-container-preimage \
+            "$RUNNER_TEMP/staging-containers-before.json" \
+            "$RUNNER_TEMP/staging-container-preimage.json"
 
       - name: Deploy root with container rollout and no route
         id: deploy
@@ -135,7 +145,37 @@ jobs:
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --strict \
-            --message "$DEPLOYMENT_MARKER"
+            --message "$DEPLOYMENT_MARKER" 2>&1 | tee "$RUNNER_TEMP/staging-deploy.log"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: always() && steps.preimage.outcome == 'success'
+        with:
+          node-version: 22
+
+      - name: Capture the exact deployed Worker version and Container image digest
+        id: deployed_image
+        if: always() && steps.deploy.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          node scripts/issue_1700_runtime_probe.mjs capture-deploy \
+            "$RUNNER_TEMP/staging-deploy.log"
+
+      - name: Capture the exact candidate Container application state
+        id: candidate_container
+        if: always() && steps.deploy.outcome == 'success'
+        continue-on-error: true
+        env:
+          PREIMAGE_CONTAINER_VERSION: ${{ steps.preimage.outputs.preimage_container_version }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler containers list --json \
+            > "$RUNNER_TEMP/staging-containers-after-deploy.json"
+          MIN_CONTAINER_APP_VERSION="$PREIMAGE_CONTAINER_VERSION" \
+          node scripts/issue_1700_runtime_probe.mjs capture-container-state \
+            "$RUNNER_TEMP/staging-containers-after-deploy.json" \
+            candidate_ \
+            "$RUNNER_TEMP/staging-container-candidate.json"
 
       - name: Identify only this run's exact rollout
         id: candidate
@@ -167,14 +207,18 @@ jobs:
 
       - name: Verify the full marker and unchanged active candidate
         id: verify_candidate
-        if: always() && steps.candidate_version.outcome == 'success'
+        if: always() && steps.candidate_version.outcome == 'success' && steps.candidate_container.outcome == 'success'
         continue-on-error: true
         env:
           CANDIDATE_DEPLOYMENT_ID: ${{ steps.candidate.outputs.candidate_deployment_id }}
           CANDIDATE_VERSION_ID: ${{ steps.candidate.outputs.candidate_version_id }}
+          DEPLOYED_VERSION_ID: ${{ steps.deployed_image.outputs.deployed_version_id }}
+          CANDIDATE_CONTAINER_VERSION: ${{ steps.candidate_container.outputs.candidate_container_version }}
+          IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
           DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
         run: |
           set -euo pipefail
+          test "$CANDIDATE_VERSION_ID" = "$DEPLOYED_VERSION_ID"
           pnpm exec wrangler deployments list \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
@@ -188,28 +232,40 @@ jobs:
             --expected-version-id "$CANDIDATE_VERSION_ID" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+          pnpm exec wrangler containers list --json \
+            > "$RUNNER_TEMP/staging-containers-after-deploy.json"
+          EXPECTED_CONTAINER_IMAGE_DIGEST="$IMAGE_DIGEST" \
+          EXPECTED_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
+            node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
+            "$RUNNER_TEMP/staging-containers-after-deploy.json"
 
       - name: Require the new deployment to be attributable before validation
         if: always()
         env:
           DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
           CANDIDATE_OUTCOME: ${{ steps.verify_candidate.outcome }}
+          CONTAINER_OUTCOME: ${{ steps.candidate_container.outcome }}
           CANDIDATE_VERSION_ID: ${{ steps.verify_candidate.outputs.candidate_version_id }}
         run: |
           set -euo pipefail
           test "$DEPLOY_OUTCOME" = success
           test "$CANDIDATE_OUTCOME" = success
+          test "$CONTAINER_OUTCOME" = success
           test -n "$CANDIDATE_VERSION_ID"
 
       - name: Verify deployed compatibility flags and empty route inventory
         id: verify
-        if: steps.deploy.outcome == 'success' && steps.verify_candidate.outcome == 'success'
+        if: steps.deploy.outcome == 'success' && steps.verify_candidate.outcome == 'success' && steps.candidate_container.outcome == 'success'
         env:
           CANDIDATE_VERSION_ID: ${{ steps.verify_candidate.outputs.candidate_version_id }}
           CANDIDATE_DEPLOYMENT_ID: ${{ steps.verify_candidate.outputs.candidate_deployment_id }}
+          DEPLOYED_VERSION_ID: ${{ steps.deployed_image.outputs.deployed_version_id }}
+          CANDIDATE_CONTAINER_VERSION: ${{ steps.candidate_container.outputs.candidate_container_version }}
+          IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
           DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
         run: |
           set -euo pipefail
+          test "$CANDIDATE_VERSION_ID" = "$DEPLOYED_VERSION_ID"
           pnpm exec wrangler deployments list \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
@@ -227,6 +283,12 @@ jobs:
             --expected-version-id "$CANDIDATE_VERSION_ID" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+          pnpm exec wrangler containers list --json \
+            > "$RUNNER_TEMP/staging-containers-verified.json"
+          EXPECTED_CONTAINER_IMAGE_DIGEST="$IMAGE_DIGEST" \
+          EXPECTED_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
+            node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
+            "$RUNNER_TEMP/staging-containers-verified.json"
           curl --fail --silent --show-error \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging/settings" \
@@ -235,18 +297,25 @@ jobs:
             --response "$RUNNER_TEMP/staging-worker-settings.json" \
             --topology infra/staging/topology.json \
             > "$RUNNER_TEMP/staging-worker-settings-readback.json"
+      - name: Verify candidate has no canonical staging route
+        id: candidate_route
+        if: steps.verify.outcome == 'success'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
           python3 scripts/verify_issue_1700_route_inventory.py \
             > "$RUNNER_TEMP/staging-route-inventory-after.json"
-          python3 scripts/staging_deployment_guard.py record-success \
-            --response "$RUNNER_TEMP/staging-worker-settings.json" \
-            --topology infra/staging/topology.json \
-            --routes "$RUNNER_TEMP/staging-route-inventory-after.json" \
-            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
 
       - name: Roll back only this run to the recorded exact preimage
-        if: failure() && steps.verify_candidate.outcome == 'success'
+        id: early_rollback
+        if: failure() && steps.verify_candidate.outcome == 'success' && (steps.verify.outcome != 'success' || steps.candidate_route.outcome != 'success')
         env:
           PREIMAGE_VERSION_ID: ${{ steps.preimage.outputs.preimage_version_id }}
+          PREIMAGE_CONTAINER_IMAGE: ${{ steps.preimage.outputs.preimage_container_image }}
+          CANDIDATE_CONTAINER_VERSION: ${{ steps.candidate_container.outputs.candidate_container_version }}
+          CANDIDATE_CONTAINER_IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
+          PREIMAGE_CONTAINER_VERSION: ${{ steps.preimage.outputs.preimage_container_version }}
           CANDIDATE_VERSION_ID: ${{ steps.verify_candidate.outputs.candidate_version_id }}
           CANDIDATE_DEPLOYMENT_ID: ${{ steps.verify_candidate.outputs.candidate_deployment_id }}
           DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
@@ -271,6 +340,43 @@ jobs:
             --rollback-marker "$ROLLBACK_MARKER" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+          pnpm exec wrangler containers list --json \
+            > "$RUNNER_TEMP/staging-containers-after-runtime-probe.json"
+          EXPECTED_CONTAINER_IMAGE_DIGEST="$CANDIDATE_CONTAINER_IMAGE_DIGEST" \
+          EXPECTED_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
+            node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
+            "$RUNNER_TEMP/staging-containers-after-runtime-probe.json"
+          python3 - "$RUNNER_TEMP/staging-config/root.toml" "$RUNNER_TEMP/staging-config/rollback.toml" "$PREIMAGE_CONTAINER_IMAGE" <<'PY'
+          import json,re,sys,tomllib
+          from pathlib import Path
+          source=Path(sys.argv[1]).read_text()
+          config=tomllib.loads(source)
+          image=sys.argv[3]
+          pattern=r'^registry\.cloudflare\.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-staging-corelinkserver@sha256:[0-9a-f]{64}$'
+          assert re.fullmatch(pattern,image)
+          assert config.get('name')=='corelink-staging'
+          assert config.get('account_id')=='6a1fc1c626fc2628823e60b9db01f5cd'
+          assert config.get('workers_dev') is False
+          assert not any(x in config for x in ('routes','route','custom_domain'))
+          assert len(config.get('containers',[]))==1
+          current=config['containers'][0]['image']
+          matches=list(re.finditer(r'(?m)^image\s*=\s*"[^"\n]*Dockerfile"$',source))
+          assert len(matches)==1 and current.endswith('Dockerfile')
+          replacement='image = '+json.dumps(image)
+          start,end=matches[0].span()
+          Path(sys.argv[2]).write_text(source[:start]+replacement+source[end:])
+          restored=tomllib.loads(Path(sys.argv[2]).read_text())
+          assert restored['containers'][0]['image']==image
+          PY
+          pnpm exec wrangler deploy \
+            --config "$RUNNER_TEMP/staging-config/rollback.toml" \
+            --strict --message "$ROLLBACK_MARKER"
+          pnpm exec wrangler containers list --json \
+            > "$RUNNER_TEMP/staging-containers-image-restored.json"
+          EXPECTED_CONTAINER_IMAGE_DIGEST="${PREIMAGE_CONTAINER_IMAGE##*@}" \
+          MIN_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
+            node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
+            "$RUNNER_TEMP/staging-containers-image-restored.json"
           pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --yes \
@@ -283,6 +389,20 @@ jobs:
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
             > "$RUNNER_TEMP/staging-after-rollback-version.json"
+          pnpm exec wrangler containers list --json \
+            > "$RUNNER_TEMP/staging-containers-after-rollback.json"
+          PREIMAGE_CONTAINER_IMAGE="$PREIMAGE_CONTAINER_IMAGE" \
+            node scripts/issue_1700_runtime_probe.mjs verify-container-rollback \
+            "$RUNNER_TEMP/staging-containers-image-restored.json" \
+            "$RUNNER_TEMP/staging-containers-after-rollback.json"
+
+      - name: Verify route-free early rollback
+        if: always() && steps.early_rollback.outcome == 'success'
+        env:
+          ROLLBACK_MARKER: issue-1700-route-free-rollback-${{ github.run_id }}-${{ github.sha }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
           python3 scripts/verify_issue_1700_route_inventory.py \
             > "$RUNNER_TEMP/staging-route-inventory-after-rollback.json"
           python3 scripts/verify_issue_1700_existing_deployment.py verify-rollback \
@@ -293,6 +413,195 @@ jobs:
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json" \
             --marker "$ROLLBACK_MARKER"
 
+      - name: Prove native D1 binding read and batch rollback through staging Container
+        id: runtime_probe
+        if: steps.verify.outcome == 'success' && steps.candidate_route.outcome == 'success' && steps.deployed_image.outcome == 'success'
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          SENTRY_RELEASE: ${{ github.sha }}
+          IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          node -e 'if (Number(process.versions.node.split(".")[0]) !== 22 || typeof WebSocket !== "function") process.exit(1)'
+          node scripts/issue_1700_runtime_probe.mjs \
+            > "$RUNNER_TEMP/staging-runtime-probe-receipt.json"
+
+      - name: Reverify unchanged rollout and record complete runtime proof
+        if: steps.runtime_probe.outcome == 'success'
+        env:
+          CANDIDATE_VERSION_ID: ${{ steps.verify_candidate.outputs.candidate_version_id }}
+          CANDIDATE_DEPLOYMENT_ID: ${{ steps.verify_candidate.outputs.candidate_deployment_id }}
+          IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
+          DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
+          WORKER_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deployments list \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-deployments-after-runtime-probe.json"
+          pnpm exec wrangler versions view "$CANDIDATE_VERSION_ID" \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-version-after-runtime-probe.json"
+          python3 scripts/verify_issue_1700_existing_deployment.py verify-candidate \
+            --deployments "$RUNNER_TEMP/staging-deployments-after-runtime-probe.json" \
+            --version "$RUNNER_TEMP/staging-version-after-runtime-probe.json" \
+            --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
+            --marker "$DEPLOYMENT_MARKER" \
+            --expected-deployment-id "$CANDIDATE_DEPLOYMENT_ID" \
+            --expected-version-id "$CANDIDATE_VERSION_ID" \
+            --output "$GITHUB_OUTPUT" \
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+          pnpm exec wrangler containers list --json \
+            > "$RUNNER_TEMP/staging-containers-after-runtime-probe.json"
+          EXPECTED_CONTAINER_IMAGE_DIGEST="$IMAGE_DIGEST" \
+          EXPECTED_CONTAINER_APP_VERSION="${{ steps.candidate_container.outputs.candidate_container_version }}" \
+            node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
+            "$RUNNER_TEMP/staging-containers-after-runtime-probe.json"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $WORKER_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging/settings" \
+            --output "$RUNNER_TEMP/staging-worker-settings-final.json"
+          python3 scripts/staging_deployment_guard.py settings \
+            --response "$RUNNER_TEMP/staging-worker-settings-final.json" \
+            --topology infra/staging/topology.json \
+            > "$RUNNER_TEMP/staging-worker-settings-readback.json"
+          python3 - "$RUNNER_TEMP/staging-runtime-probe-receipt.json" "$IMAGE_DIGEST" <<'PY'
+          import json,re,sys
+          from pathlib import Path
+          receipt=json.loads(Path(sys.argv[1]).read_text())
+          assert receipt.get('contract')=='corelink-staging-runtime-deployment-proof-v1'
+          assert receipt.get('container_image_digest')==sys.argv[2]
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}',sys.argv[2])
+          PY
+
+      - name: Prove route-free settings after runtime probe
+        id: route_after_runtime
+        if: steps.runtime_probe.outcome == 'success'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_issue_1700_route_inventory.py \
+            > "$RUNNER_TEMP/staging-route-inventory-after-runtime-probe.json"
+
+      - name: Record complete runtime deployment receipt
+        if: steps.runtime_probe.outcome == 'success' && steps.route_after_runtime.outcome == 'success'
+        id: record_runtime
+        run: |
+          set -euo pipefail
+          python3 scripts/staging_deployment_guard.py record-success \
+            --response "$RUNNER_TEMP/staging-worker-settings-final.json" \
+            --topology infra/staging/topology.json \
+            --routes "$RUNNER_TEMP/staging-route-inventory-after-runtime-probe.json" \
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+
+      - name: Roll back only this run after runtime acceptance failure
+        id: runtime_rollback
+        if: always() && failure() && steps.verify_candidate.outcome == 'success' && steps.verify.outcome == 'success' && steps.early_rollback.outcome == 'skipped'
+        env:
+          PREIMAGE_VERSION_ID: ${{ steps.preimage.outputs.preimage_version_id }}
+          PREIMAGE_CONTAINER_IMAGE: ${{ steps.preimage.outputs.preimage_container_image }}
+          PREIMAGE_CONTAINER_VERSION: ${{ steps.preimage.outputs.preimage_container_version }}
+          CANDIDATE_CONTAINER_VERSION: ${{ steps.candidate_container.outputs.candidate_container_version }}
+          CANDIDATE_CONTAINER_IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
+          CANDIDATE_VERSION_ID: ${{ steps.verify_candidate.outputs.candidate_version_id }}
+          CANDIDATE_DEPLOYMENT_ID: ${{ steps.verify_candidate.outputs.candidate_deployment_id }}
+          DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
+          ROLLBACK_MARKER: issue-1700-runtime-rollback-${{ github.run_id }}-${{ github.sha }}
+          WORKER_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          pnpm exec wrangler deployments list \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-runtime-deployments-before-rollback.json"
+          pnpm exec wrangler versions view "$CANDIDATE_VERSION_ID" \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-runtime-version-before-rollback.json"
+          python3 scripts/verify_issue_1700_existing_deployment.py verify-candidate \
+            --deployments "$RUNNER_TEMP/staging-runtime-deployments-before-rollback.json" \
+            --version "$RUNNER_TEMP/staging-runtime-version-before-rollback.json" \
+            --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
+            --marker "$DEPLOYMENT_MARKER" \
+            --expected-deployment-id "$CANDIDATE_DEPLOYMENT_ID" \
+            --expected-version-id "$CANDIDATE_VERSION_ID" \
+            --rollback-marker "$ROLLBACK_MARKER" \
+            --output "$GITHUB_OUTPUT" \
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+          pnpm exec wrangler containers list --json \
+            > "$RUNNER_TEMP/staging-runtime-containers-before-rollback.json"
+          EXPECTED_CONTAINER_IMAGE_DIGEST="$CANDIDATE_CONTAINER_IMAGE_DIGEST" \
+          EXPECTED_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
+            node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
+            "$RUNNER_TEMP/staging-runtime-containers-before-rollback.json"
+          python3 - "$RUNNER_TEMP/staging-config/root.toml" "$RUNNER_TEMP/staging-config/rollback-runtime.toml" "$PREIMAGE_CONTAINER_IMAGE" <<'PY'
+          import json,re,sys,tomllib
+          from pathlib import Path
+          source=Path(sys.argv[1]).read_text()
+          config=tomllib.loads(source)
+          image=sys.argv[3]
+          pattern=r'^registry\.cloudflare\.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-staging-corelinkserver@sha256:[0-9a-f]{64}$'
+          assert re.fullmatch(pattern,image)
+          assert config.get('name')=='corelink-staging'
+          assert config.get('account_id')=='6a1fc1c626fc2628823e60b9db01f5cd'
+          assert config.get('workers_dev') is False
+          assert not any(x in config for x in ('routes','route','custom_domain'))
+          assert len(config.get('containers',[]))==1
+          current=config['containers'][0]['image']
+          matches=list(re.finditer(r'(?m)^image\s*=\s*"[^"\n]*Dockerfile"$',source))
+          assert len(matches)==1 and current.endswith('Dockerfile')
+          replacement='image = '+json.dumps(image)
+          start,end=matches[0].span()
+          Path(sys.argv[2]).write_text(source[:start]+replacement+source[end:])
+          restored=tomllib.loads(Path(sys.argv[2]).read_text())
+          assert restored['containers'][0]['image']==image
+          PY
+          pnpm exec wrangler deploy \
+            --config "$RUNNER_TEMP/staging-config/rollback-runtime.toml" \
+            --strict --message "$ROLLBACK_MARKER"
+          pnpm exec wrangler containers list --json \
+            > "$RUNNER_TEMP/staging-runtime-containers-image-restored.json"
+          EXPECTED_CONTAINER_IMAGE_DIGEST="${PREIMAGE_CONTAINER_IMAGE##*@}" \
+          MIN_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
+            node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
+            "$RUNNER_TEMP/staging-runtime-containers-image-restored.json"
+          pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --yes --message "$ROLLBACK_MARKER"
+          pnpm exec wrangler deployments list \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-runtime-deployments-after-rollback.json"
+          pnpm exec wrangler versions view "$PREIMAGE_VERSION_ID" \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-runtime-version-after-rollback.json"
+          pnpm exec wrangler containers list --json \
+            > "$RUNNER_TEMP/staging-runtime-containers-after-rollback.json"
+          PREIMAGE_CONTAINER_IMAGE="$PREIMAGE_CONTAINER_IMAGE" \
+            node scripts/issue_1700_runtime_probe.mjs verify-container-rollback \
+            "$RUNNER_TEMP/staging-runtime-containers-image-restored.json" \
+            "$RUNNER_TEMP/staging-runtime-containers-after-rollback.json"
+      - name: Verify route-free runtime rollback
+        if: always() && steps.runtime_rollback.outcome == 'success'
+        env:
+          ROLLBACK_MARKER: issue-1700-runtime-rollback-${{ github.run_id }}-${{ github.sha }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_issue_1700_route_inventory.py \
+            > "$RUNNER_TEMP/staging-runtime-routes-after-rollback.json"
+          python3 scripts/verify_issue_1700_existing_deployment.py verify-rollback \
+            --deployments "$RUNNER_TEMP/staging-runtime-deployments-after-rollback.json" \
+            --version "$RUNNER_TEMP/staging-runtime-version-after-rollback.json" \
+            --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
+            --routes "$RUNNER_TEMP/staging-runtime-routes-after-rollback.json" \
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json" \
+            --marker "$ROLLBACK_MARKER"
+
       - name: Upload redacted route-free deployment receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -300,10 +609,15 @@ jobs:
           name: issue-1700-route-free-deployment-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/staging-deploy-receipt.json
+            ${{ runner.temp }}/staging-container-preimage.json
+            ${{ runner.temp }}/staging-container-candidate.json
             ${{ runner.temp }}/staging-route-inventory-before.json
             ${{ runner.temp }}/staging-route-inventory-after.json
             ${{ runner.temp }}/staging-route-inventory-after-rollback.json
             ${{ runner.temp }}/staging-worker-settings-readback.json
+            ${{ runner.temp }}/staging-worker-settings-final.json
+            ${{ runner.temp }}/staging-route-inventory-after-runtime-probe.json
+            ${{ runner.temp }}/staging-runtime-probe-receipt.json
           retention-days: 30
           if-no-files-found: warn
 
@@ -321,7 +635,7 @@ jobs:
       actions: read
       contents: read
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Confirm exact protected read-only verification

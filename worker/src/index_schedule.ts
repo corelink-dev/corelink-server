@@ -2,7 +2,37 @@
 import type { ScheduledController } from "@cloudflare/workers-types";
 import type { Env } from "./index_common.js";
 import { scheduledDrillForCron, scheduledWeekNumber, syntheticRegionForWeek, syntheticEmitAtMs, SYNTHETIC_PAGE_CONTRACT } from "./index_common.js";
+import { runStagingD1BindingRuntimeProbe } from "./staging_runtime_d1_probe.js";
+
+export const STAGING_D1_RUNTIME_PROBE_CRON = "* * 28 9 *";
+export const STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS = Date.parse("2026-09-28T06:00:00Z");
+
 export async function runScheduled(controller: ScheduledController, env: Env): Promise<void> {
+    if (controller.cron === STAGING_D1_RUNTIME_PROBE_CRON) {
+      if (
+        env.ENVIRONMENT !== "staging" ||
+        controller.scheduledTime < Date.parse("2026-09-28T00:00:00Z") ||
+        controller.scheduledTime >= STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS ||
+        Date.now() >= STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS ||
+        !/^[0-9a-f]{40}$/.test(env.SENTRY_RELEASE ?? "") ||
+        env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
+        env.D1_DATABASE_ID !== "d72a6b39-6a48-4338-bfda-1111dda98604" ||
+        env.R2_S3_ENDPOINT !== "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com"
+      ) {
+        console.error("[staging_d1_runtime_probe] rejected reason=staging_guard");
+        controller.noRetry();
+        throw new Error("staging D1 runtime probe guard rejected");
+      }
+      try {
+        const receipt = await runStagingD1BindingRuntimeProbe(env, controller.scheduledTime);
+        console.info(`[staging_d1_runtime_probe] receipt=${JSON.stringify(receipt)}`);
+        return;
+      } catch {
+        console.error("[staging_d1_runtime_probe] failed reason=probe_failed");
+        throw new Error("staging D1 runtime probe failed");
+      }
+    }
+
     const drill = scheduledDrillForCron(controller.cron);
     if (drill === undefined) {
       // A cron is deployment configuration, not user input. Do not echo it in
