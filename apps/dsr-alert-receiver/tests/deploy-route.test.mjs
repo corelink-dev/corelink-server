@@ -306,7 +306,7 @@ describe("B-216 protected receiver route admission", () => {
     })), "worker_inventory_truncated");
   });
 
-  it.each([[], ["corelink-i2568-sla-credit-test-20260928"]])("simulates Stage A→B with private credentials and preexisting Workers %j", async (preexistingWorkerNames) => {
+  it.each([[[]], [["corelink-i2568-sla-credit-test-20260928"]]])("simulates Stage A→B with private credentials and preexisting Workers %j", async (preexistingWorkerNames) => {
     const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
     const sha = "e".repeat(40);
