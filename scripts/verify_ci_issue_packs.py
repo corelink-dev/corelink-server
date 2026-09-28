@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import fnmatch
 import json
 import re
@@ -41,6 +42,7 @@ CHECK_IDS = {
     "cargo-mutants-v27-inventory",
     "python-b170-owner-actions",
     "rust-b122-phase-regions",
+    "python-sla-credit-real",
 }
 REQUIRED_PACK_CHECKS = {
     "issue-2440-ci-scoping": {"actionlint", "ci-pack-contract"},
@@ -50,6 +52,7 @@ REQUIRED_PACK_CHECKS = {
     "issue-1677-b170-owner-actions": {"ci-pack-contract", "python-b170-owner-actions"},
     "issue-1667-phase-regions": {"actionlint", "ci-pack-contract", "rust-b122-phase-regions"},
 }
+REQUIRED_PACK_CHECKS["issue-2568-sla-credit-real"] = {"actionlint", "ci-pack-contract", "python-sla-credit-real"}
 REQUIRED_PACK_JOBS = {pack_id: {"issue-pack"} for pack_id in REQUIRED_PACK_CHECKS}
 TARGET_BASE_RULE = (
     "required workflow_dispatch input target_base_sha; must equal merge-base(candidate_sha, "
@@ -58,13 +61,36 @@ TARGET_BASE_RULE = (
 )
 
 
+SLA_CREDIT_HASHES = {'.actionlint.yaml': '2e1ad216236818322adb7baed2e25dcc836cd7a030493fd799f4d4fc06702576',
+ '.github/workflows/issue-2568-sla-credit-real.yml': '67031ad29cdcbef2efa7d6385c298f3aa240440545db81e53d490b9df58ee195',
+ 'docs/campaigns/remediation/wp150-workflow-ownership.md': 'cb9bb10177faf2fd578e1cc23163015f8c2913e360e8f2880dcd2afc71904e15',
+ 'docs/internal/secrets-checklist.md': '4d3cbad537f0ec07f00cdc34336f41000822c60febbf178dd9fe16a48ea52af7',
+ 'scripts/issue_2568_sla_credit_real.py': '3a41577dec203d3fa4f18924de6af92224ca5ae35f5b2231551e25a00b8ca0d2',
+ 'scripts/issue_2568_sla_credit_worker.ts': '4cf891a4ba1030e03db9401df4a312c75204a08bf7be774a8f634a1bc89e2d62',
+ 'scripts/verify_issue_2568_sla_credit_real.py': 'bca4fc394e00694eb2bf95e2418a5f90005cace3c426133e862eae868d20bab4',
+ 'tests/test_issue_2568_sla_credit_real.py': '392514070165cf8442f41c82237000831ae313c20d6a0d92d70c0b5dc0214df5'}
+
+
 def validate_workflow_contract(workflow_text: str) -> list[str]:
-    actionlint_condition = "if: inputs.pack_id == 'issue-2440-ci-scoping' || inputs.pack_id == 'issue-2437-worker-three-arm' || inputs.pack_id == 'issue-1948-mutants-receipt' || inputs.pack_id == 'issue-2457-mutants-shards' || inputs.pack_id == 'issue-1667-phase-regions'"
+    actionlint_condition = "if: inputs.pack_id == 'issue-2440-ci-scoping' || inputs.pack_id == 'issue-2437-worker-three-arm' || inputs.pack_id == 'issue-1948-mutants-receipt' || inputs.pack_id == 'issue-2457-mutants-shards' || inputs.pack_id == 'issue-1667-phase-regions' || inputs.pack_id == 'issue-2568-sla-credit-real'"
     required = (
         "github.ref == 'refs/heads/main' && github.ref_protected",
         "path: candidate",
         'ACTUAL_SHA="$(git -C candidate rev-parse HEAD)"',
-        "issue-2440-ci-scoping|issue-2437-worker-three-arm|issue-1948-mutants-receipt|issue-2457-mutants-shards|issue-1677-b170-owner-actions|issue-1667-phase-regions",
+        "issue-2440-ci-scoping|issue-2437-worker-three-arm|issue-1948-mutants-receipt|issue-2457-mutants-shards|issue-1677-b170-owner-actions|issue-1667-phase-regions|issue-2568-sla-credit-real",
+        "id: sla-credit-authorization",
+        "id: python-sla-credit-real",
+        "--pack-id issue-2568-sla-credit-real --candidate-root candidate --run-self-test",
+        "python3 -I scripts/backlog_verify.py",
+        "python3 -I scripts/verify_i2176_grpc_deny_gate.py",
+        "python3 -I scripts/verify_i2574_grpc_diagnostic_policy.py",
+        "ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4",
+        "path: canonical-source",
+        "verify-source --source-root ../canonical-source",
+        "verify-wrapper --source-root ../canonical-source",
+        "python3 -I scripts/verify_issue_2568_sla_credit_real.py --self-test",
+        "python3 -I tests/test_issue_2568_sla_credit_real.py",
+        "issue-2568-sla-credit-real) workflows=(.github/workflows/issue-2568-sla-credit-real.yml) ;;",
         "id: actionlint",
         "id: ci-pack-contract",
         "id: rust-worker-three-arm",
@@ -105,6 +131,8 @@ def validate_workflow_contract(workflow_text: str) -> list[str]:
         '[[ "$TARGET_BASE_SHA" == "$EXPECTED_BASE" ]]',
     )
     errors = [f"central workflow is missing required contract: {item}" for item in required if item not in workflow_text]
+    if workflow_text.find("id: sla-credit-authorization") >= workflow_text.find("id: python-sla-credit-real"):
+        errors.append("SLA credit authorization must precede candidate execution")
     normalized_workflow = re.sub(r"[ \t]*\\[ \t]*\r?\n[ \t]*", " ", workflow_text)
     cargo_mutants_lines = [line.strip() for line in normalized_workflow.splitlines() if "cargo mutants" in line]
     expected_cargo_mutants_lines = [
@@ -303,6 +331,23 @@ def self_test(catalog: dict) -> list[str]:
     canonical_workflow = (ROOT / ".github/workflows/issue-ci-pack.yml").read_text(encoding="utf-8")
     if validate_workflow_contract(canonical_workflow):
         failures.append("canonical workflow failed its static contract")
+    for marker in (
+        "id: sla-credit-authorization",
+        "python3 -I scripts/backlog_verify.py",
+        "python3 -I scripts/verify_i2176_grpc_deny_gate.py",
+        "python3 -I scripts/verify_i2574_grpc_diagnostic_policy.py",
+        "ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4",
+    ):
+        if not validate_workflow_contract(canonical_workflow.replace(marker, "removed-control", 1)):
+            failures.append(f"SLA credit missing trusted control was accepted: {marker}")
+    authorization = canonical_workflow.index("id: sla-credit-authorization")
+    execution = canonical_workflow.index("id: python-sla-credit-real")
+    wrong_order = canonical_workflow[:authorization] + canonical_workflow[authorization:].replace(
+        "id: sla-credit-authorization", "id: python-sla-credit-real", 1)
+    wrong_order = wrong_order[:execution] + wrong_order[execution:].replace(
+        "id: python-sla-credit-real", "id: sla-credit-authorization", 1)
+    if not validate_workflow_contract(wrong_order):
+        failures.append("SLA credit execution before authorization was accepted")
     for trigger in ("push", "schedule"):
         automatic_workflow = canonical_workflow.replace(
             "\n  workflow_dispatch:\n", f"\n  workflow_dispatch:\n  {trigger}:\n", 1
@@ -336,7 +381,7 @@ def self_test(catalog: dict) -> list[str]:
     if not validate_workflow_contract(token_workflow):
         failures.append("workflow adding a credential route was accepted")
     actionlint_omitted = (ROOT / ".github/workflows/issue-ci-pack.yml").read_text(encoding="utf-8").replace(
-        "if: inputs.pack_id == 'issue-2440-ci-scoping' || inputs.pack_id == 'issue-2437-worker-three-arm' || inputs.pack_id == 'issue-1948-mutants-receipt' || inputs.pack_id == 'issue-2457-mutants-shards' || inputs.pack_id == 'issue-1667-phase-regions'",
+        "if: inputs.pack_id == 'issue-2440-ci-scoping' || inputs.pack_id == 'issue-2437-worker-three-arm' || inputs.pack_id == 'issue-1948-mutants-receipt' || inputs.pack_id == 'issue-2457-mutants-shards' || inputs.pack_id == 'issue-1667-phase-regions' || inputs.pack_id == 'issue-2568-sla-credit-real'",
         "if: inputs.pack_id == 'issue-2440-ci-scoping' || inputs.pack_id == 'issue-2437-worker-three-arm' || inputs.pack_id == 'issue-2457-mutants-shards' || inputs.pack_id == 'issue-1667-phase-regions'",
         1,
     )
@@ -370,6 +415,21 @@ def self_test(catalog: dict) -> list[str]:
         ):
             failures.append("issue 1948 accepted an out-of-scope, unlinted workflow")
     return failures
+
+
+def authorize_sla_credit_tree(root: Path, changed: list[str]) -> list[str]:
+    errors = []
+    if len(changed) != len(SLA_CREDIT_HASHES) or set(changed) != set(SLA_CREDIT_HASHES):
+        errors.append("SLA credit candidate must change exactly the eight frozen files")
+    for relative, digest in SLA_CREDIT_HASHES.items():
+        path = root / relative
+        if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            errors.append(f"SLA credit candidate content is not authorized: {relative}")
+        entry = subprocess.run(["git", "ls-tree", "HEAD", "--", relative], cwd=root,
+                               check=True, capture_output=True, text=True).stdout.split()
+        if len(entry) != 4 or entry[0] != "100644" or entry[1] != "blob" or entry[3] != relative:
+            errors.append(f"SLA credit candidate mode is not authorized: {relative}")
+    return errors
 
 
 def main() -> int:
@@ -421,6 +481,11 @@ def main() -> int:
         capture_output=True,
         text=True,
     ).stdout.splitlines()
+    if args.pack_id == "issue-2568-sla-credit-real":
+        errors = authorize_sla_credit_tree(Path(args.candidate_root).resolve(), changed)
+        if errors:
+            print("SLA credit trusted authorization failed:", *errors, sep="\n- ", file=sys.stderr)
+            return 1
     allowed = selected[0]["changed_surfaces"]
     unexpected = paths_outside_pack(changed, allowed)
     if unexpected:
