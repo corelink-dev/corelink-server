@@ -74,7 +74,6 @@ class StagingBootstrapProviderTests(unittest.TestCase):
             "STAGING_CF_ACCOUNT_ID": custom_domain.ACCOUNT_ID,
             "CF_ZONE_ID": custom_domain.ZONE_ID,
             "STAGING_R2_S3_ENDPOINT": "https://" + "a" * 32 + ".r2.cloudflarestorage.com",
-            "STAGING_CF_D1_RUNTIME_TOKEN": "d1-runtime-token",
             "STAGING_CLERK_ISSUER_URL": "https://staging-clerk.invalid",
             "STAGING_CLERK_SECRET_KEY": "clerk-secret",
             "STAGING_DSR_DLQ_REDRIVE_AUTH_KEY": "dsr-secret",
@@ -110,7 +109,6 @@ class StagingBootstrapProviderTests(unittest.TestCase):
             "STAGING_CF_ACCOUNT_ID": custom_domain.ACCOUNT_ID,
             "CF_ZONE_ID": custom_domain.ZONE_ID,
             "STAGING_R2_S3_ENDPOINT": "https://" + "a" * 32 + ".r2.cloudflarestorage.com",
-            "STAGING_CF_D1_RUNTIME_TOKEN": "d1-runtime-token",
             "STAGING_CLERK_ISSUER_URL": "https://staging-clerk.invalid",
             "STAGING_CLERK_SECRET_KEY": "clerk-secret",
             "STAGING_CLERK_WEBHOOK_SECRET": "webhook-secret",
@@ -178,7 +176,6 @@ class StagingBootstrapProviderTests(unittest.TestCase):
             "STAGING_CF_ACCOUNT_ID": custom_domain.ACCOUNT_ID,
             "CF_ZONE_ID": custom_domain.ZONE_ID,
             "STAGING_R2_S3_ENDPOINT": "https://" + "a" * 32 + ".r2.cloudflarestorage.com",
-            "STAGING_CF_D1_RUNTIME_TOKEN": "d1-runtime-token",
             "STAGING_CLERK_ISSUER_URL": "https://staging-clerk.invalid",
             "STAGING_CLERK_SECRET_KEY": "clerk-secret",
             "STAGING_CLERK_WEBHOOK_SECRET": "webhook-secret",
@@ -231,7 +228,6 @@ class StagingBootstrapProviderTests(unittest.TestCase):
             "corelink-synthetic-pager-staging": set(),
         }
         environment = {
-            "STAGING_CF_D1_RUNTIME_TOKEN": "d1-runtime-token",
             "STAGING_CF_ACCOUNT_ID": "6a1fc1c626fc2628823e60b9db01f5cd",
             "STAGING_CLERK_ISSUER_URL": "https://staging-clerk.invalid",
             "STAGING_CLERK_SECRET_KEY": "clerk-test-secret",
@@ -245,7 +241,7 @@ class StagingBootstrapProviderTests(unittest.TestCase):
         self.assertEqual(
             set(plan["corelink-staging"]),
             {
-                "CF_API_TOKEN", "CLERK_ISSUER_URL", "CLERK_SECRET_KEY",
+                "CLERK_ISSUER_URL", "CLERK_SECRET_KEY",
                 "CLOUDFLARE_ACCOUNT_ID", "CORELINK_ADMIN_AUTH_KEY",
                 "CORELINK_ERASE_AUTH_KEY", "CORELINK_INTERNAL_AUTH_KEY",
                 "PAT_SIGNING_KEY", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY",
@@ -260,14 +256,14 @@ class StagingBootstrapProviderTests(unittest.TestCase):
         )
         self.assertEqual(plan["corelink-staging"]["CORELINK_INTERNAL_AUTH_KEY"], plan["corelink-signup-staging"]["CORELINK_INTERNAL_AUTH_KEY"])
         self.assertEqual(plan["corelink-staging"]["CORELINK_ERASE_AUTH_KEY"], plan["corelink-signup-staging"]["CORELINK_ERASE_AUTH_KEY"])
-        self.assertEqual(plan["corelink-staging"]["CF_API_TOKEN"], environment["STAGING_CF_D1_RUNTIME_TOKEN"])
+        self.assertNotIn("CF_API_TOKEN", plan["corelink-staging"])
         self.assertEqual(plan["corelink-staging"]["CLOUDFLARE_ACCOUNT_ID"], environment["STAGING_CF_ACCOUNT_ID"])
         self.assertEqual(plan["corelink-synthetic-pager-staging"], {})
 
     def test_existing_secret_plan_never_overwrites_or_accepts_partial_shared_secret(self) -> None:
         complete = {
             "corelink-staging": {
-                "CF_API_TOKEN", "CLERK_ISSUER_URL", "CLERK_SECRET_KEY",
+                "CLERK_ISSUER_URL", "CLERK_SECRET_KEY",
                 "CLOUDFLARE_ACCOUNT_ID", "CORELINK_ADMIN_AUTH_KEY",
                 "CORELINK_ERASE_AUTH_KEY", "CORELINK_INTERNAL_AUTH_KEY",
                 "PAT_SIGNING_KEY", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY",
@@ -292,7 +288,6 @@ class StagingBootstrapProviderTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(RuntimeError, "STAGING_CLERK_WEBHOOK_SECRET"):
             provider.plan_missing_secret_values(workers, {
-                "STAGING_CF_D1_RUNTIME_TOKEN": "d1-token",
                 "STAGING_CF_ACCOUNT_ID": "account",
                 "STAGING_CLERK_ISSUER_URL": "issuer",
                 "STAGING_CLERK_SECRET_KEY": "clerk-secret",
@@ -302,26 +297,26 @@ class StagingBootstrapProviderTests(unittest.TestCase):
                 "STAGING_R2_S3_SECRET_ACCESS_KEY": "r2-secret",
             })
 
-    def test_existing_secret_plan_never_reuses_provider_token_as_runtime_d1_token(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "STAGING_CF_D1_RUNTIME_TOKEN"):
-            provider.plan_missing_secret_values(
-                {
-                    "corelink-staging": set(),
-                    "corelink-signup-staging": set(),
-                    "corelink-synthetic-pager-staging": set(),
-                },
-                {
-                    "STAGING_CF_API_TOKEN": "provider-management-token",
-                    "STAGING_CF_ACCOUNT_ID": custom_domain.ACCOUNT_ID,
-                    "STAGING_CLERK_ISSUER_URL": "https://staging-clerk.invalid",
-                    "STAGING_CLERK_SECRET_KEY": "clerk-secret",
-                    "STAGING_CLERK_WEBHOOK_SECRET": "webhook-secret",
-                    "STAGING_DSR_DLQ_REDRIVE_AUTH_KEY": "dsr-secret",
-                    "STAGING_ERASURE_SALT_KEY": "salt-secret",
-                    "STAGING_R2_S3_ACCESS_KEY_ID": "r2-id",
-                    "STAGING_R2_S3_SECRET_ACCESS_KEY": "r2-secret",
-                },
-            )
+    def test_existing_secret_plan_never_binds_provider_token_as_runtime_d1_token(self) -> None:
+        plan = provider.plan_missing_secret_values(
+            {
+                "corelink-staging": set(),
+                "corelink-signup-staging": set(),
+                "corelink-synthetic-pager-staging": set(),
+            },
+            {
+                "STAGING_CF_API_TOKEN": "provider-management-token",
+                "STAGING_CF_ACCOUNT_ID": custom_domain.ACCOUNT_ID,
+                "STAGING_CLERK_ISSUER_URL": "https://staging-clerk.invalid",
+                "STAGING_CLERK_SECRET_KEY": "clerk-secret",
+                "STAGING_CLERK_WEBHOOK_SECRET": "webhook-secret",
+                "STAGING_DSR_DLQ_REDRIVE_AUTH_KEY": "dsr-secret",
+                "STAGING_ERASURE_SALT_KEY": "salt-secret",
+                "STAGING_R2_S3_ACCESS_KEY_ID": "r2-id",
+                "STAGING_R2_S3_SECRET_ACCESS_KEY": "r2-secret",
+            },
+        )
+        self.assertNotIn("CF_API_TOKEN", plan["corelink-staging"])
 
     def test_provider_preflight_pins_reject_provider_and_renderer_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

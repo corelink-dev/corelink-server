@@ -439,7 +439,7 @@ class StagingCustomDomainTests(unittest.TestCase):
             {"success": True, "result": {"bindings": []}},
             {"success": True, "result": {"bindings": []}},
         )
-        self.assertIn("corelink-staging:CF_API_TOKEN", missing)
+        self.assertNotIn("corelink-staging:CF_API_TOKEN", missing)
         self.assertIn("corelink-signup-staging:CLERK_WEBHOOK_SECRET", missing)
         complete_root = {
             "success": True,
@@ -447,7 +447,6 @@ class StagingCustomDomainTests(unittest.TestCase):
                 "bindings": [
                     {"name": name, "type": "secret_text"}
                     for name in (
-                        "CF_API_TOKEN",
                         "CLERK_ISSUER_URL",
                         "CLERK_SECRET_KEY",
                         "CLOUDFLARE_ACCOUNT_ID",

@@ -63,6 +63,15 @@ GC_UNCLASSIFIED_NAMES = {
 NON_SECRET_CONFIG_NAMES = {
     "D1_DATABASE_ID",
     "R2_S3_ENDPOINT",
+    "EXPECTED_CONTAINER_APP_VERSION",
+    "EXPECTED_CONTAINER_IMAGE_DIGEST",
+    "EXPECTED_SHA",
+    "IMAGE_DIGEST",
+    "MIN_CONTAINER_APP_VERSION",
+    "PREIMAGE_CONTAINER_IMAGE",
+    "B216_BOOTSTRAP_STAGE",
+    "B216_BOOTSTRAP_HANDOFF_PATH",
+    "GITHUB_RUN_ATTEMPT",
 }
 
 I2193_MATRIX_BOUND_NAMES = {
@@ -261,11 +270,32 @@ def test_non_secret_config_names_are_allowlisted_by_both_validators() -> None:
     assert all(gate.ALLOWLIST_REGEX.match(name) for name in NON_SECRET_CONFIG_NAMES)
 
     shell_gate = (ROOT / "scripts/secrets-checklist-verify.sh").read_text(encoding="utf-8")
-    assert all(f"|{name}$" in shell_gate for name in NON_SECRET_CONFIG_NAMES)
+    regex = re.search(r"^ALLOWLIST_REGEX='([^']+)'$", shell_gate, re.MULTILINE)
+    assert regex, "Bash allowlist must have one canonical assignment"
+    for name in NON_SECRET_CONFIG_NAMES:
+        assert subprocess.run(
+            ["grep", "-E", regex.group(1)], input=f"{name}\n", text=True,
+            capture_output=True, check=False,
+        ).returncode == 0
 
     assert not gate.ALLOWLIST_REGEX.match("D1_DATABASE_TOKEN")
     assert not gate.ALLOWLIST_REGEX.match("R2_S3_SECRET_ACCESS_KEY")
     assert not gate.ALLOWLIST_REGEX.match("CORELINK_HTTP_SECRET_FILE")
+    assert not gate.ALLOWLIST_REGEX.fullmatch("EXPECTED_SHA_TOKEN")
+    assert not gate.ALLOWLIST_REGEX.fullmatch("IMAGE_DIGEST_SECRET")
+    for name in (
+        "B216_BOOTSTRAP_STAGE_TOKEN",
+        "B216_BOOTSTRAP_STAGE_SECRET",
+        "B216_BOOTSTRAP_HANDOFF_PATH_TOKEN",
+        "B216_BOOTSTRAP_HANDOFF_PATH_SECRET",
+        "B216_BOOTSTRAP_UNKNOWN",
+        "GITHUB_RUN_ATTEMPT_SECRET",
+    ):
+        assert not gate.ALLOWLIST_REGEX.fullmatch(name)
+        assert subprocess.run(
+            ["grep", "-E", regex.group(1)], input=f"{name}\n", text=True,
+            capture_output=True, check=False,
+        ).returncode != 0
 
 
 def test_i2193_matrix_bindings_remain_fail_closed() -> None:

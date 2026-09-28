@@ -101,6 +101,9 @@ export default defineConfig({
     setupFiles: ["./tests/setup.ts"],
   },
   resolve: {
+    alias: {
+      "cloudflare:workers": new URL("./tests/cloudflare_workers_node_stub.ts", import.meta.url).pathname,
+    },
     extensions: [".ts", ".js", ".mts", ".mjs"],
   },
 });

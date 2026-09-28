@@ -2,6 +2,12 @@
 import * as Sentry from "@sentry/cloudflare";
 import { scrubSentryEvent } from "./sentry-scrub.js";
 import { CoreLinkServer } from "./durable_object.js";
+import { StagingD1BindingProxy } from "./staging_d1_binding_proxy_entrypoint.js";
+
+// Required by Cloudflare's container egress interception runtime. CoreLink
+// retains its existing raw DurableObject class; only the outbound proxy
+// WorkerEntrypoint is exported from the SDK.
+export { ContainerProxy } from "@cloudflare/containers";
 import { RolloutController } from "./rollout_controller.js";
 import { EventLogDO } from "./event_log_do.js";
 import { RequestMeterCoordinatorDO } from "./request_meter_coordinator_do.js";
@@ -12,6 +18,7 @@ import type { Env } from "./index_common.js";
 import type { ExportedHandler } from "@cloudflare/workers-types";
 
 export type { Env } from "./index_common.js";
+export { StagingD1BindingProxy };
 export { doLocationHintForRegion, internalConsumerForPath } from "./index_common.js";
 export {
   deferCapVerdictFor,

@@ -69,13 +69,13 @@ issue text, logs, or artifacts:
 
 | Purpose | Required names |
 | --- | --- |
-| Cloudflare account and zone | `STAGING_CF_API_TOKEN`, `STAGING_CF_ACCOUNT_ID`, `STAGING_CF_WORKER_API_TOKEN`, `CF_ZONE_ID` (environment variable) |
+| Cloudflare account and zone | `STAGING_CF_API_TOKEN`, `STAGING_CF_ACCOUNT_ID`, `STAGING_CF_WORKER_API_TOKEN`, `STAGING_CF_ROUTE_READ_TOKEN`, `CF_ZONE_ID` (environment variable) |
 | R2 endpoint and access | `STAGING_R2_S3_ENDPOINT`, `STAGING_R2_S3_ACCESS_KEY_ID`, `STAGING_R2_S3_SECRET_ACCESS_KEY` |
 | Clerk test tenant | `STAGING_CLERK_ISSUER_URL`, `STAGING_CLERK_SECRET_KEY`, `STAGING_CLERK_WEBHOOK_SECRET` |
 | Synthetic operations | `STAGING_ERASURE_SALT_KEY`, `STAGING_DSR_DLQ_REDRIVE_AUTH_KEY` |
 | Load and teardown | `K6_STAGING_BYOK_CMK_ID`, `K6_STAGING_MFA_STUB`, `K6_STAGING_PAT`, `K6_STAGING_STRIPE_WHSEC`, `K6_STAGING_TEARDOWN_TOKEN`, `K6_TARGET_IDENTITY_RECEIPT`, `K6_TARGET_HOST` |
 
-The two Cloudflare tokens must be distinct and scoped to this target. `K6_TARGET_HOST`
+The provider API token, per-Worker API token, and routes-read token must be distinct and scoped to this target. The root Worker's D1 client uses the existing `CONFIG_DB` binding through a host/path-pinned outbound proxy; no Cloudflare D1 API token is forwarded to the container. `K6_TARGET_HOST`
 must resolve to the canonical origin. The bootstrap workflow checks every input
 before mutation; it generates the internal Worker auth keys itself and reads
 back secret names without exposing values. The staging environment must not

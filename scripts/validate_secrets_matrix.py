@@ -81,8 +81,9 @@ ALLOWLIST_REGEX = re.compile(
     r"|HOME$|USERPROFILE$"
     r"|CARGO_"
     r"|GITHUB_(TOKEN|OUTPUT|ENV|PATH|STEP_SUMMARY|ACTIONS|REPOSITORY|SHA|REF"
-    r"|WORKFLOW|RUN_ID|RUN_NUMBER|ACTOR|EVENT_NAME|EVENT_PATH|JOB|API_URL"
+    r"|WORKFLOW|RUN_ID|RUN_NUMBER|RUN_ATTEMPT|ACTOR|EVENT_NAME|EVENT_PATH|JOB|API_URL"
     r"|SERVER_URL|GRAPHQL_URL|WORKSPACE)$"
+    r"|B216_BOOTSTRAP_STAGE$|B216_BOOTSTRAP_HANDOFF_PATH$"
     r"|RUNNER_"
     r"|GH_TOKEN$"
     r"|GNUPGHOME$"
@@ -212,6 +213,14 @@ ALLOWLIST_REGEX = re.compile(
     # BYOK revocation scheduling is an explicit fail-closed boolean deployment
     # control; KMS credentials remain separate matrix entries.
     r"|CORELINK_BYOK_REVOCATION_SCHEDULER_ENABLED$"
+    # #1700 protected runtime proof carries exact deployment/image versions and
+    # digests as non-secret receipt metadata; the API tokens remain matrix-bound.
+    r"|EXPECTED_CONTAINER_APP_VERSION$"
+    r"|EXPECTED_CONTAINER_IMAGE_DIGEST$"
+    r"|EXPECTED_SHA$"
+    r"|IMAGE_DIGEST$"
+    r"|MIN_CONTAINER_APP_VERSION$"
+    r"|PREIMAGE_CONTAINER_IMAGE$"
     # WP-3 dashboard revival (2026-06-10) — Stripe billing-portal return_url
     # override (public dashboard URL; default hardcoded in source). No
     # credential material — STRIPE_SECRET_KEY (matrix row) is the actual

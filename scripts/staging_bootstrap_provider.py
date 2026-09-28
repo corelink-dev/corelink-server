@@ -144,7 +144,6 @@ def plan_missing_secret_values(
     """Build a values-only plan for absent names; never overwrite a live secret."""
     workers = {
         "corelink-staging": {
-            "CF_API_TOKEN": "STAGING_CF_D1_RUNTIME_TOKEN",
             "CLERK_ISSUER_URL": "STAGING_CLERK_ISSUER_URL",
             "CLERK_SECRET_KEY": "STAGING_CLERK_SECRET_KEY",
             "CLOUDFLARE_ACCOUNT_ID": "STAGING_CF_ACCOUNT_ID",
@@ -166,7 +165,7 @@ def plan_missing_secret_values(
     }
     required = {
         "corelink-staging": {
-            "CF_API_TOKEN", "CLERK_ISSUER_URL", "CLERK_SECRET_KEY",
+            "CLERK_ISSUER_URL", "CLERK_SECRET_KEY",
             "CLOUDFLARE_ACCOUNT_ID", "CORELINK_ADMIN_AUTH_KEY",
             "CORELINK_ERASE_AUTH_KEY", "CORELINK_INTERNAL_AUTH_KEY",
             "PAT_SIGNING_KEY", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY",

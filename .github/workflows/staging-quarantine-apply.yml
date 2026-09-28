@@ -158,7 +158,6 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_API_TOKEN }}
       STAGING_CF_API_TOKEN: ${{ secrets.STAGING_CF_API_TOKEN }}
       STAGING_CF_ACCOUNT_ID: ${{ secrets.STAGING_CF_ACCOUNT_ID }}
-      STAGING_CF_D1_RUNTIME_TOKEN: ${{ secrets.STAGING_CF_D1_RUNTIME_TOKEN }}
       CF_ZONE_ID: ${{ vars.CF_ZONE_ID }}
       STAGING_R2_S3_ENDPOINT: ${{ secrets.STAGING_R2_S3_ENDPOINT }}
       CLERK_ISSUER_URL: ${{ secrets.STAGING_CLERK_ISSUER_URL }}
@@ -198,7 +197,7 @@ jobs:
           python3 scripts/verify_staging_topology_contract.py --expect ready
           test "$(jq -r '.deployment_state' infra/staging/topology.json)" = unprovisioned
           required=(
-            STAGING_CF_API_TOKEN STAGING_CF_ACCOUNT_ID STAGING_CF_D1_RUNTIME_TOKEN
+            STAGING_CF_API_TOKEN STAGING_CF_ACCOUNT_ID
             CF_ZONE_ID STAGING_R2_S3_ENDPOINT CLERK_ISSUER_URL CLERK_SECRET_KEY
             CLERK_WEBHOOK_SECRET ERASURE_SALT_KEY DSR_DLQ_REDRIVE_AUTH_KEY
             R2_S3_ACCESS_KEY_ID R2_S3_SECRET_ACCESS_KEY
@@ -209,10 +208,6 @@ jobs:
           done
           if ((${#missing[@]})); then
             printf '::error::Missing required staging input names: %s\n' "${missing[*]}"
-            exit 1
-          fi
-          if [[ "$STAGING_CF_API_TOKEN" == "$STAGING_CF_D1_RUNTIME_TOKEN" ]]; then
-            echo '::error::provider and D1 runtime Cloudflare tokens must be distinct'
             exit 1
           fi
 
@@ -288,7 +283,6 @@ jobs:
           done
           bind_generated_secret "$signup" CORELINK_INTERNAL_AUTH_KEY
           bind_generated_secret "$signup" CORELINK_ERASE_AUTH_KEY
-          bind_env_secret "$root" CF_API_TOKEN STAGING_CF_D1_RUNTIME_TOKEN
           bind_env_secret "$root" CLOUDFLARE_ACCOUNT_ID STAGING_CF_ACCOUNT_ID
           for item in \
             "$root:CLERK_ISSUER_URL:CLERK_ISSUER_URL" \
@@ -309,7 +303,7 @@ jobs:
             printf '%s\n' "$expected" | sort -u > "$RUNNER_TEMP/expected-secret-names.txt"
             diff -u "$RUNNER_TEMP/expected-secret-names.txt" "$RUNNER_TEMP/actual-secret-names.txt"
           }
-          verify_names "$root" $'CF_API_TOKEN\nCLERK_ISSUER_URL\nCLERK_SECRET_KEY\nCLOUDFLARE_ACCOUNT_ID\nCORELINK_ADMIN_AUTH_KEY\nCORELINK_ERASE_AUTH_KEY\nCORELINK_INTERNAL_AUTH_KEY\nPAT_SIGNING_KEY\nR2_S3_ACCESS_KEY_ID\nR2_S3_SECRET_ACCESS_KEY'
+          verify_names "$root" $'CLERK_ISSUER_URL\nCLERK_SECRET_KEY\nCLOUDFLARE_ACCOUNT_ID\nCORELINK_ADMIN_AUTH_KEY\nCORELINK_ERASE_AUTH_KEY\nCORELINK_INTERNAL_AUTH_KEY\nPAT_SIGNING_KEY\nR2_S3_ACCESS_KEY_ID\nR2_S3_SECRET_ACCESS_KEY'
           verify_names "$signup" $'CLERK_SECRET_KEY\nCLERK_WEBHOOK_SECRET\nCORELINK_ERASE_AUTH_KEY\nCORELINK_INTERNAL_AUTH_KEY\nDSR_DLQ_REDRIVE_AUTH_KEY\nERASURE_SALT_KEY'
           verify_names "$receiver" ''
 
@@ -343,7 +337,6 @@ jobs:
       STAGING_CF_WORKER_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
       STAGING_CF_ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
       STAGING_CF_ACCOUNT_ID: ${{ secrets.STAGING_CF_ACCOUNT_ID }}
-      STAGING_CF_D1_RUNTIME_TOKEN: ${{ secrets.STAGING_CF_D1_RUNTIME_TOKEN }}
       CF_ZONE_ID: ${{ vars.CF_ZONE_ID }}
       STAGING_R2_S3_ENDPOINT: ${{ secrets.STAGING_R2_S3_ENDPOINT }}
       STAGING_CLERK_ISSUER_URL: ${{ secrets.STAGING_CLERK_ISSUER_URL }}
@@ -366,12 +359,9 @@ jobs:
           test -n "$STAGING_CF_WORKER_API_TOKEN"
           test -n "$STAGING_CF_ROUTE_READ_TOKEN"
           test -n "$STAGING_CF_ACCOUNT_ID"
-          test -n "$STAGING_CF_D1_RUNTIME_TOKEN"
           test -n "$CF_ZONE_ID"
           test -n "$STAGING_R2_S3_ENDPOINT"
           test "$STAGING_CF_WORKER_API_TOKEN" != "$STAGING_CF_ROUTE_READ_TOKEN"
-          test "$STAGING_CF_WORKER_API_TOKEN" != "$STAGING_CF_D1_RUNTIME_TOKEN"
-          test "$STAGING_CF_ROUTE_READ_TOKEN" != "$STAGING_CF_D1_RUNTIME_TOKEN"
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
