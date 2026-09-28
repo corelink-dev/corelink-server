@@ -441,7 +441,7 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
 
     def test_1700_d1_binding_proxy_constants_match_frozen_transition(self) -> None:
         self.assertEqual(len(backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS), 37)
-        self.assertEqual(backlog_verify.STAGING_D1_BINDING_PROXY_MANIFEST_SHA256, "d4113f29103530aaf660a54e593599115296671dffb05de206e6f220b660fc74")
+        self.assertEqual(backlog_verify.STAGING_D1_BINDING_PROXY_MANIFEST_SHA256, "05e9e3c71a7073146ced7fbcf52afaf8acae88ee6ffc621710921a0eb1f6ec0e")
         self.assertEqual(
             backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
                 "tests/test_issue_1700_route_inventory.py"
@@ -478,13 +478,13 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
             backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
                 "worker/src/staging_d1_binding_proxy.ts"
             ],
-            (0o644, "01e5ac58773118bae44c9d11ff2b3cdd0ba376579f43317af8b4fd2138b7a92d"),
+            (0o644, "1e5d940b240a4bef9daba0e360758793ab7b11a165f5b1bc8ccb7eae658a348d"),
         )
         self.assertEqual(
             backlog_verify.STAGING_D1_BINDING_PROXY_TARGETS[
                 "worker/tests/staging_d1_binding_proxy.test.ts"
             ],
-            (0o644, "6eb924bbe1aff66f9d223adb9c490c1500a6a9dfa3a3160182ffda45c72f4e78"),
+            (0o644, "5710f974898de4c88a1ddca3f9815589d7c805faa4481f44d9005054d10796cc"),
         )
 
     def test_b068_d1_source_pin_is_paired_with_exact_topology_state(self) -> None:

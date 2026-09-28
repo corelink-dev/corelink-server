@@ -14,7 +14,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(len(policy.STAGING_D1_PROXY_TARGETS), 37)
         self.assertEqual(
             policy.STAGING_D1_PROXY_TARGETS["worker/src/durable_object.ts"][1],
-            "5c9af7c31ce1ef00a9123819f81d5053705ee01423bfebef20ee94186baf92a2",
+            "c4046c2008acedecc7d1404bfad2fecbda58131e66927b58c5d56d82ca9febb9",
         )
         self.assertEqual(
             policy.STAGING_D1_PROXY_TARGETS["worker/src/durable_object_start.ts"][1],
@@ -22,7 +22,7 @@ class PolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             policy.STAGING_D1_PROXY_MANIFEST_SHA256,
-            "d4113f29103530aaf660a54e593599115296671dffb05de206e6f220b660fc74",
+            "05e9e3c71a7073146ced7fbcf52afaf8acae88ee6ffc621710921a0eb1f6ec0e",
         )
         self.assertEqual(
             policy.STAGING_D1_PROXY_TARGETS[
