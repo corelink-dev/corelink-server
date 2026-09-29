@@ -1,0 +1,1 @@
+Fix #1700 host probe transport to use Cloudflare tail JSON filters, the required trace-v1 WebSocket handshake and initialization, bounded connection timing, and binary/text event decoding. Emit only allowlisted diagnostic stage/code/status on failure; preserve staging runtime and image inputs.

@@ -168,13 +168,53 @@ function exactSchedules(schedules, crons) {
     Object.keys(item).every((key) => ["cron", "created_on", "modified_on"].includes(key)));
 }
 
+const probeStages = new Set(["probe_preflight", "schedule_preflight", "tail_create", "tail_connect", "schedule_install", "receipt_wait", "schedule_cleanup", "tail_cleanup"]);
+const probeErrors = new Map([
+  ["runtime probe preflight rejected", "probe_preflight"],
+  ["preexisting Worker schedules block probe", "preexisting_schedule"],
+  ["Cloudflare API response rejected", "api_envelope"],
+  ["Cloudflare API operation failed", "api_failure"],
+  ["Cloudflare API request failed", "api_transport"],
+  ["tail preflight rejected", "tail_envelope"],
+  ["Worker tail connection timed out", "tail_open_timeout"],
+  ["Worker tail initialization failed", "tail_initialization"],
+  ["Worker tail protocol rejected", "tail_protocol"],
+  ["Worker tail stream failed", "tail_stream"],
+  ["Worker tail stream closed before receipt", "tail_closed"],
+  ["runtime probe receipt timed out", "receipt_timeout"],
+  ["schedule API response rejected", "schedule_envelope"],
+  ["installed schedule readback rejected", "schedule_readback"],
+  ["schedule cleanup readback rejected", "schedule_cleanup"],
+  ["schedule drift requires operator cleanup", "schedule_drift"],
+]);
+
+// Never include provider bodies, exception messages, tokens or tail URLs.
+export function failureDiagnostic(error) {
+  return {
+    stage: probeStages.has(error?.stage) ? error.stage : "local_validation",
+    code: probeErrors.get(error?.message) ?? "unexpected_error",
+    ...(Number.isInteger(error?.httpStatus) && error.httpStatus >= 100 && error.httpStatus <= 599
+      ? { http_status: error.httpStatus } : {}),
+  };
+}
+
+export async function decodeTailFrame(data) {
+  if (data instanceof Blob) {
+    if (data.size > 1024 * 1024) return undefined;
+    data = await data.arrayBuffer();
+  }
+  if (typeof data === "string") return data.length <= 1024 * 1024 ? data : undefined;
+  if (data instanceof ArrayBuffer && data.byteLength <= 1024 * 1024) return new TextDecoder("utf-8", { fatal: true }).decode(data);
+  return undefined;
+}
+
 export async function runRuntimeProbe({
   token,
   release,
   expectedSha,
   imageDigest,
   api = fetch,
-  socketFactory = (url) => new WebSocket(url),
+  socketFactory = (url, protocol) => new WebSocket(url, protocol),
   now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   timeoutMs = 16 * 60_000,
@@ -184,25 +224,30 @@ export async function runRuntimeProbe({
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 16 * 60_000 ||
       now() < PROBE_WINDOW.starts_ms ||
       now() + timeoutMs >= PROBE_EXPIRY) {
-    throw new Error("runtime probe preflight rejected");
+    throw Object.assign(new Error("runtime probe preflight rejected"), { stage: "probe_preflight" });
   }
 
+  let stage = "schedule_preflight";
+  const tagged = (error) => Object.assign(error instanceof Error ? error : new Error("runtime probe failed"), { stage });
   async function request(path, init = {}) {
-    const response = await api(`${apiBase}${path}`, {
+    let response;
+    try { response = await api(`${apiBase}${path}`, {
       ...init,
       signal: AbortSignal.timeout(30_000),
       headers: { authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
-    });
+    }); } catch { throw tagged(new Error("Cloudflare API request failed")); }
     let body;
-    try { body = await response.json(); } catch { throw new Error("Cloudflare API response rejected"); }
-    if (!response.ok || body?.success !== true) throw new Error("Cloudflare API operation failed");
+    try { body = await response.json(); } catch { throw tagged(new Error("Cloudflare API response rejected")); }
+    if (!response.ok || body?.success !== true) throw Object.assign(tagged(new Error("Cloudflare API operation failed")), { httpStatus: response.status });
     return body;
   }
 
   const startedAt = now();
   const deadline = Math.min(startedAt + timeoutMs, PROBE_EXPIRY);
-  const before = requireScheduleEnvelope(await request("/schedules"));
-  if (before.length !== 0) throw new Error("preexisting Worker schedules block probe");
+  try {
+    const before = requireScheduleEnvelope(await request("/schedules"));
+    if (before.length !== 0) throw new Error("preexisting Worker schedules block probe");
+  } catch (error) { throw tagged(error); }
 
   let tailId;
   let socket;
@@ -210,21 +255,39 @@ export async function runRuntimeProbe({
   let receipt;
   let primaryError;
   let receiptTimer;
+  let openTimer;
   try {
-    const tail = (await request("/tails", { method: "POST" })).result;
-    if (typeof tail?.id !== "string" || !/^[a-f0-9]{32}$/.test(tail.id) ||
-        typeof tail?.url !== "string" || !/^wss:\/\//.test(tail.url) ||
+    stage = "tail_create";
+    const tail = (await request("/tails", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ filters: [] }),
+    })).result;
+    if (typeof tail?.id !== "string" || !/^[a-f0-9]{32}$/.test(tail.id)) throw new Error("tail preflight rejected");
+    tailId = tail.id;
+    if (typeof tail?.url !== "string" || !/^wss:\/\//.test(tail.url) ||
         !Number.isFinite(Date.parse(tail.expires_at)) || Date.parse(tail.expires_at) <= now()) {
       throw new Error("tail preflight rejected");
     }
-    tailId = tail.id;
 
-    socket = socketFactory(tail.url);
+    stage = "tail_connect";
+    socket = socketFactory(tail.url, "trace-v1");
+    socket.binaryType = "arraybuffer";
+    let rejectOpen;
+    const opened = new Promise((resolve, reject) => {
+      rejectOpen = reject;
+      openTimer = setTimeout(() => reject(new Error("Worker tail connection timed out")), Math.min(30_000, Math.max(1, deadline - now())));
+      socket.onopen = () => {
+        clearTimeout(openTimer);
+        if (socket.protocol !== "trace-v1") return reject(new Error("Worker tail protocol rejected"));
+        try { socket.send(JSON.stringify({ debug: false })); }
+        catch { return reject(new Error("Worker tail initialization failed")); }
+        resolve();
+      };
+    });
     const receiptPromise = new Promise((resolve, reject) => {
       receiptTimer = setTimeout(() => reject(new Error("runtime probe receipt timed out")), Math.max(0, deadline - now()));
-      socket.onmessage = (message) => {
+      socket.onmessage = async (message) => {
         try {
-          const event = JSON.parse(String(message.data));
+          const event = JSON.parse(await decodeTailFrame(message.data));
           const found = extractReceipt(event, release, startedAt, deadline);
           if (found !== undefined && now() < deadline && found.scheduled_time_ms <= now()) {
             clearTimeout(receiptTimer);
@@ -236,10 +299,12 @@ export async function runRuntimeProbe({
       };
       socket.onerror = () => {
         clearTimeout(receiptTimer);
+        rejectOpen(new Error("Worker tail stream failed"));
         reject(new Error("Worker tail stream failed"));
       };
       socket.onclose = () => {
         clearTimeout(receiptTimer);
+        rejectOpen(new Error("Worker tail stream closed before receipt"));
         reject(new Error("Worker tail stream closed before receipt"));
       };
     });
@@ -248,6 +313,8 @@ export async function runRuntimeProbe({
     // rejection on the normal path.
     receiptPromise.catch(() => undefined);
 
+    await opened;
+    stage = "schedule_install";
     scheduleAttempted = true;
     await request("/schedules", {
       method: "PUT",
@@ -256,14 +323,17 @@ export async function runRuntimeProbe({
     });
     const installed = requireScheduleEnvelope(await request("/schedules"));
     if (!exactSchedules(installed, [PROBE_CRON])) throw new Error("installed schedule readback rejected");
+    stage = "receipt_wait";
     receipt = await receiptPromise;
     socket.close();
   } catch (error) {
-    primaryError = error;
+    primaryError = tagged(error);
   } finally {
     clearTimeout(receiptTimer);
+    clearTimeout(openTimer);
     try { socket?.close(); } catch { /* best-effort close; tail is deleted below */ }
     if (scheduleAttempted) {
+      stage = "schedule_cleanup";
       try {
         const current = requireScheduleEnvelope(await request("/schedules"));
         if (exactSchedules(current, [PROBE_CRON])) {
@@ -274,16 +344,17 @@ export async function runRuntimeProbe({
           throw new Error("schedule drift requires operator cleanup");
         }
       } catch (error) {
-        primaryError ??= error;
+        primaryError ??= tagged(error);
       }
     }
     if (tailId !== undefined) {
+      stage = "tail_cleanup";
       try { await request(`/tails/${tailId}`, { method: "DELETE" }); }
-      catch (error) { primaryError ??= error; }
+      catch (error) { primaryError ??= tagged(error); }
     }
   }
 
-  if (primaryError !== undefined) throw new Error(primaryError instanceof Error ? primaryError.message : "runtime probe failed");
+  if (primaryError !== undefined) throw primaryError;
   if (!exactReceipt(receipt, release, startedAt, deadline)) throw new Error("runtime probe receipt rejected");
   return {
     contract: "corelink-staging-runtime-deployment-proof-v1",
@@ -386,7 +457,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    process.stderr.write("issue-1700 runtime probe failed; inspect the protected job step status\n");
+    process.stderr.write(`issue-1700 runtime probe failed ${JSON.stringify(failureDiagnostic(error))}\n`);
     process.exitCode = 1;
   }
 }
