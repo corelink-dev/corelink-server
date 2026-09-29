@@ -913,6 +913,142 @@ mod cleanup_fault_injection {
         assert!(!error.to_string().contains(session_id));
         runtime.block_on(server.verify());
     }
+
+    #[test]
+    fn customer_explicitly_live_is_never_reconciled_or_deleted() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _context = protected_stripe_context("424250");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let customer_id = "cus_explicit_live_fixture";
+        runtime.block_on(async {
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/customers")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id,
+                    "livemode": true
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id,
+                    "livemode": false,
+                    "metadata": {"test_run_id": "424250"}
+                })))
+                .expect(0)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .expect(0)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .expect(0)
+                .mount(&server)
+                .await;
+        });
+        let request = CheckoutSessionRequest::new(
+            TenantId::new("tenant_explicit_live_customer"),
+            TierKind::Starter,
+            "live-customer@example.test",
+            "https://example.test/ok",
+            "https://example.test/cancel",
+        );
+        let error = mock_client(server.uri())
+            .create_checkout_session(&request)
+            .expect_err("explicit LIVE customer must be retained without requests");
+        assert!(error.to_string().contains("explicitly LIVE"));
+        assert!(error.to_string().contains("live_mode_retained_no_recovery"));
+        assert!(!error.to_string().contains(customer_id));
+        runtime.block_on(server.verify());
+    }
+
+    #[test]
+    fn checkout_explicitly_live_is_never_reconciled_expired_or_deleted() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _context = protected_stripe_context("424251");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let customer_id = "cus_explicit_live_checkout_fixture";
+        let session_id = "cs_explicit_live_fixture";
+        runtime.block_on(async {
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/customers")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id,
+                    "livemode": false
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": session_id,
+                    "customer": customer_id,
+                    "url": "https://example.test/session",
+                    "livemode": true
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/checkout/sessions/{session_id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": session_id,
+                    "customer": customer_id,
+                    "livemode": false,
+                    "metadata": {"test_run_id": "424251"},
+                    "status": "open",
+                    "payment_status": "unpaid",
+                    "payment_intent": null,
+                    "subscription": null
+                })))
+                .expect(0)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!(
+                    "{proxy}/v1/checkout/sessions/{session_id}/expire"
+                )))
+                .expect(0)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .expect(0)
+                .mount(&server)
+                .await;
+        });
+        let request = CheckoutSessionRequest::new(
+            TenantId::new("tenant_explicit_live_checkout"),
+            TierKind::Starter,
+            "live-checkout@example.test",
+            "https://example.test/ok",
+            "https://example.test/cancel",
+        );
+        let error = mock_client(server.uri())
+            .create_checkout_session(&request)
+            .expect_err("explicit LIVE checkout must be retained without requests");
+        assert!(error.to_string().contains("explicitly LIVE"));
+        assert!(error.to_string().contains("live_mode_retained_no_recovery"));
+        assert!(!error.to_string().contains(customer_id));
+        assert!(!error.to_string().contains(session_id));
+        runtime.block_on(server.verify());
+    }
 }
 
 impl Drop for HarnessCleanup {

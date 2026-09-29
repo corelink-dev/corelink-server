@@ -1144,21 +1144,34 @@ impl StripeClient for StripeRealClient {
             .create_customer("", req.tenant_id.as_str(), &customer_idem)
             .map_err(|e| TierError::Stripe(e.to_string()))?;
         #[cfg(feature = "live-integration")]
-        if live_harness_run_id().is_some() && created_customer.livemode != Some(false) {
-            // Recover only this exact metadata-owned customer. Cleanup itself
-            // re-reads livemode and refuses DELETE unless it is explicit false.
-            let run_id = live_harness_run_id().expect("guarded above");
-            let recovered = self.cleanup_harness_customer(&created_customer.id, &run_id);
-            let status = if recovered.is_ok() {
-                "deleted_readback_pass"
-            } else {
-                "retained_recovery_required"
-            };
-            let receipt =
-                harness_recovery_receipt(&run_id, "customer", &created_customer.id, status);
-            return Err(TierError::Stripe(format!(
-                "created customer mode is not proven TEST; recovery receipt {receipt}"
-            )));
+        if let Some(run_id) = live_harness_run_id() {
+            if created_customer.livemode == Some(true) {
+                let receipt = harness_recovery_receipt(
+                    &run_id,
+                    "customer",
+                    &created_customer.id,
+                    "live_mode_retained_no_recovery",
+                );
+                return Err(TierError::Stripe(format!(
+                    "created customer is explicitly LIVE; retained without recovery request; receipt {receipt}"
+                )));
+            }
+            if created_customer.livemode.is_none() {
+                // Only an absent mode may be reconciled by re-reading this
+                // exact object. Cleanup refuses DELETE unless that read proves
+                // TEST mode and exact run ownership.
+                let recovered = self.cleanup_harness_customer(&created_customer.id, &run_id);
+                let status = if recovered.is_ok() {
+                    "deleted_readback_pass"
+                } else {
+                    "retained_recovery_required"
+                };
+                let receipt =
+                    harness_recovery_receipt(&run_id, "customer", &created_customer.id, status);
+                return Err(TierError::Stripe(format!(
+                    "created customer mode is unknown; recovery receipt {receipt}"
+                )));
+            }
         }
 
         let raw = match self.create_checkout_session_raw(
@@ -1211,38 +1224,56 @@ impl StripeClient for StripeRealClient {
             }
         };
         #[cfg(feature = "live-integration")]
-        if live_harness_run_id().is_some() && raw.livemode != Some(false) {
-            let run_id = live_harness_run_id().expect("guarded above");
-            let session_recovered = self.cleanup_harness_checkout(
-                &raw.id,
-                raw.customer.as_deref().unwrap_or(&created_customer.id),
-                &run_id,
-            );
-            let session_status = if session_recovered.is_ok() {
-                "expired_readback_pass"
-            } else {
-                "retained_recovery_required"
-            };
-            let session_receipt =
-                harness_recovery_receipt(&run_id, "checkout", &raw.id, session_status);
-            let customer_status = if session_recovered.is_ok()
-                && self
-                    .cleanup_harness_customer(&created_customer.id, &run_id)
-                    .is_ok()
-            {
-                "deleted_readback_pass"
-            } else {
-                "retained_recovery_required"
-            };
-            let customer_receipt = harness_recovery_receipt(
-                &run_id,
-                "customer",
-                &created_customer.id,
-                customer_status,
-            );
-            return Err(TierError::Stripe(format!(
-                "created checkout mode is not proven TEST; recovery receipts [{session_receipt},{customer_receipt}]"
-            )));
+        if let Some(run_id) = live_harness_run_id() {
+            if raw.livemode == Some(true) {
+                let session_receipt = harness_recovery_receipt(
+                    &run_id,
+                    "checkout",
+                    &raw.id,
+                    "live_mode_retained_no_recovery",
+                );
+                let customer_receipt = harness_recovery_receipt(
+                    &run_id,
+                    "customer",
+                    &created_customer.id,
+                    "retained_dependency_session_live",
+                );
+                return Err(TierError::Stripe(format!(
+                    "created checkout is explicitly LIVE; session and customer retained without recovery request; receipts [{session_receipt},{customer_receipt}]"
+                )));
+            }
+            if raw.livemode.is_none() {
+                let session_recovered = self.cleanup_harness_checkout(
+                    &raw.id,
+                    raw.customer.as_deref().unwrap_or(&created_customer.id),
+                    &run_id,
+                );
+                let session_status = if session_recovered.is_ok() {
+                    "expired_readback_pass"
+                } else {
+                    "retained_recovery_required"
+                };
+                let session_receipt =
+                    harness_recovery_receipt(&run_id, "checkout", &raw.id, session_status);
+                let customer_status = if session_recovered.is_ok()
+                    && self
+                        .cleanup_harness_customer(&created_customer.id, &run_id)
+                        .is_ok()
+                {
+                    "deleted_readback_pass"
+                } else {
+                    "retained_recovery_required"
+                };
+                let customer_receipt = harness_recovery_receipt(
+                    &run_id,
+                    "customer",
+                    &created_customer.id,
+                    customer_status,
+                );
+                return Err(TierError::Stripe(format!(
+                    "created checkout mode is unknown; recovery receipts [{session_receipt},{customer_receipt}]"
+                )));
+            }
         }
 
         // Stripe echoes the attached customer; fall back to the one we created
