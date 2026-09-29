@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScheduledController } from "@cloudflare/workers-types";
 import { runScheduled, STAGING_D1_RUNTIME_PROBE_CRON, STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS } from "../src/index_schedule.js";
+import { STAGING_D1_PROBE_WINDOW } from "../src/staging_runtime_d1_probe.js";
 import type { Env } from "../src/index_common.js";
 
 const RELEASE = "0123456789abcdef0123456789abcdef01234567";
-const SCHEDULED_TIME = Date.parse("2026-09-28T00:01:00Z");
+const SCHEDULED_TIME = Date.parse("2026-09-29T22:01:00Z");
 const RECEIPT = {
   contract: "corelink-staging-d1-binding-runtime-v1",
   outcome: "pass",
+  probe_nonce: STAGING_D1_PROBE_WINDOW.nonce,
   worker_release: RELEASE,
   scheduled_time_ms: SCHEDULED_TIME,
   parameterized_select: true,
@@ -46,14 +48,14 @@ afterEach(() => vi.useRealTimers());
 describe("temporary staging native D1 runtime Cron", () => {
   it("calls only the fixed release-specific DO RPC and emits no synthetic drill", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-28T00:01:05Z"));
+    vi.setSystemTime(new Date("2026-09-29T22:01:05Z"));
     const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
     const target = env(stub);
     const controllerValue = controller();
 
     await expect(runScheduled(controllerValue, target)).resolves.toBeUndefined();
 
-    expect(target.CORELINK_SERVER.idFromName).toHaveBeenCalledWith(`_staging_d1_binding_probe_v1:${RELEASE}`);
+    expect(target.CORELINK_SERVER.idFromName).toHaveBeenCalledWith(`_staging_d1_binding_probe_v2:${STAGING_D1_PROBE_WINDOW.nonce}:${RELEASE}`);
     expect(target.CORELINK_SERVER.get).toHaveBeenCalledOnce();
     expect(stub.runStagingD1RuntimeProbe).toHaveBeenCalledWith(SCHEDULED_TIME);
     expect(controllerValue.noRetry).not.toHaveBeenCalled();
@@ -61,9 +63,9 @@ describe("temporary staging native D1 runtime Cron", () => {
 
   it("accepts the same stored release receipt on a later minute for tail recovery", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-28T00:02:05Z"));
+    vi.setSystemTime(new Date("2026-09-29T22:02:05Z"));
     const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
-    const later = controllerAt(Date.parse("2026-09-28T00:02:00Z"));
+    const later = controllerAt(Date.parse("2026-09-29T22:02:00Z"));
     await expect(runScheduled(later, env(stub))).resolves.toBeUndefined();
     expect(stub.runStagingD1RuntimeProbe).toHaveBeenCalledWith(later.scheduledTime);
   });
@@ -79,7 +81,7 @@ describe("temporary staging native D1 runtime Cron", () => {
     stub.runStagingD1RuntimeProbe.mockClear();
     const badTarget = { ...target, ENVIRONMENT: "production" } as Env;
     const before = controller();
-    vi.setSystemTime(new Date("2026-09-28T00:01:05Z"));
+    vi.setSystemTime(new Date("2026-09-29T22:01:05Z"));
     await expect(runScheduled(before, badTarget)).rejects.toThrow("staging D1 runtime probe guard rejected");
     expect(before.noRetry).toHaveBeenCalledOnce();
     expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
@@ -93,11 +95,25 @@ describe("temporary staging native D1 runtime Cron", () => {
 
   it("rejects malformed or incomplete receipts without logging their body", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-28T00:01:05Z"));
+    vi.setSystemTime(new Date("2026-09-29T22:01:05Z"));
     const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue({ ...RECEIPT, rollback_absence_verified: false }) };
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     await expect(runScheduled(controller(), env(stub))).rejects.toThrow("staging D1 runtime probe failed");
     expect(error).toHaveBeenCalledWith("[staging_d1_runtime_probe] failed reason=probe_failed");
     expect(error.mock.calls.flat().join(" ")).not.toContain(JSON.stringify(stub.runStagingD1RuntimeProbe.mock.results));
   });
+});
+
+
+it("rejects previous-window nonce and previous-release receipts", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(SCHEDULED_TIME + 5000);
+  for (const receipt of [
+    { ...RECEIPT, probe_nonce: "old-probe" },
+    { ...RECEIPT, worker_release: "a".repeat(40) },
+    { ...RECEIPT, scheduled_time_ms: STAGING_D1_PROBE_WINDOW.starts_ms - 60000 },
+  ]) {
+    const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(receipt) };
+    await expect(runScheduled(controller(), env(stub))).rejects.toThrow("staging D1 runtime probe failed");
+  }
 });

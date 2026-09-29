@@ -54,7 +54,7 @@ jobs:
       inputs.confirm == 'deploy-container-staging-1700'
     runs-on: ubuntu-latest
     environment: staging
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: 6a1fc1c626fc2628823e60b9db01f5cd
@@ -138,6 +138,14 @@ jobs:
             "$RUNNER_TEMP/staging-containers-before.json" \
             "$RUNNER_TEMP/staging-container-preimage.json"
 
+      - name: Require a full deployment and cleanup budget inside the compiled window
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import { PROBE_WINDOW } from "./scripts/issue_1700_runtime_probe.mjs";
+            if (Date.now() < PROBE_WINDOW.starts_ms || Date.now() + 60 * 60_000 >= PROBE_WINDOW.expires_ms) process.exit(1);
+          '
+
       - name: Deploy root with container rollout and no route
         id: deploy
         continue-on-error: true
@@ -166,14 +174,16 @@ jobs:
 
       - name: Capture the exact candidate Container application state
         id: candidate_container
-        if: always() && steps.deploy.outcome == 'success'
+        if: always() && steps.deploy.outcome == 'success' && steps.deployed_image.outcome == 'success'
         continue-on-error: true
         env:
+          EXPECTED_CONTAINER_IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
           PREIMAGE_CONTAINER_VERSION: ${{ steps.preimage.outputs.preimage_container_version }}
         run: |
           set -euo pipefail
-          pnpm exec wrangler containers list --json \
-            > "$RUNNER_TEMP/staging-containers-after-deploy.json"
+          node scripts/issue_1700_runtime_probe.mjs wait-container-state \
+            "$RUNNER_TEMP/staging-container-preimage.json" \
+            "$RUNNER_TEMP/staging-containers-after-deploy.json"
           MIN_CONTAINER_APP_VERSION="$PREIMAGE_CONTAINER_VERSION" \
           node scripts/issue_1700_runtime_probe.mjs capture-container-state \
             "$RUNNER_TEMP/staging-containers-after-deploy.json" \
@@ -314,6 +324,7 @@ jobs:
         id: early_rollback
         if: failure() && steps.verify_candidate.outcome == 'success' && (steps.verify.outcome != 'success' || steps.candidate_route.outcome != 'success')
         env:
+          ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
           PREIMAGE_VERSION_ID: ${{ steps.preimage.outputs.preimage_version_id }}
           PREIMAGE_CONTAINER_IMAGE: ${{ steps.preimage.outputs.preimage_container_image }}
           CANDIDATE_CONTAINER_VERSION: ${{ steps.candidate_container.outputs.candidate_container_version }}
@@ -325,6 +336,7 @@ jobs:
           ROLLBACK_MARKER: issue-1700-route-free-rollback-${{ github.run_id }}-${{ github.sha }}
         run: |
           set -euo pipefail
+          CLOUDFLARE_API_TOKEN="$ROUTE_READ_TOKEN" python3 scripts/verify_issue_1700_route_inventory.py > /dev/null
           pnpm exec wrangler deployments list \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
@@ -374,8 +386,10 @@ jobs:
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/rollback.toml" \
             --strict --message "$ROLLBACK_MARKER"
-          pnpm exec wrangler containers list --json \
-            > "$RUNNER_TEMP/staging-containers-image-restored.json"
+          EXPECTED_CONTAINER_IMAGE_DIGEST="${PREIMAGE_CONTAINER_IMAGE##*@}" \
+            node scripts/issue_1700_runtime_probe.mjs wait-container-state \
+            "$RUNNER_TEMP/staging-container-candidate.json" \
+            "$RUNNER_TEMP/staging-containers-image-restored.json"
           EXPECTED_CONTAINER_IMAGE_DIGEST="${PREIMAGE_CONTAINER_IMAGE##*@}" \
           MIN_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
             node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
@@ -504,6 +518,7 @@ jobs:
         id: runtime_rollback
         if: always() && failure() && steps.verify_candidate.outcome == 'success' && steps.verify.outcome == 'success' && steps.early_rollback.outcome == 'skipped'
         env:
+          ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
           PREIMAGE_VERSION_ID: ${{ steps.preimage.outputs.preimage_version_id }}
           PREIMAGE_CONTAINER_IMAGE: ${{ steps.preimage.outputs.preimage_container_image }}
           PREIMAGE_CONTAINER_VERSION: ${{ steps.preimage.outputs.preimage_container_version }}
@@ -512,10 +527,11 @@ jobs:
           CANDIDATE_VERSION_ID: ${{ steps.verify_candidate.outputs.candidate_version_id }}
           CANDIDATE_DEPLOYMENT_ID: ${{ steps.verify_candidate.outputs.candidate_deployment_id }}
           DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
-          ROLLBACK_MARKER: issue-1700-runtime-rollback-${{ github.run_id }}-${{ github.sha }}
+          ROLLBACK_MARKER: issue-1700-route-free-rollback-${{ github.run_id }}-${{ github.sha }}
           WORKER_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
         run: |
           set -euo pipefail
+          CLOUDFLARE_API_TOKEN="$ROUTE_READ_TOKEN" python3 scripts/verify_issue_1700_route_inventory.py > /dev/null
           pnpm exec wrangler deployments list \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
@@ -565,8 +581,10 @@ jobs:
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/rollback-runtime.toml" \
             --strict --message "$ROLLBACK_MARKER"
-          pnpm exec wrangler containers list --json \
-            > "$RUNNER_TEMP/staging-runtime-containers-image-restored.json"
+          EXPECTED_CONTAINER_IMAGE_DIGEST="${PREIMAGE_CONTAINER_IMAGE##*@}" \
+            node scripts/issue_1700_runtime_probe.mjs wait-container-state \
+            "$RUNNER_TEMP/staging-container-candidate.json" \
+            "$RUNNER_TEMP/staging-runtime-containers-image-restored.json"
           EXPECTED_CONTAINER_IMAGE_DIGEST="${PREIMAGE_CONTAINER_IMAGE##*@}" \
           MIN_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
             node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
@@ -591,7 +609,7 @@ jobs:
       - name: Verify route-free runtime rollback
         if: always() && steps.runtime_rollback.outcome == 'success'
         env:
-          ROLLBACK_MARKER: issue-1700-runtime-rollback-${{ github.run_id }}-${{ github.sha }}
+          ROLLBACK_MARKER: issue-1700-route-free-rollback-${{ github.run_id }}-${{ github.sha }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
         run: |
           set -euo pipefail

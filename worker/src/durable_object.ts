@@ -1,3 +1,4 @@
+import { STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
 /**
  * CoreLinkServer Durable Object — container lifecycle manager + gRPC proxy.
  *
@@ -171,11 +172,11 @@ const STARTUP_TIMEOUT_MS = 90_000;
  * so a legitimately in-flight cold start is never pre-empted.
  */
 const STALE_STARTING_MS = STARTUP_TIMEOUT_MS + 30_000;
-const STAGING_D1_PROBE_CRON = "* * 28 9 *";
-const STAGING_D1_PROBE_EXPIRES_AT_MS = Date.parse("2026-09-28T09:00:00Z");
+const STAGING_D1_PROBE_CRON = STAGING_D1_PROBE_WINDOW.cron;
+const STAGING_D1_PROBE_EXPIRES_AT_MS = STAGING_D1_PROBE_WINDOW.expires_ms;
 const STAGING_D1_PROBE_RECEIPT_KEY = "staging-d1-binding-probe-receipt-v1";
 const STAGING_D1_PROBE_STATE_KEY = "staging-d1-binding-probe-state-v1";
-const STAGING_D1_PROBE_STARTS_AT_MS = Date.parse("2026-09-28T00:00:00Z");
+const STAGING_D1_PROBE_STARTS_AT_MS = STAGING_D1_PROBE_WINDOW.starts_ms;
 
 function validStagingD1ProbeTime(scheduledTime: number, now: number): boolean {
   return Number.isSafeInteger(scheduledTime) &&
@@ -193,7 +194,9 @@ function isStagingD1RuntimeProbeReceipt(
 ): value is StagingD1RuntimeProbeReceipt {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const receipt = value as Record<string, unknown>;
-  return receipt["contract"] === "corelink-staging-d1-binding-runtime-v1" &&
+  return receipt["probe_nonce"] === STAGING_D1_PROBE_WINDOW.nonce &&
+    validStagingD1ProbeTime(scheduledTime, scheduledTime) &&
+    receipt["contract"] === "corelink-staging-d1-binding-runtime-v1" &&
     receipt["outcome"] === "pass" &&
     receipt["worker_release"] === release &&
     receipt["scheduled_time_ms"] === scheduledTime &&
@@ -289,6 +292,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             cron: STAGING_D1_PROBE_CRON,
+            probe_nonce: STAGING_D1_PROBE_WINDOW.nonce,
             scheduled_time_ms: scheduledTime,
             worker_release: release,
           }),
