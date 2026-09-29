@@ -84,7 +84,7 @@ SOURCE_SHA256 = {
     "crates/corelink-container/src/routes/tier_select_store.rs": "2c8420e87367772276ac807dee0a9c386f304afecbb842e1214a91be3c120602",
     "crates/corelink-container/src/storage/d1_http.rs": "258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5",
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
-    "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "2148abe19ae9b119dc17eca0f242e983b47f8f6100d8d6fbba0536aafcc88af7",
+    "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "0dc7b3f8fe217e420b3e483f97b79f3a443591f3df8b8a751fcfdbaf6b609255",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "1589c0bf78b5ecee786f39e71e66feb3bcd387ba1465d4ad5f22133cdcf14b4e",
     "crates/corelink-stripe-real/tests/live_integration.rs": "b7d8b83fb6f736c4675d7cb4d36727464b6d9ddcc97fe3d026a1e0fe182bb587",
     "crates/corelink-audit-chain/tests/neon_shadow_real.rs": "dfd22738e96d82695b40addf64b3dbaf611fbd8026346f0b4e33b28f10fe79eb",
