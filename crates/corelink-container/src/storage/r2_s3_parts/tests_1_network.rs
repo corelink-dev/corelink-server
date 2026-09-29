@@ -251,14 +251,40 @@
         );
         let payload = b"rt-nuclear-6-10-14".to_vec();
         let size = payload.len() as u64;
-        client.put(&key, payload).await.expect("put");
+        let put = client.put(&key, payload).await;
 
-        // Collect both delete results before asserting. If either request
-        // fails, the final exact-key cleanup still runs.
-        let first = client.delete_if_present(&key).await;
-        let second = client.delete_if_present(&key).await;
+        // If a PUT times out after the provider committed the object, still
+        // attempt exact-key cleanup before asserting the write result. On a
+        // failed PUT, the delete-count assertions are skipped, but cleanup is
+        // still observed and the original PUT failure remains a test failure.
+        let (first, second) = if put.is_ok() {
+            // Collect both delete results before asserting. If either request
+            // fails, the final exact-key cleanup still runs.
+            (
+                client.delete_if_present(&key).await,
+                client.delete_if_present(&key).await,
+            )
+        } else {
+            (
+                Err("PUT failed; delete-count assertions were skipped".to_owned()),
+                Err("PUT failed; delete-count assertions were skipped".to_owned()),
+            )
+        };
         let cleanup = client.delete_if_present(&key).await;
-        cleanup.expect("delete-once exact-key cleanup");
+        match (put, cleanup) {
+            (Ok(()), Ok(_)) => {}
+            (Ok(()), Err(cleanup_err)) => {
+                panic!("exact-key cleanup failed: {cleanup_err}");
+            }
+            (Err(put_err), Ok(_)) => {
+                panic!("PUT failed after exact-key cleanup attempt: {put_err}");
+            }
+            (Err(put_err), Err(cleanup_err)) => {
+                panic!(
+                    "PUT failed ({put_err}); exact-key cleanup also failed ({cleanup_err})"
+                );
+            }
+        }
         let first = first.expect("first delete");
         assert_eq!(
             first,
