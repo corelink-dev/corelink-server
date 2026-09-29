@@ -14,6 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CoreLinkServer, timingSafeEqual } from "../src/durable_object.js";
+import { STAGING_D1_PROBE_WINDOW } from "../src/staging_runtime_d1_probe.js";
 import type { Env } from "../src/index.js";
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -199,6 +200,32 @@ describe("CoreLinkServer constructor", () => {
 });
 
 describe("staging D1 runtime probe exposure", () => {
+  it("accepts only fresh stored receipts and rejects expiry before accessing a Container", async () => {
+    const window = STAGING_D1_PROBE_WINDOW;
+    const release = "a".repeat(40);
+    const scheduledTime = window.starts_ms + 60_000;
+    const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: release,
+      CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd",
+      D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
+      R2_S3_ENDPOINT: "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com",
+    } as Env;
+    const receipt = { contract: "corelink-staging-d1-binding-runtime-v1", outcome: "pass",
+      probe_nonce: window.nonce, worker_release: release, scheduled_time_ms: scheduledTime,
+      parameterized_select: true, failed_batch_observed: true, rollback_absence_verified: true,
+      probe_table_dropped: true, d1_binding_intercepted: true, authorization_absent: true, cf_api_token_absent: true,
+    };
+    for (const stored of [receipt, { ...receipt, probe_nonce: "old" },
+      { ...receipt, worker_release: "b".repeat(40) }, { ...receipt, scheduled_time_ms: window.starts_ms - 60000 }]) {
+      const state = makeMockState();
+      await state.storage.put("staging-d1-binding-probe-receipt-v1", stored);
+      const do_ = new CoreLinkServer(state, env, () => scheduledTime + 5000);
+      if (stored === receipt) await expect(do_.runStagingD1RuntimeProbe(scheduledTime)).resolves.toEqual(receipt);
+      else await expect(do_.runStagingD1RuntimeProbe(scheduledTime)).rejects.toThrow("stored receipt rejected");
+      const expired = new CoreLinkServer(state, env, () => window.expires_ms);
+      await expect(expired.runStagingD1RuntimeProbe(scheduledTime)).rejects.toThrow("guard rejected");
+    }
+  });
+
   it("rejects the native probe path through ordinary Durable Object fetch", async () => {
     const state = makeMockState("public-probe-path-test");
     const do_ = new CoreLinkServer(state, makeEnv());

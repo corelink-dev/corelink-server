@@ -3,18 +3,22 @@
 // Never prints Cloudflare credentials, the tail URL, or unmatched Worker logs.
 
 import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 export const ACCOUNT_ID = "6a1fc1c626fc2628823e60b9db01f5cd";
 export const WORKER_NAME = "corelink-staging";
 export const CONTAINER_APP_ID = "a033fb81-6388-47d9-9049-0b6942778055";
 export const CONTAINER_APP_NAME = "corelink-staging-corelinkserver";
-export const PROBE_CRON = "* * 28 9 *";
-export const PROBE_EXPIRY = Date.parse("2026-09-28T09:00:00Z");
+export const PROBE_WINDOW = JSON.parse(readFileSync(new URL("../crates/corelink-container/src/routes/staging_d1_probe_window.json", import.meta.url), "utf8"));
+export const PROBE_CRON = PROBE_WINDOW.cron;
+export const PROBE_EXPIRY = PROBE_WINDOW.expires_ms;
 export const RECEIPT_PREFIX = "[staging_d1_runtime_probe] receipt=";
 
 const apiBase = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}`;
 const allowedReceiptKeys = new Set([
-  "contract", "outcome", "worker_release", "scheduled_time_ms", "parameterized_select",
+  "contract", "probe_nonce", "outcome", "worker_release", "scheduled_time_ms", "parameterized_select",
   "failed_batch_observed", "rollback_absence_verified", "probe_table_dropped",
   "d1_binding_intercepted", "authorization_absent", "cf_api_token_absent",
 ]);
@@ -22,7 +26,7 @@ const allowedReceiptKeys = new Set([
 export function captureDeployImageDigest(text) {
   if (typeof text !== "string") throw new Error("deploy log rejected");
   const versionLines = text.split(/\r?\n/).filter((line) => line.includes("Current Version ID:"));
-  const imageLines = text.split(/\r?\n/).filter((line) => /image/i.test(line) && /\bdigest:/i.test(line));
+  const imageLines = text.split(/\r?\n/).filter((line) => /\bdigest:/i.test(line));
   const digestPattern = /\bdigest:\s*(sha256:[0-9a-f]{64})(?:\s|$)/;
   if (versionLines.length !== 1 || imageLines.length !== 1) throw new Error("deploy version/image result is ambiguous");
   const version = versionLines[0].match(/Current Version ID:\s*([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\s|$)/);
@@ -81,6 +85,35 @@ export function verifyContainerState(text, expectedDigest, { expectedVersion, mi
   return state;
 }
 
+// Retry only an unchanged, captured preimage while the provider converges.
+// A different app, unexpected version or digest is drift, never a retry signal.
+export async function waitForContainerState({
+  read, preimage, expectedDigest, now = Date.now,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  timeoutMs = 180_000, intervalMs = 5_000,
+}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 180_000 ||
+      !Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > timeoutMs ||
+      !/^sha256:[0-9a-f]{64}$/.test(expectedDigest ?? "") ||
+      preimage?.application_id !== CONTAINER_APP_ID ||
+      !Number.isSafeInteger(preimage.application_version)) {
+    throw new Error("Container readback retry contract rejected");
+  }
+  const deadline = now() + timeoutMs;
+  while (now() < deadline) {
+    const text = await read(Math.max(1, deadline - now()));
+    const state = captureContainerPreimage(text);
+    if (now() >= deadline) throw new Error("Container readback deadline exceeded");
+    if (state.image_digest === expectedDigest &&
+        state.application_version === preimage.application_version + 1) return { text, state };
+    if (state.application_version !== preimage.application_version || state.image !== preimage.image) {
+      throw new Error("Container readback drift rejected");
+    }
+    await sleep(Math.min(intervalMs, deadline - now()));
+  }
+  throw new Error("Container readback deadline exceeded");
+}
+
 export function verifyContainerRollback(beforeText, afterText, expectedImage) {
   const before = verifyContainerPreimage(beforeText, expectedImage);
   const after = verifyContainerPreimage(afterText, expectedImage);
@@ -90,21 +123,22 @@ export function verifyContainerRollback(beforeText, afterText, expectedImage) {
   return after;
 }
 
-function exactReceipt(receipt, release) {
+function exactReceipt(receipt, release, startedAt, deadline) {
   return receipt !== null && typeof receipt === "object" && !Array.isArray(receipt) &&
     Object.keys(receipt).length === allowedReceiptKeys.size &&
     Object.keys(receipt).every((key) => allowedReceiptKeys.has(key)) &&
     receipt.contract === "corelink-staging-d1-binding-runtime-v1" &&
+    receipt.probe_nonce === PROBE_WINDOW.nonce &&
     receipt.outcome === "pass" && receipt.worker_release === release &&
     Number.isSafeInteger(receipt.scheduled_time_ms) &&
-    receipt.scheduled_time_ms >= Date.parse("2026-09-28T00:00:00Z") &&
-    receipt.scheduled_time_ms < PROBE_EXPIRY &&
+    receipt.scheduled_time_ms >= startedAt &&
+    receipt.scheduled_time_ms < deadline &&
     ["parameterized_select", "failed_batch_observed", "rollback_absence_verified",
       "probe_table_dropped", "d1_binding_intercepted", "authorization_absent",
       "cf_api_token_absent"].every((key) => receipt[key] === true);
 }
 
-function extractReceipt(event, release) {
+function extractReceipt(event, release, startedAt, deadline) {
   const logs = Array.isArray(event?.logs) ? event.logs : [];
   for (const entry of logs) {
     const messages = Array.isArray(entry?.message) ? entry.message : [entry?.message];
@@ -112,7 +146,7 @@ function extractReceipt(event, release) {
       if (typeof message !== "string" || !message.startsWith(RECEIPT_PREFIX)) continue;
       try {
         const receipt = JSON.parse(message.slice(RECEIPT_PREFIX.length));
-        if (exactReceipt(receipt, release)) return receipt;
+        if (exactReceipt(receipt, release, startedAt, deadline)) return receipt;
       } catch {
         // Malformed/unrelated logs are discarded without being printed.
       }
@@ -147,7 +181,8 @@ export async function runRuntimeProbe({
 }) {
   if (typeof token !== "string" || token.length < 1 || !/^[0-9a-f]{40}$/.test(release ?? "") ||
       release !== expectedSha || !/^sha256:[0-9a-f]{64}$/.test(imageDigest ?? "") ||
-      now() < Date.parse("2026-09-28T00:00:00Z") ||
+      !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 16 * 60_000 ||
+      now() < PROBE_WINDOW.starts_ms ||
       now() + timeoutMs >= PROBE_EXPIRY) {
     throw new Error("runtime probe preflight rejected");
   }
@@ -155,6 +190,7 @@ export async function runRuntimeProbe({
   async function request(path, init = {}) {
     const response = await api(`${apiBase}${path}`, {
       ...init,
+      signal: AbortSignal.timeout(30_000),
       headers: { authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
     });
     let body;
@@ -163,6 +199,8 @@ export async function runRuntimeProbe({
     return body;
   }
 
+  const startedAt = now();
+  const deadline = Math.min(startedAt + timeoutMs, PROBE_EXPIRY);
   const before = requireScheduleEnvelope(await request("/schedules"));
   if (before.length !== 0) throw new Error("preexisting Worker schedules block probe");
 
@@ -171,6 +209,7 @@ export async function runRuntimeProbe({
   let scheduleAttempted = false;
   let receipt;
   let primaryError;
+  let receiptTimer;
   try {
     const tail = (await request("/tails", { method: "POST" })).result;
     if (typeof tail?.id !== "string" || !/^[a-f0-9]{32}$/.test(tail.id) ||
@@ -181,15 +220,14 @@ export async function runRuntimeProbe({
     tailId = tail.id;
 
     socket = socketFactory(tail.url);
-    const deadline = Math.min(now() + timeoutMs, PROBE_EXPIRY);
     const receiptPromise = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("runtime probe receipt timed out")), Math.max(0, deadline - now()));
+      receiptTimer = setTimeout(() => reject(new Error("runtime probe receipt timed out")), Math.max(0, deadline - now()));
       socket.onmessage = (message) => {
         try {
           const event = JSON.parse(String(message.data));
-          const found = extractReceipt(event, release);
-          if (found !== undefined) {
-            clearTimeout(timer);
+          const found = extractReceipt(event, release, startedAt, deadline);
+          if (found !== undefined && now() < deadline && found.scheduled_time_ms <= now()) {
+            clearTimeout(receiptTimer);
             resolve(found);
           }
         } catch {
@@ -197,11 +235,11 @@ export async function runRuntimeProbe({
         }
       };
       socket.onerror = () => {
-        clearTimeout(timer);
+        clearTimeout(receiptTimer);
         reject(new Error("Worker tail stream failed"));
       };
       socket.onclose = () => {
-        clearTimeout(timer);
+        clearTimeout(receiptTimer);
         reject(new Error("Worker tail stream closed before receipt"));
       };
     });
@@ -223,6 +261,7 @@ export async function runRuntimeProbe({
   } catch (error) {
     primaryError = error;
   } finally {
+    clearTimeout(receiptTimer);
     try { socket?.close(); } catch { /* best-effort close; tail is deleted below */ }
     if (scheduleAttempted) {
       try {
@@ -245,7 +284,7 @@ export async function runRuntimeProbe({
   }
 
   if (primaryError !== undefined) throw new Error(primaryError instanceof Error ? primaryError.message : "runtime probe failed");
-  if (!exactReceipt(receipt, release)) throw new Error("runtime probe receipt rejected");
+  if (!exactReceipt(receipt, release, startedAt, deadline)) throw new Error("runtime probe receipt rejected");
   return {
     contract: "corelink-staging-runtime-deployment-proof-v1",
     account_id: ACCOUNT_ID,
@@ -254,6 +293,8 @@ export async function runRuntimeProbe({
     worker_release: release,
     container_image_digest: imageDigest,
     cron: PROBE_CRON,
+    probe_nonce: PROBE_WINDOW.nonce,
+    window_expires_ms: PROBE_EXPIRY,
     receipt,
     schedule_restored_empty: true,
     tail_deleted: true,
@@ -277,6 +318,17 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         `preimage_container_version=${preimage.application_version}\n` +
         `preimage_container_image=${preimage.image}\n` +
         `preimage_container_image_digest=${preimage.image_digest}\n`);
+      process.exit(0);
+    }
+    if (process.argv[2] === "wait-container-state") {
+      const preimage = JSON.parse(await readFile(process.argv[3], "utf8"));
+      const execute = promisify(execFile);
+      const result = await waitForContainerState({
+        preimage, expectedDigest: process.env.EXPECTED_CONTAINER_IMAGE_DIGEST,
+        read: async (timeout) => (await execute("pnpm", ["exec", "wrangler", "containers", "list", "--json"],
+          { timeout, maxBuffer: 1024 * 1024 })).stdout,
+      });
+      await writeFile(process.argv[4], result.text, { mode: 0o600 });
       process.exit(0);
     }
     if (process.argv[2] === "capture-container-state") {

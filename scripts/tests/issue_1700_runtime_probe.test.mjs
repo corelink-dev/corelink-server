@@ -1,16 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { runRuntimeProbe, captureDeployImageDigest, captureContainerPreimage, verifyContainerPreimage, verifyContainerImageDigest, verifyContainerState, verifyContainerRollback, CONTAINER_APP_ID, CONTAINER_APP_NAME, PROBE_CRON, PROBE_EXPIRY } from "../issue_1700_runtime_probe.mjs";
+import { runRuntimeProbe, waitForContainerState, captureDeployImageDigest, captureContainerPreimage, verifyContainerPreimage, verifyContainerImageDigest, verifyContainerState, verifyContainerRollback, CONTAINER_APP_ID, CONTAINER_APP_NAME, PROBE_CRON, PROBE_EXPIRY, PROBE_WINDOW } from "../issue_1700_runtime_probe.mjs";
 
 const release = "0123456789abcdef0123456789abcdef01234567";
-const now = Date.parse("2026-09-28T00:02:00Z");
+const now = Date.parse("2026-09-29T22:01:00Z");
 const imageDigest = `sha256:${"a".repeat(64)}`;
 const receipt = {
   contract: "corelink-staging-d1-binding-runtime-v1",
   outcome: "pass",
+  probe_nonce: PROBE_WINDOW.nonce,
   worker_release: release,
-  scheduled_time_ms: Date.parse("2026-09-28T00:01:00Z"),
+  scheduled_time_ms: Date.parse("2026-09-29T22:01:00Z"),
   parameterized_select: true,
   failed_batch_observed: true,
   rollback_absence_verified: true,
@@ -20,7 +21,7 @@ const receipt = {
   cf_api_token_absent: true,
 };
 
-function harness({ schedules: initial = [], sendReceipt = true, driftAfterReceipt = false } = {}) {
+function harness({ schedules: initial = [], sendReceipt = true, driftAfterReceipt = false, emittedReceipt = receipt } = {}) {
   let schedules = initial;
   let socket;
   let tailDeleted = false;
@@ -47,7 +48,7 @@ function harness({ schedules: initial = [], sendReceipt = true, driftAfterReceip
       schedules = next;
       if (next.length === 1 && sendReceipt) {
         queueMicrotask(() => socket.onmessage({ data: JSON.stringify({
-          logs: [{ message: [`[staging_d1_runtime_probe] receipt=${JSON.stringify(receipt)}`] }],
+          logs: [{ message: [`[staging_d1_runtime_probe] receipt=${JSON.stringify(emittedReceipt)}`] }],
         }) }));
       }
       return response({ success: true, result: { schedules } });
@@ -193,6 +194,8 @@ test("runtime rollback is exclusive with early rollback and never retries a fail
   assert.ok(runtimeStep, "runtime rollback step is present");
   const condition = runtimeStep.match(/^\s+if:\s+(.+)$/m)?.[1];
   assert.ok(condition, "runtime rollback has a condition");
+  assert.match(runtimeStep, /ROLLBACK_MARKER: issue-1700-route-free-rollback-/);
+  assert.ok(runtimeStep.indexOf('CLOUDFLARE_API_TOKEN="$ROUTE_READ_TOKEN" python3 scripts/verify_issue_1700_route_inventory.py') < runtimeStep.indexOf("pnpm exec wrangler deploy"));
   assert.match(condition, /steps\.early_rollback\.outcome == 'skipped'/);
 
   const shouldRollbackRuntime = ({ failed, candidateVerified, deployVerified, earlyRollback }) =>
@@ -205,5 +208,60 @@ test("runtime rollback is exclusive with early rollback and never retries a fail
   ];
   for (const [name, input, expected] of cases) {
     assert.equal(shouldRollbackRuntime(input), expected, name);
+  }
+});
+
+
+test("captures the actual Wrangler registry push result without an image label", () => {
+  const versionId = "d787acbc-666b-4e2f-87b3-0e93a3f6393b";
+  assert.deepEqual(captureDeployImageDigest(`d787acbc: digest: ${imageDigest} size: 1580\nCurrent Version ID: ${versionId}`), { versionId, imageDigest });
+});
+
+function containerRow(version, digest = imageDigest) {
+  return { id: CONTAINER_APP_ID, name: CONTAINER_APP_NAME, version,
+    image: `registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/${CONTAINER_APP_NAME}@${digest}` };
+}
+
+test("readback retries only the exact stale preimage and accepts the next exact version", async () => {
+  const old = containerRow(2, `sha256:${"b".repeat(64)}`);
+  const preimage = captureContainerPreimage(JSON.stringify([old]));
+  let clock = 0, reads = 0;
+  const result = await waitForContainerState({ preimage, expectedDigest: imageDigest,
+    now: () => clock, sleep: async ms => { clock += ms; },
+    read: async () => JSON.stringify([++reads < 3 ? old : containerRow(3)]),
+  });
+  assert.equal(reads, 3);
+  assert.equal(result.state.application_version, 3);
+});
+
+test("readback rejects wrong app, wrong digest, skipped version, and deadline", async () => {
+  const old = containerRow(2, `sha256:${"b".repeat(64)}`);
+  const preimage = captureContainerPreimage(JSON.stringify([old]));
+  for (const row of [{ ...containerRow(3), id: "other" }, containerRow(3, `sha256:${"c".repeat(64)}`), containerRow(4)]) {
+    await assert.rejects(waitForContainerState({ preimage, expectedDigest: imageDigest,
+      read: async () => JSON.stringify([row]), sleep: async () => assert.fail("must not retry drift"),
+    }));
+  }
+  let clock = 0;
+  await assert.rejects(waitForContainerState({ preimage, expectedDigest: imageDigest,
+    timeoutMs: 10, intervalMs: 5, now: () => clock,
+    sleep: async ms => { clock += ms; }, read: async () => JSON.stringify([old]),
+  }), /deadline/);
+});
+
+
+test("host ignores wrong nonce, release, expired and pre-invocation receipts and cleans up", async () => {
+  for (const emittedReceipt of [
+    { ...receipt, probe_nonce: "old-window" },
+    { ...receipt, worker_release: "f".repeat(40) },
+    { ...receipt, scheduled_time_ms: PROBE_EXPIRY },
+    { ...receipt, scheduled_time_ms: now - 60000 },
+  ]) {
+    const h = harness({ emittedReceipt });
+    await assert.rejects(runRuntimeProbe({ token: "token", release, expectedSha: release,
+      imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now, timeoutMs: 5,
+    }), /timed out/);
+    assert.deepEqual(h.schedules, []);
+    assert.equal(h.tailDeleted, true);
   }
 });

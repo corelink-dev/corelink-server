@@ -1,10 +1,13 @@
+import window from "../../crates/corelink-container/src/routes/staging_d1_probe_window.json";
+export const STAGING_D1_PROBE_WINDOW = window;
 import type { Env } from "./index_common.js";
 
-export const STAGING_D1_RUNTIME_PROBE_DO_PREFIX = "_staging_d1_binding_probe_v1:";
+export const STAGING_D1_RUNTIME_PROBE_DO_PREFIX = `_staging_d1_binding_probe_v2:${window.nonce}:`;
 export const STAGING_D1_RUNTIME_PROBE_PATH = "/_internal/staging/d1-binding-runtime-probe";
 
 export interface StagingD1RuntimeProbeReceipt {
   readonly contract: "corelink-staging-d1-binding-runtime-v1";
+  readonly probe_nonce: string;
   readonly outcome: "pass";
   readonly worker_release: string;
   readonly scheduled_time_ms: number;
@@ -41,6 +44,9 @@ export async function runStagingD1BindingRuntimeProbe(
   // its release-bound receipt, later ticks return that same receipt so a tail
   // can recover it; the first scheduled timestamp remains the proof timestamp.
   if (
+    receipt.probe_nonce !== window.nonce ||
+    receipt.scheduled_time_ms < window.starts_ms ||
+    receipt.scheduled_time_ms >= window.expires_ms ||
     receipt.contract !== "corelink-staging-d1-binding-runtime-v1" ||
     receipt.outcome !== "pass" ||
     receipt.worker_release !== release ||

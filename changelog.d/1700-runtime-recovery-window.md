@@ -1,0 +1,1 @@
+Fix #1700 staging proof recovery: bind Worker, Durable Object, Container and host receipt validation to one expiring probe window and fresh nonce; capture real Wrangler image digests and wait only for exact Container convergence. Preserve route-free rollback ownership and bounded cleanup.

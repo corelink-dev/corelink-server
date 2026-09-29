@@ -20,9 +20,19 @@ use crate::storage::{
     StorageEnv,
 };
 
-const EXPECTED_CRON: &str = "* * 28 9 *";
-const PROBE_START_MS: u64 = 1_790_553_600_000; // 2026-09-28T00:00:00Z
-const PROBE_EXPIRY_MS: u64 = 1_790_586_000_000; // 2026-09-28T09:00:00Z
+#[derive(Deserialize)]
+struct ProbeWindow {
+    cron: String,
+    starts_ms: u64,
+    expires_ms: u64,
+    nonce: String,
+}
+
+fn probe_window() -> ProbeWindow {
+    serde_json::from_str(include_str!("staging_d1_probe_window.json"))
+        .expect("compiled staging probe window")
+}
+
 const EXPECTED_ACCOUNT: &str = "6a1fc1c626fc2628823e60b9db01f5cd";
 const EXPECTED_DATABASE: &str = "d72a6b39-6a48-4338-bfda-1111dda98604";
 
@@ -30,6 +40,7 @@ const EXPECTED_DATABASE: &str = "d72a6b39-6a48-4338-bfda-1111dda98604";
 #[serde(deny_unknown_fields)]
 struct ProbeRequest {
     cron: String,
+    probe_nonce: String,
     scheduled_time_ms: u64,
     worker_release: String,
 }
@@ -38,6 +49,7 @@ struct ProbeRequest {
 struct ProbeReceipt {
     contract: &'static str,
     outcome: &'static str,
+    probe_nonce: String,
     worker_release: String,
     scheduled_time_ms: u64,
     parameterized_select: bool,
@@ -91,10 +103,12 @@ async fn run_probe(headers: HeaderMap, Json(input): Json<ProbeRequest>) -> impl 
 }
 
 fn valid_request(input: &ProbeRequest, now: u64) -> bool {
-    input.cron == EXPECTED_CRON
+    let window = probe_window();
+    input.cron == window.cron
+        && input.probe_nonce == window.nonce
         && input.scheduled_time_ms % 60_000 == 0
-        && (PROBE_START_MS..PROBE_EXPIRY_MS).contains(&input.scheduled_time_ms)
-        && (PROBE_START_MS..PROBE_EXPIRY_MS).contains(&now)
+        && (window.starts_ms..window.expires_ms).contains(&input.scheduled_time_ms)
+        && (window.starts_ms..window.expires_ms).contains(&now)
         && input.worker_release.len() == 40
         && input
             .worker_release
@@ -170,6 +184,7 @@ async fn execute_probe(input: &ProbeRequest) -> Result<ProbeReceipt, ()> {
     Ok(ProbeReceipt {
         contract: "corelink-staging-d1-binding-runtime-v1",
         outcome: "pass",
+        probe_nonce: input.probe_nonce.clone(),
         worker_release: input.worker_release.clone(),
         scheduled_time_ms: input.scheduled_time_ms,
         parameterized_select: true,
@@ -194,11 +209,12 @@ mod tests {
     use super::*;
 
     const RELEASE: &str = "0123456789abcdef0123456789abcdef01234567";
-    const TIME: u64 = 1_790_553_660_000;
+    const TIME: u64 = 1790719260000;
 
     fn input() -> ProbeRequest {
         ProbeRequest {
-            cron: EXPECTED_CRON.to_owned(),
+            cron: probe_window().cron,
+            probe_nonce: probe_window().nonce,
             scheduled_time_ms: TIME,
             worker_release: RELEASE.to_owned(),
         }
@@ -208,10 +224,13 @@ mod tests {
     fn accepts_only_exact_timed_staging_probe_contract() {
         assert!(valid_request(&input(), TIME));
         let mut last_valid = input();
-        last_valid.scheduled_time_ms = PROBE_EXPIRY_MS - 60_000;
-        assert!(valid_request(&last_valid, PROBE_EXPIRY_MS - 1));
-        assert!(!valid_request(&last_valid, PROBE_EXPIRY_MS));
-        assert!(!valid_request(&input(), PROBE_EXPIRY_MS));
+        last_valid.scheduled_time_ms = probe_window().expires_ms - 60_000;
+        assert!(valid_request(&last_valid, probe_window().expires_ms - 1));
+        assert!(!valid_request(&last_valid, probe_window().expires_ms));
+        assert!(!valid_request(&input(), probe_window().expires_ms));
+        let mut bad = input();
+        bad.probe_nonce = "old-probe".to_owned();
+        assert!(!valid_request(&bad, TIME));
         let mut bad = input();
         bad.cron = "0 0 * * *".to_owned();
         assert!(!valid_request(&bad, TIME));
@@ -227,7 +246,7 @@ mod tests {
     fn probe_table_identifier_is_derived_only_from_hex_release_and_time() {
         assert_eq!(
             format!("corelink_staging_d1_probe_{}_{}", &RELEASE[..16], TIME),
-            "corelink_staging_d1_probe_0123456789abcdef_1790553660000"
+            "corelink_staging_d1_probe_0123456789abcdef_1790719260000"
         );
     }
 }
