@@ -96,6 +96,8 @@ jobs:
           python3 scripts/verify_issue_1700_route_inventory.py \
             > "$RUNNER_TEMP/staging-route-inventory-before.json"
       - name: Render and validate isolated root config
+        env:
+          STAGING_R2_S3_ENDPOINT: ${{ secrets.STAGING_R2_S3_ENDPOINT }}
         run: |
           set -euo pipefail
           mkdir -m 700 "$RUNNER_TEMP/staging-config"
