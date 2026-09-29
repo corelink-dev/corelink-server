@@ -57,6 +57,7 @@ jobs:
     timeout-minutes: 30
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: 6a1fc1c626fc2628823e60b9db01f5cd
     steps:
       - name: Confirm exact protected route-free operation
         env:
