@@ -43,7 +43,7 @@ CORRECTION_PATHS = frozenset({
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
 SOURCE_SHA = os.environ.get("I2568_EXPECTED_SHA", "")
 SOURCE_DIGESTS = {
-    "apps/signup-worker/src/webhooks/sla_credit_cron.ts": "07adc5680fe77a03d0cf648c872691252d7c042e151e897ef79f65ad61207db0",
+    "apps/signup-worker/src/webhooks/sla_credit_cron.ts": "fd78c94df2358135f776ebdf5335b3d4c08d249540632b6262cae73506e5a9e3",
     "migrations/d1/0055_tenant_billing.sql": "f5420ceac080d92ae5dab05cf6209525d767de3408828bda46134e9323e8d93d",
     "migrations/d1/0117_sla_credit_ledger.sql": "658469f4102b6ef424af7dda29c8febcbf1058a677426be24da9306282c3454e",
 }
@@ -305,6 +305,7 @@ def verify(root: Path = ROOT) -> None:
     worker = need_text(root, WORKER, REQUIRED_WORKER)
     runtime = need_text(root, "apps/signup-worker/src/webhooks/sla_credit_cron.ts", (
         "CONTRACT_TIERS", "evaluateSlaCredit", "enterprise: { target: 99.95 }",
+        "LEFT JOIN sla_monthly_measurements AS m", "tier_not_in_launch_sla",
     ))
     tier_table = re.search(r"const CONTRACT_TIERS[^=]*=\s*\{(?P<body>.*?)\n\};", runtime, re.DOTALL)
     if (not tier_table or re.search(r"\b(?:free|solo|starter|pro|max)\s*:", tier_table.group("body"))
@@ -316,9 +317,11 @@ def verify(root: Path = ROOT) -> None:
         'tier: "enterprise"', 'for (const tier of ["free", "solo", "starter", "pro", "max"])',
         'expect(db.ledger.size).toBe(0)', 'expect(db.outbox.size).toBe(0)',
         'expect(applyCredit).not.toHaveBeenCalled()',
+        'blocks legacy due credits for all excluded tiers before replay or provider I/O',
+        'expect(reconcileCredit).not.toHaveBeenCalled()',
     ))
-    if test_source.count('for (const tier of ["free", "solo", "starter", "pro", "max"])') < 2:
-        raise VerificationError("both evaluator and sweep/provider negatives are required")
+    if test_source.count('for (const tier of ["free", "solo", "starter", "pro", "max"])') < 3:
+        raise VerificationError("evaluator, new-sweep, and legacy-retry negatives are required")
     need_text(root, TESTS, (
         "test_wrong_account_rejected_before_provider_request",
         "test_live_or_unrestricted_key_rejected_before_provider_request",

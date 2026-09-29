@@ -56,13 +56,15 @@ class MemoryDb implements D1DatabaseLike {
           return { results: row ? [row] as T[] : [] as T[] };
         }
         if (sql.includes("sla_monthly_observations")) return { results: this.observations.filter((row) => row.published_at_ms == null) as T[] };
-        if (sql.includes("sla_monthly_measurements")) {
+        if (sql.includes("FROM sla_monthly_measurements")) {
           return { results: this.measurements.filter((row) => row.state === "pending" && Number(row.eligible_at_ms) <= Number(args[0])).slice(0, 100) as T[] };
         }
         if (sql.includes("tenant_billing")) return { results: this.customer && !this.missingTenants.has(String(args[0])) ? [{ stripe_customer_id: this.customer }] as T[] : [] as T[] };
         if (sql.includes("FROM sla_credit_ledger")) {
           const now = Number(args[0]);
-          return { results: [...this.ledger.values()].filter((row) =>
+          return { results: [...this.ledger.values()].map((row) => ({ ...row,
+            measurement_tier: this.measurements.find((measurement) => measurement.tenant_id === row.tenant_id && measurement.service_period === row.service_period)?.tier,
+          })).filter((row) =>
             ((row.status === "pending" || row.status === "failed") && Number(row.next_attempt_at_ms) <= now) ||
             (row.status === "processing" && Number(row.lease_until_ms) <= Number(args[1]))).sort((a, b) => Number(a.next_attempt_at_ms) - Number(b.next_attempt_at_ms)).slice(0, 100) as T[] };
         }
@@ -135,12 +137,15 @@ class MemoryDb implements D1DatabaseLike {
     if (sql.includes("SET status = 'blocked'")) {
       const id = String(args[args.length - 1]);
       const row = this.ledger.get(id);
-      if (row) { row.status = "blocked"; if (sql.includes("provider_ref = ?")) row.provider_ref = args[0]; }
+      if (row) { row.status = "blocked"; row.failure_reason = sql.includes("failure_reason = ?") ? args[sql.includes("provider_ref = ?") ? 1 : 0] : undefined; if (sql.includes("provider_ref = ?")) row.provider_ref = args[0]; }
       return { meta: { changes: row ? 1 : 0 } };
     }
     if (sql.includes("UPDATE sla_credit_outbox")) {
       const row = this.outbox.get(String(args[args.length - 1]));
-      if (row) { row.status = sql.includes("needs_review") ? "needs_review" : sql.includes("failed") ? "failed" : "sent"; row.provider_ref = args[0]; }
+      if (row) {
+        row.status = sql.includes("SET status = ?") ? args[0] : sql.includes("needs_review") ? "needs_review" : sql.includes("failed") ? "failed" : "sent";
+        if (sql.includes("provider_ref = ?")) row.provider_ref = args[0];
+      }
       return { meta: { changes: row ? 1 : 0 } };
     }
     if (sql.includes("INSERT INTO sla_credit_reconciliation")) {
@@ -200,6 +205,43 @@ describe("B-089 gates, retries, and transaction boundaries", () => {
       expect(applyCredit).not.toHaveBeenCalled();
     }
   });
+
+  it("blocks legacy due credits for all excluded tiers before replay or provider I/O", async () => {
+    for (const tier of ["free", "solo", "starter", "pro", "max"]) {
+      const row = measurementRow({ tier, tenant_id: `legacy-${tier}`, availability_percent: 90 });
+      row.state = "evaluated";
+      const db = new MemoryDb([row]);
+      const creditId = `sla_credit:legacy-${tier}:2026-08`;
+      const status = tier === "starter" ? "processing" : tier === "pro" ? "pending" : "failed";
+      db.ledger.set(creditId, { credit_id: creditId, tenant_id: `legacy-${tier}`, service_period: "2026-08",
+        status, attempts: 1, next_attempt_at_ms: 0, lease_until_ms: 0 });
+      db.outbox.set(creditId, { credit_id: creditId, provider_ref: tier === "pro" ? "ii_prior" : null,
+        payload_json: "{}", status: "failed" });
+      const applyCredit = vi.fn(async () => ({ provider_ref: "ii_forbidden" }));
+      const reconcileCredit = vi.fn(async () => ({ ok: true }));
+      const result = await runSlaCreditSweep({ BILLING_DB: db, SLA_CREDITS_ENABLED: "true" }, 0,
+        { applyCredit, reconcileCredit });
+      expect(result).toMatchObject({ created: 0, applied: 0, blocked: 1 });
+      expect(db.ledger.get(creditId)).toMatchObject({ status: "blocked", failure_reason: "tier_not_in_launch_sla" });
+      expect(db.outbox.get(creditId)).toMatchObject({ status: tier === "pro" ? "needs_review" : "blocked" });
+      expect(db.outbox.get(creditId)?.provider_ref).toBe(tier === "pro" ? "ii_prior" : null);
+      expect(applyCredit).not.toHaveBeenCalled();
+      expect(reconcileCredit).not.toHaveBeenCalled();
+    }
+  });
+
+  it("blocks an orphaned due credit when its source measurement is missing", async () => {
+    const db = new MemoryDb([]);
+    const creditId = "sla_credit:legacy-missing:2026-08";
+    db.ledger.set(creditId, { credit_id: creditId, tenant_id: "legacy-missing", service_period: "2026-08",
+      status: "pending", attempts: 0, next_attempt_at_ms: 0 });
+    const applyCredit = vi.fn(async () => ({ provider_ref: "ii_forbidden" }));
+    const result = await runSlaCreditSweep({ BILLING_DB: db, SLA_CREDITS_ENABLED: "true" }, 0, { applyCredit });
+    expect(result).toMatchObject({ applied: 0, blocked: 1 });
+    expect(db.ledger.get(creditId)).toMatchObject({ status: "blocked", failure_reason: "tier_not_in_launch_sla" });
+    expect(applyCredit).not.toHaveBeenCalled();
+  });
+
   it("does not let a supplied provider bypass the in-sweep financial gate", async () => {
     const db = new MemoryDb([measurementRow()]);
     let calls = 0;
@@ -263,7 +305,7 @@ describe("B-089 gates, retries, and transaction boundaries", () => {
   });
 
   it("recovers an accepted provider object from the outbox across a mapping change", async () => {
-    const db = new MemoryDb([]);
+    const db = new MemoryDb([{ ...measurementRow({ tenant_id: "tenant-crash" }), state: "evaluated" }]);
     db.customer = "cus_new";
     const request: SlaCreditRequest = {
       credit_id: "sla_credit:tenant-crash:2026-08",
@@ -295,7 +337,7 @@ describe("B-089 gates, retries, and transaction boundaries", () => {
   });
 
   it("persists a transient recovery-reconcile failure instead of orphaning the provider object", async () => {
-    const db = new MemoryDb([]);
+    const db = new MemoryDb([{ ...measurementRow({ tenant_id: "tenant-recovery-transient" }), state: "evaluated" }]);
     db.customer = "cus_new";
     const request: SlaCreditRequest = {
       credit_id: "sla_credit:tenant-recovery-transient:2026-08", tenant_id: "tenant-recovery-transient",
@@ -315,7 +357,7 @@ describe("B-089 gates, retries, and transaction boundaries", () => {
   });
 
   it("marks a permanent recovery mismatch needs-review with durable reconciliation evidence", async () => {
-    const db = new MemoryDb([]);
+    const db = new MemoryDb([{ ...measurementRow({ tenant_id: "tenant-recovery-mismatch" }), state: "evaluated" }]);
     db.customer = "cus_new";
     const request: SlaCreditRequest = {
       credit_id: "sla_credit:tenant-recovery-mismatch:2026-08", tenant_id: "tenant-recovery-mismatch",

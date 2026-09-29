@@ -37,7 +37,7 @@ WORKER_NAME = "corelink-i2568-sla-credit-test-20260928"
 # commit is never a valid substitute for the code being tested or deployed.
 SOURCE_SHA = os.environ.get("I2568_EXPECTED_SHA", "")
 SOURCE_DIGESTS = {
-    "apps/signup-worker/src/webhooks/sla_credit_cron.ts": "07adc5680fe77a03d0cf648c872691252d7c042e151e897ef79f65ad61207db0",
+    "apps/signup-worker/src/webhooks/sla_credit_cron.ts": "fd78c94df2358135f776ebdf5335b3d4c08d249540632b6262cae73506e5a9e3",
     "migrations/d1/0055_tenant_billing.sql": "f5420ceac080d92ae5dab05cf6209525d767de3408828bda46134e9323e8d93d",
     "migrations/d1/0117_sla_credit_ledger.sql": "658469f4102b6ef424af7dda29c8febcbf1058a677426be24da9306282c3454e",
 }
