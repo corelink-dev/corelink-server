@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -30,10 +31,19 @@ LEAF_PATHS = frozenset({
     WP150_PATH,
     SECRET_REGISTRY_PATH,
 })
+CORRECTION_PATHS = frozenset({
+    WORKFLOW,
+    OPERATOR,
+    WORKER,
+    "scripts/verify_issue_2568_sla_credit_real.py",
+    TESTS,
+    "apps/signup-worker/src/webhooks/sla_credit_cron.ts",
+    "apps/signup-worker/tests/sla_credit_cron.test.ts",
+})
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
-SOURCE_SHA = "5fabd93e98d805a39319fcb6a22c9ee5267fafd4"
+SOURCE_SHA = os.environ.get("I2568_EXPECTED_SHA", "")
 SOURCE_DIGESTS = {
-    "apps/signup-worker/src/webhooks/sla_credit_cron.ts": "e290331915c8f61e3115a9d5b9b1213c4aac97005ade2de98ba79ba866abc3c3",
+    "apps/signup-worker/src/webhooks/sla_credit_cron.ts": "07adc5680fe77a03d0cf648c872691252d7c042e151e897ef79f65ad61207db0",
     "migrations/d1/0055_tenant_billing.sql": "f5420ceac080d92ae5dab05cf6209525d767de3408828bda46134e9323e8d93d",
     "migrations/d1/0117_sla_credit_ledger.sql": "658469f4102b6ef424af7dda29c8febcbf1058a677426be24da9306282c3454e",
 }
@@ -47,6 +57,7 @@ REQUIRED_WORKFLOW = (
     "workflow_dispatch:", "contents: read", "ubuntu-24.04", "timeout-minutes: 25",
     "stripe-test", "CF_I2568_API_TOKEN", "STRIPE_SECRET_KEY", "STRIPE_TEST_ACCOUNT_ID",
     "credentialless", "full-real", "expected_sha", "I2568_CONFIRMATION",
+    "I2568_EXPECTED_SHA", "refs/heads/codex/support03-enterprise-credit-correction",
     "--candidate-diff-base", "--candidate-sha",
     "provider:", "static:", "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
     "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
@@ -77,9 +88,12 @@ class VerificationError(ValueError):
     pass
 
 
-def validate_candidate_paths(paths: list[str] | tuple[str, ...] | set[str]) -> None:
-    if len(paths) != len(LEAF_PATHS) or frozenset(paths) != LEAF_PATHS:
-        raise VerificationError("candidate diff must contain exactly the eight frozen #2568 leaf paths")
+def validate_candidate_paths(paths: list[str] | tuple[str, ...] | set[str],
+                             branch_ref: str = "refs/heads/codex/support03-issue-2568") -> None:
+    expected = (CORRECTION_PATHS if branch_ref == "refs/heads/codex/support03-enterprise-credit-correction"
+                else LEAF_PATHS if branch_ref == "refs/heads/codex/support03-issue-2568" else None)
+    if expected is None or len(paths) != len(expected) or frozenset(paths) != expected:
+        raise VerificationError("candidate diff does not match the exact owned leaf paths")
 
 
 def validate_wp150_manifest(data: bytes, mode: int) -> None:
@@ -125,7 +139,7 @@ def validate_candidate_diff(root: Path, base_sha: str, candidate_sha: str) -> No
         raise VerificationError("cannot establish the exact candidate diff against current main") from exc
     if head != candidate_sha or ancestor.returncode != 0:
         raise VerificationError("candidate head or current-main ancestry does not match the selected immutable SHA")
-    validate_candidate_paths(paths)
+    validate_candidate_paths(paths, os.environ.get("GITHUB_REF", ""))
     if len(tree_entry) != 4 or tree_entry[0] != "100644" or tree_entry[3] != WP150_PATH:
         raise VerificationError("candidate WP150 manifest mode or path is not the authorized regular file")
     validate_wp150_manifest(manifest_bytes, int(tree_entry[0], 8))
@@ -146,7 +160,7 @@ def need_text(root: Path, relative: str, required: tuple[str, ...]) -> str:
 
 
 def validate_source_manifest(source: dict[str, str], digests: dict[str, str]) -> None:
-    if source.get("source_sha") != SOURCE_SHA:
+    if not FULL_SHA.fullmatch(SOURCE_SHA) or source.get("source_sha") != SOURCE_SHA:
         raise VerificationError("frozen canonical source SHA mismatch")
     if digests != SOURCE_DIGESTS:
         raise VerificationError("frozen canonical source digest manifest mismatch")
@@ -186,7 +200,7 @@ def validate_provider_receipt(receipt: dict[str, Any]) -> None:
             or operator.get("head_sha") != receipt.get("candidate_sha")
             or not re.fullmatch(r"[0-9a-f]{64}", str(operator.get("operator_file_sha256", "")))):
         raise VerificationError("provider receipt does not bind the exact operator implementation")
-    if receipt.get("canonical_source_sha") != SOURCE_SHA or receipt.get("canonical_source_digests") != SOURCE_DIGESTS:
+    if receipt.get("canonical_source_sha") != receipt.get("candidate_sha") or receipt.get("canonical_source_sha") != SOURCE_SHA or receipt.get("canonical_source_digests") != SOURCE_DIGESTS:
         raise VerificationError("provider receipt canonical source identity is incomplete")
     if receipt.get("stripe_test_account_id_sha256") != "e9678dceccdaa37a7259379096e82875f6ae0c694f9a461a28691c79eceb33ad":
         raise VerificationError("provider receipt Stripe account binding hash is incorrect")
@@ -233,7 +247,7 @@ def validate_provider_receipt(receipt: dict[str, Any]) -> None:
                    for row in invocations)):
         raise VerificationError("provider receipt lacks gate-false, enabled and exact replay private invocations")
     credit = receipt.get("credit")
-    if not isinstance(credit, dict) or (credit.get("service_period") != "2026-08" or credit.get("tier") != "starter"
+    if not isinstance(credit, dict) or (credit.get("service_period") != "2026-08" or credit.get("tier") != "enterprise"
             or credit.get("monthly_fee_minor") != 10000 or credit.get("availability_percent") != 99.49
             or credit.get("credit_percent") != 5 or credit.get("amount_minor") != 500
             or credit.get("currency") != "USD" or credit.get("gate_false_provider_effects") != 0):
@@ -284,9 +298,27 @@ def validate_provider_receipt(receipt: dict[str, Any]) -> None:
 
 
 def verify(root: Path = ROOT) -> None:
+    if not FULL_SHA.fullmatch(SOURCE_SHA):
+        raise VerificationError("exact protected-main source SHA is missing")
     workflow = need_text(root, WORKFLOW, REQUIRED_WORKFLOW)
     operator = need_text(root, OPERATOR, REQUIRED_OPERATOR)
     worker = need_text(root, WORKER, REQUIRED_WORKER)
+    runtime = need_text(root, "apps/signup-worker/src/webhooks/sla_credit_cron.ts", (
+        "CONTRACT_TIERS", "evaluateSlaCredit", "enterprise: { target: 99.95 }",
+    ))
+    tier_table = re.search(r"const CONTRACT_TIERS[^=]*=\s*\{(?P<body>.*?)\n\};", runtime, re.DOTALL)
+    if (not tier_table or re.search(r"\b(?:free|solo|starter|pro|max)\s*:", tier_table.group("body"))
+            or 'observation.tier !== "enterprise"' not in worker
+            or '"tier": "enterprise"' not in operator
+            or '"tier": "starter"' in operator):
+        raise VerificationError("Enterprise-only runtime/operator policy guard drifted")
+    test_source = need_text(root, "apps/signup-worker/tests/sla_credit_cron.test.ts", (
+        'tier: "enterprise"', 'for (const tier of ["free", "solo", "starter", "pro", "max"])',
+        'expect(db.ledger.size).toBe(0)', 'expect(db.outbox.size).toBe(0)',
+        'expect(applyCredit).not.toHaveBeenCalled()',
+    ))
+    if test_source.count('for (const tier of ["free", "solo", "starter", "pro", "max"])') < 2:
+        raise VerificationError("both evaluator and sweep/provider negatives are required")
     need_text(root, TESTS, (
         "test_wrong_account_rejected_before_provider_request",
         "test_live_or_unrestricted_key_rejected_before_provider_request",
@@ -330,6 +362,8 @@ def verify(root: Path = ROOT) -> None:
         raise VerificationError("provider workflow must not run on push or pull_request")
     if "environment: stripe-test" not in workflow:
         raise VerificationError("provider operation is not bound to stripe-test")
+    if workflow.count('ref: ${{ inputs.expected_sha }}') != 4 or 'ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4' in workflow:
+        raise VerificationError("canonical checkouts must use the exact candidate SHA")
     static = re.search(r"(?ms)^  static:\n(.*?)(?=^  provider:\n)", workflow)
     provider = re.search(r"(?ms)^  provider:\n(.*)$", workflow)
     if not static or not provider:
@@ -337,6 +371,7 @@ def verify(root: Path = ROOT) -> None:
     static_text = static.group(1)
     if ("inputs.mode == 'credentialless'" not in static_text
             or "refs/heads/codex/support03-issue-2568" not in static_text
+            or "refs/heads/codex/support03-enterprise-credit-correction" not in static_text
             or "inputs.mode == 'full-real'" not in static_text
             or "refs/heads/main" not in static_text
             or "only frozen leaf paths for pre-merge checks" not in static_text

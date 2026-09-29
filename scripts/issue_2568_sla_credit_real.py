@@ -33,9 +33,11 @@ BRANCH = "refs/heads/main"
 STRIPE_ACCOUNT_SHA256 = "e9678dceccdaa37a7259379096e82875f6ae0c694f9a461a28691c79eceb33ad"
 CF_ACCOUNT = "51284495e71acdb5a7677e7383ab026b"
 WORKER_NAME = "corelink-i2568-sla-credit-test-20260928"
-SOURCE_SHA = "5fabd93e98d805a39319fcb6a22c9ee5267fafd4"
+# The protected workflow binds this to its exact, fresh main input. A historical
+# commit is never a valid substitute for the code being tested or deployed.
+SOURCE_SHA = os.environ.get("I2568_EXPECTED_SHA", "")
 SOURCE_DIGESTS = {
-    "apps/signup-worker/src/webhooks/sla_credit_cron.ts": "e290331915c8f61e3115a9d5b9b1213c4aac97005ade2de98ba79ba866abc3c3",
+    "apps/signup-worker/src/webhooks/sla_credit_cron.ts": "07adc5680fe77a03d0cf648c872691252d7c042e151e897ef79f65ad61207db0",
     "migrations/d1/0055_tenant_billing.sql": "f5420ceac080d92ae5dab05cf6209525d767de3408828bda46134e9323e8d93d",
     "migrations/d1/0117_sla_credit_ledger.sql": "658469f4102b6ef424af7dda29c8febcbf1058a677426be24da9306282c3454e",
 }
@@ -616,6 +618,7 @@ def run_all(*, expected_sha: str, run_id: str, confirmation: str, source_root: P
             raise OperatorError("root-owned I2568_PROVIDER_APPROVED protected-environment gate is not true")
         head = assert_checkout(expected_sha)
         receipt["candidate_sha"] = head
+        verify_source_checkout(Path.cwd(), expected_sha)
         receipt["operator"] = {
             "branch": "main", "head_sha": head,
             "workflow_run_id": run_id,
@@ -626,9 +629,9 @@ def run_all(*, expected_sha: str, run_id: str, confirmation: str, source_root: P
         source_root = source_root.resolve()
         source_head = subprocess.check_output(["git", "-C", str(source_root), "rev-parse", "HEAD"], text=True,
                                               stderr=subprocess.DEVNULL).strip()
-        if source_head != SOURCE_SHA:
-            raise OperatorError("separate canonical-source checkout is not the frozen baseline")
-        source_digests = _check_source(source_root)
+        if source_head != expected_sha or source_head != SOURCE_SHA or not re.fullmatch(r"[0-9a-f]{40}", SOURCE_SHA):
+            raise OperatorError("separate canonical-source checkout is not the exact protected-main candidate")
+        source_digests = verify_source_checkout(source_root, expected_sha)
         receipt["canonical_source_digests"] = source_digests
 
         stripe_key = os.environ.get("STRIPE_SECRET_KEY", "")
@@ -743,7 +746,7 @@ def run_all(*, expected_sha: str, run_id: str, confirmation: str, source_root: P
             raise OperatorError("owned Stripe customer ID is missing")
         observation_time_ms = int(time.time() * 1000)
         observation = {
-            "tenant_id": tenant_id, "service_period": "2026-08", "tier": "starter",
+            "tenant_id": tenant_id, "service_period": "2026-08", "tier": "enterprise",
             "monthly_fee_minor": 10000, "currency": "USD", "availability_percent": 99.49,
             "force_majeure": False, "observed_at_ms": observation_time_ms,
         }
@@ -778,7 +781,7 @@ def run_all(*, expected_sha: str, run_id: str, confirmation: str, source_root: P
             raise OperatorError("gate-false sweep caused a Stripe invoice-item effect")
         receipt["credit"] = {
             "tenant_sha256": redacted_id(tenant_id), "customer_sha256": redacted_id(customer_id),
-            "service_period": period, "tier": "starter", "monthly_fee_minor": 10000,
+            "service_period": period, "tier": "enterprise", "monthly_fee_minor": 10000,
             "availability_percent": 99.49, "cutoff_at_ms": observation_row.get("cutoff_at_ms"),
             "observation_observed_at_ms": observation_row.get("observed_at_ms"),
             "sweep_observed_at_ms": observation_time_ms, "credit_percent": 5,
@@ -1102,6 +1105,7 @@ def run_capability_probe(*, expected_sha: str, run_id: str, confirmation: str, o
             raise OperatorError("explicit #2568 test-mode confirmation is missing")
         head = assert_checkout(expected_sha)
         receipt["candidate_sha"] = head
+        verify_source_checkout(Path.cwd(), expected_sha)
         if not re.fullmatch(r"[A-Za-z0-9-]{1,80}", run_id):
             raise OperatorError("run_id is missing or malformed")
         account_binding = os.environ.get("STRIPE_TEST_ACCOUNT_ID", "")
@@ -1216,7 +1220,13 @@ def run_capability_probe(*, expected_sha: str, run_id: str, confirmation: str, o
     return rc
 
 
-def verify_source_checkout(source_root: Path) -> dict[str, str]:
+def verify_source_checkout(source_root: Path, expected_sha: str) -> dict[str, str]:
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_sha) or SOURCE_SHA != expected_sha:
+        raise OperatorError("canonical source is not bound to the exact protected-main candidate")
+    source_head = subprocess.check_output(["git", "-C", str(source_root), "rev-parse", "HEAD"],
+                                          text=True, stderr=subprocess.DEVNULL).strip()
+    if source_head != expected_sha:
+        raise OperatorError("canonical source checkout is not the exact protected-main candidate")
     observed: dict[str, str] = {}
     for relative, expected in SOURCE_DIGESTS.items():
         path = source_root / relative
@@ -1233,9 +1243,9 @@ def verify_wrapper_bundle(source_root: Path, candidate_root: Path) -> None:
     source_root = source_root.resolve()
     source_head = subprocess.check_output(["git", "-C", str(source_root), "rev-parse", "HEAD"],
                                           text=True, stderr=subprocess.DEVNULL).strip()
-    if source_head != SOURCE_SHA:
-        raise OperatorError("canonical source checkout is not the frozen baseline")
-    verify_source_checkout(source_root)
+    if source_head != SOURCE_SHA or not re.fullmatch(r"[0-9a-f]{40}", SOURCE_SHA):
+        raise OperatorError("canonical source checkout is not the exact protected-main candidate")
+    verify_source_checkout(source_root, SOURCE_SHA)
     runtime = Path(tempfile.mkdtemp(prefix=".i2568-wrapper-check-", dir=candidate_root.resolve()))
     runtime.chmod(0o700)
     try:
@@ -1258,8 +1268,8 @@ def contract_check(root: Path) -> list[str]:
     for relative in sorted(expected):
         if not (root / relative).is_file():
             errors.append(f"missing frozen path {relative}")
-    if SOURCE_SHA != "5fabd93e98d805a39319fcb6a22c9ee5267fafd4":
-        errors.append("frozen source SHA drift")
+    if not re.fullmatch(r"[0-9a-f]{40}", SOURCE_SHA):
+        errors.append("exact protected-main source SHA is missing")
     return errors
 
 
@@ -1295,9 +1305,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "verify-source":
             source_head = subprocess.check_output(["git", "-C", str(args.source_root.resolve()), "rev-parse", "HEAD"],
                                                   text=True, stderr=subprocess.DEVNULL).strip()
-            if source_head != SOURCE_SHA:
-                raise OperatorError("canonical source checkout is not the frozen baseline")
-            verify_source_checkout(args.source_root.resolve())
+            if source_head != SOURCE_SHA or not re.fullmatch(r"[0-9a-f]{40}", SOURCE_SHA):
+                raise OperatorError("canonical source checkout is not the exact protected-main candidate")
+            verify_source_checkout(args.source_root.resolve(), SOURCE_SHA)
             print("#2568 frozen canonical source: PASS")
             return 0
         if args.command == "verify-wrapper":

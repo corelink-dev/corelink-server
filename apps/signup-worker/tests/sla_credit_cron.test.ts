@@ -19,7 +19,7 @@ function baseMeasurement(overrides: Partial<SlaMonthlyMeasurement> = {}): SlaMon
   return {
     tenant_id: "tenant-1",
     service_period: "2026-08",
-    tier: "pro",
+    tier: "enterprise",
     monthly_fee_minor: 5_000,
     currency: "USD",
     availability_percent: 99.4,
@@ -166,17 +166,40 @@ describe("B-089 strict policy boundaries", () => {
 
   it("rejects unsafe integer fees and never creates an unsafe amount", () => {
     expect(evaluateSlaCredit(baseMeasurement({ monthly_fee_minor: Number.MAX_SAFE_INTEGER + 1 })).reason).toBe("invalid_measurement");
-    expect(evaluateSlaCredit(baseMeasurement({ monthly_fee_minor: 1, availability_percent: 99.89 })).eligible).toBe(false);
-    expect(evaluateSlaCredit(baseMeasurement({ currency: "usd", availability_percent: 99.4 })).amount_minor).toBe(250);
+    expect(evaluateSlaCredit(baseMeasurement({ monthly_fee_minor: 1, availability_percent: 99.95 })).eligible).toBe(false);
+    expect(evaluateSlaCredit(baseMeasurement({ currency: "usd", availability_percent: 99.49 })).amount_minor).toBe(250);
   });
 
   it("caps stacked credits and marks an absolute <95% result catastrophic", () => {
     const result = evaluateSlaCredit(baseMeasurement({ availability_percent: 94.99, latency_excess_percent: 80, latency_sustained_minutes: 60, dsr_breach_days: 45, billing_drift_percent: 0.2, billing_drift_sustained_hours: 25 }));
     expect(result).toMatchObject({ eligible: true, credit_percent: 100, amount_minor: 5_000, catastrophic: true });
   });
+
+  it("excludes all five non-Enterprise launch tiers before credit calculation", () => {
+    for (const tier of ["free", "solo", "starter", "pro", "max"]) {
+      const decision = evaluateSlaCredit(baseMeasurement({ tier, availability_percent: 90 }));
+      expect(decision).toMatchObject({ eligible: false, credit_percent: 0, amount_minor: 0,
+        reason: tier === "free" ? "free_tier_excluded" : "tier_not_in_executed_sla" });
+    }
+    expect(evaluateSlaCredit(baseMeasurement({ tier: " ENTERPRISE ", availability_percent: 99.49 })))
+      .toMatchObject({ eligible: true, credit_percent: 5, amount_minor: 250 });
+  });
 });
 
 describe("B-089 gates, retries, and transaction boundaries", () => {
+  it("never creates a ledger, outbox, or provider call for the five excluded tiers", async () => {
+    for (const tier of ["free", "solo", "starter", "pro", "max"]) {
+      const db = new MemoryDb([measurementRow({ tier, availability_percent: 90 })]);
+      const applyCredit = vi.fn(async () => ({ provider_ref: "ii_forbidden" }));
+      const result = await runSlaCreditSweep({ BILLING_DB: db, SLA_CREDITS_ENABLED: "true" }, 0, { applyCredit });
+      expect(result).toMatchObject({ measured: 1, created: 0, applied: 0, blocked: 0 });
+      expect(db.measurements[0]).toMatchObject({ state: "ineligible", credit_percent: 0, amount_minor: 0,
+        decision_reason: tier === "free" ? "free_tier_excluded" : "tier_not_in_executed_sla" });
+      expect(db.ledger.size).toBe(0);
+      expect(db.outbox.size).toBe(0);
+      expect(applyCredit).not.toHaveBeenCalled();
+    }
+  });
   it("does not let a supplied provider bypass the in-sweep financial gate", async () => {
     const db = new MemoryDb([measurementRow()]);
     let calls = 0;
@@ -219,7 +242,7 @@ describe("B-089 gates, retries, and transaction boundaries", () => {
   });
 
   it("does not starve a newer row behind a bounded batch of ineligible rows", async () => {
-    const rows = Array.from({ length: 101 }, (_, index) => measurementRow({ tenant_id: `t-${index}`, availability_percent: 99.9 }));
+    const rows = Array.from({ length: 101 }, (_, index) => measurementRow({ tenant_id: `t-${index}`, availability_percent: 99.95 }));
     rows[100] = measurementRow({ tenant_id: "newer", availability_percent: 99.4 });
     const db = new MemoryDb(rows);
     const first = await runSlaCreditSweep({ BILLING_DB: db }, 0);

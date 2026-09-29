@@ -24,7 +24,7 @@
 import { constantTimeEqual } from "./github_provision.js";
 
 export type CreditFailureKind = "transient" | "permanent";
-export type SlaTier = "free" | "starter" | "pro" | "enterprise";
+export type SlaTier = "free" | "solo" | "starter" | "pro" | "max" | "enterprise";
 
 export interface SlaMonthlyMeasurement {
   tenant_id: string;
@@ -56,8 +56,6 @@ export interface CreditDecision {
 }
 
 const CONTRACT_TIERS: Record<string, { target: number }> = {
-  starter: { target: 99.5 },
-  pro: { target: 99.9 },
   enterprise: { target: 99.95 },
 };
 const DAY_MS = 24 * 60 * 60 * 1000;
