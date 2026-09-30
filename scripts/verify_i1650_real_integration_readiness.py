@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKET = ROOT / "docs/handoff/2026-09-22-i1650-real-integration-readiness.json"
 MANIFEST = ROOT / "scripts/real-ignored-harness-manifest.json"
 WORKFLOW = ROOT / ".github/workflows/real-ignored-harnesses.yml"
+BOOTSTRAP = ROOT / "scripts/issue_2564_r2_temp_credentials.py"
 PROFILES = ("d1", "r2", "stripe", "neon")
 REQUIRED_RESOURCES = {
     "d1": (
@@ -69,7 +70,7 @@ def load(path: Path) -> dict[str, Any]:
     return value
 
 
-def validate_packet(packet: dict[str, Any], manifest: dict[str, Any], workflow: str) -> bool:
+def validate_packet(packet: dict[str, Any], manifest: dict[str, Any], workflow: str, bootstrap: str) -> bool:
     walk(packet)
     if packet.get("schema_version") != "i1650.real-integration-readiness.v2":
         fail("unsupported packet schema")
@@ -91,11 +92,29 @@ def validate_packet(packet: dict[str, Any], manifest: dict[str, Any], workflow: 
         fail("profile set drifted")
     if not isinstance(manifest_profiles, dict) or set(manifest_profiles) != set(PROFILES):
         fail("executor manifest profile set drifted")
+    r2_required = manifest_profiles["r2"].get("required_env", ())
+    if not isinstance(r2_required, list) or r2_required.count("R2_S3_SESSION_TOKEN") != 1:
+        fail("R2 executor manifest must require exactly one derived session token")
+    if 'R2_S3_SESSION_TOKEN: ""' not in workflow:
+        fail("R2 session token must start empty in the executor workflow")
+    if "secrets.R2_S3_SESSION_TOKEN" in workflow or "vars.R2_S3_SESSION_TOKEN" in workflow:
+        fail("R2 session token must never use a persistent GitHub binding")
+    for marker in (
+        'python3 -S scripts/issue_2564_r2_temp_credentials.py',
+        '"R2_S3_SESSION_TOKEN"] = credentials.session_token',
+        'run(list(RUNNER), cwd=cwd, env=child_env',
+    ):
+        if marker not in (workflow if marker.startswith("python3") else bootstrap):
+            fail("R2 session token must be issued in memory and passed only to the child runner")
     for profile in PROFILES:
         item = profiles[profile]
         if not isinstance(item, dict):
             fail(f"{profile} packet shape is invalid")
         expected = list(manifest_profiles[profile].get("required_env", ()))
+        # The session token is a derived, per-run credential. It belongs in
+        # the executor's runtime contract, never in persistent readiness bindings.
+        if profile == "r2":
+            expected.remove("R2_S3_SESSION_TOKEN")
         env = item.get("environment")
         if item.get("status") not in {"blocked", "ready"} or not isinstance(env, list):
             fail(f"{profile} packet shape is invalid")
@@ -171,14 +190,21 @@ def validate_packet(packet: dict[str, Any], manifest: dict[str, Any], workflow: 
     return packet["status"] == "ready"
 
 
-def mutation_checks(packet: dict[str, Any], manifest: dict[str, Any], workflow: str) -> None:
+def mutation_checks(packet: dict[str, Any], manifest: dict[str, Any], workflow: str, bootstrap: str) -> None:
     """Prove READY rejects missing resources and owner-reviewed cleanup evidence."""
     expect_rejected(
         "D1 routed to shared environment",
         packet,
         manifest,
-        workflow.replace("environment: ${{ inputs.profile == 'd1' && 'real-d1-2563' || 'real-integration' }}", "environment: real-integration", 1),
+        workflow.replace("environment: ${{ inputs.profile == 'd1' && 'real-d1-2563' || 'real-integration' }}", "environment: real-integration", 1), bootstrap,
     )
+    missing_session = copy.deepcopy(manifest)
+    missing_session["profiles"]["r2"]["required_env"].remove("R2_S3_SESSION_TOKEN")
+    expect_rejected("manifest omits derived R2 session token", packet, missing_session, workflow, bootstrap)
+    expect_rejected("persistent session-token binding", packet, manifest, workflow + "\n      R2_S3_SESSION_TOKEN: ${{ secrets.R2_S3_SESSION_TOKEN }}\n", bootstrap)
+    expect_rejected("persistent session-token variable binding", packet, manifest, workflow + "\n      R2_S3_SESSION_TOKEN: ${{ vars.R2_S3_SESSION_TOKEN }}\n", bootstrap)
+    expect_rejected("session token not initialized empty", packet, manifest, workflow.replace('R2_S3_SESSION_TOKEN: ""', "", 1), bootstrap)
+    expect_rejected("session token not issued in memory", packet, manifest, workflow, bootstrap.replace('"R2_S3_SESSION_TOKEN"] = credentials.session_token', '"R2_S3_SESSION_TOKEN"] = os.environ["R2_S3_SESSION_TOKEN"]', 1))
     ready_packet = copy.deepcopy(packet)
     ready_packet["status"] = "ready"
     for profile in PROFILES:
@@ -195,30 +221,30 @@ def mutation_checks(packet: dict[str, Any], manifest: dict[str, Any], workflow: 
             "owner_reviewed": True,
             "evidence_ref": "synthetic://cleanup-receipt",
         }
-    if not validate_packet(ready_packet, manifest, workflow):
+    if not validate_packet(ready_packet, manifest, workflow, bootstrap):
         fail("complete synthetic readiness fixture did not validate")
     for profile in PROFILES:
         missing_resource = copy.deepcopy(ready_packet)
         resource = missing_resource["profiles"][profile]["resources"][0]
         resource["status"] = "missing"
         resource["evidence_ref"] = None
-        expect_rejected(f"{profile} ready with a missing resource", missing_resource, manifest, workflow)
+        expect_rejected(f"{profile} ready with a missing resource", missing_resource, manifest, workflow, bootstrap)
         missing_cleanup = copy.deepcopy(ready_packet)
         missing_cleanup["profiles"][profile]["cleanup_receipt"] = {
             "status": "missing",
             "owner_reviewed": False,
             "evidence_ref": None,
         }
-        expect_rejected(f"{profile} ready without owner-reviewed cleanup", missing_cleanup, manifest, workflow)
+        expect_rejected(f"{profile} ready without owner-reviewed cleanup", missing_cleanup, manifest, workflow, bootstrap)
 
     production_scope = copy.deepcopy(ready_packet)
     production_scope["profiles"]["d1"]["resources"][0]["scope"] = "production account; production writes allowed"
-    expect_rejected("ready profile with production resource scope", production_scope, manifest, workflow)
+    expect_rejected("ready profile with production resource scope", production_scope, manifest, workflow, bootstrap)
 
 
-def expect_rejected(label: str, packet: dict[str, Any], manifest: dict[str, Any], workflow: str) -> None:
+def expect_rejected(label: str, packet: dict[str, Any], manifest: dict[str, Any], workflow: str, bootstrap: str) -> None:
     try:
-        validate_packet(packet, manifest, workflow)
+        validate_packet(packet, manifest, workflow, bootstrap)
     except ValueError:
         return
     fail(f"readiness mutation was accepted: {label}")
@@ -228,8 +254,9 @@ def validate() -> bool:
     packet = load(PACKET)
     manifest = load(MANIFEST)
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    mutation_checks(packet, manifest, workflow)
-    return validate_packet(packet, manifest, workflow)
+    bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
+    mutation_checks(packet, manifest, workflow, bootstrap)
+    return validate_packet(packet, manifest, workflow, bootstrap)
 
 def main() -> int:
     try:
