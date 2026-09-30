@@ -4,7 +4,7 @@ type: "legal_template"
 doc_status: "PENDING_LEGAL_REVIEW"
 version: "1.0.0"
 created: "2026-05-14"
-updated: "2026-05-14"
+updated: "2026-09-30"
 owner: "Gustavo Schneiter"
 legal_review_status: "PENDING"
 legal_review_firm: "TBD (Schellman Legal / Cooley / DLA Piper / Bird & Bird / Fenwick & West / Latham & Watkins)"
@@ -36,7 +36,9 @@ superseded_by: null
 >
 > **References**: GDPR Art. 28, Art. 33, Art. 37, Art. 46 · LGPD Art. 33 §1, Art. 46, Art. 48 · Schrems II (C-311/18) · EDPB Recommendations 01/2020 · NIST SP 800-88 Rev.1 §2.4 · INV-DATA-RESIDENCY · INV-REGION-NO-CROSS-LEAK · INV-BYOK-CRYPTO-SOVEREIGNTY · INV-ERASURE-ATTESTATION-SIGNED
 
-> **CURRENT LAUNCH BOUNDARY (DD-051 / B-204):** BYOK is not enabled or provisioned in the launched CoreLink data plane. No FIPS-validated BYOK module, CMK activation path, BYOK kill switch, or set of four KMS providers is currently available. The live service uses provider-managed R2 encryption and its ordinary DSR erasure pipeline. Every BYOK, FIPS, CMK, crypto-erase, and four-provider reference below is a **future-state design requirement**, conditional on separately approved production enablement and current evidence; it is not an unconditional customer commitment or a statement that the feature is available today.
+> **PRELAUNCH INTERNAL REVIEW DRAFT — NOT OFFERED, EXECUTED, OR OPERATIVE.** CoreLink has not launched and has no customers; this template has not been executed or distributed as a customer commitment. All present-tense contractual formulations below are proposed template wording only, not evidence of current processing practices or obligations. Counsel review and approval of any applicable transfer basis are pending.
+>
+> **CURRENT PRELAUNCH BOUNDARY (DD-051 / B-204):** CoreLink has not launched. BYOK is not enabled or provisioned; no FIPS-validated BYOK module, CMK activation path, BYOK kill switch, or set of four KMS providers is available. The configured service source uses provider-managed R2 encryption and the ordinary DSR erasure pipeline. Every BYOK, FIPS, CMK, crypto-erase, and four-provider reference below is a **future-state design requirement**, conditional on separately approved production enablement and current evidence; it is not an unconditional customer commitment or a statement that the feature is available today.
 
 ---
 
@@ -54,7 +56,7 @@ superseded_by: null
 - DPO contact: Gustavo Schneiter (interim, sole-founder dual-hat) · `dpo@corelink.io`
 - Emergency contact: `security@corelink.io`
 
-**Relationship:** The parties have entered into a Master Service Agreement ("MSA") or equivalent order form ("Service Agreement") under which CoreLink acts as Processor and Customer acts as Controller in respect of Personal Data processed through the CoreLink content-addressable cache service.
+**Historical template relationship:** Earlier source wording assumed a Master Service Agreement or order form between CoreLink and a Customer. No such customer relationship or executed instrument is confirmed; this paragraph records a proposed template structure only and creates no current relationship or obligation.
 
 ---
 
@@ -90,7 +92,7 @@ superseded_by: null
 CoreLink processes Personal Data on documented instruction from Customer solely for the following purposes:
 1. Storage and retrieval of cache blobs uploaded by Customer or Customer's authorised users.
 2. Access control enforcement (tenant isolation and RBAC; BYOK key operations only if separately enabled for a tenant).
-3. Audit log generation for compliance, integrity, and forensic purposes (7-year retention per CTRL-AUDIT-005).
+3. Audit log generation for compliance, integrity, and forensic purposes; retention duration and storage-enforced immutability require a separately approved policy and are not established here.
 4. Breach detection, incident response, and security operations.
 
 CoreLink shall not process Personal Data for its own purposes, use it for training machine-learning models, or disclose it to third parties except as required by applicable law or as necessary to deliver the service via authorised Sub-processors (Section 8).
@@ -123,11 +125,17 @@ CoreLink does not knowingly process special-category data (GDPR Art. 9) or data 
 
 This template's regional statements apply to R2 objects and tenant-pinned
 Durable Object state. They do not apply to the shared D1 control plane. The
-five production Workers currently bind one D1 database whose primary Cloudflare
-reports in ENAM, with no D1 jurisdiction and automatic read replication. That
-database holds tenant, membership, PAT, quota, billing, and audit-outbox data.
-This is a prelaunch technical disclosure, not an approved transfer mechanism
-or executed customer commitment.
+five production Workers currently bind one D1 database with no D1 jurisdiction
+binding. A read-only Wrangler 4.145.0 provider readback on 2026-09-30 identified
+the exact target as `corelink-prod-d1` (ID `d64742ea-e102-40b2-a844-ff02e3f94562`),
+with `running_in_region=ENAM`, `jurisdiction=null`, and automatic read
+replication. The provider reports 162 tables. `running_in_region` is metadata,
+not a physical-location guarantee; Wrangler config and readback do not establish
+tenant-specific D1 residency or an approved transfer mechanism. This prelaunch
+disclosure records the technical posture selected by the root owner, not legal
+approval or an executed customer commitment. The shared database holds tenant, membership, PAT,
+quota, billing-state, and audit-outbox data. This is a prelaunch technical
+disclosure, not an approved transfer mechanism or executed customer commitment.
 
 ### 7.1 Enumerated Regions
 
@@ -161,11 +169,7 @@ restriction is enforced at the infrastructure level (Cloudflare DO
 
 ### 7.3 International Transfer Mechanism
 
-The repository disclosure describes the shared D1 control plane under SCC/TIA
-safeguards. This template does not establish that a transfer mechanism has been
-approved or executed. Counsel must approve the applicable transfer basis,
-safeguards, and effective date before any customer-facing residency term is
-published.
+The repository describes the shared D1 control plane and records a read-only exact-target provider metadata readback dated 2026-09-30. SCC/TIA are assessment frameworks; no transfer basis or safeguard has been approved or executed. This template does not itself establish a lawful transfer mechanism. Counsel must approve the applicable transfer basis, safeguards, and effective date before publication.
 
 SAM is not a provisioned signup region. A future SAM deployment would require a
 separate residency decision and legal review under LGPD Art. 33; this template
@@ -181,7 +185,7 @@ CoreLink engages the following Sub-processors. Customer authorises their engagem
 
 | Sub-processor | Role | Data Categories | DPA Reference | Region Scope |
 |---|---|---|---|---|
-| **Cloudflare, Inc.** | Infrastructure: Workers, R2, D1, KV, Durable Objects, Custom Domains | Blob content (encrypted), audit metadata, access logs | [cf-dpa.cloudflare.com](https://www.cloudflare.com/cloudflare-customer-dpa/) | R2/DO tenant-pinned; shared D1 control plane is global (primary reported ENAM, no D1 jurisdiction) |
+| **Cloudflare, Inc.** | Infrastructure: Workers, R2, D1, KV, Durable Objects, Custom Domains | Blob content (encrypted), audit metadata, access logs | [cf-dpa.cloudflare.com](https://www.cloudflare.com/cloudflare-customer-dpa/) | R2/DO source paths are tenant-pinned; shared D1 is global without a D1 jurisdiction binding. A read-only 2026-09-30 Wrangler readback of `corelink-prod-d1` reported ENAM metadata and `jurisdiction=null`; that is not a physical-location guarantee or legal approval. |
 | **Customer KMS Provider (future only)** | No current service processing; candidate BYOK CMK integration | Not applicable while BYOK is unavailable | Would require a separately enabled customer agreement | Not an active sub-processor |
 
 ### 8.2 Customer KMS Provider Options
@@ -207,7 +211,7 @@ CoreLink implements and maintains the following technical and organisational sec
 
 ### 9.1 Encryption at Rest
 
-- **Current encryption**: The launched service uses provider-managed R2 encryption. BYOK envelope encryption (unique DEK wrapped by a customer CMK) is a future-state design, not an active control.
+- **Current encryption**: The configured service source uses provider-managed R2 encryption; CoreLink has not launched and this is not a customer guarantee. BYOK envelope encryption (unique DEK wrapped by a customer CMK) is a future-state design, not an active control.
 - **BYOK FIPS Verification (future only)**: No FIPS-backed BYOK endpoint is enabled and no FIPS validation is claimed. A future enablement would require provider-specific evidence in `docs/compliance/byok-fips-evidence.md` before any customer commitment.
 - **Per-region Key Isolation**: Any future BYOK key isolation is conditional on production enablement; this template is not evidence that such a control is active.
 
@@ -228,7 +232,7 @@ CoreLink implements and maintains the following technical and organisational sec
 
 - Append-only audit chain with tamper-evident Ed25519 signatures (S-09).
 - Daily integrity verification (continuous auditor job).
-- Audit logs retained 7 years (CTRL-AUDIT-005).
+- Audit-event retention duration and storage-enforced immutability are not established here; production Object Lock COMPLIANCE retention is not available or promised.
 
 ### 9.5 Erasure Attestation
 
@@ -294,18 +298,11 @@ Upon becoming aware of a Breach affecting Customer Personal Data, CoreLink shall
 
 ### 12.1 Transfer Mechanism
 
-Where Personal Data is transferred from the European Economic Area (EEA) to a third country (including the United States, where Cloudflare is headquartered), such transfers are made on the basis of:
-- EU Standard Contractual Clauses (Module 1: Controller to Controller; Module 2: Controller to Processor) per GDPR Art. 46(2)(c).
-- Cloudflare's SCCs with CoreLink (incorporated by reference in Cloudflare DPA).
+This prelaunch template does not establish that any EEA-to-third-country transfer has been approved or executed. EU Standard Contractual Clauses and Cloudflare's DPA may be inputs to counsel's assessment; their existence does not by itself establish an approved transfer basis or effective supplementary measures for the shared D1 control plane.
 
 ### 12.2 Schrems II Transfer Impact Assessment
 
-CoreLink has conducted a Transfer Impact Assessment (TIA) per EDPB Recommendations 01/2020. The TIA:
-- Assesses US surveillance law (FISA 702, EO 12333, CLOUD Act) risk.
-- Documents supplementary measures (technical, organisational, contractual) rendering the transfer compliant.
-- Does not rely on BYOK to conclude that a transfer is compliant: BYOK is not
-  active in the launched data plane. Any future TIA must be re-reviewed after a
-  real CMK path and provider evidence are provisioned.
+A Transfer Impact Assessment for the current shared-D1 posture remains pending counsel review. This repository template records questions and technical observations; it does not conclude that a transfer is compliant or that supplementary measures are effective. BYOK is unavailable at launch and does not cover the shared D1 control-plane records.
 
 Full TIA available at `legal/tia-template.md`.
 
@@ -347,7 +344,7 @@ Upon termination or expiry of the Service Agreement for any reason:
 
 ### 14.2 Audit Log Retention Post-Termination
 
-Anonymised or pseudonymised audit logs (from which Personal Data has been removed) may be retained for up to 7 years from the date of the event, solely for CoreLink's internal audit, legal compliance, and integrity-verification purposes.
+Any retention of anonymised or pseudonymised audit logs is subject to a separately approved retention policy. This template does not establish a seven-year retention duration or Object Lock guarantee.
 
 ### 14.3 Return of Data
 

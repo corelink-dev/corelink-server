@@ -1,7 +1,11 @@
 # Aviso de Privacidade — HuGR CoreLink
 
+> **RASCUNHO INTERNO PRÉ-LANÇAMENTO — NÃO PUBLICADO NEM VIGENTE.** A CoreLink não foi lançada e não tem clientes. As descrições no presente abaixo são texto histórico proposto; não declaram práticas atuais de coleta, uso, compartilhamento, retenção ou tratamento e não criam compromisso vigente. A revisão jurídica e a aprovação do proprietário estão pendentes antes de qualquer uso futuro com clientes.
+>
+> **Status da fonte:** O proprietário confirma que a CoreLink não foi lançada e não tem clientes. A revisão e aprovação jurídica dos termos de tratamento, residência e transferência estão pendentes; este aviso não estabelece uma base de transferência aprovada.
+
 **Versão:** 1.0.0
-**Publicado em:** 2026-05-13
+**Data da fonte histórica (não publicada):** 2026-05-13
 **Contato DPO:** privacy@hugr.dev
 
 ---
@@ -15,7 +19,7 @@
 
 ## 2. Categorias de Dados Coletados
 
-Coletamos as seguintes categorias de dados pessoais:
+O aviso histórico proposto enumerava as seguintes categorias de dados pessoais; isto não declara coleta atual:
 
 - **Dados de identificação:** nome, endereço de e-mail, UUID do titular.
 - **Dados de autenticação:** tokens PAT (Personal Access Token), credenciais WebAuthn.
@@ -64,12 +68,7 @@ Para alterações em sub-processadores, você será notificado com no mínimo 30
 
 ## 6. Transferências Internacionais
 
-Seus dados podem ser processados nos seguintes países/regiões:
-- **Brasil (SAM):** região primária.
-- **Estados Unidos (WNAM/ENAM):** Cloudflare, Stripe, Neon.
-- **União Europeia (WEUR):** Cloudflare EU, Grafana Labs.
-
-As transferências para fora do Brasil são amparadas por: (a) países com nível de proteção adequado reconhecido pela ANPD; (b) cláusulas contratuais padrão (SCCs) conforme GDPR Art. 46.
+Nenhuma região está atualmente disponível para clientes. Os ambientes de Worker de produção apontam para um único banco D1 global compartilhado, sem vínculo por tenant. Ele contém registros de tenant, associação, PAT, cotas, estado de cobrança e outbox de auditoria. Uma consulta somente leitura com Wrangler 4.145.0 em 2026-09-30 identificou `corelink-prod-d1` (ID `d64742ea-e102-40b2-a844-ff02e3f94562`), com `running_in_region=ENAM`, `jurisdiction=null`, replicação automática de leitura e 162 tabelas. A região informada é metadado, não garantia de localização física; esta é a postura técnica pré-lançamento escolhida pelo proprietário raiz, não aprovação jurídica. Nenhuma base de transferência ou medida suplementar para esse D1 compartilhado foi aprovada. Este aviso é um rascunho e não promete processamento regional nem transferência internacional.
 
 ---
 
@@ -78,7 +77,7 @@ As transferências para fora do Brasil são amparadas por: (a) países com níve
 | Categoria | Período de Retenção | Base |
 |---|---|---|
 | Dados de conta | Enquanto vigente o contrato + 5 anos | LGPD Art. 16 fiscal |
-| Logs de auditoria | 7 anos | R2 Object Lock (regulatório) |
+| Logs de auditoria | O prazo de retenção não é estabelecido aqui | Não há garantia de Object Lock; a retenção COMPLIANCE de produção não está disponível nem foi comprovada |
 | Logs de build (artefatos) | Conforme configuração do titular | Contratual |
 | Dados de faturamento | 5 anos (fiscal) | LGPD Art. 16 |
 | Consentimentos | 7 anos | LGPD Art. 8 (regime de consentimento) + GDPR Art. 7(1) (demonstrabilidade) |
@@ -109,7 +108,7 @@ Implementamos as seguintes medidas de segurança:
 - Criptografia em trânsito (TLS 1.2 mínimo; TLS 1.3 negociado quando houver suporte).
 - Criptografia em repouso (R2 + Neon encryption at rest).
 - Controle de acesso com autenticação multifator (WebAuthn FIDO2).
-- Auditoria append-only com cadeia de hash (BLAKE3).
+- Controles de origem para cadeia de auditoria com evidência de adulteração; não se estabelece imutabilidade Object Lock nem prazo fixo de retenção.
 - Testes regulares de segurança (SOC 2 Type II em preparação).
 
 ---

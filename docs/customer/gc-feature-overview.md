@@ -113,8 +113,8 @@ live capability.
 
 We do NOT delete:
 
-- audit log rows (immutable; retention separate per LGPD Art. 16
-  policy + R2 Object Lock 7y);
+- audit log rows (retention is subject to an approved policy; no production
+  R2 Object Lock or storage-enforced seven-year guarantee is claimed);
 - DSR erasure trail (cross-referenced for regulatory compliance);
 - any blob during a degrade-mode `gc-pause` window (admin-triggered
   emergency stop).

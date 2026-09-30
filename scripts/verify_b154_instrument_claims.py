@@ -15,11 +15,16 @@ counsel, notify customers, or infer that the documents were executed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verify_b086_d1_residency import VerificationError as B086VerificationError
+from verify_b086_d1_residency import verify_readback_record
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +32,28 @@ DPA = ROOT / "legal/dpa/v1.0.0.en-US.md"
 SLA = ROOT / "legal/sla/v1.0.0.md"
 B083_RECEIPT = Path("evidence/owner-actions/B-083/byok-real-kms-lifecycle.json")
 B046_PROBE = Path("evidence/owner-actions/B-046/object-lock-probe.json")
+RESOLUTION = Path("evidence/owner-actions/B-154/prelaunch-claim-resolution.json")
+B086_RESOLUTION = Path("evidence/owner-actions/B-086/d1-residency-resolution.json")
+WRANGLER = Path("wrangler.toml")
 DOCKERFILE = Path("Dockerfile")
+PUBLIC_COPY_PATHS = (
+    Path("legal/dpa-residency-amendment.md"),
+    Path("legal/dpa/v1.0.0.en-US.md"),
+    Path("legal/dpa/v1.0.0.es-419.md"),
+    Path("legal/dpa/v1.0.0.pt-BR.md"),
+    Path("legal/privacy-notice/v1.0.0/en-US.md"),
+    Path("legal/privacy-notice/v1.0.0/es-MX.md"),
+    Path("legal/privacy-notice/v1.0.0/pt-BR.md"),
+    Path("legal/privacy-notice/v1.0.0/metadata.yaml"),
+    Path("legal/sla/v1.0.0.md"),
+    Path("legal/dpa/STANDARD-CONTRACTUAL-CLAUSES-EU.md"),
+    Path("legal/tia-template.md"),
+    Path("docs/customer/dpa-onboarding.md"),
+    Path("docs/customer/byok-kill-switch.md"),
+    Path("docs/customer/gc-feature-overview.md"),
+    Path("legal/breach-notification/gdpr-irish-dpc-template.en.md"),
+    Path("legal/breach-notification/lgpd-anpd-template.pt-br.md"),
+)
 
 
 class VerificationError(RuntimeError):
@@ -45,7 +71,10 @@ CLAIMS = (
     Claim(
         "dpa_object_lock",
         DPA,
-        re.compile(r"\bimmutable\s+R2\s+with\s+Object\s+Lock\b", re.IGNORECASE),
+        re.compile(
+            r"\b(?:immutable\s+R2\s+with\s+Object\s+Lock|R2\s+Object\s+Lock.{0,60}(?:retention|7\s+years?)|Object\s+Lock.{0,60}(?:7\s+years?|seven\s+years?|7\s+años|7\s+anos|retention|retención|retenção))\b",
+            re.IGNORECASE,
+        ),
     ),
     Claim(
         "sla_byok_kill_switch",
@@ -58,7 +87,7 @@ CLAIMS = (
 )
 
 POLARITY_RE = re.compile(
-    r"\b(?:no|not|never|without|cannot|can't|does\s+not|doesn't|"
+    r"\b(?:no|not|never|without|cannot|can't|não|nao|does\s+not|doesn't|"
     r"isn't|is\s+not|aren't|are\s+not|unavailable|deferred|"
     r"future(?:[- ]only)?|not\s+guaranteed)\b",
     re.IGNORECASE,
@@ -161,14 +190,24 @@ def scan_claims(markdown: str, path: Path) -> list[tuple[str, int, str]]:
 
 
 def verify_texts(dpa_text: str, sla_text: str) -> list[tuple[str, int, str]]:
+    """Reject positive claims and require explicit prelaunch limitations."""
     found = scan_claims(dpa_text, DPA) + scan_claims(sla_text, SLA)
-    labels = {label for label, _line, _text in found}
-    expected = {claim.label for claim in CLAIMS}
-    missing = sorted(expected - labels)
+    if found:
+        details = "; ".join(f"{label}@{line}" for label, line, _text in found)
+        raise VerificationError(f"unproved B-154 feature claim is active: {details}")
+
+    dpa_active = " ".join(text for _line, text in _active_lines(dpa_text))
+    sla_active = " ".join(text for _line, text in _active_lines(sla_text))
+    required_limits = (
+        ("Object Lock COMPLIANCE retention", dpa_active),
+        ("Seven-year Object Lock retention and storage-enforced immutability are not available or promised", dpa_active),
+        ("BYOK key revocation, crypto-erase, and a BYOK kill switch are unavailable", dpa_active),
+        ("BYOK unavailable; no kill-switch SLO", sla_active),
+    )
+    missing = [label for label, source in required_limits if label not in source]
     if missing:
         raise VerificationError(
-            "active B-154 instrument claim population missing (fail-closed): "
-            + ", ".join(missing)
+            "prelaunch B-154 feature limitation is missing: " + ", ".join(missing)
         )
     return found
 
@@ -178,28 +217,14 @@ def verify_capability_state(byok: dict, object_lock: dict, dockerfile: str) -> N
     try:
         # B-083 receipt schema v2 structure
         byok_unverified = (
-            byok.get("tenant_redacted") == "NOT_PROVISIONED"
-            and byok.get("runtime", {}).get("image_digest") is None
-            and byok.get("lifecycle", {}).get("provider_access", {}).get("status") == "NOT_EXECUTED"
-            and all(
-                byok.get("lifecycle", {}).get(field, {}).get("status") == "NOT_EXECUTED"
-                for field in (
-                    "customer_create_or_import",
-                    "wrap_unwrap",
-                    "revoke_restore",
-                    "rotate",
-                )
-            )
+            byok.get("evidence_state") != "VERIFIED"
+            and byok.get("lifecycle", {}).get("revoke_restore", {}).get("status") != "PASS"
         )
-        probe_indeterminate = (
-            object_lock.get("classification") == "INDETERMINATE"
-            and object_lock.get("bucket_operation", {}).get("status") == "INDETERMINATE"
-            and object_lock.get("object_operation", {}).get("status") == "SKIPPED"
-        )
+        probe_not_proven = object_lock.get("classification") not in ("SUPPORTED", "VERIFIED")
     except (KeyError, TypeError, AttributeError):
         raise VerificationError("B-154 capability evidence shape changed; re-review") from None
-    if not byok_unverified or not probe_indeterminate:
-        raise VerificationError("B-154 capability evidence changed; re-review runtime/probe before closing")
+    if not byok_unverified or not probe_not_proven:
+        raise VerificationError("B-154 capability evidence now proves a feature; re-review claims before publishing")
 
     active = "\n".join(
         line.split("#", 1)[0]
@@ -216,8 +241,139 @@ def verify_capability_state(byok: dict, object_lock: dict, dockerfile: str) -> N
         raise VerificationError("B-154 production Dockerfile BYOK feature changed; re-review")
 
 
+
+def verify_public_claim_copies(root: Path) -> None:
+    for relative in PUBLIC_COPY_PATHS:
+        try:
+            source = (root / relative).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise VerificationError(f"B-154 public copy unreadable: {relative}: {exc}") from exc
+        active_claims = scan_claims(source, DPA) + scan_claims(source, SLA)
+        if active_claims:
+            labels = ", ".join(f"{label}@{line}" for label, line, _text in active_claims)
+            raise VerificationError(f"unproved positive claim in {relative}: {labels}")
+
+
+def verify_prelaunch_document_status(root: Path, overrides: dict[Path, str] | None = None) -> None:
+    """Reject operational metadata left behind on internal prelaunch copies."""
+    required = {
+        Path("legal/dpa/v1.0.0.en-US.md"): (
+            'effective_date: null', 'document_status: "PRELAUNCH_INTERNAL_REVIEW_DRAFT"',
+            'legal_review_status: "pending"', 'NOT OFFERED, EXECUTED, OR OPERATIVE',
+        ),
+        Path("legal/dpa/v1.0.0.es-419.md"): (
+            'effective_date: null', 'document_status: "PRELAUNCH_INTERNAL_REVIEW_DRAFT"',
+            'legal_review_status: "pending"', 'NO OFRECIDO, EJECUTADO NI VIGENTE',
+        ),
+        Path("legal/dpa/v1.0.0.pt-BR.md"): (
+            'effective_date: null', 'document_status: "PRELAUNCH_INTERNAL_REVIEW_DRAFT"',
+            'legal_review_status: "pending"', 'NÃO OFERECIDO, EXECUTADO NEM VIGENTE',
+        ),
+        Path("legal/sla/v1.0.0.md"): (
+            'effective_date: null', 'document_status: "PRELAUNCH_INTERNAL_REVIEW_DRAFT"',
+            'legal_review_status: "pending"', 'NOT OFFERED, EXECUTED, OR OPERATIVE',
+        ),
+        Path("legal/dpa/STANDARD-CONTRACTUAL-CLAUSES-EU.md"): (
+            'effective_date: null', 'PRELAUNCH_INTERNAL_REFERENCE_DRAFT_NOT_INCORPORATED',
+            'not a controlling or incorporated customer instrument',
+        ),
+        Path("legal/privacy-notice/v1.0.0/metadata.yaml"): (
+            'published_at: null', 'publication_status: "not_published_prelaunch_internal_review"',
+            'status: "pending_pre_ga"',
+        ),
+    }
+    for relative, phrases in required.items():
+        if overrides is not None and relative in overrides:
+            source = overrides[relative]
+        else:
+            try:
+                source = (root / relative).read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise VerificationError(f"prelaunch status source unreadable: {relative}: {exc}") from exc
+        missing = [phrase for phrase in phrases if phrase not in source]
+        if missing:
+            raise VerificationError(f"{relative} has stale/effective metadata or missing prelaunch boundary: {missing}")
+        if relative.as_posix().startswith("legal/dpa/v1.0.0.") and 'legal_review_status: "approved"' in source:
+            raise VerificationError(f"{relative} retains an approved legal-review status")
+
+
+def verify_prelaunch_resolution(root: Path) -> None:
+    try:
+        record = json.loads((root / RESOLUTION).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise VerificationError(f"B-154 prelaunch resolution is unreadable: {exc}") from exc
+    if not isinstance(record, dict) or record.get("schema_version") != 1:
+        raise VerificationError("B-154 prelaunch resolution schema changed")
+    if record.get("issue") != 2597 or record.get("parent_issue") != 1676:
+        raise VerificationError("B-154 prelaunch resolution issue identity changed")
+    lifecycle = record.get("lifecycle")
+    if not isinstance(lifecycle, dict) or lifecycle.get("service_launched") is not False:
+        raise VerificationError("B-154 must record the confirmed prelaunch state")
+    for field, expected in (
+        ("customers", "NONE_CONFIRMED"),
+        ("customer_instruments_executed", "NONE_CONFIRMED"),
+        ("customer_notices", "NOT_APPLICABLE_NO_CUSTOMERS"),
+        ("enterprise_byok_case_study", "NO_CIRCULATION_CONFIRMED"),
+        ("customer_data_migration", "NOT_AUTHORIZED_OR_PERFORMED"),
+    ):
+        if lifecycle.get(field) != expected:
+            raise VerificationError(f"B-154 lifecycle {field} does not match owner-confirmed prelaunch facts")
+    claims = record.get("claims")
+    if not isinstance(claims, dict):
+        raise VerificationError("B-154 claim resolutions are missing")
+    object_lock = claims.get("object_lock", {})
+    byok = claims.get("byok_kill_switch", {})
+    if object_lock.get("capability_status") != "UNPROVEN" or object_lock.get("provider_classification") != "INDETERMINATE":
+        raise VerificationError("B-154 Object Lock receipt no longer has the unproven boundary")
+    if byok.get("capability_status") != "UNPROVEN" or byok.get("revoke_restore") != "NOT_EXECUTED" or byok.get("p99_measurement") != "NOT_MEASURED":
+        raise VerificationError("B-154 BYOK lifecycle/p99 boundary changed; re-review claims")
+    if record.get("provider_chains_closed") is not False or record.get("status") != "OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW":
+        raise VerificationError("B-154 provider or counsel chain must remain open")
+    d1 = claims.get("d1_residency")
+    if not isinstance(d1, dict):
+        raise VerificationError("B-154 shared-D1 owner resolution is missing")
+    try:
+        b086 = json.loads((root / B086_RESOLUTION).read_text(encoding="utf-8"))
+        wrangler_text = (root / WRANGLER).read_text(encoding="utf-8")
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise VerificationError(f"B-154 B-086 evidence input is unreadable: {exc}") from exc
+    try:
+        verify_readback_record(b086, wrangler_text)
+    except B086VerificationError as exc:
+        raise VerificationError(f"B-154 relies on invalid B-086 provider evidence: {exc}") from exc
+    b086_sources = b086.get("source_sha256", {})
+    if not isinstance(b086_sources, dict) or b086_sources.get("wrangler.toml") != hashlib.sha256(wrangler_text.encode("utf-8")).hexdigest():
+        raise VerificationError("B-154 B-086 receipt is not bound to the current Wrangler source")
+    b086_hash = hashlib.sha256((root / B086_RESOLUTION).read_bytes()).hexdigest()
+    if (
+        d1.get("source_record") != B086_RESOLUTION.as_posix()
+        or d1.get("source_sha256") != b086_hash
+        or d1.get("provider_target") != "corelink-prod-d1"
+        or d1.get("provider_database_id") != "d64742ea-e102-40b2-a844-ff02e3f94562"
+        or d1.get("physical_location") != "NOT_INFERRED_FROM_PROVIDER_METADATA"
+        or d1.get("transfer_basis") != "PENDING_COUNSEL_REVIEW"
+        or d1.get("data_migration") != "NONE"
+        or d1.get("active_workers_verified") != 5
+        or d1.get("active_config_db_bindings_match") is not True
+        or d1.get("technical_posture_owner") != "root; not a legal approval"
+        or d1.get("provider_readback_at") != b086.get("provider_readback", {}).get("captured_at")
+        or d1.get("active_bindings_readback_at") != b086.get("deployed_active_readback", {}).get("captured_at")
+    ):
+        raise VerificationError("B-154 D1 owner resolution, source hash, or physical-location boundary drifted")
+    hashes = record.get("source_sha256")
+    if not isinstance(hashes, dict):
+        raise VerificationError("B-154 frozen source hashes are missing")
+    for relative in PUBLIC_COPY_PATHS:
+        expected = hashes.get(relative.as_posix())
+        path = root / relative
+        if not path.is_file() or path.is_symlink():
+            raise VerificationError(f"B-154 public copy missing or non-regular: {relative}")
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != expected:
+            raise VerificationError(f"B-154 frozen clause bytes changed: {relative}")
+
 def verify_repository_state(root: Path = ROOT) -> None:
-    sources = (B083_RECEIPT, B046_PROBE, DOCKERFILE)
+    sources = (B083_RECEIPT, B046_PROBE, RESOLUTION, DOCKERFILE)
     for relative in sources:
         path = root / relative
         if not path.is_file() or path.is_symlink():
@@ -229,6 +385,9 @@ def verify_repository_state(root: Path = ROOT) -> None:
     except (OSError, UnicodeError, ValueError) as exc:
         raise VerificationError(f"B-154 source unreadable or malformed: {exc}") from exc
     verify_capability_state(byok, object_lock, dockerfile)
+    verify_public_claim_copies(root)
+    verify_prelaunch_document_status(root)
+    verify_prelaunch_resolution(root)
 
 
 def _must_reject(dpa_text: str, sla_text: str, label: str) -> None:
@@ -240,39 +399,55 @@ def _must_reject(dpa_text: str, sla_text: str, label: str) -> None:
 
 
 def self_test(dpa_text: str, sla_text: str) -> None:
-    """Exercise formatting, deletion, comment, and negative-status mutations."""
-    found = verify_texts(dpa_text, sla_text)
-    if {label for label, _line, _text in found} != {claim.label for claim in CLAIMS}:
-        raise AssertionError("B-154 baseline claim population drifted")
-
-    # Removing emphasis must not hide either active claim.
-    plain_dpa = dpa_text.replace("**immutable R2 with Object Lock**", "immutable R2 with Object Lock")
-    plain_sla = sla_text.replace("**BYOK kill-switch p99 ≤ 5 min**", "BYOK kill-switch p99 ≤ 5 min")
-    verify_texts(plain_dpa, plain_sla)
-
+    """Exercise missing-limit and unsupported-positive-claim negative controls."""
+    verify_texts(dpa_text, sla_text)
+    verify_prelaunch_document_status(ROOT)
+    dpa_path = Path("legal/dpa/v1.0.0.en-US.md")
+    current_dpa = (ROOT / dpa_path).read_text(encoding="utf-8")
+    try:
+        verify_prelaunch_document_status(ROOT, {dpa_path: current_dpa.replace('legal_review_status: "pending"', 'legal_review_status: "approved"', 1)})
+    except VerificationError:
+        pass
+    else:
+        raise AssertionError("B-154 status negative mutation unexpectedly passed: approved DPA metadata")
     _must_reject(
-        dpa_text.replace("immutable R2 with Object Lock", "immutable R2 with retention metadata", 1),
+        dpa_text + "\nAudit events are retained in immutable R2 with Object Lock for 7 years.\n",
         sla_text,
-        "dpa-claim-deleted",
+        "positive-object-lock-claim-added",
     )
     _must_reject(
         dpa_text,
-        sla_text.replace("BYOK kill-switch p99 ≤ 5 min", "BYOK activation is unavailable", 1),
-        "sla-claim-deleted",
+        sla_text + "\nBYOK kill-switch p99 ≤ 5 min is guaranteed.\n",
+        "positive-byok-slo-added",
     )
-    _must_reject("## Object Lock\nR2 retention is not configured.\n", sla_text, "heading-only-object-lock")
-    _must_reject("R2 does not implement Object Lock.\n", sla_text, "negative-object-lock-status")
     _must_reject(
-        "No immutable R2 with Object Lock is guaranteed.\n",
+        dpa_text.replace(
+            "Seven-year Object Lock retention and storage-enforced immutability are not available or promised.",
+            "Seven-year Object Lock retention and storage-enforced immutability may apply.",
+        ),
         sla_text,
-        "negated-object-lock-claim",
+        "object-lock-limitation-weakened",
     )
-    _must_reject(dpa_text, "BYOK kill-switch is not available.\n", "negative-byok-status")
     _must_reject(
         dpa_text,
-        "BYOK kill-switch p99 ≤ 5 min is not guaranteed.\n",
-        "disclaimed-byok-claim",
+        sla_text.replace("BYOK unavailable; no kill-switch SLO", "BYOK enabled; kill-switch SLO applies"),
+        "byok-limitation-weakened",
     )
+    b086 = json.loads((ROOT / B086_RESOLUTION).read_text(encoding="utf-8"))
+    wrangler_text = (ROOT / WRANGLER).read_text(encoding="utf-8")
+    for label, mutate in (
+        ("missing D1 readback", lambda value: value.pop("provider_readback", None)),
+        ("stale D1 readback", lambda value: value["provider_readback"].update(captured_at="2000-01-01T00:00:00Z")),
+        ("physical location inferred", lambda value: value["provider_readback"].update(physical_location_conclusion="PHYSICAL_LOCATION_GUARANTEED")),
+        ("wrong active D1 binding", lambda value: value["deployed_active_readback"]["active_workers"][0].update(CONFIG_DB_database_id="00000000-0000-4000-8000-000000000000")),
+    ):
+        mutated = json.loads(json.dumps(b086))
+        mutate(mutated)
+        try:
+            verify_readback_record(mutated, wrangler_text)
+        except B086VerificationError:
+            continue
+        raise AssertionError(f"B-154 D1 evidence mutation unexpectedly passed: {label}")
 
 
 def main() -> int:
@@ -289,9 +464,8 @@ def main() -> int:
     except (OSError, UnicodeError, VerificationError, AssertionError) as exc:
         print(f"FAIL: B-154 active claim verifier: {exc}", file=sys.stderr)
         return 1
-    details = "; ".join(f"{label}@{line}" for label, line, _text in found)
-    suffix = "; negative mutations rejected" if args.self_test else ""
-    print(f"B-154 open: active instrument claims={len(found)} ({details}){suffix}")
+    suffix = "; positive-claim mutations rejected" if args.self_test else ""
+    print(f"B-154 prelaunch limits verified: Object Lock and BYOK unavailable/unproven{suffix}")
     return 0
 
 

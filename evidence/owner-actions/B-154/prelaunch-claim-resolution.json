@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "issue": 2597,
+  "parent_issue": 1676,
+  "capture_commit": "ca6a3fbc891a3d917a5bec2e10f7c73e6cb887e0",
+  "captured_at": "2026-09-30",
+  "lifecycle": {
+    "service_launched": false,
+    "customers": "NONE_CONFIRMED",
+    "customer_instruments_executed": "NONE_CONFIRMED",
+    "customer_notices": "NOT_APPLICABLE_NO_CUSTOMERS",
+    "enterprise_byok_case_study": "NO_CIRCULATION_CONFIRMED",
+    "customer_data_migration": "NOT_AUTHORIZED_OR_PERFORMED"
+  },
+  "claims": {
+    "object_lock": {
+      "public_claim": "Seven-year R2 Object Lock COMPLIANCE retention",
+      "capability_status": "UNPROVEN",
+      "provider_receipt": "evidence/owner-actions/B-046/object-lock-probe.json",
+      "provider_classification": "INDETERMINATE",
+      "launch_availability": "NOT_AVAILABLE_OR_PROMISED",
+      "limitation": "No accepted exact-target production proof establishes Object Lock COMPLIANCE retention or a seven-year storage-enforced guarantee."
+    },
+    "byok_kill_switch": {
+      "public_claim": "Enterprise BYOK kill-switch p99 <= 300 seconds",
+      "capability_status": "UNPROVEN",
+      "provider_runtime_receipt": "evidence/owner-actions/B-083/byok-real-kms-lifecycle.json",
+      "provider_runtime_state": "BLOCKED",
+      "revoke_restore": "NOT_EXECUTED",
+      "p99_measurement": "NOT_MEASURED",
+      "launch_availability": "NOT_AVAILABLE_OR_PROMISED",
+      "limitation": "No authenticated lifecycle proof from the shipped CoreLink runtime or measured production run_loop p99 establishes the claim."
+    },
+    "d1_residency": {
+      "posture": "ONE_SHARED_GLOBAL_D1_PRELAUNCH_DISCLOSURE",
+      "source_record": "evidence/owner-actions/B-086/d1-residency-resolution.json",
+      "physical_location": "NOT_INFERRED_FROM_PROVIDER_METADATA",
+      "transfer_basis": "PENDING_COUNSEL_REVIEW",
+      "data_migration": "NONE",
+      "provider_readback": "evidence/owner-actions/B-086/d1-residency-resolution.json",
+      "provider_target": "corelink-prod-d1",
+      "provider_database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
+      "readback_at": "2026-09-30",
+      "metadata": "running_in_region=ENAM; jurisdiction=null; read_replication=auto; 162 tables",
+      "technical_posture_owner": "root; not a legal approval",
+      "source_sha256": "e0bcd9280ee9afe1f572b4e6967ccfc22e9021580beb4d29f00626729d79abef",
+      "provider_readback_at": "2026-09-30T14:42:49Z",
+      "active_bindings_readback_at": "2026-09-30T14:37:23Z",
+      "active_workers_verified": 5,
+      "active_config_db_bindings_match": true
+    }
+  },
+  "historical_remediation": {
+    "issue_2594": "CLOSED_NOT_PLANNED_NO_EXECUTED_CUSTOMER_DPA_REMEDIATION",
+    "issue_2595": "CLOSED_NOT_PLANNED_NO_EXECUTED_CUSTOMER_SLA_REMEDIATION",
+    "issue_2596": "CLOSED_NO_CIRCULATION",
+    "notice_or_amendment": "NONE_CLAIMED"
+  },
+  "status": "OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW",
+  "provider_chains_closed": false,
+  "source_sha256": {
+    "legal/dpa-residency-amendment.md": "cd6427ab8310624058793f9a7a8e3c4b0a0526ec6dec7943bc5b44e8f0e3fd50",
+    "legal/dpa/v1.0.0.en-US.md": "341449b3b76fd923185c11852706b5b55c9ce00a8227eea2a41c76758edc658a",
+    "legal/dpa/v1.0.0.es-419.md": "1874ef2bbd8c6e16a70a87ab9c57c7f543d68553677fe0b3ac2f9254098d1587",
+    "legal/dpa/v1.0.0.pt-BR.md": "f9790fce953cb86d2c946c862a7f0017dda960d09dca50fbdaea7d8d0fba8a61",
+    "legal/privacy-notice/v1.0.0/en-US.md": "73e88933a628b994772e8223e812e1c791607d9e09a7ae17904096976b6e2e3d",
+    "legal/privacy-notice/v1.0.0/es-MX.md": "e45a225987daffdf320eaa20198fd493675dba534d65c52ba2d7150a0b6a7c39",
+    "legal/privacy-notice/v1.0.0/pt-BR.md": "e2fb15657a03671fb66a0cce4464af5bdf33a25e02cfb5bae4217bdb322ef7b0",
+    "legal/sla/v1.0.0.md": "fbf7afe106cd3a815e177a4d4f289052bbf03dc12080d81c1f273e63f20c3d4f",
+    "legal/dpa/STANDARD-CONTRACTUAL-CLAUSES-EU.md": "4dcc4f7480f0ec917e00574712d8b207176ad7a06feebb98ed618a9bb2316f28",
+    "legal/tia-template.md": "5429c78813b6c576d7da9e83b9a77c4e1ca102f017fbc0dc29de67faa226f989",
+    "docs/customer/dpa-onboarding.md": "72378277c677801099880b31b3baf386adbfa940183ca3ea73507c836842e802",
+    "docs/customer/byok-kill-switch.md": "e60338656af3973b61556226f029c905412238bc0c546e35fab427df9e4393e7",
+    "docs/customer/gc-feature-overview.md": "1d2c6359df7bdfcd2a1a4e6d4b1b869af2b2695e1148dfeb9ed54d3c9c2c60b8",
+    "legal/breach-notification/gdpr-irish-dpc-template.en.md": "64488dfada42bd44af086d65e8782f0591b38b3775d5ca2f8abe9a9e432ceb8c",
+    "legal/breach-notification/lgpd-anpd-template.pt-br.md": "34cd13cf131049788e2aaa8bf91773bc0c9c491ea21c0570758339ed76677edf",
+    "legal/privacy-notice/v1.0.0/metadata.yaml": "cb76f458909f798e27619c911f1f885bb8dcfaad18384a453aa3973f8ae9a102"
+  }
+}

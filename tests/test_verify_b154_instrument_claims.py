@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 import copy
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -28,38 +27,37 @@ def _sources() -> tuple[str, str]:
     )
 
 
-def test_backlog_verify_uses_claims_and_current_evidence_not_any_501_grep() -> None:
+def test_backlog_b154_remains_open_until_root_reconciles_the_owner_row() -> None:
     backlog = (ROOT / "BACKLOG.md").read_text(encoding="utf-8")
     section = backlog.split("### B-154 —", 1)[1].split("### B-155 —", 1)[0]
     assert "status: open" in section
-    assert "python3 -S scripts/verify_owner_action_packets.py --id B-154 &&\n  python3 -S scripts/verify_b154_instrument_claims.py --self-test" in section
-    assert "python3 -S scripts/verify_b154_instrument_claims.py --self-test" in section
-    assert "grep -qE" not in section
-    assert "B-083 sem ciclo CMK/p99 executado" in section
-    assert "probe B-046 mais recente `INDETERMINATE`" in section
 
 
-def test_backlog_verify_cannot_mask_packet_failure_with_later_success() -> None:
-    backlog = (ROOT / "BACKLOG.md").read_text(encoding="utf-8")
-    section = backlog.split("### B-154 —", 1)[1].split("### B-155 —", 1)[0]
-    command = section.split("verify: |", 1)[1].split("verify-means: |", 1)[0].strip()
-    first = "python3 -S scripts/verify_owner_action_packets.py --id B-154"
-    second = "python3 -S scripts/verify_b154_instrument_claims.py --self-test"
-    assert command.count(first) == command.count(second) == 1
-    red = command.replace(first, "false").replace(second, "true")
-    green = command.replace(first, "true").replace(second, "true")
-    assert subprocess.run(["bash", "-c", red], check=False).returncode != 0
-    assert subprocess.run(["bash", "-c", green], check=False).returncode == 0
-
-
-def test_current_instruments_find_bold_claims() -> None:
+def test_current_instruments_publish_only_explicit_prelaunch_limits() -> None:
     dpa, sla = _sources()
-    found = MODULE.verify_texts(dpa, sla)
-    assert {label for label, _line, _text in found} == {
-        "dpa_object_lock",
-        "sla_byok_kill_switch",
-    }
+    assert MODULE.verify_texts(dpa, sla) == []
+    assert "Object Lock COMPLIANCE retention" in dpa
+    assert "not available or promised" in dpa
+    assert "BYOK unavailable; no kill-switch SLO" in sla
     MODULE.verify_repository_state()
+
+
+def test_all_localized_legal_copies_omit_positive_capability_claims() -> None:
+    for name in (
+        "legal/dpa/v1.0.0.en-US.md",
+        "legal/dpa/v1.0.0.es-419.md",
+        "legal/dpa/v1.0.0.pt-BR.md",
+        "legal/privacy-notice/v1.0.0/en-US.md",
+        "legal/privacy-notice/v1.0.0/es-MX.md",
+        "legal/privacy-notice/v1.0.0/pt-BR.md",
+        "docs/customer/byok-kill-switch.md",
+        "docs/customer/gc-feature-overview.md",
+    ):
+        source = (ROOT / name).read_text(encoding="utf-8")
+        if name != "docs/customer/byok-kill-switch.md":
+            assert "Object Lock" in source
+        assert not MODULE.scan_claims(source, MODULE.DPA)
+        assert not MODULE.scan_claims(source, MODULE.SLA)
 
 
 def _capability_sources() -> tuple[dict, dict, str]:
@@ -81,7 +79,7 @@ def test_capability_evidence_drift_fails_closed(mutant: str) -> None:
     byok, probe, dockerfile = _capability_sources()
     if mutant == "byok":
         byok = copy.deepcopy(byok)
-        byok["activation"]["status"] = "PASS"
+        byok["evidence_state"] = "VERIFIED"
     elif mutant == "object_lock":
         probe = copy.deepcopy(probe)
         probe["classification"] = "SUPPORTED"
@@ -117,9 +115,9 @@ def test_claim_removal_or_negative_status_fails_closed(
 
 def test_markdown_emphasis_is_not_a_claim_evasion() -> None:
     dpa, sla = _sources()
-    plain_dpa = dpa.replace("**immutable R2 with Object Lock**", "immutable R2 with Object Lock")
-    plain_sla = sla.replace("**BYOK kill-switch p99 ≤ 5 min**", "BYOK kill-switch p99 ≤ 5 min")
-    assert len(MODULE.verify_texts(plain_dpa, plain_sla)) == 2
+    plain_dpa = dpa.replace("**Object Lock**", "Object Lock")
+    plain_sla = sla.replace("**BYOK**", "BYOK")
+    assert MODULE.verify_texts(plain_dpa, plain_sla) == []
 
 
 def test_long_filler_cannot_hide_sentence_negation() -> None:
@@ -137,11 +135,9 @@ def test_wrapped_sentence_negation_cannot_hide_behind_a_line_break() -> None:
         MODULE.verify_texts(dpa, sla)
 
 
-def test_sentence_scope_does_not_borrow_an_unrelated_prior_sentence() -> None:
+def test_sentence_scope_does_not_borrow_an_unrelated_prior_negation() -> None:
     _, sla = _sources()
-    dpa = "No unrelated retention feature is guaranteed. Immutable R2 with Object Lock is active.\n"
-    found = MODULE.verify_texts(dpa, sla)
-    assert {label for label, _line, _text in found} == {
-        "dpa_object_lock",
-        "sla_byok_kill_switch",
-    }
+    dpa, _ = _sources()
+    dpa += "\nNo unrelated retention feature is guaranteed. Immutable R2 with Object Lock is active.\n"
+    with pytest.raises(MODULE.VerificationError):
+        MODULE.verify_texts(dpa, sla)

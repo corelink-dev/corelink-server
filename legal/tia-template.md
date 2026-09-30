@@ -58,7 +58,7 @@ Customer (Controller, EEA or Brazil)
 ```
 
 - **Transfer 1**: Customer → CoreLink (via HTTPS; TLS 1.2 floor, 1.3 negotiated). Personal Data enters CoreLink's processing environment.
-- **Transfer 2**: CoreLink → Cloudflare infrastructure (Workers runtime + R2/D1/DO storage). R2/DO state follows the tenant residency posture; the shared D1 control plane is currently reported with a primary in ENAM, no D1 jurisdiction, and automatic read replication.
+- **Transfer 2**: CoreLink → Cloudflare infrastructure (Workers runtime + R2/D1/DO storage). R2/DO state follows the tenant residency posture; a read-only Wrangler 4.145.0 readback on 2026-09-30 identified `corelink-prod-d1` (ID `d64742ea-e102-40b2-a844-ff02e3f94562`), with `running_in_region=ENAM`, `jurisdiction=null`, and automatic read replication. This is metadata, not a physical-location guarantee or legal approval.
 - **Transfer direction**: EEA-originating data may be processed by Cloudflare infrastructure with US parent company jurisdiction (FISA 702 / EO 12333 / CLOUD Act risk scope).
 
 ### 1.3 Categories of Personal Data Transferred
@@ -206,10 +206,14 @@ shared D1 control-plane placement or a current transfer safeguard.
 #### 4.2.1 DPA Amendment — 4 Regions Enumerated
 
 **Prelaunch disclosure**: the DPA template distinguishes tenant-pinned R2/DO
-state from the shared global D1 control plane. The D1 primary is currently
-reported in ENAM with no D1 jurisdiction and automatic read replication. This
-template is pending legal review and does not itself approve a transfer basis
-or establish a customer commitment.
+state from the shared global D1 control plane. A read-only Wrangler 4.145.0
+readback on 2026-09-30 identified `corelink-prod-d1` (ID
+`d64742ea-e102-40b2-a844-ff02e3f94562`), with `running_in_region=ENAM`,
+`jurisdiction=null`, automatic read replication, and 162 tables. These fields
+are provider metadata, not a physical-location guarantee. The root owner
+selected the shared-D1 prelaunch disclosure as a technical posture; this
+template is pending legal review and does not approve a transfer basis or
+establish a customer commitment.
 
 **EDPB §84 alignment**: Transparency obligation; data exporter knows where data is processed.
 

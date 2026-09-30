@@ -172,29 +172,62 @@
       "retry_and_rollback": "Before retrying, reload the endpoint list and stop if the target is already disabled or IDs changed. Do not re-enable an endpoint after duplicate processing without a new owner decision; if an accidental enable occurs, disable it again and record the incident.",
       "references": ["BACKLOG.md#B-065", "scripts/check_billing_health.py", ".github/workflows/billing-health-daily.yml"]
     },
-    {
+        {
       "id": "B-086",
       "owner": "owner",
       "status": "open",
-      "action_type": "residency_amendment_signature",
+      "action_type": "prelaunch_residency_disclosure_verification",
       "procedure": [
-        "UI: Have counsel choose whether to provision jurisdictional D1 or review/execute a residency amendment disclosing the single global D1. The current legal/dpa-residency-amendment.md is a pending legal-review template, not an executed instrument; the packet does not choose the commercial/legal path.",
-        "RUN: Reconcile the chosen path against all five production wrangler environments and the DPA residency amendment, without changing production bindings in this action packet.",
-        "UI: Execute the amendment or Cloudflare account change through the owner’s authenticated legal/provider workflow and record the effective date and counterparty/reference."
+        "RUN: Verify the selected one-shared-D1 prelaunch disclosure against wrangler.toml, the exact-target authenticated metadata receipt, and all five active production Worker version bindings; perform no provider or data mutation; the residency amendment remains a pending legal-review template, not an executed instrument.",
+        "RUN: Verify all directly linked residency copies identify the shared D1 control plane and explicitly avoid physical-placement or transfer-approval claims.",
+        "RUN: Keep customer-facing distribution/launch blocked until counsel approves the applicable transfer basis and any required safeguards; this future gate does not imply an executed customer instrument or prevent an accurate internal prelaunch record."
       ],
       "inputs_and_credentials_boundary": {
-        "inputs": ["five production D1 bindings", "database_id inventory", "legal/dpa-residency-amendment.md", "Cloudflare account/provider facts", "counsel transfer-impact decision"],
-        "credentials": "Owner/counsel signature or Cloudflare account authority is required; no D1 binding, legal file, or provider account is mutated by this packet."
+        "inputs": [
+          "five production D1 bindings",
+          "fresh exact-target provider metadata and active Worker version readback",
+          "residency source copies",
+          "B-086 resolution receipt"
+        ],
+        "credentials": "Read-only Cloudflare authentication is used only to refresh provider readback; no D1 binding, provider resource, legal instrument, or customer data is mutated."
       },
       "evidence": {
         "path": "evidence/owner-actions/B-086/d1-residency-resolution.json",
         "format": "json",
-        "required_fields": ["schema_version", "captured_at", "decision", "production_bindings", "distinct_database_ids", "dpa_status", "effective_at", "signed_document_sha256_or_provider_case", "reviewer"],
-        "item_schema": "decision is jurisdictional_d1, legal_amendment, or unresolved; production_bindings[] contains env, binding, database_id, and residency_claim; unresolved requires an explicit owner reason."
+        "required_fields": [
+          "schema_version",
+          "capture_commit",
+          "captured_at",
+          "decision",
+          "production_bindings",
+          "distinct_database_ids",
+          "dpa_status",
+          "related_legal_surfaces",
+          "effective_at",
+          "signed_document_sha256_or_provider_case",
+          "reviewer",
+          "unresolved_reason",
+          "cloudflare_observations",
+          "capability_observation",
+          "verification",
+          "source_sha256",
+          "commands",
+          "mutations_performed",
+          "current_owner_decision",
+          "provider_readback",
+          "deployed_active_readback",
+          "updated_at"
+        ],
+        "item_schema": "decision is shared_d1_prelaunch_disclosure; current_owner_decision records root’s technical posture only; provider_readback and deployed_active_readback must be fresh, read-only, exact-target, and prove all five active CONFIG_DB IDs match. Physical primary/replica placement and transfer approval must remain explicitly unproved/pending."
       },
-      "expected_postcondition": "The D1 deployment and any subsequently executed residency claim agree, with an owner/counsel or provider artifact proving the chosen path; B-086 remains open until that decision is executed.",
-      "retry_and_rollback": "Retry read-only inventory with the same account context. Do not rotate D1 IDs or amend signed text twice. Roll back an unexecuted draft by discarding it; a signed amendment requires a superseding legal instrument, and a provider change requires the provider’s documented reversal path.",
-      "references": ["BACKLOG.md#B-086", "wrangler.toml", "legal/dpa-residency-amendment.md"]
+      "expected_postcondition": "Merged source and hosted verification prove the prelaunch shared-D1 disclosures match the current exact-target metadata and all five active Worker bindings. B-086 may close on that source/publication proof; counsel transfer-basis approval and physical placement assurance remain explicit launch/distribution gates, not claims already satisfied.",
+      "retry_and_rollback": "Refresh both provider readbacks if older than 24 hours or if any exact ID/version changes. Do not migrate data or change bindings. Correct source disclosure and rerun focused checks if any source copy drifts.",
+      "references": [
+        "BACKLOG.md#B-086",
+        "evidence/owner-actions/B-086/d1-residency-resolution.json",
+        "wrangler.toml",
+        "legal/dpa-residency-amendment.md"
+      ]
     },
     {
       "id": "B-089",
@@ -292,29 +325,54 @@
       "retry_and_rollback": "Check existing secret names and certificate expiry before re-acquisition. Retry upload through stdin with the same certificate. Revoke/replace only the affected certificate and secret on compromise; retain the previous signing path until the replacement is verified unless the owner orders immediate revocation.",
       "references": ["BACKLOG.md#B-111", ".github/workflows/notarize-macos.yml", ".github/workflows/sign-windows.yml"]
     },
-    {
+        {
       "id": "B-154",
       "owner": "owner",
       "status": "open",
-      "action_type": "executed_instrument_remediation",
+      "action_type": "prelaunch_claim_reconciliation",
       "procedure": [
-        "UI: For the effective DPA Object Lock and SLA BYOK kill-switch statements, have counsel/owner choose amendment, formal notice, or construction of the promised capability. The former case-study testimonial is withdrawn in the source draft; check whether any copy circulated before deciding on notice.",
-        "RUN: Reconcile the chosen decision against legal/dpa/v1.0.0.en-US.md, legal/sla/v1.0.0.md, the Dockerfile AWS-enabled BYOK build, the B-083 runtime receipt, and marketing/launch/CASE-STUDIES/enterprise-byok.md; compiled provider and /deactivate wiring do not establish customer CMK operation or kill-switch p99. Preserve executed bytes and do not silently edit them in place.",
-        "UI: Execute any required addendum/notice or authorize the engineering and billing spend; record counterparties, signatures, and effective dates before claiming the instrument is truthful."
+        "RUN: Verify each directly linked DPA/SLA/privacy/customer-facing copy states Object Lock and BYOK availability only to the extent supported by accepted provider/runtime evidence; unproved capabilities remain unavailable and no p99 is promised.",
+        "RUN: Verify the B-154 prelaunch resolution records no launch, no confirmed customers or executed instruments, and no case-study circulation; preserve historical versions and attributions.",
+        "RUN: GATE: Keep B-154 open while #1646/#1877 Object Lock proof and #1653/#2165 KMS lifecycle/p99 proof remain nonterminal. This packet does not create a legal approval, customer notice, addendum, or provider result."
       ],
       "inputs_and_credentials_boundary": {
-        "inputs": ["executed DPA", "executed SLA", "AWS-enabled BYOK build and B-083 unverified runtime/p99 receipt", "case-study attribution state", "counsel/owner remedy decision"],
-        "credentials": "Owner/counsel signature, customer notice authority, or construction budget is external. This packet does not amend legal instruments, notify customers, or enable BYOK."
+        "inputs": [
+          "B-154 prelaunch claim resolution",
+          "linked DPA/SLA/privacy/customer copies",
+          "B-046 Object Lock and B-083 real-KMS evidence",
+          "terminal outcomes from #1646/#1877 and #1653/#2165"
+        ],
+        "credentials": "No customer notice, instrument signature, provider mutation, or feature activation is authorized by this packet."
       },
       "evidence": {
-        "path": "evidence/owner-actions/B-154/executed-instrument-resolution.json",
+        "path": "evidence/owner-actions/B-154/prelaunch-claim-resolution.json",
         "format": "json",
-        "required_fields": ["schema_version", "captured_at", "surfaces", "decisions", "signed_documents", "notices", "capability_evidence", "operator"],
-        "item_schema": "surfaces[] contains surface, original_claim, decision (amend, notify, build, or unresolved), effective_at, and evidence_reference; signed_documents[] contains version and sha256; unresolved decisions remain explicit. object_lock capability status follows the latest probe classification (INDETERMINATE on 2026-09-09); its historical_report separately records the 2026-08-25 reported NotImplemented result without treating that older report as the current probe. byok_kill_switch status UNVERIFIED_RUNTIME_P99 means AWS-enabled build and Shred route exist, but B-083 has no customer CMK lifecycle or p99 measurement."
+        "required_fields": [
+          "schema_version",
+          "issue",
+          "parent_issue",
+          "capture_commit",
+          "captured_at",
+          "lifecycle",
+          "claims",
+          "historical_remediation",
+          "status",
+          "provider_chains_closed",
+          "source_sha256"
+        ],
+        "item_schema": "lifecycle records no launch/no confirmed customers/no executed customer instruments/no notices applicable/no case-study circulation/no migration; claims classify Object Lock and BYOK as UNPROVEN and NOT_AVAILABLE_OR_PROMISED, with exact limitations and source receipts; status remains OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW and provider_chains_closed is false until linked provider parents reach evidence-backed terminal outcomes."
       },
-      "expected_postcondition": "Every unsupported executed/public claim has an evidenced legal remedy, notice, or delivered capability, while historical signed bytes remain auditable; B-154 remains open until owner completion.",
-      "retry_and_rollback": "Retry only against the same document/version and counterpart record. Abandon unexecuted drafts safely; signed amendments/notices and deployed capabilities require formal supersession or the documented product rollback, never an unreviewed git revert.",
-      "references": ["BACKLOG.md#B-154", "legal/dpa/v1.0.0.en-US.md", "legal/sla/v1.0.0.md", "crates/corelink-container/src/routes/byok_admin.rs", "marketing/launch/CASE-STUDIES/enterprise-byok.md"]
+      "expected_postcondition": "Prelaunch sources and resolution truthfully narrow unproved claims, record no-customer/no-circulation disposition, preserve historical source bytes, and leave provider parents open. B-154 remains open until #1646/#1877 and #1653/#2165 have terminal evidence-backed outcomes and the exact-head source checks are recorded.",
+      "retry_and_rollback": "Refresh source-linked receipt hashes after any source change. Never upgrade capability status without accepted provider/runtime proof; never infer executed instruments or circulation from repository text.",
+      "references": [
+        "BACKLOG.md#B-154",
+        "evidence/owner-actions/B-154/prelaunch-claim-resolution.json",
+        "legal/dpa/v1.0.0.en-US.md",
+        "legal/sla/v1.0.0.md",
+        "evidence/owner-actions/B-046/object-lock-probe.json",
+        "evidence/owner-actions/B-083/byok-real-kms-lifecycle.json",
+        "marketing/launch/CASE-STUDIES/enterprise-byok.md"
+      ]
     },
     {
       "id": "B-029",

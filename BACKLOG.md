@@ -11157,33 +11157,21 @@ verify-means: |
 last-verified: 2026-08-31
 ```
 
-### B-086 — postura prelaunch do D1 global compartilhado aguarda sign-off jurídico
+### B-086 — prelaunch disclosure reconciled to one shared D1; transfer and physical placement remain launch gates
 
-Os cinco blocos de produção do `wrangler.toml` — linhas 540, 870, 1036, 1196 e 1352 —
-ligam o **mesmo** `database_id = "d64742ea-e102-40b2-a844-ff02e3f94562"`. O que vive nesse
-banco inclui `tenant`, `team_member` (identificador Clerk em claro e hash de e-mail),
-`pat`, quotas, estado de cobrança e o outbox de auditoria.
+All five production Worker versions bind `CONFIG_DB` to the same D1 ID. Root selected the
+accurate shared-D1 prelaunch disclosure; the 2026-09-30 read-only exact-target readback
+identifies `corelink-prod-d1` (`d64742ea-e102-40b2-a844-ff02e3f94562`) and all five active
+Worker version receipts match that ID. Provider metadata reports `running_in_region=ENAM`,
+`jurisdiction=null`, and automatic read replication. These metadata do not establish the
+physical location of the primary or replicas. R2/DO tenant pinning does not apply to D1.
 
-O texto prelaunch selecionado separa as superfícies: R2 e estado de Durable
-Objects permanecem fixados por tenant; o plano de controle D1 é um banco global
-compartilhado. A leitura autenticada da Cloudflare registra o primário em ENAM,
-`jurisdiction = null` e replicação de leitura automática. Essa leitura não é uma
-inferência a partir de Workers ou R2 e não aprova uma base de transferência.
-
-As únicas chaves `jurisdiction = "eu"` em toda a configuração estão nas linhas 958 e 971
-do `wrangler.toml`, e ambas são bindings de **bucket R2**. O binding do D1 não tem chave
-de jurisdição alguma.
-
-O caminho de arquitetura escolhido é manter o D1 compartilhado e alinhar o texto
-prelaunch. As cópias de DPA, TIA, compromissos, data handling e vendas declaram
-agora esse limite. Elas não criam um instrumento executado nem aprovam a base de
-transferência do Art. 46.
-
-
-**Ato remanescente: counsel aprova a base de transferência aplicável e a versão
-efetiva dos termos voltados ao cliente.** Os documentos são rascunhos prelaunch,
-explicitamente `PENDING_LEGAL_REVIEW`; nenhuma frase deste item transforma o texto
-em obrigação contratual efetiva.
+The linked prelaunch copies disclose shared D1, identify the control-plane data categories,
+and state that no transfer basis has been approved. No customer instrument, migration, or
+physical-location guarantee is claimed. Counsel must approve the applicable transfer basis and effective customer-facing terms before
+customer-facing publication; required safeguards and physical placement assurance (if required
+by launch policy) also remain gates before launch. No approval is represented as complete. Those gates do not invalidate this
+accurate prelaunch record and are not represented as completed.
 
 ```backlog
 id: B-086
@@ -11195,14 +11183,14 @@ verify: |
   python3 -S scripts/verify_owner_action_packets.py --id B-086
   python3 -S scripts/verify_b086_d1_residency.py --self-test
 verify-means: |
-  externo — os cinco bindings de produção usam UM único `database_id`; a linha
-  ativa da Cloudflare no DPA declara D1 global compartilhado e o verificador
-  rejeita uma reivindicação D1 tenant-pinned. Isto confirma alinhamento de
-  fonte, não aprovação jurídica ou termo executado.
-
-  Counsel: aprovar a base de transferência aplicável, as salvaguardas e a data
-  efetiva dos termos voltados ao cliente antes da publicação.
-last-verified: 2026-09-26
+  Source and evidence checks confirm the selected shared-D1 posture, current exact-target
+  metadata, and five matching active CONFIG_DB bindings. They do not prove physical primary
+  or replica placement, approve a transfer basis, or establish executed customer terms.
+  Close only after exact-head hosted checks, merge, and published-source readback; preserve
+  counsel/physical-placement requirements as explicit future launch gates.
+  Counsel: aprovar a base de transferência aplicável e os termos efetivos antes da publicação
+  voltada ao cliente; esta condição não é afirmada como cumprida.
+last-verified: 2026-09-30
 ```
 
 ### B-087 — o CAIQ v4 entregue a compradores atesta "Y" para três controles que nunca executaram com sucesso
@@ -16160,58 +16148,21 @@ verify-means: |
 last-verified: 2026-09-05
 ```
 
-### B-154 — ⛔ OWNER: dois instrumentos jurídicos executados afirmam capacidades ainda sem prova operacional
+### B-154 — prelaunch Object Lock and BYOK claims narrowed; provider capability parents remain open
 
-Não são páginas de marketing. São atos jurídicos assinados, e por isso **nenhuma linha deles
-pode ser emendada sem o owner** — a correção de um instrumento executado é um aditivo, não um
-commit.
+CoreLink has not launched, has no confirmed customers, and has no executed customer instruments.
+The enterprise BYOK case study has not circulated; #2594/#2595 are not applicable to customer
+remediation and #2596 records no circulation. No customer notice, amendment, or executed remedy
+is claimed.
 
-- **`legal/dpa/v1.0.0.en-US.md:110`** — *"Audit events are retained in immutable R2 with
-  Object Lock"*. O receipt atual de [B-046](evidence/owner-actions/B-046/object-lock-probe.json),
-  capturado em 2026-09-09, é `INDETERMINATE`: a credencial foi rejeitada antes de criar o
-  bucket e a operação de retenção foi `SKIPPED`. Ele não prova Object Lock e também não prova
-  a sua ausência. O DPA é o instrumento que o comprador anexa ao contrato dele.
-- **`legal/sla/v1.0.0.md:46`** — a linha Enterprise compromete *"BYOK kill-switch p99 ≤
-  5 min"*. O receipt atual de [B-083](evidence/owner-actions/B-083/byok-real-kms-lifecycle.json),
-  capturado em 2026-09-09, registra `check_access: BLOCKED` e `NOT_EXECUTED` para ativação,
-  round-trip CAS/AC, revogação e `run_loop`, porque não havia tenant protegido, CMK, role ou
-  credencial. O Dockerfile seleciona `byok-aws-real` e a rota falha fechado quando o provider
-  não está disponível, mas isso não comprova operação nem p99. A capacidade prometida segue
-  sem evidência operacional; [B-083] continua sendo a dependência técnica.
-- **`marketing/launch/CASE-STUDIES/enterprise-byok.md:59`** — a fonte atual é um rascunho
-  com placeholders e declara que não existe depoimento, drill ou artefato de cliente. Não há
-  uma promessa pública executada a reconciliar nesta cópia; ela deve permanecer não publicada
-  até existir evidência e aprovação do cliente.
-
-**Estado evidence-first (2026-09-09).** Os dois receipts acima são observações versionadas,
-não aprovação jurídica nem capability green. A combinação mantém B-154 **open/blocked**: os
-  instrumentos executados continuam carregando as afirmações, e nenhuma evidência atual
-  comprova Object Lock ou o SLO BYOK. O case study continua draft e não fecha o item.
-
-**Uma correção ao enunciado original, e ela muda o custo para melhor.** A atribuição do
-depoimento é hoje `[ENTERPRISE_CUSTOMER_TITLE]` / `[ENTERPRISE_CUSTOMER_NAME or
-SANITIZED_DESCRIPTOR]` — **marcadores, não uma pessoa**. Ninguém foi citado ainda. Retratar
-custa **zero** agora e passa a exigir uma conversa com um cliente real no minuto em que
-alguém preencher o marcador antes do drill ser real. É o item mais barato desta leva e o que
-mais encarece se esperar.
-
-**Por que não é duplicata de [B-009]/[B-046]/[B-083]/[B-084]/[B-087].** Aqueles cinco cobrem
-o **defeito de engenharia** (o stub, o binário, o script do drill) e o **CAIQ**. Nenhum deles
-nomeia `legal/dpa/*` nem `legal/sla/*`, e nenhum dos `verify` deles lê esses arquivos —
-conferido. A diferença é material: consertar o binário não retira a afirmação do instrumento
-assinado, e retirar a afirmação não conserta o binário.
-
-**O que este item NÃO decide** — e é exatamente o que o torna `owner:`: qual das três saídas
-tomar em cada instrumento. Emendar (aditivo com contraparte), notificar (comunicação formal a
-quem já assinou), ou construir a capacidade. As três envolvem contraparte, dinheiro ou
-assinatura, e nenhuma é minha.
-
-
-**Só ele — e apenas isto (precisado 2026-08-31): a ASSINATURA.** O texto do aditivo, a minuta
-da notificação formal e o parecer de qual das três saídas é mais barata por instrumento **eu
-entrego prontos** — isso é redação, e é minha. O que não é executável sem ele é **executar o
-instrumento**: assinar o aditivo, notificar formalmente a contraparte, ou pagar a construção
-da capacidade.
+The linked prelaunch DPA, SLA, privacy, and customer-copy sources now state that seven-year
+Object Lock COMPLIANCE retention and BYOK customer-managed-key operation/kill-switch p99 are
+unproven and unavailable/not promised. Repository implementation, mocks, configuration, and
+provider-only experiments do not establish a shipped customer capability. The resolution JSON
+retains exact limitations and source hashes. Object Lock evidence remains owned by #1646/#1877;
+KMS lifecycle and measured p99 remain owned by #1653/#2165. B-154 stays open until those parent
+outcomes are terminal and evidence-backed. This record does not create legal approval or close
+either capability parent.
 
 ```backlog
 id: B-154
@@ -16221,55 +16172,13 @@ status: open
 action-packet: docs/handoff/2026-09-05-owner-action-packets-b008-b154.json
 verify: |
   python3 -S scripts/verify_owner_action_packets.py --id B-154
-  bash -c 'set -e
-  d=legal/dpa/v1.0.0.en-US.md
-  s=legal/sla/v1.0.0.md
-  b=crates/corelink-container/src/routes/byok_admin.rs
-  for f in "$d" "$s"; do [ -f "$f" ] || { echo "FALHA: $f sumiu — um instrumento executado nao some sozinho; reavalie o item."; exit 1; }; done
-  n=0; det=""
-  grep -qE "^[^#<*>-]*Object Lock" "$d" && { n=$((n+1)); det="$det dpa-afirma-object-lock"; }
-  grep -qE "^[^#<*>-]*BYOK kill-switch" "$s" && { n=$((n+1)); det="$det sla-compromete-kill-switch"; }
-  if [ -f "$b" ]; then
-    grep -qE "^[^/*]*NOT_IMPLEMENTED" "$b" || { echo "FALHA: byok_admin.rs nao devolve mais NOT_IMPLEMENTED em linha executavel — o BYOK pode ter sido construido; releia o item antes de confiar neste portao."; exit 1; }
-  else
-    echo "FALHA: $b sumiu — sem ele nao consigo sustentar que o SLA promete o que nao existe."; exit 1
-  fi
-  if [ "$n" -gt 0 ]; then
-    echo "aberto: $n de 2 instrumentos executados ainda afirmam capacidade sem evidencia (BYOK tem ramo fail-closed 501 no codigo):$det"
-  else
-    echo "aberto: nenhum instrumento publicado repete a afirmacao; o BYOK segue NOT_IMPLEMENTED e a decisao/assinatura do owner continua pendente"
-  fi'
+  python3 -S scripts/verify_b154_instrument_claims.py --self-test
 verify-means: |
-  open/blocked — os dois instrumentos assinados ainda carregam as afirmações e os receipts
-  versionados atuais não comprovam as capacidades: B-046 está `INDETERMINATE` antes do probe
-  de Object Lock; B-083 está `BLOCKED`/`NOT_EXECUTED` sem tenant, CMK e runtime protegido.
-  Nenhum desses estados pode virar green por inferência de código, configuração ou prosa.
-
-  **Os greps nos instrumentos são ancorados em `^[^#]*`** — markdown não tem comentário de
-  linha, mas as duas páginas usam `#` de cabeçalho, e um título futuro como
-  *"## Object Lock — o que não fazemos"* satisfaria um grep nu e manteria o item verde
-  descrevendo o oposto. O grep no código usa `^[^/]*` pelo motivo padrão: doc-comment não é
-  enforcement.
-
-  **A condição do código é premissa, não achado, e por isso falha ALTO.** Se o BYOK deixar de
-  responder 501, o comando **para** e manda reler, em vez de decidir sozinho — porque nesse
-  cenário a linha do SLA pode ter passado a ser verdadeira, e um portão não deve tomar essa
-  decisão no lugar do owner.
-
-  **Medido pelos dois lados (2026-09-09):** no estado atual sai *"aberto: 2 de 2
-  instrumentos…"* e exit 0; os receipts citados acima permanecem bloqueados/indeterminados.
-  Numa cópia com as duas linhas retiradas dos instrumentos, sai
-  *"FALHA: nenhum dos dois instrumentos assinados carrega mais a afirmacao"* e exit 1.
-
-  **O depoimento do case study ficou FORA do predicado, de propósito.** Ele é hoje um
-  marcador não preenchido — retratá-lo é barato e não muda o veredito deste item; medi-lo
-  junto faria o item parecer resolvido quando só a parte fácil tivesse sido feita. Está no
-  corpo, com o caminho e a linha, para quem fechar tratar os três juntos.
-
-  Este item é `owner:` pelo critério estrito: o próximo passo é um aditivo contratual, uma
-  notificação formal a quem já assinou, ou a construção da capacidade. Nenhum é executável
-  sem a assinatura ou o dinheiro do owner.
-last-verified: 2026-09-05
+  The prelaunch receipt, source hashes, active claims, and limitation language must agree.
+  The verifier rejects a positive Object Lock/BYOK availability or p99 claim without proof,
+  and the packet must retain no-customer/no-circulation status plus open provider dependencies.
+  B-154 remains open until #1646/#1877 and #1653/#2165 reach terminal evidence-backed outcomes.
+last-verified: 2026-09-30
 ```
 
 ### B-155 — 93 de 134 `verify` fazem `grep` de padrão não-ancorado: o comentário do arquivo alvo satisfaz o portão
