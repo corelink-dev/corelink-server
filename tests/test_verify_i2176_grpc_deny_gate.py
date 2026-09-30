@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 import fnmatch
 import hashlib
+import os
 import shutil
 import tempfile
 from unittest.mock import patch
@@ -65,6 +66,204 @@ class P0WaveClassifierTests(unittest.TestCase):
             "B072_STAGING_CF_ROUTE_READ_TOKEN",
         ):
             self.assertEqual(text.count(f"`{name}`"), 1)
+
+    def _wallet_route_fixture(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        trusted, candidate = root / "trusted", root / "candidate"
+        source_root = Path(__file__).resolve().parents[1]
+        for relative in verify.WALLET_ROUTE_PATHS:
+            for target in (trusted, candidate):
+                path = target / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((source_root / relative).read_bytes())
+                path.chmod(0o644)
+        for target in (trusted, candidate):
+            actionlint = target / ".actionlint.yaml"
+            actionlint.write_text("protected\n")
+            link = target / ".github/actionlint.yaml"
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to("../.actionlint.yaml")
+        return trusted, candidate
+
+    def _wallet_route_classifier_patches(self):
+        states = {name: "new" for name in ("i1652", "i1648", "i1700", "i2565")}
+        return (
+            patch.object(verify, "_wave_state", return_value=states),
+            patch.object(verify, "_wave_group_state", return_value="new"),
+            patch.object(verify, "_wave_common_controls_equal"),
+            patch.object(verify, "_wave_pin_matches", return_value=True),
+        )
+
+    def test_wallet_route_accepts_consumed_base_self_and_ordinary_client_maintenance(self) -> None:
+        trusted, candidate = self._wallet_route_fixture()
+        with self._wallet_route_classifier_patches()[0], self._wallet_route_classifier_patches()[1], self._wallet_route_classifier_patches()[2], self._wallet_route_classifier_patches()[3]:
+            with patch.object(verify, "_wave_controls_match", return_value=True):
+                self.assertTrue(verify.validate_wave(trusted, trusted, set()))
+            ordinary = next(iter(verify.WALLET_ROUTE_ORDINARY_PATHS))
+            target = candidate / ordinary
+            target.write_bytes(target.read_bytes() + b"\n// reviewed ordinary maintenance\n")
+            changed = verify.changed_paths(trusted, candidate)
+            self.assertEqual(changed, {ordinary})
+            with patch.object(verify, "_wave_controls_match", return_value=True):
+                self.assertTrue(verify.validate_wave(candidate, trusted, changed))
+
+    def test_wallet_route_real_tree_transformed_base_self_and_second_maintenance(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        required = set(verify.WAVE_BASE_CONTROLS) | set(verify.WALLET_ROUTE_PATHS)
+        required.update(path for group in verify.WAVE_GROUPS.values() for path in group)
+        required.add(Path("docs/internal/secrets-checklist.md"))
+        if not all((source_root / relative).exists() for relative in required):
+            self.skipTest("complete protected-base source tree is unavailable")
+        if not verify._wave_controls_match(source_root):
+            self.skipTest("source tree is not the frozen protected P0 baseline")
+
+        def hardlink_tree(source: Path, destination: Path) -> None:
+            ignored = shutil.ignore_patterns(".git", "target", "node_modules", ".venv", "__pycache__")
+            shutil.copytree(source, destination, symlinks=True, copy_function=os.link, ignore=ignored)
+
+        def replace_bytes(root: Path, relative: Path, content: bytes) -> None:
+            target = root / relative
+            mode = target.lstat().st_mode & 0o777
+            target.unlink()
+            target.write_bytes(content)
+            target.chmod(mode)
+
+        with tempfile.TemporaryDirectory() as directory:
+            trusted = Path(directory) / "trusted"
+            hardlink_tree(source_root, trusted)
+            base_live, transformed_live = verify._wallet_route_expected_live(trusted)
+            self.assertNotEqual(base_live, transformed_live)
+            transformed_verifier = verify._wallet_route_expected_verifier(trusted, transformed_live)
+            replace_bytes(trusted, verify.WALLET_ROUTE_LIVE_PATH, transformed_live)
+            replace_bytes(trusted, verify.WALLET_ROUTE_VERIFIER_PATH, transformed_verifier)
+            for relative in verify.WALLET_ROUTE_ORDINARY_PATHS:
+                path = trusted / relative
+                replace_bytes(trusted, relative, path.read_bytes() + b"\n// trusted wallet-route maintenance\n")
+
+            self.assertTrue(verify.validate_wave(trusted, trusted, set()))
+            candidate = Path(directory) / "candidate"
+            hardlink_tree(trusted, candidate)
+            client = candidate / "crates/corelink-stripe-real/src/client.rs"
+            replace_bytes(
+                candidate,
+                Path("crates/corelink-stripe-real/src/client.rs"),
+                client.read_bytes() + b"\n// second ordinary maintenance change\n",
+            )
+            changes = verify.changed_paths(trusted, candidate)
+            self.assertEqual(changes, {Path("crates/corelink-stripe-real/src/client.rs")})
+            self.assertTrue(verify.validate_wave(candidate, trusted, changes))
+
+    def test_wallet_route_accepts_exact_privileged_pair_only_with_all_three_ordinary_paths(self) -> None:
+        trusted, candidate = self._wallet_route_fixture()
+        base_live, transformed_live = verify._wallet_route_expected_live(trusted)
+        self.assertEqual(base_live.count(verify.WALLET_ROUTE_LITERAL), 11)
+        (candidate / verify.WALLET_ROUTE_LIVE_PATH).write_bytes(transformed_live)
+        (candidate / verify.WALLET_ROUTE_VERIFIER_PATH).write_bytes(
+            verify._wallet_route_expected_verifier(trusted, transformed_live)
+        )
+        for relative in verify.WALLET_ROUTE_ORDINARY_PATHS:
+            target = candidate / relative
+            original = target.read_bytes()
+            self.assertIn(b"/_wallet/proxy", original)
+            target.write_bytes(original.replace(b"/_wallet/proxy", b""))
+        with self._wallet_route_classifier_patches()[0], self._wallet_route_classifier_patches()[1], self._wallet_route_classifier_patches()[2], self._wallet_route_classifier_patches()[3]:
+            changed = verify.changed_paths(trusted, candidate)
+            self.assertEqual(changed, set(verify.WALLET_ROUTE_PATHS))
+            with patch.object(verify, "_wave_controls_match", return_value=True):
+                self.assertTrue(verify.validate_wave(candidate, trusted, changed))
+
+    def test_wallet_route_rejects_partial_live_transform_or_unpaired_verifier(self) -> None:
+        for case in ("partial", "unpaired", "altered-live", "verifier-drift", "wrong-digest"):
+            trusted, candidate = self._wallet_route_fixture()
+            base_live, transformed_live = verify._wallet_route_expected_live(trusted)
+            if case == "partial":
+                actual_live = base_live.replace(verify.WALLET_ROUTE_LITERAL, b"", 1)
+                (candidate / verify.WALLET_ROUTE_LIVE_PATH).write_bytes(actual_live)
+            elif case == "unpaired":
+                (candidate / verify.WALLET_ROUTE_LIVE_PATH).write_bytes(transformed_live)
+                for relative in verify.WALLET_ROUTE_ORDINARY_PATHS:
+                    target = candidate / relative
+                    target.write_bytes(target.read_bytes() + b"\n")
+            elif case == "altered-live":
+                actual_live = transformed_live.replace(b"customer_id", b"session_id", 1)
+                (candidate / verify.WALLET_ROUTE_LIVE_PATH).write_bytes(actual_live)
+                for relative in verify.WALLET_ROUTE_ORDINARY_PATHS:
+                    target = candidate / relative
+                    target.write_bytes(target.read_bytes() + b"\n")
+            elif case == "verifier-drift":
+                verifier = candidate / verify.WALLET_ROUTE_VERIFIER_PATH
+                verifier.write_bytes(verifier.read_bytes() + b"\n# candidate verifier change\n")
+            else:
+                (candidate / verify.WALLET_ROUTE_LIVE_PATH).write_bytes(transformed_live)
+                for relative in verify.WALLET_ROUTE_ORDINARY_PATHS:
+                    target = candidate / relative
+                    target.write_bytes(target.read_bytes() + b"\n")
+                verifier = verify._wallet_route_expected_verifier(trusted, transformed_live)
+                start = verifier.index(verify.WALLET_ROUTE_VERIFIER_KEY) + len(verify.WALLET_ROUTE_VERIFIER_KEY)
+                verifier = verifier[:start] + b"0" * 64 + verifier[start + 64:]
+                (candidate / verify.WALLET_ROUTE_VERIFIER_PATH).write_bytes(verifier)
+            with self._wallet_route_classifier_patches()[0], self._wallet_route_classifier_patches()[1], self._wallet_route_classifier_patches()[2], self._wallet_route_classifier_patches()[3]:
+                with patch.object(verify, "_wave_controls_match", return_value=True):
+                    with self.assertRaises(verify.ContractError, msg=case):
+                        verify.validate_wave(candidate, trusted, verify.changed_paths(trusted, candidate))
+
+    def test_wallet_route_triggers_both_protected_entrypoints_and_manual_proof(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        paths = (
+            "crates/corelink-stripe-real/src/client.rs",
+            "crates/corelink-stripe-real/src/client/tests_part_01.rs",
+            "crates/corelink-stripe-real/tests/live_integration.rs",
+            "crates/corelink-stripe-real/tests/wallet_broker_proxy.rs",
+            "scripts/verify_real_ignored_harnesses.py",
+        )
+        protected = (root / ".github/workflows/issue-2176-grpc-deny-gate.yml").read_text()
+        supplemental = (root / ".github/workflows/issue-2574-staging-grpc-diagnostic.yml").read_text()
+        for workflow in (protected, supplemental):
+            for relative in paths:
+                self.assertIn(f'"{relative}"', workflow)
+        self.assertIn("pull_request_target:", protected)
+        self.assertNotIn("workflow_dispatch:", protected)
+        self.assertIn('ref: ${{ github.event.pull_request.base.sha }}', protected)
+        self.assertIn('ref: ${{ github.event.pull_request.head.sha }}', protected)
+        self.assertIn("trusted-base/scripts/verify_i2176_grpc_deny_gate.py", protected)
+        self.assertIn("trusted-base/scripts/verify_i2574_grpc_diagnostic_policy.py", protected)
+
+    def test_wallet_route_rejects_other_delivery_wave_or_unconsumed_2565_base(self) -> None:
+        trusted, candidate = self._wallet_route_fixture()
+        ordinary = next(iter(verify.WALLET_ROUTE_ORDINARY_PATHS))
+        target = candidate / ordinary
+        target.write_bytes(target.read_bytes() + b"\n")
+        with self._wallet_route_classifier_patches()[0], self._wallet_route_classifier_patches()[1], self._wallet_route_classifier_patches()[2], self._wallet_route_classifier_patches()[3]:
+            with patch.object(verify, "_wave_group_state", side_effect=lambda root, group: "old" if root == candidate and group == "i1700" else "new"):
+                with self.assertRaises(verify.ContractError):
+                    verify.validate_wallet_route_candidate(trusted, candidate)
+            def unconsumed_pin(root: Path, relative: Path, pin: tuple[int, str] | None) -> bool:
+                if relative == Path(".github/workflows/issue-1650-real-integration-contract.yml"):
+                    return False
+                return verify.matches_pinned_file(root, relative, pin)
+            with patch.object(verify, "_wave_pin_matches", side_effect=unconsumed_pin):
+                with self.assertRaises(verify.ContractError):
+                    verify.validate_wallet_route_candidate(trusted, candidate)
+
+    def test_wallet_route_rejects_foreign_path_mode_and_symlink(self) -> None:
+        for mutation in ("foreign", "mode", "symlink"):
+            trusted, candidate = self._wallet_route_fixture()
+            ordinary = next(iter(verify.WALLET_ROUTE_ORDINARY_PATHS))
+            target = candidate / ordinary
+            if mutation == "foreign":
+                extra = candidate / "unexpected.txt"
+                extra.write_text("extra")
+                target.write_bytes(target.read_bytes() + b"\n")
+            elif mutation == "mode":
+                target.chmod(0o755)
+            else:
+                target.unlink()
+                target.symlink_to(trusted / ordinary)
+            with self._wallet_route_classifier_patches()[0], self._wallet_route_classifier_patches()[1], self._wallet_route_classifier_patches()[2], self._wallet_route_classifier_patches()[3]:
+                with self.assertRaises(verify.ContractError, msg=mutation):
+                    verify.validate_wallet_route_candidate(trusted, candidate)
 
     def test_i1652_full_guard_transition_is_atomic_and_monotonic(self) -> None:
         paths = verify.WAVE_GROUPS["i1652"]

@@ -51,6 +51,11 @@ on:
       - "docs/internal/secrets-checklist.md"
       - ".github/workflows/issue-2176-grpc-deny-gate.yml"
       - ".github/workflows/issue-2574-staging-grpc-diagnostic.yml"
+      - "crates/corelink-stripe-real/src/client.rs"
+      - "crates/corelink-stripe-real/src/client/tests_part_01.rs"
+      - "crates/corelink-stripe-real/tests/live_integration.rs"
+      - "crates/corelink-stripe-real/tests/wallet_broker_proxy.rs"
+      - "scripts/verify_real_ignored_harnesses.py"
 
 permissions:
   contents: read
@@ -89,6 +94,12 @@ jobs:
           --trusted-base trusted-base
           --candidate candidate
           --expected-head ${{ github.event.pull_request.head.sha }}
+
+      - name: Validate candidate with the protected-base #2574 verifier
+        run: >-
+          python3 -S trusted-base/scripts/verify_i2574_grpc_diagnostic_policy.py
+          --trusted-base trusted-base
+          --candidate candidate
 
       - name: Run protected-base adversarial fixtures
         run: >-

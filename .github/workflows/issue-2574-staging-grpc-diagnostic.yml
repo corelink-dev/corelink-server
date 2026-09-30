@@ -25,6 +25,11 @@ on:
       - "worker/src/durable_object_start.ts"
       - "worker/src/lib/internal_auth.ts"
       - "worker/tests/grpc_*.test.ts"
+      - "crates/corelink-stripe-real/src/client.rs"
+      - "crates/corelink-stripe-real/src/client/tests_part_01.rs"
+      - "crates/corelink-stripe-real/tests/live_integration.rs"
+      - "crates/corelink-stripe-real/tests/wallet_broker_proxy.rs"
+      - "scripts/verify_real_ignored_harnesses.py"
 
 permissions:
   contents: read

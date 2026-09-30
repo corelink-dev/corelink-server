@@ -7,6 +7,7 @@ tree is only read, never imported or executed.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import hashlib
 import os
 import shutil
@@ -319,6 +320,26 @@ def changed(base: Path, candidate: Path) -> set[str]:
     return {name for name in names if not (base / name).exists() or not (candidate / name).exists() or digest(base / name) != digest(candidate / name)}
 
 
+def _load_trusted_i2176_checker(base: Path) -> object:
+    """Load only the #2176 verifier from the supplied protected BASE tree."""
+    trusted_checker = base / "scripts/verify_i2176_grpc_deny_gate.py"
+    spec = importlib.util.spec_from_file_location("trusted_i2176_wallet_route", trusted_checker)
+    if spec is None or spec.loader is None:
+        raise ContractError("trusted #2176 wallet route classifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def validate_wallet_route_transition(base: Path, candidate: Path) -> bool:
+    """Delegate to the protected BASE #2176 classifier, never candidate code."""
+    module = _load_trusted_i2176_checker(base)
+    try:
+        return module.validate_wallet_route_candidate(base, candidate)
+    except module.ContractError as error:
+        raise ContractError(str(error)) from error
+
+
 def validate(base: Path, candidate: Path) -> None:
     require_regular_tree(base)
     require_regular_tree(candidate, base)
@@ -326,6 +347,8 @@ def validate(base: Path, candidate: Path) -> None:
     require_pinned_modes(base, POLICY | POLICY_FIXTURES)
     require_pinned_modes(candidate, set(EXPECTED) | POLICY | POLICY_FIXTURES)
     differences = changed(base, candidate)
+    if differences & WALLET_ROUTE_PATHS and validate_wallet_route_transition(base, candidate):
+        return
     native_transition = exact_staging_d1_proxy_transition(base, candidate)
     i1648_transition = exact_staging_successor(base, candidate, STAGING_I1648_PREIMAGES, STAGING_I1648_TARGETS, (STAGING_D1_PROXY_TARGETS,))
     b216_transition = exact_staging_successor(base, candidate, STAGING_B216_PREIMAGES, STAGING_B216_TARGETS, (STAGING_D1_PROXY_TARGETS, STAGING_I1648_TARGETS))
@@ -382,6 +405,13 @@ def self_test() -> None:
 
 RECEIVER_ALLOWED = re.compile(r"^(apps/dsr-alert-receiver/|\.github/workflows/(issue-2730-dsr-alert-receiver|b216-receiver-deploy-nonprod)\.yml$|docs/campaigns/remediation/wp150-workflow-ownership\.md$|docs/internal/secrets-checklist\.md$)")
 RECEIVER_OWNED = re.compile(r"^(apps/dsr-alert-receiver/|\.github/workflows/b216-receiver-deploy-nonprod\.yml$)")
+WALLET_ROUTE_PATHS = frozenset({
+    "crates/corelink-stripe-real/src/client.rs",
+    "crates/corelink-stripe-real/src/client/tests_part_01.rs",
+    "crates/corelink-stripe-real/tests/live_integration.rs",
+    "crates/corelink-stripe-real/tests/wallet_broker_proxy.rs",
+    "scripts/verify_real_ignored_harnesses.py",
+})
 PRIVACY_MARKERS = re.compile(r"console\.(?:log|error|warn)|DSR_DLQ_ALERT_AUTH_TOKEN|tenant_id|subject_id|raw body", re.IGNORECASE)
 
 
