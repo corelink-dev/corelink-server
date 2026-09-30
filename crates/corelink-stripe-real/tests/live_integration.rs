@@ -736,6 +736,7 @@ mod cleanup_fault_injection {
                 .and(path(format!(
                     "{proxy}/v1/prices/price_unknown_mode_fixture"
                 )))
+                .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
@@ -743,11 +744,13 @@ mod cleanup_fault_injection {
                 .and(path(format!(
                     "{proxy}/v1/checkout/sessions/{session_id}/expire"
                 )))
+                .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
                 .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
@@ -797,11 +800,13 @@ mod cleanup_fault_injection {
                 .await;
             Mock::given(method("POST"))
                 .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
                 .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
@@ -877,11 +882,13 @@ mod cleanup_fault_injection {
                 .and(path(format!(
                     "{proxy}/v1/checkout/sessions/{session_id}/expire"
                 )))
+                .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
                 .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
@@ -937,11 +944,13 @@ mod cleanup_fault_injection {
                 .await;
             Mock::given(method("POST"))
                 .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
                 .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
@@ -1014,11 +1023,13 @@ mod cleanup_fault_injection {
                 .and(path(format!(
                     "{proxy}/v1/checkout/sessions/{session_id}/expire"
                 )))
+                .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
                 .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
