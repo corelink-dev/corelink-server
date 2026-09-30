@@ -8,7 +8,7 @@ from scripts import issue_1700_historical_query as query
 def event():
     native = {'contract': 'corelink-staging-d1-binding-runtime-v1', 'outcome': 'pass',
               'probe_nonce': query.NONCE, 'worker_release': query.RELEASE,
-              'scheduled_time_ms': query.START + 60000,
+              'scheduled_time_ms': query.START + 60000, 'old_probe_release': query.OLD_RELEASE,
               **{k: True for k in query.NATIVE_CHECKS}, 'unknown_payload': 'do-not-echo'}
     return {'$metadata': {'message': '[staging_d1_runtime_probe] receipt=' + json.dumps(native)},
             '$workers': {'scriptName': 'corelink-staging', 'scriptVersion': {'id': query.VERSION},
@@ -35,7 +35,7 @@ class HistoricalQueryTests(unittest.TestCase):
         self.assertNotIn('do-not-echo', json.dumps(result))
         self.assertEqual(query.QUERY['dry'], True)
         self.assertEqual(query.QUERY['limit'], 100)
-        self.assertEqual(query.QUERY['timeframe'], {'from': 1790727123000, 'to': 1790728458000})
+        self.assertEqual(query.QUERY['timeframe'], {'from': 1790801501000, 'to': 1790801765000})
 
     def test_denied_identity_prevents_query(self):
         calls = []
@@ -61,7 +61,7 @@ class HistoricalQueryTests(unittest.TestCase):
         for field, value in [('scriptName', 'other'), ('scriptVersion', {'id': 'wrong'}), ('eventType', 'fetch')]:
             e = event(); e['$workers'][field] = value; variants.append(e)
         e = event(); e['timestamp'] = query.START - 1; variants.append(e)
-        for field, value in [('probe_nonce', 'wrong'), ('worker_release', 'wrong'),
+        for field, value in [('probe_nonce', 'wrong'), ('worker_release', 'wrong'), ('old_probe_release', 'wrong'),
                              ('scheduled_time_ms', query.START - 1), ('outcome', 'fail'),
                              *[(key, False) for key in query.NATIVE_CHECKS]]:
             e = event()
@@ -85,6 +85,41 @@ class HistoricalQueryTests(unittest.TestCase):
             query.request('/accounts/other')
         with self.assertRaises(ValueError):
             query.request(query.QUERY_PATH, {**query.QUERY, 'dry': False})
+
+    def test_filter_counters_explain_exclusion_without_logging_source_values(self):
+        valid = event()
+        wrong_version = copy.deepcopy(valid)
+        wrong_version['$workers']['scriptVersion'] = {'id': 'do-not-echo'}
+        missing_type = copy.deepcopy(valid)
+        del missing_type['$workers']['eventType']
+        result = query.classify(response([valid, wrong_version, missing_type, None,
+            {'$workers': 'do-not-echo', '$metadata': {'message': ['do-not-echo']}}]))
+        self.assertEqual(result['filter_counts'], {
+            'object_event': 4, 'worker_metadata': 3, 'message_metadata': 4,
+            'exact_service': 3, 'exact_version': 2, 'scheduled_event': 2,
+            'timestamp_in_window': 3, 'probe_prefix': 3, 'receipt_prefix': 3,
+            'eligible_event': 1, 'malformed_receipt': 0, 'rejected_receipt': 0,
+        })
+        self.assertEqual(len(result['historical_receipts']), 1)
+        self.assertNotIn('do-not-echo', json.dumps(result))
+        self.assertEqual(result['tail_close_provenance'], 'not_available_in_this_query_contract')
+
+    def test_missing_retirement_fields_and_malformed_receipts_never_pass(self):
+        variants = []
+        for key in (*query.NATIVE_CHECKS, 'old_probe_release'):
+            e = event()
+            native = json.loads(e['$metadata']['message'].split('receipt=', 1)[1])
+            del native[key]
+            e['$metadata']['message'] = '[staging_d1_runtime_probe] receipt=' + json.dumps(native)
+            variants.append(e)
+        for e in variants:
+            result = query.classify(response([e]))
+            self.assertEqual(result['classification'], 'no_conclusive_historical_evidence')
+            self.assertEqual(result['filter_counts']['rejected_receipt'], 1)
+        for payload in ['malformed', '[]']:
+            e = event(); e['$metadata']['message'] = '[staging_d1_runtime_probe] receipt=' + payload
+            self.assertEqual(query.classify(response([e]))['filter_counts']['malformed_receipt'], 1)
+        self.assertTrue(query.classify(response([event()] * 100))['limit_reached'])
 
     def test_workflow_reuses_repo_secret_only_in_protected_job(self):
         workflow = Path('.github/workflows/issue-1700-container-staging-deploy.yml').read_text()

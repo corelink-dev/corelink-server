@@ -10,14 +10,16 @@ import urllib.request
 ACCOUNT = '6a1fc1c626fc2628823e60b9db01f5cd'
 BASE = 'https://api.cloudflare.com/client/v4'
 QUERY_PATH = f'/accounts/{ACCOUNT}/workers/observability/telemetry/query'
-START, END = 1790727123000, 1790728458000  # 2026-09-30 00:12:03..00:34:18 UTC
-VERSION = '516d7e11-c366-4ebf-b84b-eec9a4861446'
-RELEASE = '0f785fb9b096afe01247f1057d46377b9f604f13'
-NONCE = 'issue-1700-recovery-20260929'
+START, END = 1790801501000, 1790801765000  # 2026-09-30 20:51:41..20:56:05 UTC
+VERSION = '6fe4c25f-2767-4382-bb0e-6f03e6a1c992'
+RELEASE = 'cc32b3d819181bf9175e795868f66212aa5456c1'
+OLD_RELEASE = '0f785fb9b096afe01247f1057d46377b9f604f13'
+NONCE = 'issue-1700-recovery-20260930-v5'
 NATIVE_CHECKS = ('parameterized_select', 'failed_batch_observed', 'rollback_absence_verified',
-                 'probe_table_dropped', 'd1_binding_intercepted', 'authorization_absent', 'cf_api_token_absent')
+                 'probe_table_dropped', 'd1_binding_intercepted', 'authorization_absent', 'cf_api_token_absent',
+                 'old_probe_retired', 'old_probe_tables_absent', 'v4_probe_catalog_absent')
 QUERY = {
-    'queryId': 'issue1700-run36649066490-readonly', 'dry': True, 'view': 'events', 'limit': 100,
+    'queryId': 'issue1700-run36775268954-readonly', 'dry': True, 'view': 'events', 'limit': 100,
     'timeframe': {'from': START, 'to': END},
     'parameters': {'filterCombination': 'and', 'filters': [
         {'key': '$metadata.service', 'operation': 'eq', 'type': 'string', 'value': 'corelink-staging'},
@@ -59,14 +61,34 @@ def classify(body):
     if not isinstance(events, list) or len(events) > 100:
         raise ValueError('event_envelope')
     receipts, failed = [], 0
+    counts = dict.fromkeys(('object_event', 'worker_metadata', 'message_metadata',
+        'exact_service', 'exact_version', 'scheduled_event', 'timestamp_in_window',
+        'probe_prefix', 'receipt_prefix', 'eligible_event', 'malformed_receipt',
+        'rejected_receipt'), 0)
     for event in events:
-        workers = event.get('$workers', {})
-        if (workers.get('scriptName') != 'corelink-staging' or
-            workers.get('scriptVersion', {}).get('id') != VERSION or
-            workers.get('eventType') not in ('scheduled', 'cron') or
-            type(event.get('timestamp')) is not int or not START <= event['timestamp'] <= END):
+        if not isinstance(event, dict):
             continue
-        message = event.get('$metadata', {}).get('message', '')
+        counts['object_event'] += 1
+        workers, metadata = event.get('$workers'), event.get('$metadata')
+        counts['worker_metadata'] += isinstance(workers, dict)
+        counts['message_metadata'] += isinstance(metadata, dict)
+        workers = workers if isinstance(workers, dict) else {}
+        metadata = metadata if isinstance(metadata, dict) else {}
+        version = workers.get('scriptVersion')
+        message = metadata.get('message')
+        predicates = {
+            'exact_service': workers.get('scriptName') == 'corelink-staging',
+            'exact_version': isinstance(version, dict) and version.get('id') == VERSION,
+            'scheduled_event': workers.get('eventType') in ('scheduled', 'cron'),
+            'timestamp_in_window': type(event.get('timestamp')) is int and START <= event['timestamp'] <= END,
+            'probe_prefix': isinstance(message, str) and message.startswith('[staging_d1_runtime_probe]'),
+            'receipt_prefix': isinstance(message, str) and message.startswith('[staging_d1_runtime_probe] receipt='),
+        }
+        for key, matched in predicates.items():
+            counts[key] += matched
+        if not all(predicates[k] for k in ('exact_service', 'exact_version', 'scheduled_event', 'timestamp_in_window', 'probe_prefix')):
+            continue
+        counts['eligible_event'] += 1
         if message == '[staging_d1_runtime_probe] failed reason=probe_failed':
             failed += 1
         prefix = '[staging_d1_runtime_probe] receipt='
@@ -75,29 +97,34 @@ def classify(body):
         try:
             native = json.loads(message[len(prefix):])
         except ValueError:
+            counts['malformed_receipt'] += 1
             continue
         if not isinstance(native, dict):
+            counts['malformed_receipt'] += 1
             continue
         valid = (native.get('contract') == 'corelink-staging-d1-binding-runtime-v1' and
                  native.get('outcome') == 'pass' and native.get('probe_nonce') == NONCE and
-                 native.get('worker_release') == RELEASE and
+                 native.get('worker_release') == RELEASE and native.get('old_probe_release') == OLD_RELEASE and
                  type(native.get('scheduled_time_ms')) is int and
                  START <= native['scheduled_time_ms'] <= END and
                  all(native.get(key) is True for key in NATIVE_CHECKS))
         if valid:
             # Allowlisted values only; never retain arbitrary log fields/payloads.
             receipts.append({'contract': native['contract'], 'outcome': 'pass',
-                'probe_nonce': NONCE, 'worker_release': RELEASE,
+                'probe_nonce': NONCE, 'worker_release': RELEASE, 'old_probe_release': OLD_RELEASE,
                 'scheduled_time_ms': native['scheduled_time_ms'],
                 **{key: True for key in NATIVE_CHECKS}, 'event_sha256': digest(event)})
+        else:
+            counts['rejected_receipt'] += 1
     return {'classification': 'historical_native_receipt_recovered' if receipts else
             'historical_attempt_failed_or_claimed' if failed else 'no_conclusive_historical_evidence',
             'event_count': len(events), 'limit_reached': len(events) == 100,
+            'filter_counts': counts, 'tail_close_provenance': 'not_available_in_this_query_contract',
             'failed_marker_count': failed, 'historical_receipts': receipts}
 
 
 def collect(call=request):
-    out = {'contract': 'issue1700-historical-classification-v1', 'run_id': '36649066490',
+    out = {'contract': 'issue1700-historical-classification-v1', 'run_id': '36775268954',
            'dry': True, 'new_runtime_proof': False, 'query_sha256': digest(QUERY),
            'timeframe': QUERY['timeframe'], 'classification': 'unknown'}
     try:
