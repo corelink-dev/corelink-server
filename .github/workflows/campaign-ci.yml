@@ -57,6 +57,10 @@ on:
           - i2417
           - i2421
           - i2614
+      expected_sha:
+        description: Exact commit SHA required by the i1678 focused pack
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -185,6 +189,11 @@ jobs:
         if: ${{ inputs.suite == 'i1678' }}
         shell: bash
         run: pnpm install --frozen-lockfile --filter @corelink/signup-worker... --ignore-scripts
+
+      - name: Install pinned DSR receiver dependencies
+        if: ${{ inputs.suite == 'i1678' }}
+        shell: bash
+        run: pnpm --dir apps/dsr-alert-receiver install --frozen-lockfile --ignore-workspace --ignore-scripts
 
       - name: Install pytest for seam checks
         shell: bash
@@ -330,7 +339,18 @@ jobs:
           set -euo pipefail
           pnpm --dir worker exec vitest run tests/pat_verify_cache.test.ts tests/runner_mint.test.ts tests/auth_rotate.test.ts 2>&1 | tee artifacts/campaign-ci/i1662.log
 
-      - name: i1678 exact DSR queue isolation checks
+      - name: Assert exact requested i1678 commit
+        if: ${{ inputs.suite == 'i1678' }}
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+
+      - name: i1678 durable DSR receiver and queue acceptance pack
         if: ${{ inputs.suite == 'i1678' }}
         shell: bash
         run: |
@@ -338,7 +358,54 @@ jobs:
           {
             pnpm --dir apps/signup-worker test -- dsr_consumer.test.ts
             pnpm --dir apps/signup-worker typecheck
+            pnpm --dir apps/dsr-alert-receiver typecheck
+            pnpm --dir apps/dsr-alert-receiver test
+            python3 -B -m unittest -v tests/test_b216_dsr_schema_fence.py
+            python3 -B scripts/apply_staging_b216_dsr_schema.py --check-contract
+            bash -n scripts/verify-signup-worker-dsr-redrive-schema.sh
+            python3 scripts/verify_staging_topology_contract.py --expect ready
+            test "$(sha256sum scripts/verify_i2574_grpc_diagnostic_policy.py | cut -d ' ' -f 1)" = "58c85ba647de0023e647d17bbc5345f80011e4b7a310e8eaec71c21ae900487d"
+            test "$(sha256sum tests/test_verify_i2574_grpc_diagnostic_policy.py | cut -d ' ' -f 1)" = "e654f03671d9ba65c7de73c1fc5126b056ce5c5bfd7d3489d8a431d2ba7be935"
+            python3 -B -S -m unittest -v tests/test_verify_i2574_grpc_diagnostic_policy.py
+            python3 -B -S - <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "scripts")
+          from verify_i2574_grpc_diagnostic_policy import validate_receiver_path_boundary
+          root = Path.cwd()
+          receiver_sources = {
+              str(path.relative_to(root))
+              for path in (root / "apps/dsr-alert-receiver/src").rglob("*")
+              if path.is_file()
+          }
+          assert receiver_sources, "receiver source inventory is empty"
+          validate_receiver_path_boundary(receiver_sources, root)
+          PY
           } 2>&1 | tee artifacts/campaign-ci/i1678.log
+      - name: i1678 credentialless receiver bundle dry-run
+        if: ${{ inputs.suite == 'i1678' }}
+        shell: bash
+        env:
+          DRY_RUN_HOME: ${{ runner.temp }}/i1678-wrangler-empty-home
+        run: |
+          set -euo pipefail
+          mkdir -p "$DRY_RUN_HOME"
+          chmod 700 "$DRY_RUN_HOME"
+          runner_uid="$(id -u)"
+          runner_gid="$(id -g)"
+          sudo unshare --net -- setpriv \
+            --reuid "$runner_uid" \
+            --regid "$runner_gid" \
+            --clear-groups -- \
+            env -i \
+            "PATH=$PATH" \
+            "HOME=$DRY_RUN_HOME" \
+            "RUNNER_TEMP=$RUNNER_TEMP" \
+            "GITHUB_SHA=$GITHUB_SHA" \
+            CI=true \
+            WRANGLER_SEND_METRICS=false \
+            node apps/dsr-alert-receiver/scripts/run-wrangler-dry-run.mjs \
+            2>&1 | tee artifacts/campaign-ci/i1678-wrangler-dry-run.log
 
       - name: i1666 exact nightly mutants lane contract checks
         if: ${{ inputs.suite == 'i1666' }}
