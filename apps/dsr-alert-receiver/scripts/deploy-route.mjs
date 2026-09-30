@@ -160,6 +160,20 @@ export function preparePrivateBootstrapConfig(config, migration, databaseId, app
   return privateConfig;
 }
 
+export function prepareWorkersDevBootstrapConfig(config, migration, databaseId, appDir) {
+  validateTrackedInputs(config, migration);
+  if (databaseId !== TARGET.databaseId) fail("database_identity_mismatch");
+  const workersDevSettings = [...config.matchAll(/^workers_dev\s*=\s*(true|false)\s*$/gm)];
+  if (workersDevSettings.length !== 1 || workersDevSettings[0][1] !== "true") fail("bootstrap_config_drift");
+  if (/^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(config)) fail("bootstrap_route_config_forbidden");
+  const publicConfig = config
+    .replace(`database_id = "${TARGET.placeholderId}"`, `database_id = "${databaseId}"`)
+    .replace('main = "src/index.ts"', `main = "${resolve(appDir, "src/index.ts")}"`)
+    .replace('migrations_dir = "migrations"', `migrations_dir = "${resolve(appDir, "migrations")}"`);
+  if (!publicConfig.includes('workers_dev = true') || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(publicConfig)) fail("bootstrap_config_drift");
+  return publicConfig;
+}
+
 export function validateBootstrapWorkerScriptInventory(rows, { allowTarget = false } = {}) {
   if (!Array.isArray(rows)) fail("worker_inventory_ambiguous");
   const info = rows.result_info;
@@ -623,8 +637,12 @@ export function validateBootstrapDeployedInventory(inventory, versionId) {
   const deploymentList = normalizeDeploymentList({ deployments: [inventory.deployments.active] });
   if (selectPriorRevision(deploymentList) !== versionId) fail("worker_revision_readback_mismatch");
   if (inventory.routes?.status === "known" && inventory.routes.count !== 0) fail("worker_custom_route_present");
-  if (inventory.subdomain?.status === "known") validateIntakeDisabled(inventory.subdomain);
-  else if (inventory.subdomain?.status !== "absent") fail("worker_subdomain_ambiguous");
+  if (inventory.subdomain?.status !== "known" || inventory.subdomain.enabled !== true || inventory.subdomain.previews_enabled !== false) fail("worker_subdomain_readback_mismatch");
+  return true;
+}
+
+export function validateWorkersDevEnabled(subdomain) {
+  if (!subdomain || subdomain.enabled !== true || subdomain.previews_enabled !== false) fail("worker_subdomain_readback_mismatch");
   return true;
 }
 
@@ -813,6 +831,7 @@ export async function runBootstrapFinalize({ context, config, migration, fetchIm
     binding: TARGET.databaseBinding,
     worker_revision: bootstrapReceipt.worker_revision,
     worker_revision_tag: bootstrapReceipt.worker_revision_tag,
+    workers_dev: true,
     preexisting_worker_names: bootstrapReceipt.preexisting_worker_names,
     worker_inventory_count_preimage: bootstrapReceipt.worker_inventory_count_preimage,
     secret_provisioned: false,
@@ -851,7 +870,7 @@ export async function runBootstrapFinalize({ context, config, migration, fetchIm
     await mkdir(wranglerHome, { mode: 0o700 });
     tempConfig = join(tempDir, "wrangler.toml");
     const appDir = resolve(worktree, "apps/dsr-alert-receiver");
-    await writeFile(tempConfig, preparePrivateBootstrapConfig(config, migration, TARGET.databaseId, appDir), { mode: 0o600, flag: "wx" });
+    await writeFile(tempConfig, prepareWorkersDevBootstrapConfig(config, migration, TARGET.databaseId, appDir), { mode: 0o600, flag: "wx" });
 
     stage = "bootstrap_prewrite_recheck";
     if (await readBootstrapDatabase(api, migration) !== TARGET.databaseId) fail("database_identity_mismatch");
@@ -879,14 +898,14 @@ export async function runBootstrapFinalize({ context, config, migration, fetchIm
     const candidateVersion = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${tagged[0].id}`);
     validateCandidateVersion(candidateVersion, TARGET.databaseId, versionTag);
 
-    stage = "worker_private_deploy";
+    stage = "worker_workers_dev_deploy";
     command(["versions", "deploy", `${tagged[0].id}@100%`, "--yes", "--config", tempConfig], {
       cwd: appDir,
       home: wranglerHome,
       apiToken: context.apiToken,
     });
 
-    stage = "worker_private_readback";
+    stage = "worker_workers_dev_readback";
     const [deploymentResponse, deployedVersion, secrets] = await Promise.all([
       api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`),
       api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${tagged[0].id}`),
@@ -914,12 +933,12 @@ export async function runBootstrapFinalize({ context, config, migration, fetchIm
     receipt.custom_routes_status = postInventory.routes.status === "known" ? "absent" : "unknown";
     receipt.subdomain_postflight = postInventory.subdomain.status === "absent"
       ? "absent"
-      : postInventory.subdomain.enabled === false && postInventory.subdomain.previews_enabled === false ? "disabled" : "unknown";
-    if (receipt.subdomain_postflight === "unknown") fail("worker_subdomain_ambiguous");
+      : postInventory.subdomain.enabled === true && postInventory.subdomain.previews_enabled === false ? "enabled" : "unknown";
+    validateWorkersDevEnabled(postInventory.subdomain);
     receipt.public_ingress_status = receipt.custom_routes_status === "absent"
-      ? "workers_dev_disabled_routes_absent_subdomain_disabled"
-      : "workers_dev_disabled_subdomain_disabled_routes_unknown";
-    receipt.status = "private_worker_deployed_and_verified";
+      ? "workers_dev_enabled_custom_routes_absent_previews_disabled"
+      : "workers_dev_enabled_no_custom_routes_configured_previews_disabled";
+    receipt.status = "workers_dev_receiver_deployed_and_verified";
     receipt.completed_at = new Date().toISOString();
     if (receiptPath) await writeReceipt(receiptPath, receipt);
     return receipt;
@@ -927,8 +946,18 @@ export async function runBootstrapFinalize({ context, config, migration, fetchIm
     receipt.status = "failed";
     receipt.failed_stage = stage;
     receipt.failure_code = error instanceof RouteError ? error.code : "route_failed_closed";
-    if (["worker_secret_provision", "worker_private_deploy"].includes(stage) && error instanceof RouteError && error.providerFailure) Object.assign(receipt, error.providerFailure);
-    if (mutationStarted) receipt.rollback_status = "ambiguous_do_not_retry";
+    if (stage === "worker_secret_provision" && error instanceof RouteError && error.providerFailure) Object.assign(receipt, error.providerFailure);
+    if (mutationStarted) {
+      try {
+        const path = `/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`;
+        await api(path, { method: "POST", body: { enabled: false, previews_enabled: false } });
+        const disabled = await api(path);
+        if (disabled?.enabled !== false || disabled?.previews_enabled !== false) fail("workers_dev_rollback_readback_mismatch");
+        receipt.rollback_status = "workers_dev_disabled_verified";
+      } catch {
+        receipt.rollback_status = "ambiguous_manual_disable_required";
+      }
+    }
     if (receiptPath) await writeReceipt(receiptPath, receipt);
     throw error instanceof RouteError ? error : new RouteError("route_failed_closed");
   } finally {
@@ -936,15 +965,16 @@ export async function runBootstrapFinalize({ context, config, migration, fetchIm
   }
 }
 
-async function queryDatabase(api, id, sql) {
-  const results = await api(`/accounts/${TARGET.accountId}/d1/database/${id}/query`, { method: "POST", body: { sql } });
+async function queryDatabase(api, id, sql, params = []) {
+  const results = await api(`/accounts/${TARGET.accountId}/d1/database/${id}/query`, { method: "POST", body: { sql, ...(params.length === 0 ? {} : { params }) } });
   if (!Array.isArray(results) || results.length !== 1 || results[0]?.success !== true || !Array.isArray(results[0]?.results)) fail("database_query_ambiguous");
   return results[0].results;
 }
 
-export async function queryBootstrapDatabase(api, id, sql) {
+export async function queryBootstrapDatabase(api, id, sql, params = []) {
   if (!/^SELECT\b/i.test(sql) || /\b(?:CREATE|DROP|ALTER|INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)) fail("bootstrap_database_query_not_read_only");
-  return queryDatabase(api, id, sql);
+  if (!Array.isArray(params) || params.some((parameter) => typeof parameter !== "string" && typeof parameter !== "number" && typeof parameter !== "boolean" && parameter !== null)) fail("bootstrap_database_query_not_read_only");
+  return queryDatabase(api, id, sql, params);
 }
 
 export async function main() {
