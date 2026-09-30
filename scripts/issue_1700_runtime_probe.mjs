@@ -12,13 +12,20 @@ export const WORKER_NAME = "corelink-staging";
 export const CONTAINER_APP_ID = "a033fb81-6388-47d9-9049-0b6942778055";
 export const CONTAINER_APP_NAME = "corelink-staging-corelinkserver";
 export const PROBE_WINDOW = JSON.parse(readFileSync(new URL("../crates/corelink-container/src/routes/staging_d1_probe_window.json", import.meta.url), "utf8"));
+const APPROVED_PROBE_WINDOW = Object.freeze({ cron: "* * 30 9 *", starts_ms: 1790791200000,
+  expires_ms: 1790812740000, nonce: "issue-1700-recovery-20260930-v5" });
+export function approvedProbeWindow(value = PROBE_WINDOW) {
+  return value !== null && typeof value === "object" && value.cron === APPROVED_PROBE_WINDOW.cron &&
+    value.starts_ms === APPROVED_PROBE_WINDOW.starts_ms && value.expires_ms === APPROVED_PROBE_WINDOW.expires_ms &&
+    value.nonce === APPROVED_PROBE_WINDOW.nonce && Object.keys(value).sort().join(",") === "cron,expires_ms,nonce,starts_ms";
+}
 export const PROBE_CRON = PROBE_WINDOW.cron;
 export const PROBE_EXPIRY = PROBE_WINDOW.expires_ms;
 export const RECEIPT_PREFIX = "[staging_d1_runtime_probe] receipt=";
 
 const apiBase = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}`;
 const allowedReceiptKeys = new Set([
-  "old_probe_release", "old_probe_retired", "old_probe_tables_absent",
+  "old_probe_release", "old_probe_retired", "old_probe_tables_absent", "v4_probe_catalog_absent",
   "contract", "probe_nonce", "outcome", "worker_release", "scheduled_time_ms", "parameterized_select",
   "failed_batch_observed", "rollback_absence_verified", "probe_table_dropped",
   "d1_binding_intercepted", "authorization_absent", "cf_api_token_absent",
@@ -132,6 +139,7 @@ function exactReceipt(receipt, release, startedAt, deadline) {
     receipt.probe_nonce === PROBE_WINDOW.nonce &&
     receipt.old_probe_release === "0f785fb9b096afe01247f1057d46377b9f604f13" &&
     receipt.old_probe_retired === true && receipt.old_probe_tables_absent === true &&
+    receipt.v4_probe_catalog_absent === true &&
     receipt.outcome === "pass" && receipt.worker_release === release &&
     Number.isSafeInteger(receipt.scheduled_time_ms) &&
     receipt.scheduled_time_ms >= startedAt &&
@@ -248,6 +256,7 @@ export async function runRuntimeProbe({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   timeoutMs = 16 * 60_000,
 }) {
+  if (!approvedProbeWindow()) throw Object.assign(new Error("runtime probe window rejected"), { stage: "probe_preflight" });
   if (typeof token !== "string" || token.length < 1 || !/^[0-9a-f]{40}$/.test(release ?? "") ||
       release !== expectedSha || !/^sha256:[0-9a-f]{64}$/.test(imageDigest ?? "") ||
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 16 * 60_000 ||

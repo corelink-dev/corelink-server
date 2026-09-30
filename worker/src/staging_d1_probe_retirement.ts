@@ -14,6 +14,19 @@ for (let at = Math.ceil(OLD_PROBE_RUN_BOUNDS.start / 60000) * 60000;
   OLD_PROBE_TABLES.set(`${OLD_TABLE_PREFIX}${at}`, at);
 }
 
+// The failed v4 schedule readback showed empty schedules/tails, not a completed
+// runtime receipt. Prove its exact release-derived D1 namespace is absent; do
+// not drop it or infer anything about DO state from this catalog check.
+export const V4_FAILED_PROBE_RELEASE = "9d8fdbfa04dd16d4099056de6e16ea8343ebba46";
+export const V4_FAILED_PROBE_TABLE_PREFIX = `corelink_staging_d1_probe_${V4_FAILED_PROBE_RELEASE.slice(0, 16)}_`;
+export async function assertV4FailedProbeCatalogAbsent(db: D1Database): Promise<void> {
+  const result = await db.prepare("SELECT type, name, tbl_name FROM sqlite_master WHERE name GLOB ?1 OR tbl_name GLOB ?1 LIMIT 1")
+    .bind(`${V4_FAILED_PROBE_TABLE_PREFIX}*`).all();
+  if (!result.success || !Array.isArray(result.results) || result.results.length !== 0) {
+    throw new Error("v4 failed probe catalog absence unproven");
+  }
+}
+
 export interface OldProbeRetirement {
   old_probe_release: typeof OLD_PROBE_RELEASE;
   old_probe_retired: true;

@@ -63,6 +63,9 @@ def validate_state(state, run, log, current_sha):
 
 def validate_runtime(receipt, started_ms, now_ms):
     window = json.loads(Path('crates/corelink-container/src/routes/staging_d1_probe_window.json').read_text())
+    if window != {'cron': '* * 30 9 *', 'starts_ms': 1790791200000,
+                  'expires_ms': 1790812740000, 'nonce': 'issue-1700-recovery-20260930-v5'}:
+        raise RuntimeError('runtime probe window rejected')
     native = receipt.get('receipt', {})
     if (receipt.get('contract') != 'corelink-staging-runtime-deployment-proof-v1'
         or receipt.get('worker_release') != PIN['rollout_sha']
