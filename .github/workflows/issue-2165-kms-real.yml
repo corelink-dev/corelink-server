@@ -1,0 +1,1700 @@
+name: Issue 2165 real KMS lifecycle
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/issue-2165-kms-real.yml
+      - scripts/issue_2165_kms_runtime.py
+      - scripts/issue_2165_cf5128_readback.py
+      - scripts/issue_2165_kms_custodian.py
+      - scripts/issue_2165_kms_cycles.py
+      - scripts/issue_2165_kms_latency.py
+      - scripts/issue_2165_provider_access.py
+      - scripts/issue_2165_wrap_unwrap_receipt.py
+      - scripts/issue_2165_failure_retry_receipt.py
+      - scripts/issue_2165_r2_audit_archive.py
+      - scripts/issue_2165_kms_custodian_receipts.py
+      - scripts/issue_2165_residency_receipt.py
+      - scripts/issue_2165_residency_source.py
+      - scripts/issue_2165_sidecar_operator.py
+      - Dockerfile.b083-operator
+      - requirements-issue-2165-operator.txt
+      - requirements-issue-2165-r2-archive.txt
+      - scripts/verify_issue_2165_kms_contract.py
+      - scripts/verify_issue_2165_kms_cleanup.py
+      - tests/test_issue_2165_kms_runtime.py
+      - tests/test_issue_2165_kms_custodian.py
+      - tests/test_issue_2165_kms_cycles.py
+      - tests/test_issue_2165_kms_latency.py
+      - tests/test_issue_2165_provider_access.py
+      - tests/test_issue_2165_wrap_unwrap_receipt.py
+      - tests/test_issue_2165_failure_retry_receipt.py
+      - tests/test_issue_2165_kms_custodian_receipts.py
+      - tests/test_issue_2165_residency_receipt.py
+      - tests/test_issue_2165_residency_source.py
+      - tests/test_issue_2165_r2_audit_archive.py
+      - tests/test_issue_2165_sidecar_operator.py
+      - tests/test_issue_2165_r2_archive_lock.py
+      - tests/test_issue_2165_cf5128_readback.py
+      - tests/test_verify_issue_2165_kms_contract.py
+      - tests/test_verify_issue_2165_kms_cleanup.py
+  workflow_dispatch:
+    inputs:
+      target_alias:
+        description: Must equal the protected nonproduction B-083 target alias
+        type: string
+        required: true
+      phase:
+        description: Select one bounded evidence phase
+        type: choice
+        required: true
+        options: [inventory, pregrant-deny, postgrant-readonly, lifecycle, cleanup]
+      confirmation:
+        description: Enter issue-2165-<protected target alias> to authorize this phase
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: issue-2165-kms-real-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  static-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact pull request head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+      - name: Install pinned focused test dependencies
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-input pytest==9.0.2
+          python3 -m pip install --require-hashes -r requirements-issue-2165-operator.txt
+          # Verify the complete hash-locked wheel closure for both Fargate architectures
+          # and the separate Python 3.12 audit archive before contract tests.
+          python3 -m pip download --disable-pip-version-check --no-input --only-binary=:all: --require-hashes \
+            --platform manylinux2014_aarch64 --python-version 311 --implementation cp --abi cp311 \
+            --dest "$RUNNER_TEMP/b083-op-arm64-lock" -r requirements-issue-2165-operator.txt
+          python3 -m pip download --disable-pip-version-check --no-input --only-binary=:all: --require-hashes \
+            --platform manylinux2014_x86_64 --python-version 312 --implementation cp --abi cp312 \
+            --dest "$RUNNER_TEMP/b083-r2-py312-lock" -r requirements-issue-2165-r2-archive.txt
+      - name: Check static workflow contract and focused tests
+        env:
+          B083_TARGET_ALIAS: static-check-target
+        run: |
+          set -euo pipefail
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -config-file .github/actionlint.yaml .github/workflows/issue-2165-kms-real.yml
+          for phase in inventory pregrant-deny postgrant-readonly lifecycle cleanup; do
+            python3 -B scripts/verify_issue_2165_kms_contract.py --workflow .github/workflows/issue-2165-kms-real.yml --env b083-kms-lifecycle --target-alias "$B083_TARGET_ALIAS" --phase "$phase"
+          done
+          PYTHONDONTWRITEBYTECODE=1 python3 -B -m pytest -q \
+            tests/test_verify_issue_2165_kms_contract.py \
+            tests/test_verify_issue_2165_kms_cleanup.py \
+            tests/test_verify_issue_2165_cf5128_storage.py \
+            tests/test_issue_2165_kms_runtime.py \
+            tests/test_issue_2165_kms_custodian.py \
+            tests/test_issue_2165_kms_custodian_receipts.py \
+            tests/test_issue_2165_kms_cycles.py \
+            tests/test_issue_2165_kms_latency.py \
+            tests/test_issue_2165_provider_access.py \
+            tests/test_issue_2165_wrap_unwrap_receipt.py \
+            tests/test_issue_2165_failure_retry_receipt.py \
+            tests/test_issue_2165_residency_receipt.py \
+            tests/test_issue_2165_residency_source.py \
+            tests/test_issue_2165_r2_archive_lock.py \
+            tests/test_issue_2165_r2_audit_archive.py \
+            tests/test_issue_2165_sidecar_operator.py \
+            tests/test_issue_2165_cf5128_readback.py
+          test -z "$(find scripts tests \( -name '*.pyc' -o -name '__pycache__' \) -print -quit)"
+
+  inventory:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.phase == 'inventory'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: b083-kms-lifecycle
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+      B083_AWS_CUSTODIAN_ROLE_ARN: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_AWS_OPERATOR_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_OPERATOR_TASK_DEFINITION_ARN }}
+      B083_AWS_OPERATOR_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_ROLE_ARN }}
+      B083_AWS_APP_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_APP_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_IMAGE_URI: ${{ vars.B083_AWS_OPERATOR_IMAGE_URI }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_D1_DATABASE_ID: ${{ vars.B083_D1_DATABASE_ID }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_R2_S3_ENDPOINT: ${{ vars.B083_R2_S3_ENDPOINT }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_AUDIT_SINK_REF: ${{ vars.B083_AUDIT_SINK_REF }}
+      B083_CUSTODIAN_REF: ${{ vars.B083_CUSTODIAN_REF }}
+      B083_RUNTIME_CONFIG_SECRET_ARN: ${{ vars.B083_RUNTIME_CONFIG_SECRET_ARN }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      B083_CF_API_TOKEN: ${{ secrets.B083_CF_API_TOKEN }}
+      B083_R2_READONLY_ACCESS_KEY_ID: ${{ secrets.B083_R2_READONLY_ACCESS_KEY_ID }}
+      B083_R2_READONLY_SECRET_ACCESS_KEY: ${{ secrets.B083_R2_READONLY_SECRET_ACCESS_KEY }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      PHASE: ${{ inputs.phase }}
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Validate protected target and phase confirmation
+        run: |
+          set -euo pipefail
+          test "$REQUESTED_TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$B083_TARGET_ALIAS" != prod6a
+          test "$B083_CONFIRMATION" = "issue-2165-$B083_TARGET_ALIAS"
+          test "$B083_AWS_PREFLIGHT_ROLE_ARN" != "$B083_AWS_CONTROLLER_ROLE_ARN"
+          test "$B083_AWS_CONTROLLER_ROLE_ARN" != "$B083_AWS_CUSTODIAN_ROLE_ARN"
+          test "$B083_AWS_PREFLIGHT_ROLE_ARN" != "$B083_AWS_CUSTODIAN_ROLE_ARN"
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-inventory-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Read protected manifest and perform bounded CF5128 inventory
+        run: |
+          set -euo pipefail
+          manifest="$RUNNER_TEMP/b083-manifest.json"
+          trap 'rm -f "$manifest"' EXIT
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$manifest"
+          chmod 600 "$manifest"
+          python3 scripts/verify_issue_2165_kms_contract.py --workflow .github/workflows/issue-2165-kms-real.yml --env b083-kms-lifecycle --target-alias "$B083_TARGET_ALIAS" --phase inventory
+          aws sts get-caller-identity --output json >/dev/null
+          python3 scripts/issue_2165_cf5128_readback.py --manifest "$manifest" --phase preflight --receipt "$RUNNER_TEMP/cf-preflight.json"
+
+  postgrant-readonly:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.phase == 'postgrant-readonly'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: b083-kms-lifecycle
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+      B083_AWS_CUSTODIAN_ROLE_ARN: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_AWS_OPERATOR_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_OPERATOR_TASK_DEFINITION_ARN }}
+      B083_AWS_OPERATOR_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_ROLE_ARN }}
+      B083_AWS_APP_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_APP_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_IMAGE_URI: ${{ vars.B083_AWS_OPERATOR_IMAGE_URI }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_D1_DATABASE_ID: ${{ vars.B083_D1_DATABASE_ID }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_R2_S3_ENDPOINT: ${{ vars.B083_R2_S3_ENDPOINT }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_AUDIT_SINK_REF: ${{ vars.B083_AUDIT_SINK_REF }}
+      B083_CUSTODIAN_REF: ${{ vars.B083_CUSTODIAN_REF }}
+      B083_RUNTIME_CONFIG_SECRET_ARN: ${{ vars.B083_RUNTIME_CONFIG_SECRET_ARN }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      B083_CF_API_TOKEN: ${{ secrets.B083_CF_API_TOKEN }}
+      B083_R2_READONLY_ACCESS_KEY_ID: ${{ secrets.B083_R2_READONLY_ACCESS_KEY_ID }}
+      B083_R2_READONLY_SECRET_ACCESS_KEY: ${{ secrets.B083_R2_READONLY_SECRET_ACCESS_KEY }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      PHASE: ${{ inputs.phase }}
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-postread-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Read exact CMK, grant and runtime identity policy boundaries
+        if: inputs.phase == 'postgrant-readonly'
+        run: |
+          set -euo pipefail
+          test "$REQUESTED_TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$B083_CONFIRMATION" = "issue-2165-$B083_TARGET_ALIAS"
+          POLICY_ONLY_SENTINEL_ARN="arn:aws:kms:${B083_AWS_REGION}:${B083_AWS_ACCOUNT_ID}:key/00000000-0000-0000-0000-000000000000"
+          # Synthetic sentinel is IAM simulation input only; never call KMS with it.
+          sim="$(aws iam simulate-principal-policy --policy-source-arn "$B083_AWS_RUNTIME_ROLE_ARN" --action-names kms:Encrypt kms:Decrypt kms:DescribeKey kms:GenerateDataKey kms:ReEncryptFrom kms:ReEncryptTo kms:CreateGrant kms:ScheduleKeyDeletion --resource-arns "$B083_KMS_KEY_ARN" "$POLICY_ONLY_SENTINEL_ARN" --output json)"
+          printf '%s' "$sim" | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d["EvaluationResults"]; assert len(r)==16 and all(x["EvalDecision"]=="implicitDeny" for x in r)'
+          key="$(aws kms describe-key --key-id "$B083_KMS_KEY_ARN" --output json)"
+          printf '%s' "$key" | python3 -c 'import json,sys; m=json.load(sys.stdin)["KeyMetadata"]; assert m["Enabled"] and m["KeyState"]=="Enabled" and m["KeyUsage"]=="ENCRYPT_DECRYPT" and m["KeySpec"]=="SYMMETRIC_DEFAULT"'
+          grants="$(aws kms list-grants --key-id "$B083_KMS_KEY_ARN" --output json)"
+          printf '%s' "$grants" | python3 -c 'import json,os,sys; d=json.load(sys.stdin); role=os.environ["B083_AWS_RUNTIME_ROLE_ARN"]; g=[x for x in d["Grants"] if x["GranteePrincipal"] == role]; assert len(g) == 1 and set(g[0]["Operations"]) == {"Encrypt", "Decrypt", "DescribeKey"}'
+
+  pregrant-checks:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.phase == 'pregrant-deny' || inputs.phase == 'lifecycle')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: b083-kms-lifecycle
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+      B083_AWS_CUSTODIAN_ROLE_ARN: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_AWS_OPERATOR_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_OPERATOR_TASK_DEFINITION_ARN }}
+      B083_AWS_OPERATOR_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_ROLE_ARN }}
+      B083_AWS_APP_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_APP_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_IMAGE_URI: ${{ vars.B083_AWS_OPERATOR_IMAGE_URI }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_D1_DATABASE_ID: ${{ vars.B083_D1_DATABASE_ID }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_R2_S3_ENDPOINT: ${{ vars.B083_R2_S3_ENDPOINT }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_AUDIT_SINK_REF: ${{ vars.B083_AUDIT_SINK_REF }}
+      B083_CUSTODIAN_REF: ${{ vars.B083_CUSTODIAN_REF }}
+      B083_RUNTIME_CONFIG_SECRET_ARN: ${{ vars.B083_RUNTIME_CONFIG_SECRET_ARN }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      B083_CF_API_TOKEN: ${{ secrets.B083_CF_API_TOKEN }}
+      B083_R2_READONLY_ACCESS_KEY_ID: ${{ secrets.B083_R2_READONLY_ACCESS_KEY_ID }}
+      B083_R2_READONLY_SECRET_ACCESS_KEY: ${{ secrets.B083_R2_READONLY_SECRET_ACCESS_KEY }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      PHASE: ${{ inputs.phase }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-pregrant-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Verify target and runtime identity KMS implicit denies before any task start
+        if: inputs.phase == 'pregrant-deny' || inputs.phase == 'lifecycle'
+        run: |
+          set -euo pipefail
+          test "$REQUESTED_TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$B083_CONFIRMATION" = "issue-2165-$B083_TARGET_ALIAS"
+          test "$B083_AWS_PREFLIGHT_ROLE_ARN" != "$B083_AWS_CUSTODIAN_ROLE_ARN"
+          POLICY_ONLY_SENTINEL_ARN="arn:aws:kms:${B083_AWS_REGION}:${B083_AWS_ACCOUNT_ID}:key/00000000-0000-0000-0000-000000000000"
+          # Synthetic sentinel is IAM policy simulation input only; never call KMS with it.
+          sim="$(aws iam simulate-principal-policy --policy-source-arn "$B083_AWS_RUNTIME_ROLE_ARN" --action-names kms:Encrypt kms:Decrypt kms:DescribeKey kms:GenerateDataKey kms:ReEncryptFrom kms:ReEncryptTo kms:CreateGrant kms:ScheduleKeyDeletion --resource-arns "$B083_KMS_KEY_ARN" "$POLICY_ONLY_SENTINEL_ARN" --output json)"
+          printf '%s' "$sim" | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d["EvaluationResults"]; assert len(r)==16 and all(x["EvalDecision"]=="implicitDeny" for x in r)'
+          grants="$(aws kms list-grants --key-id "$B083_KMS_KEY_ARN" --output json)"
+          printf '%s' "$grants" | python3 -c 'import json,os,sys; g=[x for x in json.load(sys.stdin)["Grants"] if x.get("GranteePrincipal")==os.environ["B083_AWS_RUNTIME_ROLE_ARN"]]; assert not g'
+      - name: Verify operator ECS Exec channels and no KMS permissions before task start
+        if: inputs.phase == 'pregrant-deny' || inputs.phase == 'lifecycle'
+        run: |
+          set -euo pipefail
+          POLICY_ONLY_SENTINEL_ARN="arn:aws:kms:${B083_AWS_REGION}:${B083_AWS_ACCOUNT_ID}:key/00000000-0000-0000-0000-000000000000"
+          # This sentinel is only an IAM simulation resource; never call KMS with it.
+          operator_channels="$(aws iam simulate-principal-policy --policy-source-arn "$B083_AWS_OPERATOR_ROLE_ARN" --action-names ssmmessages:CreateControlChannel ssmmessages:CreateDataChannel ssmmessages:OpenControlChannel ssmmessages:OpenDataChannel --resource-arns "$B083_KMS_KEY_ARN" --output json)"
+          printf '%s' "$operator_channels" | python3 -c 'import json,sys; r=json.load(sys.stdin)["EvaluationResults"]; assert len(r)==4 and all(x["EvalDecision"] == "allowed" for x in r)'
+          operator_kms="$(aws iam simulate-principal-policy --policy-source-arn "$B083_AWS_OPERATOR_ROLE_ARN" --action-names kms:Encrypt kms:Decrypt kms:DescribeKey --resource-arns "$B083_KMS_KEY_ARN" "$POLICY_ONLY_SENTINEL_ARN" --output json)"
+          printf '%s' "$operator_kms" | python3 -c 'import json,sys; r=json.load(sys.stdin)["EvaluationResults"]; assert len(r)==6 and all(x["EvalDecision"] == "implicitDeny" for x in r)'
+
+  runtime-controller:
+    needs: pregrant-checks
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.phase == 'pregrant-deny' || inputs.phase == 'lifecycle')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: b083-kms-lifecycle
+    outputs:
+      app_task_arn: ${{ steps.run.outputs.app_task_arn }}
+      operator_task_arn: ${{ steps.run.outputs.operator_task_arn }}
+      runtime_run_id: ${{ steps.run.outputs.runtime_run_id }}
+      failure_retry_pregrant_json: ${{ steps.pregrant-probe.outputs.failure_retry_pregrant_json }}
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+      B083_AWS_CUSTODIAN_ROLE_ARN: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_AWS_OPERATOR_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_OPERATOR_TASK_DEFINITION_ARN }}
+      B083_AWS_OPERATOR_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_ROLE_ARN }}
+      B083_AWS_APP_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_APP_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_IMAGE_URI: ${{ vars.B083_AWS_OPERATOR_IMAGE_URI }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_D1_DATABASE_ID: ${{ vars.B083_D1_DATABASE_ID }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_R2_S3_ENDPOINT: ${{ vars.B083_R2_S3_ENDPOINT }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_AUDIT_SINK_REF: ${{ vars.B083_AUDIT_SINK_REF }}
+      B083_CUSTODIAN_REF: ${{ vars.B083_CUSTODIAN_REF }}
+      B083_RUNTIME_CONFIG_SECRET_ARN: ${{ vars.B083_RUNTIME_CONFIG_SECRET_ARN }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      B083_CF_API_TOKEN: ${{ secrets.B083_CF_API_TOKEN }}
+      B083_R2_READONLY_ACCESS_KEY_ID: ${{ secrets.B083_R2_READONLY_ACCESS_KEY_ID }}
+      B083_R2_READONLY_SECRET_ACCESS_KEY: ${{ secrets.B083_R2_READONLY_SECRET_ACCESS_KEY }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      PHASE: ${{ inputs.phase }}
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - name: Enforce lifecycle readiness after protected environment approval
+        if: inputs.phase == 'pregrant-deny' || inputs.phase == 'lifecycle'
+        run: |
+          set -euo pipefail
+          test "$B083_LIFECYCLE_READY" = yes
+          test "$B083_LIFECYCLE_APPROVED_SHA" = "$GITHUB_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Validate bounded target and immutable images
+        run: |
+          set -euo pipefail
+          test "$REQUESTED_TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$B083_TARGET_ALIAS" != prod6a
+          test "$B083_CONFIRMATION" = "issue-2165-$B083_TARGET_ALIAS"
+          test "$B083_AWS_PREFLIGHT_ROLE_ARN" != "$B083_AWS_CONTROLLER_ROLE_ARN"
+          test "$B083_AWS_CONTROLLER_ROLE_ARN" != "$B083_AWS_CUSTODIAN_ROLE_ARN"
+          printf '%s' "$B083_IMAGE_URI" | grep -Eq '@sha256:[a-fA-F0-9]{64}$'
+          printf '%s' "$B083_AWS_OPERATOR_IMAGE_URI" | grep -Eq '@sha256:[a-fA-F0-9]{64}$'
+          python3 scripts/verify_issue_2165_kms_contract.py --workflow .github/workflows/issue-2165-kms-real.yml --env b083-kms-lifecycle --target-alias "$B083_TARGET_ALIAS" --phase "$PHASE"
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-controller-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Fetch protected manifest
+        if: inputs.phase == 'pregrant-deny' || inputs.phase == 'lifecycle'
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+        run: |
+          set -euo pipefail
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$MANIFEST_PATH"
+          chmod 600 "$MANIFEST_PATH"
+      - name: Run pregrant-deny runtime proof
+        if: inputs.phase == 'pregrant-deny'
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+        run: |
+          set -euo pipefail
+          python3 scripts/issue_2165_kms_runtime.py --manifest "$MANIFEST_PATH" --phase pregrant-deny --stage run --evidence-dir "$RUNNER_TEMP/evidence"
+      - name: Capture same-run pregrant failure evidence before lifecycle grant
+        id: pregrant-probe
+        if: inputs.phase == 'lifecycle'
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+          B083_CAPTURE_FAILURE_RETRY: '1'
+        run: |
+          set -euo pipefail
+          python3 scripts/issue_2165_kms_runtime.py --manifest "$MANIFEST_PATH" --phase pregrant-deny --stage run --evidence-dir "$RUNNER_TEMP/evidence"
+      - name: Start isolated app and operator tasks
+        id: run
+        if: inputs.phase == 'lifecycle'
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+        run: |
+          set -euo pipefail
+          python3 scripts/issue_2165_kms_runtime.py --manifest "$MANIFEST_PATH" --phase lifecycle --stage start --evidence-dir "$RUNNER_TEMP/evidence"
+      - name: Remove protected manifest
+        if: always()
+        run: rm -f "$RUNNER_TEMP/b083-manifest.json"
+
+  kms-custodian:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.phase == 'lifecycle'
+    needs: runtime-controller
+    outputs:
+      grant_id: ${{ steps.create-grant.outputs.grant_id }}
+      custody_run_id: ${{ steps.authorize.outputs.run_id }}
+      audit_source_receipts_json: ${{ steps.custodian-receipts.outputs.audit_source_receipts_json }}
+      grant_receipt_json: ${{ steps.grant-source.outputs.grant_receipt_json }}
+      grant_cloudtrail_json: ${{ steps.grant-source.outputs.grant_cloudtrail_json }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: b083-kms-lifecycle
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+      B083_AWS_CUSTODIAN_ROLE_ARN: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_AWS_OPERATOR_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_OPERATOR_TASK_DEFINITION_ARN }}
+      B083_AWS_OPERATOR_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_ROLE_ARN }}
+      B083_AWS_APP_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_APP_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_IMAGE_URI: ${{ vars.B083_AWS_OPERATOR_IMAGE_URI }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_D1_DATABASE_ID: ${{ vars.B083_D1_DATABASE_ID }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_R2_S3_ENDPOINT: ${{ vars.B083_R2_S3_ENDPOINT }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_AUDIT_SINK_REF: ${{ vars.B083_AUDIT_SINK_REF }}
+      B083_CUSTODIAN_REF: ${{ vars.B083_CUSTODIAN_REF }}
+      B083_RUNTIME_CONFIG_SECRET_ARN: ${{ vars.B083_RUNTIME_CONFIG_SECRET_ARN }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      B083_CF_API_TOKEN: ${{ secrets.B083_CF_API_TOKEN }}
+      B083_R2_READONLY_ACCESS_KEY_ID: ${{ secrets.B083_R2_READONLY_ACCESS_KEY_ID }}
+      B083_R2_READONLY_SECRET_ACCESS_KEY: ${{ secrets.B083_R2_READONLY_SECRET_ACCESS_KEY }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      PHASE: ${{ inputs.phase }}
+    steps:
+      - name: Enforce lifecycle readiness after protected environment approval
+        id: authorize
+        run: |
+          set -euo pipefail
+          test "$B083_LIFECYCLE_READY" = yes
+          test "$B083_LIFECYCLE_APPROVED_SHA" = "$GITHUB_SHA"
+          test "$REQUESTED_TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$B083_CONFIRMATION" = "issue-2165-$B083_TARGET_ALIAS"
+          test "$B083_AWS_PREFLIGHT_ROLE_ARN" != "$B083_AWS_CUSTODIAN_ROLE_ARN"
+          printf 'run_id=%s\n' "$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-custodian-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Fetch protected target manifest
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+        run: |
+          set -euo pipefail
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$MANIFEST_PATH"
+          chmod 600 "$MANIFEST_PATH"
+      - name: Read exact customer CMK metadata before lifecycle changes
+        if: inputs.phase == 'lifecycle'
+        run: |
+          set -euo pipefail
+          test -f scripts/issue_2165_kms_custodian_receipts.py
+          aws kms describe-key --key-id "$B083_KMS_KEY_ARN" --output json > "$RUNNER_TEMP/customer-cmk-before.json"
+          chmod 600 "$RUNNER_TEMP/customer-cmk-before.json"
+      - name: Verify approved on-demand key rotation
+        if: inputs.phase == 'lifecycle'
+        run: |
+          set -euo pipefail
+          python3 scripts/issue_2165_kms_custodian.py --manifest "$RUNNER_TEMP/b083-manifest.json" --stage rotate --evidence-dir "$RUNNER_TEMP/evidence/key-rotate"
+      - name: Schedule deletion only within the approved reversible test window
+        id: deletion-schedule
+        # Lifecycle readiness is not the rollback proof: the helper still hard-blocks the API until root/Astra accepts one.
+        if: inputs.phase == 'lifecycle' && vars.B083_LIFECYCLE_READY == 'yes' && vars.B083_LIFECYCLE_APPROVED_SHA == github.sha
+        run: |
+          set -euo pipefail
+          python3 scripts/issue_2165_kms_custodian.py --manifest "$RUNNER_TEMP/b083-manifest.json" --stage schedule --evidence-dir "$RUNNER_TEMP/evidence/key-schedule"
+      - name: Cancel deletion schedule and verify key Enabled
+        if: always() && inputs.phase == 'lifecycle' && steps.deletion-schedule.outcome != 'skipped'
+        run: |
+          set -euo pipefail
+          python3 scripts/issue_2165_kms_custodian.py --manifest "$RUNNER_TEMP/b083-manifest.json" --stage cancel --evidence-dir "$RUNNER_TEMP/evidence/key-cancel"
+      - name: Create the exact runtime grant after root-approved task start
+        id: create-grant
+        if: inputs.phase == 'lifecycle' && vars.B083_LIFECYCLE_READY == 'yes' && vars.B083_LIFECYCLE_APPROVED_SHA == github.sha && steps.deletion-schedule.outcome == 'success'
+        run: |
+          set -euo pipefail
+          test "$B083_LIFECYCLE_READY" = yes
+          test "$B083_LIFECYCLE_APPROVED_SHA" = "$GITHUB_SHA"
+          test "$REQUESTED_TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$B083_CONFIRMATION" = "issue-2165-$B083_TARGET_ALIAS"
+          test -n "${{ needs.runtime-controller.outputs.app_task_arn }}"
+          test -n "${{ needs.runtime-controller.outputs.operator_task_arn }}"
+          B083_MANIFEST_PATH="$RUNNER_TEMP/b083-manifest.json" python3 scripts/issue_2165_kms_custodian.py --manifest "$RUNNER_TEMP/b083-manifest.json" --stage grant --evidence-dir "$RUNNER_TEMP/evidence/initial-grant"
+      - name: Capture exact custodian caller before the read-only role handoff
+        if: inputs.phase == 'lifecycle' && steps.create-grant.outcome == 'success'
+        env:
+          CUSTODIAN_CALLER_PATH: ${{ runner.temp }}/custodian-caller.json
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --output json > "$CUSTODIAN_CALLER_PATH"
+          chmod 600 "$CUSTODIAN_CALLER_PATH"
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        if: inputs.phase == 'lifecycle' && steps.create-grant.outcome == 'success'
+        with:
+          role-to-assume: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-custodian-readback-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Collect authenticated custodian lifecycle receipts
+        id: custodian-receipts
+        if: inputs.phase == 'lifecycle'
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+          CLOUDTRAIL_PATH: ${{ runner.temp }}/custodian-cloudtrail.json
+          CALLER_PATH: ${{ runner.temp }}/custodian-caller.json
+          PREFLIGHT_CALLER_PATH: ${{ runner.temp }}/custodian-readback-caller.json
+          RECEIPTS_PATH: ${{ runner.temp }}/custodian-source-receipts.json
+        run: |
+          set -euo pipefail
+          read -r CT_START CT_END <<< "$(python3 - "$MANIFEST_PATH" <<'PY'
+          import datetime, json, sys
+          m = json.load(open(sys.argv[1], encoding="utf-8"))
+          def iso(ms):
+              return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+          print(iso(m["lifecycle_window"]["started_at_ms"]), iso(m["lifecycle_window"]["ended_at_ms"]))
+          PY
+          )"
+          aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventSource,AttributeValue=kms.amazonaws.com --start-time "$CT_START" --end-time "$CT_END" --output json > "$CLOUDTRAIL_PATH"
+          chmod 600 "$CLOUDTRAIL_PATH"
+          aws sts get-caller-identity --output json > "$PREFLIGHT_CALLER_PATH"
+          chmod 600 "$PREFLIGHT_CALLER_PATH"
+          python3 - "$PREFLIGHT_CALLER_PATH" "$B083_AWS_PREFLIGHT_ROLE_ARN" "$B083_AWS_ACCOUNT_ID" "$GITHUB_RUN_ID" <<'PY'
+          import json, pathlib, re, sys
+          identity = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          role = sys.argv[2]
+          account, run = sys.argv[3], sys.argv[4]
+          expected = rf"arn:aws:sts::{re.escape(account)}:assumed-role/{re.escape(role.rsplit('/', 1)[-1])}/i2165-custodian-readback-{re.escape(run)}"
+          if identity.get("Account") != account or not re.fullmatch(expected, identity.get("Arn", "")):
+              raise SystemExit("CloudTrail LookupEvents must run under this run's exact preflight role session")
+          PY
+          python3 scripts/issue_2165_kms_custodian_receipts.py --manifest "$MANIFEST_PATH" --receipt-dir "$RUNNER_TEMP/evidence" --cloudtrail "$CLOUDTRAIL_PATH" --caller-identity "$CALLER_PATH" --output "$RECEIPTS_PATH"
+          python3 - "$RECEIPTS_PATH" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, pathlib, sys
+          print("audit_source_receipts_json=" + json.dumps(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")), sort_keys=True, separators=(",", ":")))
+          PY
+      - name: Handoff only the exact grant receipt and matching CloudTrail event
+        id: grant-source
+        if: inputs.phase == 'lifecycle' && steps.create-grant.outcome == 'success'
+        env:
+          GRANT_RECEIPT_PATH: ${{ runner.temp }}/evidence/initial-grant/custodian-grant-receipt.json
+          CLOUDTRAIL_PATH: ${{ runner.temp }}/custodian-cloudtrail.json
+        run: |
+          set -euo pipefail
+          python3 - "$GRANT_RECEIPT_PATH" "$CLOUDTRAIL_PATH" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib, sys
+          receipt = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if receipt.get("schema") != "corelink.issue-2165-kms-custodian-receipt-v1" or receipt.get("stage") != "grant" or len(receipt.get("actions", [])) != 1:
+              raise SystemExit("exact initial grant receipt is missing")
+          action = receipt["actions"][0]
+          grant_id = action.get("grant_id")
+          cloudtrail = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+          matches = []
+          for outer in cloudtrail.get("Events", []):
+              if outer.get("EventName") != "CreateGrant":
+                  continue
+              try:
+                  inner = json.loads(outer["CloudTrailEvent"])
+              except (KeyError, TypeError, json.JSONDecodeError):
+                  continue
+              if (inner.get("eventID") == outer.get("EventId")
+                      and (inner.get("responseElements") or {}).get("grantId") == grant_id):
+                  matches.append(outer)
+          if len(matches) != 1:
+              raise SystemExit("exact grant has no unique authenticated CloudTrail event")
+          print("grant_receipt_json=" + json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+          print("grant_cloudtrail_json=" + json.dumps({"Events": matches}, sort_keys=True, separators=(",", ":")))
+          PY
+      - name: Remove protected target manifest
+        if: always()
+        run: rm -f "$RUNNER_TEMP/b083-manifest.json" "$RUNNER_TEMP/customer-cmk-before.json" "$RUNNER_TEMP/custodian-cloudtrail.json" "$RUNNER_TEMP/custodian-caller.json" "$RUNNER_TEMP/custodian-readback-caller.json" "$RUNNER_TEMP/custodian-source-receipts.json"
+
+  postgrant-checks:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.phase == 'lifecycle'
+    needs: [kms-custodian]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: b083-kms-lifecycle
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      EXPECTED_GRANT_ID: ${{ needs.kms-custodian.outputs.grant_id }}
+    steps:
+      - name: Require approved exact lifecycle run
+        run: |
+          set -euo pipefail
+          test "$B083_LIFECYCLE_READY" = yes
+          test "$B083_LIFECYCLE_APPROVED_SHA" = "$GITHUB_SHA"
+          test "$REQUESTED_TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$B083_CONFIRMATION" = "issue-2165-$B083_TARGET_ALIAS"
+          test -n "$EXPECTED_GRANT_ID"
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-postgrant-readback-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Verify exact postgrant CMK and runtime grant under preflight identity
+        run: |
+          set -euo pipefail
+          test "$B083_AWS_PREFLIGHT_ROLE_ARN" != "${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}"
+          key="$(aws kms describe-key --key-id "$B083_KMS_KEY_ARN" --output json)"
+          printf '%s' "$key" | EXPECTED_KEY_ARN="$B083_KMS_KEY_ARN" python3 -c 'import json,os,sys; k=json.load(sys.stdin)["KeyMetadata"]; assert k["Arn"] == os.environ["EXPECTED_KEY_ARN"] and k["Enabled"] and k["KeyState"] == "Enabled" and k["KeyUsage"] == "ENCRYPT_DECRYPT" and k["KeySpec"] == "SYMMETRIC_DEFAULT"'
+          grants="$(aws kms list-grants --key-id "$B083_KMS_KEY_ARN" --output json)"
+          printf '%s' "$grants" | EXPECTED_GRANT_ID="$EXPECTED_GRANT_ID" RUNTIME_ROLE="$B083_AWS_RUNTIME_ROLE_ARN" python3 -c 'import json,os,sys; all_grants=json.load(sys.stdin)["Grants"]; matches=[g for g in all_grants if g.get("GranteePrincipal")==os.environ["RUNTIME_ROLE"]]; assert len(matches)==1 and matches[0].get("GrantId")==os.environ["EXPECTED_GRANT_ID"] and set(matches[0].get("Operations",[]))=={"Encrypt","Decrypt","DescribeKey"}'
+
+  runtime-observe:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.phase == 'lifecycle'
+    needs: [runtime-controller, kms-custodian, postgrant-checks]
+    outputs:
+      audit_source_receipts_json: ${{ steps.observe-runtime.outputs.audit_source_receipts_json }}
+      runtime_lifecycle_rows_json: ${{ steps.observe-runtime.outputs.runtime_lifecycle_rows_json }}
+      lifecycle_exec_source_json: ${{ steps.observe-runtime.outputs.lifecycle_exec_source_json }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: b083-kms-lifecycle
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+      B083_AWS_CUSTODIAN_ROLE_ARN: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_AWS_OPERATOR_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_OPERATOR_TASK_DEFINITION_ARN }}
+      B083_AWS_OPERATOR_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_ROLE_ARN }}
+      B083_AWS_APP_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_APP_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_IMAGE_URI: ${{ vars.B083_AWS_OPERATOR_IMAGE_URI }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_D1_DATABASE_ID: ${{ vars.B083_D1_DATABASE_ID }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_R2_S3_ENDPOINT: ${{ vars.B083_R2_S3_ENDPOINT }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_AUDIT_SINK_REF: ${{ vars.B083_AUDIT_SINK_REF }}
+      B083_CUSTODIAN_REF: ${{ vars.B083_CUSTODIAN_REF }}
+      B083_RUNTIME_CONFIG_SECRET_ARN: ${{ vars.B083_RUNTIME_CONFIG_SECRET_ARN }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      B083_CF_API_TOKEN: ${{ secrets.B083_CF_API_TOKEN }}
+      B083_R2_READONLY_ACCESS_KEY_ID: ${{ secrets.B083_R2_READONLY_ACCESS_KEY_ID }}
+      B083_R2_READONLY_SECRET_ACCESS_KEY: ${{ secrets.B083_R2_READONLY_SECRET_ACCESS_KEY }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      PHASE: ${{ inputs.phase }}
+      B083_ISSUE2165_APP_TASK_ARN: ${{ needs.runtime-controller.outputs.app_task_arn }}
+      B083_ISSUE2165_OPERATOR_TASK_ARN: ${{ needs.runtime-controller.outputs.operator_task_arn }}
+      B083_ISSUE2165_RUN_ID: ${{ needs.runtime-controller.outputs.runtime_run_id }}
+      B083_ISSUE2165_GRANT_ID: ${{ needs.kms-custodian.outputs.grant_id }}
+      FAILURE_RETRY_PREGRANT_JSON: ${{ needs.runtime-controller.outputs.failure_retry_pregrant_json }}
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - name: Enforce lifecycle readiness after protected environment approval
+        run: |
+          set -euo pipefail
+          test "$B083_LIFECYCLE_READY" = yes
+          test "$B083_LIFECYCLE_APPROVED_SHA" = "$GITHUB_SHA"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-observe-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Observe actual runtime and fail closed on incomplete lifecycle evidence
+        id: observe-runtime
+        if: inputs.phase == 'lifecycle' && vars.B083_LIFECYCLE_READY == 'yes' && vars.B083_LIFECYCLE_APPROVED_SHA == github.sha
+        run: |
+          set -euo pipefail
+          test -n "$B083_ISSUE2165_GRANT_ID"
+          manifest="$RUNNER_TEMP/b083-manifest.json"
+          trap 'rm -f "$manifest"' EXIT
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$manifest"
+          chmod 600 "$manifest"
+          B083_ISSUE2165_GRANT_ID="$B083_ISSUE2165_GRANT_ID" B083_KMS_KEY_ARN="$B083_KMS_KEY_ARN" B083_AWS_RUNTIME_ROLE_ARN="$B083_AWS_RUNTIME_ROLE_ARN" python3 - "$manifest" <<'PY'
+          import json, os, sys
+          path = sys.argv[1]
+          with open(path, encoding="utf-8") as f:
+              manifest = json.load(f)
+          manifest["grant"] = {
+              "grant_id": os.environ["B083_ISSUE2165_GRANT_ID"],
+              "key_arn": os.environ["B083_KMS_KEY_ARN"],
+              "grantee_role_arn": os.environ["B083_AWS_RUNTIME_ROLE_ARN"],
+              "custodian_authorized": True,
+          }
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(manifest, f, separators=(",", ":"))
+          PY
+          python3 scripts/issue_2165_kms_runtime.py --manifest "$manifest" --phase lifecycle --stage observe --evidence-dir "$RUNNER_TEMP/evidence"
+
+  provider-access-readback:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.phase == 'lifecycle'
+    needs: [runtime-controller, kms-custodian, runtime-observe]
+    outputs:
+      audit_source_receipts_json: ${{ steps.merge.outputs.audit_source_receipts_json }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: b083-kms-lifecycle
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_D1_DATABASE_ID: ${{ vars.B083_D1_DATABASE_ID }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      B083_CF_API_TOKEN: ${{ secrets.B083_CF_API_TOKEN }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      APP_TASK_ARN: ${{ needs.runtime-controller.outputs.app_task_arn }}
+      RUNTIME_ROWS: ${{ needs.runtime-observe.outputs.runtime_lifecycle_rows_json }}
+      RUNTIME_EXEC_SOURCE_JSON: ${{ needs.runtime-observe.outputs.lifecycle_exec_source_json }}
+      TENANT_ISOLATION_ROWS: ${{ needs.runtime-observe.outputs.audit_source_receipts_json }}
+      PREGRANT_SOURCE_JSON: ${{ needs.runtime-controller.outputs.failure_retry_pregrant_json }}
+      GRANT_RECEIPT_JSON: ${{ needs.kms-custodian.outputs.grant_receipt_json }}
+      GRANT_CLOUDTRAIL_JSON: ${{ needs.kms-custodian.outputs.grant_cloudtrail_json }}
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Enforce lifecycle readiness before read-only target checks
+        run: |
+          set -euo pipefail
+          test "$B083_LIFECYCLE_READY" = yes
+          test "$B083_LIFECYCLE_APPROVED_SHA" = "$GITHUB_SHA"
+          test "$REQUESTED_TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$B083_CONFIRMATION" = "issue-2165-$B083_TARGET_ALIAS"
+          test -n "$APP_TASK_ARN"
+          test -n "$RUNTIME_ROWS"
+          test -f scripts/issue_2165_provider_access.py
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-provider-readback-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Fetch manifest and bounded runtime-role KMS CloudTrail events
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+          ACTIVATIONS_PATH: ${{ runner.temp }}/activation-rows.json
+          CLOUDTRAIL_PATH: ${{ runner.temp }}/describe-key-events.json
+          KMS_EVENTS_PATH: ${{ runner.temp }}/kms-encrypt-decrypt-events.json
+          IDENTITY_PATH: ${{ runner.temp }}/readback-caller.json
+          RUNTIME_SOURCE_PATH: ${{ runner.temp }}/runtime-ecs-exec-source.json
+          APP_TASK_READBACK_PATH: ${{ runner.temp }}/app-task-readback.json
+        run: |
+          set -euo pipefail
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$MANIFEST_PATH"
+          chmod 600 "$MANIFEST_PATH"
+          printf '%s' "$RUNTIME_ROWS" > "$ACTIVATIONS_PATH"
+          chmod 600 "$ACTIVATIONS_PATH"
+          read -r CT_START CT_END <<< "$(python3 - "$MANIFEST_PATH" <<'PY'
+          import datetime, json, sys
+          m = json.load(open(sys.argv[1], encoding="utf-8"))
+          def iso(ms):
+              return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+          print(iso(m["lifecycle_window"]["started_at_ms"]), iso(m["lifecycle_window"]["ended_at_ms"]))
+          PY
+          )"
+          aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=DescribeKey --start-time "$CT_START" --end-time "$CT_END" --output json > "$CLOUDTRAIL_PATH"
+          chmod 600 "$CLOUDTRAIL_PATH"
+          aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventSource,AttributeValue=kms.amazonaws.com --start-time "$CT_START" --end-time "$CT_END" --output json > "$KMS_EVENTS_PATH"
+          chmod 600 "$KMS_EVENTS_PATH"
+          aws sts get-caller-identity --output json > "$IDENTITY_PATH"
+          chmod 600 "$IDENTITY_PATH"
+          aws ecs describe-tasks --cluster "$B083_AWS_CLUSTER_ARN" --tasks "$APP_TASK_ARN" --output json > "$APP_TASK_READBACK_PATH"
+          chmod 600 "$APP_TASK_READBACK_PATH"
+          python3 - "$RUNTIME_SOURCE_PATH" <<'PY'
+          import json, os, pathlib, sys
+          value = json.loads(os.environ["RUNTIME_EXEC_SOURCE_JSON"])
+          path = pathlib.Path(sys.argv[1])
+          path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+          path.chmod(0o600)
+          PY
+      - name: Correlate KMS DescribeKey, activation HTTP 202, and D1 SELECT-only state
+        id: access
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+          ACTIVATIONS_PATH: ${{ runner.temp }}/activation-rows.json
+          CLOUDTRAIL_PATH: ${{ runner.temp }}/describe-key-events.json
+          IDENTITY_PATH: ${{ runner.temp }}/readback-caller.json
+          RECEIPT_PATH: ${{ runner.temp }}/provider-access-receipt.json
+          EVIDENCE_PATH: ${{ runner.temp }}/provider-access-evidence.json
+        run: |
+          set -euo pipefail
+          python3 scripts/issue_2165_provider_access.py --manifest "$MANIFEST_PATH" --activations "$ACTIVATIONS_PATH" --cloudtrail "$CLOUDTRAIL_PATH" --caller-identity "$IDENTITY_PATH" --app-task-arn "$APP_TASK_ARN" --output "$RECEIPT_PATH" --evidence "$EVIDENCE_PATH"
+      - name: Correlate tenant-bound KMS Encrypt/Decrypt, BYOK state, and CAS round-trips
+        id: wrap
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+          RUNTIME_SOURCE_PATH: ${{ runner.temp }}/runtime-ecs-exec-source.json
+          KMS_EVENTS_PATH: ${{ runner.temp }}/kms-encrypt-decrypt-events.json
+          IDENTITY_PATH: ${{ runner.temp }}/readback-caller.json
+          APP_TASK_READBACK_PATH: ${{ runner.temp }}/app-task-readback.json
+          WRAP_RECEIPT_PATH: ${{ runner.temp }}/wrap-unwrap-receipt.json
+          WRAP_EVIDENCE_PATH: ${{ runner.temp }}/wrap-unwrap-evidence.json
+        run: |
+          set -euo pipefail
+          test -f scripts/issue_2165_wrap_unwrap_receipt.py
+          python3 scripts/issue_2165_wrap_unwrap_receipt.py --manifest "$MANIFEST_PATH" --runtime-source "$RUNTIME_SOURCE_PATH" --cloudtrail "$KMS_EVENTS_PATH" --caller-identity "$IDENTITY_PATH" --app-task-readback "$APP_TASK_READBACK_PATH" --app-task-arn "$APP_TASK_ARN" --output "$WRAP_RECEIPT_PATH" --evidence "$WRAP_EVIDENCE_PATH"
+      - name: Collect bounded ExecuteCommand events and stage private retry evidence
+        id: failure-inputs
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+          ACTIVATIONS_PATH: ${{ runner.temp }}/activation-rows.json
+          EXEC_EVENTS_PATH: ${{ runner.temp }}/execute-command-events.json
+          DESCRIBE_EVENTS_PATH: ${{ runner.temp }}/describe-key-events.json
+          PREGRANT_EXEC_PATH: ${{ runner.temp }}/pregrant-exec.json
+          RETRY_EXEC_PATH: ${{ runner.temp }}/retry-exec.json
+          PREGRANT_CLOUDTRAIL_PATH: ${{ runner.temp }}/pregrant-cloudtrail.json
+          RETRY_CLOUDTRAIL_PATH: ${{ runner.temp }}/retry-cloudtrail.json
+          GRANT_RECEIPT_PATH: ${{ runner.temp }}/grant-receipt.json
+          GRANT_CLOUDTRAIL_PATH: ${{ runner.temp }}/grant-cloudtrail.json
+          D1_BASELINE_PATH: ${{ runner.temp }}/d1-baseline.json
+          D1_PREGRANT_PATH: ${{ runner.temp }}/d1-pregrant.json
+        run: |
+          set -euo pipefail
+          test -n "$PREGRANT_SOURCE_JSON"
+          test -n "$RUNTIME_EXEC_SOURCE_JSON"
+          test -n "$GRANT_RECEIPT_JSON"
+          test -n "$GRANT_CLOUDTRAIL_JSON"
+          read -r CT_START CT_END <<< "$(python3 - "$MANIFEST_PATH" <<'PY'
+          import datetime, json, sys
+          m = json.load(open(sys.argv[1], encoding="utf-8"))
+          def iso(ms):
+              return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+          print(iso(m["lifecycle_window"]["started_at_ms"]), iso(m["lifecycle_window"]["ended_at_ms"]))
+          PY
+          )"
+          aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=ExecuteCommand --start-time "$CT_START" --end-time "$CT_END" --output json > "$EXEC_EVENTS_PATH"
+          chmod 600 "$EXEC_EVENTS_PATH"
+          python3 - "$PREGRANT_SOURCE_JSON" "$RUNTIME_EXEC_SOURCE_JSON" "$GRANT_RECEIPT_JSON" "$GRANT_CLOUDTRAIL_JSON" "$MANIFEST_PATH" "$EXEC_EVENTS_PATH" "$DESCRIBE_EVENTS_PATH" "$PREGRANT_EXEC_PATH" "$RETRY_EXEC_PATH" "$PREGRANT_CLOUDTRAIL_PATH" "$RETRY_CLOUDTRAIL_PATH" "$GRANT_RECEIPT_PATH" "$GRANT_CLOUDTRAIL_PATH" "$D1_BASELINE_PATH" "$D1_PREGRANT_PATH" <<'PY'
+          import hashlib, json, os, pathlib, sys
+          (pre_raw, retry_raw, grant_raw, grant_ct_raw, manifest_path, exec_ct_path, describe_ct_path,
+           pre_exec_path, retry_exec_path, pre_ct_path, retry_ct_path, grant_path, grant_ct_path,
+           baseline_path, pregrant_path) = sys.argv[1:]
+          def read_env(name): return json.loads(os.environ[name])
+          manifest = json.loads(pathlib.Path(manifest_path).read_text(encoding="utf-8"))
+          pre = read_env("PREGRANT_SOURCE_JSON")
+          retry_source = read_env("RUNTIME_EXEC_SOURCE_JSON")
+          grant = read_env("GRANT_RECEIPT_JSON")
+          grant_ct = read_env("GRANT_CLOUDTRAIL_JSON")
+          exec_events = json.loads(pathlib.Path(exec_ct_path).read_text(encoding="utf-8")).get("Events", [])
+          describe_events = json.loads(pathlib.Path(describe_ct_path).read_text(encoding="utf-8")).get("Events", [])
+          aws, op = manifest["aws"], manifest["operator"]
+          def task_id(arn): return arn.rsplit("/", 1)[-1]
+          def invocation(source, phase, task):
+              matches = []
+              for outer in exec_events:
+                  if outer.get("EventName") != "ExecuteCommand": continue
+                  try: inner = json.loads(outer["CloudTrailEvent"])
+                  except (KeyError, TypeError, json.JSONDecodeError): continue
+                  ident = inner.get("userIdentity", {})
+                  issuer = ident.get("sessionContext", {}).get("sessionIssuer", {}) if isinstance(ident, dict) else {}
+                  params = inner.get("requestParameters", {})
+                  if (inner.get("eventID") == outer.get("EventId") and inner.get("eventSource") == "ecs.amazonaws.com"
+                      and inner.get("awsRegion") == aws["region"] and inner.get("recipientAccountId") == aws["account_id"]
+                      and issuer.get("arn") == aws["controller_role_arn"] and params.get("container") == op["container_name"]
+                      and params.get("command") == op["entrypoint"] + " --phase " + phase
+                      and params.get("interactive") is True and params.get("task") in {task, task_id(task)}
+                      and params.get("cluster") in {aws["cluster_arn"], aws["cluster_arn"].rsplit("/",1)[-1]}):
+                      matches.append(outer)
+              if len(matches) != 1: raise SystemExit("ECS ExecuteCommand must map uniquely to the authenticated task and phase")
+              return matches[0]
+          pre_prov = pre["exec_provenance"]
+          retry_prov = retry_source["provenance"]
+          pre_event = invocation(pre_prov, "pregrant-deny", pre["operator_task_arn"])
+          retry_event = invocation(retry_prov, "lifecycle", retry_prov["task_arn"])
+          def normalized(source, provenance, event, app_task, rows, app_td, app_image):
+              return {"task_arn": provenance["task_arn"], "app_task_arn": app_task,
+                  "app_task_definition_arn": app_td, "app_image_uri": app_image,
+                  "task_definition_arn": provenance["task_definition_arn"], "image_uri": provenance["image_uri"],
+                  "invocation_id": event["EventId"], "invocation_digest": provenance["execute_response_sha256"],
+                  "rows": [{"slot": r["slot"], "step": "activate", "status": r["status"],
+                    "request_started_at_utc": r["request_started_at_utc"], "observed_at_utc": r["observed_at_utc"],
+                    "request_body_sha256": r["request_body_sha256"]} for r in rows]}
+          app_td, app_image = aws["task_definition_arn"], aws["image_uri"]
+          pre_exec = normalized(pre, pre_prov, pre_event, pre["app_task_arn"], pre["route_rows"], app_td, app_image)
+          retry_rows = [r for r in retry_source["response_rows"] if r.get("step") == "activate"]
+          retry_exec = normalized(retry_source, retry_prov, retry_event, os.environ["APP_TASK_ARN"], retry_rows, app_td, app_image)
+          def private(path, value):
+              p = pathlib.Path(path); p.write_text(json.dumps(value, sort_keys=True, separators=(",", ":"))+"\n", encoding="utf-8"); p.chmod(0o600)
+          private(pre_exec_path, pre_exec); private(retry_exec_path, retry_exec)
+          pre_events = [e for e in describe_events if e.get("EventName") == "DescribeKey"] + [pre_event]
+          private(pre_ct_path, {"Events": pre_events}); private(retry_ct_path, {"Events": [retry_event]})
+          private(grant_path, grant); private(grant_ct_path, grant_ct)
+          private(baseline_path, pre["d1_before"]); private(pregrant_path, pre["d1_after"])
+          PY
+      - name: Validate same-intent pregrant denial and postgrant retry
+        id: failure-retry
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+          PREGRANT_EXEC_PATH: ${{ runner.temp }}/pregrant-exec.json
+          RETRY_EXEC_PATH: ${{ runner.temp }}/retry-exec.json
+          PREGRANT_CLOUDTRAIL_PATH: ${{ runner.temp }}/pregrant-cloudtrail.json
+          RETRY_CLOUDTRAIL_PATH: ${{ runner.temp }}/retry-cloudtrail.json
+          GRANT_RECEIPT_PATH: ${{ runner.temp }}/grant-receipt.json
+          GRANT_CLOUDTRAIL_PATH: ${{ runner.temp }}/grant-cloudtrail.json
+          D1_BASELINE_PATH: ${{ runner.temp }}/d1-baseline.json
+          D1_PREGRANT_PATH: ${{ runner.temp }}/d1-pregrant.json
+          FAILURE_RETRY_RECEIPT_PATH: ${{ runner.temp }}/failure-retry-receipt.json
+          FAILURE_RETRY_EVIDENCE_PATH: ${{ runner.temp }}/failure-retry-evidence.json
+        run: |
+          set -euo pipefail
+          test -f scripts/issue_2165_failure_retry_receipt.py
+          python3 scripts/issue_2165_failure_retry_receipt.py --manifest "$MANIFEST_PATH" --pregrant-exec "$PREGRANT_EXEC_PATH" --retry-exec "$RETRY_EXEC_PATH" --pregrant-cloudtrail "$PREGRANT_CLOUDTRAIL_PATH" --retry-cloudtrail "$RETRY_CLOUDTRAIL_PATH" --grant-receipt "$GRANT_RECEIPT_PATH" --grant-cloudtrail "$GRANT_CLOUDTRAIL_PATH" --d1-baseline "$D1_BASELINE_PATH" --d1-pregrant "$D1_PREGRANT_PATH" --output "$FAILURE_RETRY_RECEIPT_PATH" --evidence "$FAILURE_RETRY_EVIDENCE_PATH"
+          python3 - "$FAILURE_RETRY_RECEIPT_PATH" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib, sys
+          receipt = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          print("audit_source_receipt_json=" + json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+          PY
+      - name: Merge only real runtime source rows
+        id: merge
+        env:
+          PROVIDER_RECEIPT_PATH: ${{ runner.temp }}/provider-access-receipt.json
+          PROVIDER_RECEIPT_JSON: ${{ steps.access.outputs.audit_source_receipt_json }}
+          WRAP_RECEIPT_PATH: ${{ runner.temp }}/wrap-unwrap-receipt.json
+          WRAP_RECEIPT_JSON: ${{ steps.wrap.outputs.audit_source_receipt_json }}
+          FAILURE_RETRY_JSON: ${{ steps.failure-retry.outputs.audit_source_receipt_json }}
+        run: |
+          set -euo pipefail
+          python3 - "$PROVIDER_RECEIPT_PATH" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, pathlib, sys
+          provider = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if json.loads(os.environ["PROVIDER_RECEIPT_JSON"]) != provider:
+              raise SystemExit("provider receipt output does not match the mode-0600 receipt")
+          wrap = json.loads(pathlib.Path(os.environ["WRAP_RECEIPT_PATH"]).read_text(encoding="utf-8"))
+          if json.loads(os.environ["WRAP_RECEIPT_JSON"]) != wrap:
+              raise SystemExit("wrap/unwrap receipt output does not match the mode-0600 receipt")
+          raw = os.environ.get("TENANT_ISOLATION_ROWS", "")
+          rows = json.loads(raw) if raw else []
+          if not isinstance(rows, list):
+              raise SystemExit("runtime source rows must be a JSON array")
+          rows.append(provider)
+          rows.append(wrap)
+          rows.append(json.loads(os.environ["FAILURE_RETRY_JSON"]))
+          if len(rows) != 4 or {row.get("step") for row in rows if isinstance(row, dict)} != {"provider_access", "tenant_isolation", "wrap_unwrap", "failure_retry"}:
+              raise SystemExit("runtime source handoff must contain provider_access, tenant_isolation, wrap_unwrap, and failure_retry rows")
+          print("audit_source_receipts_json=" + json.dumps(rows, sort_keys=True, separators=(",", ":")))
+          PY
+      - name: Remove provider access evidence from runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/b083-manifest.json" "$RUNNER_TEMP/activation-rows.json" "$RUNNER_TEMP/describe-key-events.json" "$RUNNER_TEMP/execute-command-events.json" "$RUNNER_TEMP/kms-encrypt-decrypt-events.json" "$RUNNER_TEMP/readback-caller.json" "$RUNNER_TEMP/runtime-ecs-exec-source.json" "$RUNNER_TEMP/app-task-readback.json" "$RUNNER_TEMP/provider-access-receipt.json" "$RUNNER_TEMP/provider-access-evidence.json" "$RUNNER_TEMP/wrap-unwrap-receipt.json" "$RUNNER_TEMP/wrap-unwrap-evidence.json" "$RUNNER_TEMP/wrap-unwrap-receipt.json" "$RUNNER_TEMP/wrap-unwrap-evidence.json" "$RUNNER_TEMP/pregrant-exec.json" "$RUNNER_TEMP/retry-exec.json" "$RUNNER_TEMP/pregrant-cloudtrail.json" "$RUNNER_TEMP/retry-cloudtrail.json" "$RUNNER_TEMP/grant-receipt.json" "$RUNNER_TEMP/grant-cloudtrail.json" "$RUNNER_TEMP/d1-baseline.json" "$RUNNER_TEMP/d1-pregrant.json" "$RUNNER_TEMP/failure-retry-receipt.json" "$RUNNER_TEMP/failure-retry-evidence.json"
+
+  kms-cycles:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.phase == 'lifecycle'
+    needs: [runtime-controller, kms-custodian, runtime-observe, provider-access-readback]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: b083-kms-lifecycle
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+      B083_AWS_CUSTODIAN_ROLE_ARN: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_AWS_OPERATOR_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_OPERATOR_TASK_DEFINITION_ARN }}
+      B083_AWS_OPERATOR_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_ROLE_ARN }}
+      B083_AWS_APP_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_APP_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_EXECUTION_ROLE_ARN }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_AWS_OPERATOR_IMAGE_URI: ${{ vars.B083_AWS_OPERATOR_IMAGE_URI }}
+      B083_D1_DATABASE_ID: ${{ vars.B083_D1_DATABASE_ID }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_R2_S3_ENDPOINT: ${{ vars.B083_R2_S3_ENDPOINT }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_AUDIT_SINK_REF: ${{ vars.B083_AUDIT_SINK_REF }}
+      B083_CUSTODIAN_REF: ${{ vars.B083_CUSTODIAN_REF }}
+      B083_RUNTIME_CONFIG_SECRET_ARN: ${{ vars.B083_RUNTIME_CONFIG_SECRET_ARN }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      B083_CF_API_TOKEN: ${{ secrets.B083_CF_API_TOKEN }}
+      B083_ISSUE2165_GRANT_ID: ${{ needs.kms-custodian.outputs.grant_id }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+    outputs:
+      grant_ids_json: ${{ steps.cycles.outputs.grant_ids_json }}
+      final_grant_id: ${{ steps.cycles.outputs.final_grant_id }}
+      audit_source_receipts_json: ${{ steps.latency.outputs.audit_source_receipts_json }}
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - name: Enforce lifecycle readiness after protected environment approval
+        run: |
+          set -euo pipefail
+          test "$B083_LIFECYCLE_READY" = yes
+          test "$B083_LIFECYCLE_APPROVED_SHA" = "$GITHUB_SHA"
+          test "$REQUESTED_TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$B083_CONFIRMATION" = "issue-2165-$B083_TARGET_ALIAS"
+          test -n "$B083_ISSUE2165_GRANT_ID"
+          test -f scripts/issue_2165_kms_cycles.py
+          test -f scripts/issue_2165_kms_latency.py
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-cycles-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Fetch protected manifest and run ten exact-key revoke/restore cycles
+        id: cycles
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$MANIFEST_PATH"' EXIT
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$MANIFEST_PATH"
+          chmod 600 "$MANIFEST_PATH"
+          B083_ISSUE2165_GRANT_ID="$B083_ISSUE2165_GRANT_ID" python3 scripts/issue_2165_kms_cycles.py --manifest "$MANIFEST_PATH" --evidence-dir "$RUNNER_TEMP/evidence"
+      - name: Acquire bounded CloudTrail readback and verify paired latency evidence
+        id: latency
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$MANIFEST_PATH"' EXIT
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$MANIFEST_PATH"
+          chmod 600 "$MANIFEST_PATH"
+          test -f "$RUNNER_TEMP/evidence/lifecycle-cycle-bundle.json"
+          aws sts get-caller-identity --output json > "$RUNNER_TEMP/evidence/caller.json"
+          chmod 600 "$RUNNER_TEMP/evidence/caller.json"
+          read -r CT_START CT_END <<< "$(python3 - "$MANIFEST_PATH" <<'PY'
+          import datetime, json, sys
+          m = json.load(open(sys.argv[1], encoding="utf-8"))
+          def iso(ms):
+              return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).isoformat()
+          print(iso(m["lifecycle_window"]["started_at_ms"]), iso(m["lifecycle_window"]["ended_at_ms"]))
+          PY
+          )"
+          aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventSource,AttributeValue=kms.amazonaws.com --start-time "$CT_START" --end-time "$CT_END" --output json > "$RUNNER_TEMP/evidence/cloudtrail-response.json"
+          chmod 600 "$RUNNER_TEMP/evidence/cloudtrail-response.json"
+          python3 - "$MANIFEST_PATH" "$RUNNER_TEMP/evidence/lifecycle-cycle-bundle.json" "$RUNNER_TEMP/evidence/cloudtrail-response.json" "$RUNNER_TEMP/evidence/caller.json" "$RUNNER_TEMP/evidence/cloudtrail-latency-input.json" <<'PY'
+          import hashlib, json, pathlib, sys
+          manifest_path, bundle_path, events_path, caller_path, output_path = map(pathlib.Path, sys.argv[1:])
+          manifest = json.loads(manifest_path.read_text())
+          raw = json.loads(events_path.read_text())
+          identity = json.loads(caller_path.read_text())
+          source_events = raw.get("Events")
+          if not isinstance(source_events, list):
+              raise SystemExit("CloudTrail LookupEvents did not return an Events array")
+          raw_canonical = json.dumps(source_events, sort_keys=True, separators=(",", ":")).encode()
+          events = [row for row in source_events if isinstance(row, dict) and row.get("EventName") in {"CreateGrant", "RevokeGrant"}]
+          canonical = json.dumps(events, sort_keys=True, separators=(",", ":")).encode()
+          window = manifest["lifecycle_window"]
+          def iso(ms):
+              import datetime
+              return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+          region = manifest["aws"]["region"]
+          run_id = __import__("os").environ["GITHUB_RUN_ID"]
+          payload = {
+              "schema": "corelink.issue-2165-kms-latency-input.v1",
+              "run_id": run_id,
+              "cycle_bundle": json.loads(bundle_path.read_text()),
+              "cloudtrail": {
+                  "schema": "corelink-issue-2165-cloudtrail-latency-v1",
+                  "run_id": run_id,
+                  "source": {"method": "LookupEvents", "caller_arn": identity.get("Arn"), "account_id": identity.get("Account"), "region": region, "window_start_utc": iso(window["started_at_ms"]), "window_end_utc": iso(window["ended_at_ms"]), "raw_response_sha256": hashlib.sha256(raw_canonical).hexdigest(), "response_sha256": hashlib.sha256(canonical).hexdigest()},
+                  "events": events,
+              },
+          }
+          output_path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+          output_path.chmod(0o600)
+          PY
+          python3 scripts/issue_2165_kms_latency.py --manifest "$MANIFEST_PATH" --input "$RUNNER_TEMP/evidence/cloudtrail-latency-input.json" --output "$RUNNER_TEMP/evidence/lifecycle-samples.json"
+          python3 - "$RUNNER_TEMP/evidence/lifecycle-samples.json" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib, sys
+          samples = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          receipt = samples.get("audit_source_receipt")
+          if not isinstance(receipt, dict) or receipt.get("step") != "revoke_restore":
+              raise SystemExit("latency verifier did not emit a source-backed revoke_restore receipt")
+          print("audit_source_receipts_json=" + json.dumps([receipt], sort_keys=True, separators=(",", ":")))
+          PY
+
+  residency-readback:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.phase == 'lifecycle'
+    needs: [runtime-controller, provider-access-readback, kms-cycles]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: b083-kms-lifecycle
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      audit_source_receipts_json: ${{ steps.residency.outputs.audit_source_receipts_json }}
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_D1_DATABASE_ID: ${{ vars.B083_D1_DATABASE_ID }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_R2_S3_ENDPOINT: ${{ vars.B083_R2_S3_ENDPOINT }}
+      B083_AUDIT_SINK_REF: ${{ vars.B083_AUDIT_SINK_REF }}
+      B083_CF_API_TOKEN: ${{ secrets.B083_CF_API_TOKEN }}
+      B083_R2_READONLY_ACCESS_KEY_ID: ${{ secrets.B083_R2_READONLY_ACCESS_KEY_ID }}
+      B083_R2_READONLY_SECRET_ACCESS_KEY: ${{ secrets.B083_R2_READONLY_SECRET_ACCESS_KEY }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      APP_TASK_ARN: ${{ needs.runtime-controller.outputs.app_task_arn }}
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Require exact protected target and physical-placement authority input
+        run: |
+          set -euo pipefail
+          test "$B083_LIFECYCLE_READY" = yes
+          test "$B083_LIFECYCLE_APPROVED_SHA" = "$GITHUB_SHA"
+          test "$REQUESTED_TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$B083_CONFIRMATION" = "issue-2165-$B083_TARGET_ALIAS"
+          test -n "$APP_TASK_ARN"
+          test -f scripts/issue_2165_residency_source.py
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-residency-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Fetch current ECS D1 and R2 read-only residency evidence
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+          SOURCES_PATH: ${{ runner.temp }}/residency-sources.json
+          RAW_PATH: ${{ runner.temp }}/residency-raw-evidence.json
+        run: |
+          set -euo pipefail
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$MANIFEST_PATH"
+          chmod 600 "$MANIFEST_PATH"
+          python3 - "$MANIFEST_PATH" "$SOURCES_PATH" "$RAW_PATH" <<'PY'
+          import datetime, hashlib, json, os, pathlib, subprocess, sys
+          sys.path.insert(0, "scripts")
+          import issue_2165_cf5128_readback as cf
+          manifest_path, sources_path, raw_path = map(pathlib.Path, sys.argv[1:])
+          m = json.loads(manifest_path.read_text(encoding="utf-8"))
+          target = cf.validate_manifest(m, dict(os.environ))
+          aws = m["aws"]
+          def canonical(value): return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+          def digest(value): return hashlib.sha256(canonical(value)).hexdigest()
+          def observed(): return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+          def aws_json(args, creds=None):
+              env = dict(os.environ)
+              if creds:
+                  env["AWS_ACCESS_KEY_ID"], env["AWS_SECRET_ACCESS_KEY"] = creds
+                  env.pop("AWS_SESSION_TOKEN", None)
+              completed = subprocess.run(["aws", *args, "--region", aws["region"], "--output", "json"], check=True, capture_output=True, text=True, timeout=60, env=env)
+              return json.loads(completed.stdout)
+          task_doc = aws_json(["ecs", "describe-tasks", "--cluster", aws["cluster_arn"], "--tasks", os.environ["APP_TASK_ARN"]])
+          tasks = task_doc.get("tasks", [])
+          if len(tasks) != 1 or tasks[0].get("taskArn") != os.environ["APP_TASK_ARN"]:
+              raise SystemExit("residency ECS task readback is not exact")
+          td_doc = aws_json(["ecs", "describe-task-definition", "--task-definition", aws["task_definition_arn"]])
+          td = td_doc.get("taskDefinition", {})
+          containers = td.get("containerDefinitions", [])
+          if len(containers) != 1:
+              raise SystemExit("residency task definition must contain exactly the pinned app container")
+          app_container = containers[0]
+          attachments = [d for a in tasks[0].get("attachments", []) for d in a.get("details", []) if isinstance(d, dict)]
+          eni_ids = [d.get("value") for d in attachments if d.get("name") == "networkInterfaceId"]
+          if len(eni_ids) != 1:
+              raise SystemExit("residency task must have one exact network interface")
+          eni_doc = aws_json(["ec2", "describe-network-interfaces", "--network-interface-ids", eni_ids[0]])
+          eni = eni_doc.get("NetworkInterfaces", [])
+          if len(eni) != 1:
+              raise SystemExit("residency task network interface readback is not exact")
+          ecs_raw = {"task": task_doc, "task_definition": td_doc, "network_interface": eni_doc}
+          app_src = {"provider_ref": "aws:ecs:" + os.environ["APP_TASK_ARN"], "raw_sha256": digest(ecs_raw), "observed_at_utc": observed()}
+          app = {"method": "ecs-describe-tasks+describe-task-definition", "source": app_src,
+                 "task": {"last_status": tasks[0].get("lastStatus"), "task_definition_arn": tasks[0].get("taskDefinitionArn"),
+                          "cluster_arn": tasks[0].get("clusterArn"), "region": aws["region"], "availability_zone": eni[0].get("AvailabilityZone"),
+                          "image_digest": next((c.get("imageDigest") for c in tasks[0].get("containers", []) if c.get("name") == app_container.get("name")), None)},
+                 "task_definition": {"task_definition_arn": td.get("taskDefinitionArn"), "task_role_arn": td.get("taskRoleArn"), "image_uri": app_container.get("image")}}
+          tenants = m["disposable_tenants"]
+          sql = ("SELECT tenant_id, mode, cmk_provider, cmk_key_id, state, updated_at_ms "
+                 "FROM tenant_byok_config WHERE tenant_id IN (?, ?) ORDER BY tenant_id")
+          d1_path = f"/accounts/{target['account_id']}/d1/database/{target['database_id']}/query"
+          d1_payload = cf._api_json("POST", d1_path, os.environ["B083_CF_API_TOKEN"], {"sql": sql, "params": tenants})
+          d1_fields = {"tenant_id", "mode", "cmk_provider", "cmk_key_id", "state", "updated_at_ms"}
+          d1_rows = cf._extract_select_rows(d1_payload, d1_fields)
+          if set(row["tenant_id"] for row in d1_rows) != set(tenants):
+              raise SystemExit("residency D1 SELECT did not return exactly both protected tenants")
+          d1_meta = d1_payload["result"][0]["meta"]
+          if d1_meta.get("changed_db") is not False or d1_meta.get("rows_written") != 0 or d1_meta.get("changes") != 0:
+              raise SystemExit("residency D1 query did not prove zero writes")
+          d1_raw = {"sql": sql, "params": tenants, "response": d1_payload}
+          d1 = {"method": "parameterized-select-post", "account_alias": "cf5128", "account_id": target["account_id"],
+                "binding": "B083_D1", "database_id": target["database_id"], "region": target["d1_region"],
+                "changed_db": False, "rows_written": 0, "changes": 0,
+                "tenant_rows": [{"tenant_slot": f"tenant_{'a' if index == 0 else 'b'}", "tenant_id": tenant} for index, tenant in enumerate(tenants)],
+                "source": {"provider_ref": f"https://api.cloudflare.com/client/v4/accounts/{target['account_id']}/d1/database/{target['database_id']}/query", "raw_sha256": digest(d1_raw), "observed_at_utc": observed()}}
+          access, secret = os.environ["B083_R2_READONLY_ACCESS_KEY_ID"], os.environ["B083_R2_READONLY_SECRET_ACCESS_KEY"]
+          prefixes, r2_raw_rows = [], []
+          for item in target["r2_prefixes"]:
+              listed = cf.r2_list_prefix(target, item["prefix"], access, secret)
+              prefixes.append(dict(item))
+              r2_raw_rows.append({"prefix": item["prefix"], "objects": [{"key": key, "size": size} for key, size in listed]})
+          r2_raw = {"endpoint": target["endpoint"], "bucket": target["bucket"], "prefixes": r2_raw_rows}
+          r2 = {"method": "s3-list-objects-v2-read-only", "binding": "B083_R2", "account_id": target["account_id"],
+                "endpoint": target["endpoint"], "bucket": target["bucket"], "region": "auto", "prefix_inventory": prefixes,
+                "source": {"provider_ref": f"s3://{target['bucket']}/ListObjectsV2", "raw_sha256": digest(r2_raw), "observed_at_utc": observed()}}
+          placement = m["cloudflare"]["d1"].get("physical_placement_attestation")
+          if not isinstance(placement, dict):
+              raise SystemExit("authoritative Cloudflare D1 primary/replica placement attestation is missing from the protected manifest")
+          placement_raw = placement.get("raw_evidence")
+          if not isinstance(placement_raw, dict) or digest(placement_raw) != placement.get("source", {}).get("raw_sha256"):
+              raise SystemExit("protected Cloudflare D1 placement evidence digest does not match its raw source")
+          placement_bundle = {key: placement[key] for key in ("authority", "account_id", "database_id", "physical_region", "scope", "source")}
+          sources = {"schema": "corelink.issue-2165-residency-input.v1", "app": app, "d1": d1, "r2": r2, "d1_physical_placement": placement_bundle}
+          raw = {"ecs": ecs_raw, "d1_select": d1_raw, "r2_inventory": r2_raw, "d1_physical_placement": placement_raw}
+          for path, value in ((sources_path, sources), (raw_path, raw)):
+              path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+              path.chmod(0o600)
+          PY
+      - name: Verify and adapt only authenticated residency evidence
+        id: residency
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-manifest.json
+          SOURCES_PATH: ${{ runner.temp }}/residency-sources.json
+          RAW_PATH: ${{ runner.temp }}/residency-raw-evidence.json
+          RECEIPT_PATH: ${{ runner.temp }}/residency-source-receipt.json
+        run: |
+          set -euo pipefail
+          test -f scripts/issue_2165_residency_source.py
+          python3 scripts/issue_2165_residency_source.py --manifest "$MANIFEST_PATH" --sources "$SOURCES_PATH" --raw-evidence "$RAW_PATH" --output "$RECEIPT_PATH"
+          python3 - "$RECEIPT_PATH" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib, sys
+          row = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if set(row) != {"step", "occurred_at_utc", "source"} or row.get("step") != "residency":
+              raise SystemExit("residency source adapter did not emit exactly one archive-compatible row")
+          print("audit_source_receipts_json=" + json.dumps([row], sort_keys=True, separators=(",", ":")))
+          PY
+      - name: Remove private residency readback evidence
+        if: always()
+        run: rm -f "$RUNNER_TEMP/b083-manifest.json" "$RUNNER_TEMP/residency-sources.json" "$RUNNER_TEMP/residency-raw-evidence.json" "$RUNNER_TEMP/residency-source-receipt.json"
+
+  audit-archive:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.phase == 'lifecycle'
+    needs: [provider-access-readback, runtime-observe, kms-custodian, kms-cycles, residency-readback]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: b083-kms-lifecycle
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_R2_S3_ENDPOINT: ${{ vars.B083_R2_S3_ENDPOINT }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      RUNTIME_SOURCE_ROWS: ${{ needs.provider-access-readback.outputs.audit_source_receipts_json }}
+      CUSTODIAN_SOURCE_ROWS: ${{ needs.kms-custodian.outputs.audit_source_receipts_json }}
+      CYCLE_SOURCE_ROWS: ${{ needs.kms-cycles.outputs.audit_source_receipts_json }}
+      RESIDENCY_SOURCE_ROWS: ${{ needs.residency-readback.outputs.audit_source_receipts_json }}
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Enforce target readiness and complete source receipt set
+        env:
+          RECEIPTS_PATH: ${{ runner.temp }}/source-receipts.json
+        run: |
+          set -euo pipefail
+          test "$B083_LIFECYCLE_READY" = yes
+          test "$B083_LIFECYCLE_APPROVED_SHA" = "$GITHUB_SHA"
+          test "$REQUESTED_TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$B083_CONFIRMATION" = "issue-2165-$B083_TARGET_ALIAS"
+          python3 - "$RECEIPTS_PATH" <<'PY'
+          import json, os, pathlib, sys
+          from scripts.issue_2165_r2_audit_archive import validate_source_receipts
+          rows = []
+          for name in ("RUNTIME_SOURCE_ROWS", "CUSTODIAN_SOURCE_ROWS", "CYCLE_SOURCE_ROWS", "RESIDENCY_SOURCE_ROWS"):
+              raw = os.environ.get(name, "")
+              if not raw:
+                  continue
+              value = json.loads(raw)
+              if not isinstance(value, list):
+                  raise SystemExit(f"{name} must be a JSON array of source-backed receipts")
+              rows.extend(value)
+          validate_source_receipts(rows)
+          path = pathlib.Path(sys.argv[1])
+          path.write_text(json.dumps(rows, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+          path.chmod(0o600)
+          PY
+      - name: Install pinned archive client dependencies
+        run: |
+          set -euo pipefail
+          test -f requirements-issue-2165-r2-archive.txt
+          python3 -m pip install --require-hashes -r requirements-issue-2165-r2-archive.txt
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-audit-manifest-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Fetch protected R2 target manifest
+        run: |
+          set -euo pipefail
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$RUNNER_TEMP/b083-manifest.json"
+          chmod 600 "$RUNNER_TEMP/b083-manifest.json"
+      - name: Write two immutable R2 objects and verify authenticated readback
+        env:
+          B083_R2_AUDIT_PARENT_ACCESS_KEY_ID: ${{ secrets.B083_R2_AUDIT_PARENT_ACCESS_KEY_ID }}
+          B083_R2_AUDIT_PARENT_SECRET_ACCESS_KEY: ${{ secrets.B083_R2_AUDIT_PARENT_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$RUNNER_TEMP/b083-manifest.json" "$RUNNER_TEMP/source-receipts.json" "$RUNNER_TEMP/archive-result.json"' EXIT
+          python3 scripts/issue_2165_r2_audit_archive.py --manifest "$RUNNER_TEMP/b083-manifest.json" --receipts "$RUNNER_TEMP/source-receipts.json" --output "$RUNNER_TEMP/archive-result.json"
+
+  runtime-cleanup:
+    if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.phase == 'lifecycle' || inputs.phase == 'cleanup')
+    needs: [runtime-controller, kms-custodian, runtime-observe, kms-cycles, audit-archive]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: b083-kms-lifecycle
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+      B083_AWS_CUSTODIAN_ROLE_ARN: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_AWS_OPERATOR_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_OPERATOR_TASK_DEFINITION_ARN }}
+      B083_AWS_OPERATOR_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_ROLE_ARN }}
+      B083_AWS_APP_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_APP_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_IMAGE_URI: ${{ vars.B083_AWS_OPERATOR_IMAGE_URI }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_D1_DATABASE_ID: ${{ vars.B083_D1_DATABASE_ID }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_R2_S3_ENDPOINT: ${{ vars.B083_R2_S3_ENDPOINT }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_AUDIT_SINK_REF: ${{ vars.B083_AUDIT_SINK_REF }}
+      B083_CUSTODIAN_REF: ${{ vars.B083_CUSTODIAN_REF }}
+      B083_RUNTIME_CONFIG_SECRET_ARN: ${{ vars.B083_RUNTIME_CONFIG_SECRET_ARN }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      B083_CF_API_TOKEN: ${{ secrets.B083_CF_API_TOKEN }}
+      B083_R2_READONLY_ACCESS_KEY_ID: ${{ secrets.B083_R2_READONLY_ACCESS_KEY_ID }}
+      B083_R2_READONLY_SECRET_ACCESS_KEY: ${{ secrets.B083_R2_READONLY_SECRET_ACCESS_KEY }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      PHASE: ${{ inputs.phase }}
+      B083_ISSUE2165_APP_TASK_ARN: ${{ needs.runtime-controller.outputs.app_task_arn }}
+      B083_ISSUE2165_OPERATOR_TASK_ARN: ${{ needs.runtime-controller.outputs.operator_task_arn }}
+      B083_ISSUE2165_RUN_ID: ${{ needs.runtime-controller.outputs.runtime_run_id }}
+      B083_ISSUE2165_GRANT_ID: ${{ needs.kms-cycles.outputs.final_grant_id || needs.kms-custodian.outputs.grant_id }}
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-runtime-cleanup-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - name: Stop only authenticated task handoff
+        if: always() && inputs.phase == 'lifecycle' && needs.runtime-controller.outputs.app_task_arn != '' && needs.runtime-controller.outputs.operator_task_arn != '' && needs.runtime-controller.outputs.runtime_run_id == github.run_id
+        run: |
+          set -euo pipefail
+          manifest="$RUNNER_TEMP/b083-manifest.json"
+          trap 'rm -f "$manifest"' EXIT
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$manifest"
+          chmod 600 "$manifest"
+          if [ -n "$B083_ISSUE2165_GRANT_ID" ]; then
+            B083_ISSUE2165_GRANT_ID="$B083_ISSUE2165_GRANT_ID" B083_KMS_KEY_ARN="$B083_KMS_KEY_ARN" B083_AWS_RUNTIME_ROLE_ARN="$B083_AWS_RUNTIME_ROLE_ARN" python3 - "$manifest" <<'PY'
+          import json, os, sys
+          path = sys.argv[1]
+          with open(path, encoding="utf-8") as f:
+              manifest = json.load(f)
+          manifest["grant"] = {
+              "grant_id": os.environ["B083_ISSUE2165_GRANT_ID"],
+              "key_arn": os.environ["B083_KMS_KEY_ARN"],
+              "grantee_role_arn": os.environ["B083_AWS_RUNTIME_ROLE_ARN"],
+              "custodian_authorized": True,
+          }
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(manifest, f, separators=(",", ":"))
+          PY
+          fi
+          python3 scripts/issue_2165_kms_runtime.py --manifest "$manifest" --phase lifecycle --stage cleanup --evidence-dir "$RUNNER_TEMP/evidence"
+      - name: Reject standalone cleanup without authenticated same-run handoff
+        if: always() && inputs.phase == 'cleanup' && (needs.runtime-controller.outputs.app_task_arn == '' || needs.runtime-controller.outputs.operator_task_arn == '' || needs.runtime-controller.outputs.runtime_run_id != github.run_id)
+        run: |
+          echo 'Standalone cleanup has no authenticated same-run task handoff; run cleanup in the originating lifecycle dispatch.' >&2
+          exit 2
+
+  kms-cleanup:
+    if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.phase == 'lifecycle' || inputs.phase == 'cleanup')
+    needs: [runtime-controller, kms-custodian, runtime-observe, kms-cycles, audit-archive, runtime-cleanup]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: b083-kms-lifecycle
+    outputs:
+      cancel_expected: ${{ steps.cleanup.outputs.cancel_expected }}
+      rollback_receipt_json: ${{ steps.cleanup-handoff.outputs.rollback_receipt_json }}
+    env:
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      REQUESTED_TARGET_ALIAS: ${{ inputs.target_alias }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+      B083_AWS_CUSTODIAN_ROLE_ARN: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_AWS_OPERATOR_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_OPERATOR_TASK_DEFINITION_ARN }}
+      B083_AWS_OPERATOR_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_ROLE_ARN }}
+      B083_AWS_APP_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_APP_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_IMAGE_URI: ${{ vars.B083_AWS_OPERATOR_IMAGE_URI }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_D1_DATABASE_ID: ${{ vars.B083_D1_DATABASE_ID }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_R2_S3_ENDPOINT: ${{ vars.B083_R2_S3_ENDPOINT }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_AUDIT_SINK_REF: ${{ vars.B083_AUDIT_SINK_REF }}
+      B083_CUSTODIAN_REF: ${{ vars.B083_CUSTODIAN_REF }}
+      B083_RUNTIME_CONFIG_SECRET_ARN: ${{ vars.B083_RUNTIME_CONFIG_SECRET_ARN }}
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      B083_CF_API_TOKEN: ${{ secrets.B083_CF_API_TOKEN }}
+      B083_R2_READONLY_ACCESS_KEY_ID: ${{ secrets.B083_R2_READONLY_ACCESS_KEY_ID }}
+      B083_R2_READONLY_SECRET_ACCESS_KEY: ${{ secrets.B083_R2_READONLY_SECRET_ACCESS_KEY }}
+      B083_CONFIRMATION: ${{ inputs.confirmation }}
+      B083_LIFECYCLE_READY: ${{ vars.B083_LIFECYCLE_READY }}
+      B083_LIFECYCLE_APPROVED_SHA: ${{ vars.B083_LIFECYCLE_APPROVED_SHA }}
+      PHASE: ${{ inputs.phase }}
+      B083_ISSUE2165_GRANT_ID: ${{ needs.kms-custodian.outputs.grant_id }}
+      B083_ISSUE2165_GRANT_IDS: ${{ needs.kms-cycles.outputs.grant_ids_json }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-key-cleanup-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Revoke exact run grants or cancel its pending deletion schedule
+        id: cleanup
+        if: always() && inputs.phase == 'lifecycle' && (needs.runtime-controller.outputs.runtime_run_id == github.run_id || needs.kms-custodian.outputs.custody_run_id == github.run_id)
+        run: |
+          set -euo pipefail
+          manifest="$RUNNER_TEMP/b083-manifest.json"
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$manifest"
+          chmod 600 "$manifest"
+          key_state="$(aws kms describe-key --key-id "$B083_KMS_KEY_ARN" --query 'KeyMetadata.KeyState' --output text)"
+          if [ "$key_state" = PendingDeletion ]; then
+            echo 'cancel_expected=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'cancel_expected=false' >> "$GITHUB_OUTPUT"
+          fi
+          if [ -z "$B083_ISSUE2165_GRANT_IDS" ]; then
+            if [ -n "$B083_ISSUE2165_GRANT_ID" ]; then
+              B083_ISSUE2165_GRANT_IDS="$(python3 -c 'import json,os; print(json.dumps([os.environ["B083_ISSUE2165_GRANT_ID"]]))')"
+              export B083_ISSUE2165_GRANT_IDS
+            else
+              unset B083_ISSUE2165_GRANT_IDS B083_ISSUE2165_GRANT_ID
+            fi
+          fi
+          python3 scripts/issue_2165_kms_custodian.py --manifest "$manifest" --stage cleanup --evidence-dir "$RUNNER_TEMP/evidence/key-cleanup"
+      - name: Hand off only the authenticated key rollback receipt
+        id: cleanup-handoff
+        if: always() && inputs.phase == 'lifecycle' && steps.cleanup.outputs.cancel_expected == 'true'
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/evidence/key-cleanup/custodian-cleanup-rollback-receipt.json"
+          if [ -f "$receipt" ]; then
+            python3 - "$receipt" "$RUNNER_TEMP/b083-manifest.json" "$GITHUB_OUTPUT" <<'PY'
+          import json, os, pathlib, sys
+          source = pathlib.Path(sys.argv[1])
+          payload = json.loads(source.read_text())
+          manifest = json.loads(pathlib.Path(sys.argv[2]).read_text())
+          if payload.get("stage") != "cleanup-rollback" or payload.get("run_id") != os.environ["GITHUB_RUN_ID"]:
+              raise SystemExit("cleanup rollback receipt run binding mismatch")
+          actions = payload.get("actions")
+          if not isinstance(actions, list) or len(actions) != 2 or [item.get("operation") for item in actions] != ["cancel-key-deletion", "enable-key"]:
+              raise SystemExit("cleanup rollback receipt must contain exactly CancelKeyDeletion and EnableKey")
+          canonical = json.dumps({"stage": payload["stage"], "run_id": payload["run_id"], "actions": actions}, sort_keys=True, separators=(",", ":")).encode()
+          import hashlib
+          if hashlib.sha256(canonical).hexdigest() != payload.get("receipt_sha256"):
+              raise SystemExit("cleanup rollback receipt digest does not match its action summary")
+          if actions[0].get("readback") != "Disabled" or actions[1].get("readback") != "Enabled":
+              raise SystemExit("cleanup rollback receipt does not confirm Disabled then Enabled")
+          key = manifest["aws"]["cmk_arn"]
+          if any(item.get("key_arn") != key for item in actions):
+              raise SystemExit("cleanup rollback receipt key does not match protected manifest")
+          redacted = {"schema": payload["schema"], "stage": payload["stage"], "run_id": payload["run_id"], "observed_at_utc": payload["observed_at_utc"], "receipt_sha256": payload["receipt_sha256"], "actions": [{"operation": item["operation"], "readback": item["readback"]} for item in actions]}
+          output = pathlib.Path(sys.argv[3])
+          with output.open("a") as stream:
+              stream.write("rollback_receipt_json=" + json.dumps(redacted, sort_keys=True, separators=(",", ":")) + "\n")
+          PY
+          else
+            echo 'rollback_receipt_json=' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Remove private custodian cleanup evidence
+        if: always()
+        run: rm -f "$RUNNER_TEMP/b083-manifest.json" "$RUNNER_TEMP"/evidence/key-cleanup/*.json
+      - name: Fail with exact reconciliation request if grant handoff is missing
+        if: always() && inputs.phase == 'lifecycle' && needs.runtime-controller.outputs.runtime_run_id == github.run_id && needs.kms-custodian.outputs.grant_id == '' && needs.kms-custodian.outputs.custody_run_id != github.run_id
+        run: |
+          echo 'Exact grant ID output is missing; do not revoke any other grant. Root custodian must reconcile the run and CMK read-only.' >&2
+          exit 2
+      - name: Reject standalone key cleanup without authenticated same-run state
+        if: always() && inputs.phase == 'cleanup' && (needs.runtime-controller.outputs.app_task_arn == '' || needs.runtime-controller.outputs.operator_task_arn == '' || needs.runtime-controller.outputs.runtime_run_id != github.run_id)
+        run: |
+          echo 'Standalone key cleanup has no authenticated same-run lifecycle state; no grant was changed.' >&2
+          exit 2
+
+  cleanup-readback:
+    if: always() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.phase == 'lifecycle' && needs.kms-cleanup.outputs.cancel_expected == 'true'
+    needs: [kms-cleanup]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: b083-kms-lifecycle
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      B083_TARGET_MANIFEST_SECRET_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      B083_AWS_PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      B083_AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      B083_AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      B083_AWS_CLUSTER_ARN: ${{ vars.B083_AWS_CLUSTER_ARN }}
+      B083_AWS_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_TASK_DEFINITION_ARN }}
+      B083_AWS_CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+      B083_AWS_RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      B083_AWS_APP_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_APP_EXECUTION_ROLE_ARN }}
+      B083_AWS_CUSTODIAN_ROLE_ARN: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+      B083_AWS_OPERATOR_TASK_DEFINITION_ARN: ${{ vars.B083_AWS_OPERATOR_TASK_DEFINITION_ARN }}
+      B083_AWS_OPERATOR_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_ROLE_ARN }}
+      B083_AWS_OPERATOR_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_EXECUTION_ROLE_ARN }}
+      B083_AWS_OPERATOR_IMAGE_URI: ${{ vars.B083_AWS_OPERATOR_IMAGE_URI }}
+      B083_IMAGE_URI: ${{ vars.B083_IMAGE_URI }}
+      B083_KMS_KEY_ARN: ${{ secrets.B083_KMS_KEY_ARN }}
+      B083_D1_REGION: ${{ vars.B083_D1_REGION }}
+      B083_CF_ACCOUNT_ID: ${{ vars.B083_CF_ACCOUNT_ID }}
+      B083_RUN_NAMESPACE: ${{ vars.B083_RUN_NAMESPACE }}
+      B083_NETWORK_RECEIPT_SHA256: ${{ vars.B083_NETWORK_RECEIPT_SHA256 }}
+      CLEANUP_ROLLBACK_RECEIPT_JSON: ${{ needs.kms-cleanup.outputs.rollback_receipt_json }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-cleanup-readback-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Fetch protected manifest and capture exact rollback handoff
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$RUNNER_TEMP/b083-manifest.json" "$RUNNER_TEMP/cleanup-rollback-receipt.json" "$RUNNER_TEMP/cleanup-caller.json" "$RUNNER_TEMP/cleanup-cloudtrail.json" "$RUNNER_TEMP/cleanup-result.json"' EXIT
+          aws secretsmanager get-secret-value --secret-id "$B083_TARGET_MANIFEST_SECRET_ARN" --query SecretString --output text > "$RUNNER_TEMP/b083-manifest.json"
+          chmod 600 "$RUNNER_TEMP/b083-manifest.json"
+          python3 - "$RUNNER_TEMP/cleanup-rollback-receipt.json" <<'PY'
+          import json, os, pathlib, sys
+          value = json.loads(os.environ.get("CLEANUP_ROLLBACK_RECEIPT_JSON", ""))
+          if value.get("schema") != "corelink.issue-2165-kms-custodian-receipt-v1" or value.get("stage") != "cleanup-rollback" or value.get("run_id") != os.environ["GITHUB_RUN_ID"]:
+              raise SystemExit("same-run authenticated cleanup rollback receipt is missing or malformed")
+          path = pathlib.Path(sys.argv[1])
+          path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+          path.chmod(0o600)
+          PY
+          aws sts get-caller-identity --output json > "$RUNNER_TEMP/cleanup-caller.json"
+          chmod 600 "$RUNNER_TEMP/cleanup-caller.json"
+          read -r start end < <(python3 - "$RUNNER_TEMP/cleanup-rollback-receipt.json" <<'PY'
+          import datetime, json, pathlib, sys
+          receipt = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          end = datetime.datetime.fromisoformat(receipt["observed_at_utc"].replace("Z", "+00:00"))
+          start = end - datetime.timedelta(minutes=5)
+          fmt = lambda value: value.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+          print(fmt(start), fmt(end))
+          PY
+          )
+          aws cloudtrail lookup-events --start-time "$start" --end-time "$end" --max-results 50 --output json > "$RUNNER_TEMP/cleanup-cloudtrail.json"
+          chmod 600 "$RUNNER_TEMP/cleanup-cloudtrail.json"
+          PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/verify_issue_2165_kms_cleanup.py --manifest "$RUNNER_TEMP/b083-manifest.json" --receipt "$RUNNER_TEMP/cleanup-rollback-receipt.json" --cloudtrail "$RUNNER_TEMP/cleanup-cloudtrail.json" --caller-identity "$RUNNER_TEMP/cleanup-caller.json" --output "$RUNNER_TEMP/cleanup-result.json"
