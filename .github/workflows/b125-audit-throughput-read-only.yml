@@ -10,9 +10,14 @@ on:
         description: 'Type "run-b125-read-only" to authorize the bounded read'
         required: true
         type: string
+      deployment_receipt_ref:
+        description: 'Exact #1648 issue-comment URL for the verified active repaired-image rollout'
+        required: true
+        type: string
 
 permissions:
   contents: read
+  issues: read
 
 concurrency:
   group: b125-audit-throughput-read-only
@@ -23,6 +28,7 @@ jobs:
     name: B-125 six-hour D1 read
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    environment: production
     steps:
       - name: Checkout without write credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -40,7 +46,9 @@ jobs:
           CONFIRM: ${{ inputs.confirm }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           BILLING_D1_DATABASE_ID: ${{ secrets.CORELINK_BILLING_D1_DATABASE_ID }}
+          DEPLOYMENT_RECEIPT_REF: ${{ inputs.deployment_receipt_ref }}
         shell: bash
         run: |
           set -euo pipefail
@@ -89,10 +97,117 @@ jobs:
             exit 1
           }
 
+          # The repaired image became active at 19:36:16Z on 2026-09-30.
+          # Six complete UTC buckets first contain only post-repair rows at
+          # 02:00Z on 2026-10-01. Allow five minutes for the last bucket to
+          # settle, and reject before any provider query until then.
+          python3 - <<'PY' || fail_closed "post_repair_six_hour_window_not_settled"
+          from datetime import datetime, timezone
+          not_before = datetime(2026, 10, 1, 2, 5, tzinfo=timezone.utc)
+          if datetime.now(timezone.utc) < not_before:
+              raise SystemExit(1)
+          PY
+
           [[ "$CONFIRM" == "run-b125-read-only" ]] || fail_closed "confirmation_mismatch"
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || fail_closed "protected_main_ref_required"
           [[ -n "${CF_ACCOUNT_ID:-}" ]] || fail_closed "CF_ACCOUNT_ID_missing"
           [[ -n "${CF_API_TOKEN:-}" ]] || fail_closed "CF_API_TOKEN_missing"
           echo "::add-mask::${CF_API_TOKEN}"
+
+          # Bind the read to the frozen #1648 production repair artifact and
+          # independently read back its IAD Container application through the
+          # official Cloudflare API before any D1 query. The issue comment is
+          # evidence context, not a substitute for current provider state.
+          repair_source_sha="46e2d1cbe7c00a303c0942e8f46751dce75e5c14"
+          repair_image_digest="sha256:ecd63379d2040c6a891edaeb140fd388f26b5ffc181987c9c777060ced633e8a"
+          expected_account_id="6a1fc1c626fc2628823e60b9db01f5cd"
+          expected_database_id="d64742ea-e102-40b2-a844-ff02f3e94562"
+          expected_config_blob_sha="5ffec8b882bcb99dcaf1df964c609e9d2c35838d"
+          expected_config_sha256="568d0e6994ce1156542e350520a9750924a0f3f416e67af07c7275682e24c7a6"
+          [[ "$CF_ACCOUNT_ID" == "$expected_account_id" ]] || fail_closed "cloudflare_account_target_mismatch"
+          [[ "$DEPLOYMENT_RECEIPT_REF" =~ ^https://github\.com/HuGR-dev/corelink-server/issues/1648#issuecomment-[0-9]+$ ]] || fail_closed "deployment_receipt_reference_invalid"
+          comment_id="${DEPLOYMENT_RECEIPT_REF##*issuecomment-}"
+          comment_path="$raw_dir/deployment-comment.json"
+          if ! GH_TOKEN="$GH_TOKEN" gh api "repos/HuGR-dev/corelink-server/issues/comments/$comment_id" >"$comment_path" 2>/dev/null; then
+            fail_closed "deployment_receipt_comment_unavailable"
+          fi
+          if ! python3 - "$comment_path" "$DEPLOYMENT_RECEIPT_REF" "$repair_source_sha" "$repair_image_digest" <<'PY'
+          import json, sys
+          path, expected_url, expected_source, expected_digest = sys.argv[1:]
+          try:
+              with open(path, encoding="utf-8") as stream:
+                  comment = json.load(stream)
+              body = comment.get("body") if isinstance(comment, dict) else None
+              valid = (
+                  isinstance(comment, dict)
+                  and comment.get("html_url") == expected_url
+                  and isinstance(comment.get("issue_url"), str)
+                  and comment["issue_url"].endswith("/issues/1648")
+                  and isinstance(body, str)
+                  and "ROLLOUT_COMPLETE" in body
+                  and expected_source in body
+                  and expected_digest in body
+              )
+          except (OSError, ValueError, TypeError):
+              valid = False
+          if not valid:
+              raise SystemExit("deployment receipt comment is not a matching #1648 rollout receipt")
+          PY
+          then
+            fail_closed "deployment_receipt_comment_mismatch"
+          fi
+
+          # Reuse the exact #1648 provider response parser. It requires the
+          # pinned IAD app identity, stable healthy 16/16 state, and no active
+          # rollout. Require the completed rollout target and active config to
+          # use the exact immutable digest before allowing any D1 SELECT.
+          runtime_summary="$raw_dir/runtime-summary.json"
+          if ! python3 - "$runtime_summary" <<'PY'
+          import json, os, sys
+          from scripts.issue_1648_image_only import (
+              API, APP_PATH, NEW_REF, ROLLOUTS_PATH, GateError,
+              app_snapshot, no_active_rollout, require,
+          )
+          output = sys.argv[1]
+          token = os.environ.get("CF_API_TOKEN", "")
+          try:
+              api = API(token)
+              app_result = api.request("GET", APP_PATH)
+              app = app_snapshot(app_result)
+              require(app["healthy"] == 16 and app["active"] == 0,
+                      "healthy_instance_count_not_16")
+              require(app["image"] == NEW_REF, "active_repaired_image_mismatch")
+              rollouts_result = api.request("GET", ROLLOUTS_PATH)
+              no_active_rollout(rollouts_result, app)
+              entries = (rollouts_result if isinstance(rollouts_result, list)
+                         else rollouts_result.get("rollouts") if isinstance(rollouts_result, dict)
+                         else None)
+              require(isinstance(entries, list), "rollouts_shape")
+              completed = [item for item in entries if isinstance(item, dict)
+                           and item.get("status") == "completed"
+                           and item.get("target_version") == app["version"]
+                           and isinstance(item.get("target_configuration"), dict)
+                           and item["target_configuration"].get("image") == NEW_REF]
+              require(bool(completed), "completed_repaired_rollout_missing")
+              summary = {
+                  "account_id": "6a1fc1c626fc2628823e60b9db01f5cd",
+                  "application_id": "a033572c-0803-4866-b3a3-61f4812843b1",
+                  "application_version": app["version"],
+                  "active_image": app["image"],
+                  "healthy_instances": app["healthy"],
+                  "active_instances": app["active"],
+                  "failed_instances": app["failed"],
+                  "completed_rollout_count": len(completed),
+              }
+              with open(output, "w", encoding="utf-8") as stream:
+                  json.dump(summary, stream, indent=2, sort_keys=True)
+                  stream.write("\n")
+          except (GateError, OSError, ValueError, TypeError):
+              raise SystemExit("active repaired Container state is unavailable or mismatched")
+          PY
+          then
+            fail_closed "active_repaired_container_readback_failed"
+          fi
 
           # The canonical production UUID is source-derived. If the optional
           # repo secret is present it must match; a mismatch can never select a
@@ -113,6 +228,53 @@ jobs:
           fi
           D1_DATABASE_ID="${BILLING_D1_DATABASE_ID:-$canonical_ids}"
           [[ "$D1_DATABASE_ID" =~ ^[0-9a-f-]{36}$ ]] || fail_closed "database_uuid_invalid"
+          [[ "$D1_DATABASE_ID" == "$expected_database_id" ]] || fail_closed "database_target_mismatch"
+
+          expected_images=(
+            "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-corelinkserver-prod:46e2d1cbe-r1"
+            "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-sam-corelinkserver-prod:46e2d1cbe-r1"
+            "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-lhr-corelinkserver-prod:46e2d1cbe-r1"
+            "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-nrt-corelinkserver-prod:46e2d1cbe-r1"
+            "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-syd-corelinkserver-prod:46e2d1cbe-r1"
+          )
+          for image in "${expected_images[@]}"; do
+            [[ "$(grep -Fc "image = \"$image\"" wrangler.toml)" -eq 1 ]] || fail_closed "production_image_pin_mismatch"
+          done
+          config_sha256="$(sha256sum wrangler.toml | cut -d ' ' -f 1)"
+          config_blob_sha="$(git rev-parse "$GITHUB_SHA:wrangler.toml")"
+          [[ "$config_blob_sha" == "$expected_config_blob_sha" ]] || fail_closed "production_config_blob_mismatch"
+          [[ "$config_sha256" == "$expected_config_sha256" ]] || fail_closed "production_config_sha256_mismatch"
+
+          python3 - "$receipt" "$DEPLOYMENT_RECEIPT_REF" "$GITHUB_SHA" "$config_sha256" "$config_blob_sha" "$expected_account_id" "$D1_DATABASE_ID" "$repair_source_sha" "$repair_image_digest" "$runtime_summary" <<'PY'
+          import json, sys
+          (path, receipt_ref, capture_sha, config_sha256, config_blob_sha,
+           account_id, database_id, source_sha, image_digest, runtime_summary_path) = sys.argv[1:]
+          with open(path, encoding="utf-8") as stream:
+              receipt = json.load(stream)
+          with open(runtime_summary_path, encoding="utf-8") as stream:
+              runtime_summary = json.load(stream)
+          receipt["deployment_pin"] = {
+              "receipt_ref": receipt_ref,
+              "capture_main_sha": capture_sha,
+              "production_config_sha256": config_sha256,
+              "production_config_blob_sha": config_blob_sha,
+              "target_account_id": account_id,
+              "target_database_id": database_id,
+              "repair_source_sha": source_sha,
+              "repair_image_digest": image_digest,
+              "repair_image_tag": "46e2d1cbe-r1",
+              "runtime_digest_verified_by_workflow": True,
+              "runtime_verification_receipt_ref": receipt_ref,
+              "runtime_verification_source": "Cloudflare Containers GET application and rollouts API",
+              "runtime_verification": runtime_summary,
+              "post_repair_first_complete_bucket_utc": "2026-09-30T20:00:00Z",
+              "post_repair_capture_not_before_utc": "2026-10-01T02:05:00Z",
+              "scope": "IAD production Container application only; other regional pins are config-verified, not runtime-verified",
+          }
+          with open(path, "w", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
 
           corepack enable
           export CLOUDFLARE_API_TOKEN="$CF_API_TOKEN"
@@ -126,7 +288,7 @@ jobs:
           # audit_outbox scan. The former correlated subqueries rescanned the
           # 84k-row production table twelve times and failed in the D1 lane.
           SQL[hourly]='WITH hour_offsets(hour_offset) AS (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5), clock AS (SELECT CAST(strftime("%s", "now") AS INTEGER) / 3600 * 3600 AS anchor_s), aggregate_counts AS (SELECT c.anchor_s, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 3600) * 1000 AND enqueued_at < c.anchor_s * 1000 THEN 1 END) AS arrivals_0, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 3600) * 1000 AND emitted_at < c.anchor_s * 1000 THEN 1 END) AS sealed_0, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 7200) * 1000 AND enqueued_at < (c.anchor_s - 3600) * 1000 THEN 1 END) AS arrivals_1, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 7200) * 1000 AND emitted_at < (c.anchor_s - 3600) * 1000 THEN 1 END) AS sealed_1, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 10800) * 1000 AND enqueued_at < (c.anchor_s - 7200) * 1000 THEN 1 END) AS arrivals_2, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 10800) * 1000 AND emitted_at < (c.anchor_s - 7200) * 1000 THEN 1 END) AS sealed_2, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 14400) * 1000 AND enqueued_at < (c.anchor_s - 10800) * 1000 THEN 1 END) AS arrivals_3, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 14400) * 1000 AND emitted_at < (c.anchor_s - 10800) * 1000 THEN 1 END) AS sealed_3, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 18000) * 1000 AND enqueued_at < (c.anchor_s - 14400) * 1000 THEN 1 END) AS arrivals_4, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 18000) * 1000 AND emitted_at < (c.anchor_s - 14400) * 1000 THEN 1 END) AS sealed_4, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 21600) * 1000 AND enqueued_at < (c.anchor_s - 18000) * 1000 THEN 1 END) AS arrivals_5, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 21600) * 1000 AND emitted_at < (c.anchor_s - 18000) * 1000 THEN 1 END) AS sealed_5, COUNT(CASE WHEN enqueued_at < c.anchor_s * 1000 AND (emitted_at IS NULL OR emitted_at >= c.anchor_s * 1000) THEN 1 END) AS boundary_unsealed FROM audit_outbox CROSS JOIN clock c), bucket_counts AS (SELECT h.hour_offset, a.anchor_s, CASE h.hour_offset WHEN 0 THEN a.arrivals_0 WHEN 1 THEN a.arrivals_1 WHEN 2 THEN a.arrivals_2 WHEN 3 THEN a.arrivals_3 WHEN 4 THEN a.arrivals_4 WHEN 5 THEN a.arrivals_5 END AS arrivals, CASE h.hour_offset WHEN 0 THEN a.sealed_0 WHEN 1 THEN a.sealed_1 WHEN 2 THEN a.sealed_2 WHEN 3 THEN a.sealed_3 WHEN 4 THEN a.sealed_4 WHEN 5 THEN a.sealed_5 END AS sealed_rows, a.boundary_unsealed FROM hour_offsets h CROSS JOIN aggregate_counts a) SELECT strftime("%Y-%m-%dT%H:00:00Z", anchor_s - (hour_offset + 1) * 3600, "unixepoch") AS window_start_utc, strftime("%Y-%m-%dT%H:00:00Z", anchor_s - hour_offset * 3600, "unixepoch") AS window_end_utc, arrivals, sealed_rows, boundary_unsealed FROM bucket_counts ORDER BY hour_offset DESC'
-          SQL[latency]='SELECT COUNT(*) AS valid_latency_rows, MIN(emitted_at - enqueued_at) AS min_latency_ms, AVG(emitted_at - enqueued_at) AS mean_latency_ms, MAX(emitted_at - enqueued_at) AS max_latency_ms, (SELECT latency_ms FROM (SELECT emitted_at - enqueued_at AS latency_ms, ROW_NUMBER() OVER (ORDER BY emitted_at - enqueued_at) AS row_number, COUNT(*) OVER () AS sample_size FROM audit_outbox WHERE emitted_at IS NOT NULL AND enqueued_at >= (strftime("%s", "now") - 21600) * 1000 AND emitted_at >= enqueued_at) ranked WHERE row_number = CAST((sample_size + 1) / 2 AS INTEGER)) AS median_latency_ms, (SELECT latency_ms FROM (SELECT emitted_at - enqueued_at AS latency_ms, ROW_NUMBER() OVER (ORDER BY emitted_at - enqueued_at) AS row_number, COUNT(*) OVER () AS sample_size FROM audit_outbox WHERE emitted_at IS NOT NULL AND enqueued_at >= (strftime("%s", "now") - 21600) * 1000 AND emitted_at >= enqueued_at) ranked WHERE row_number = CAST((sample_size * 90 + 99) / 100 AS INTEGER)) AS p90_latency_ms FROM audit_outbox WHERE emitted_at IS NOT NULL AND enqueued_at >= (strftime("%s", "now") - 21600) * 1000 AND emitted_at >= enqueued_at'
+          SQL[latency]='WITH clock AS (SELECT CAST(strftime("%s", "now") AS INTEGER) / 3600 * 3600 AS anchor_s), valid_latencies AS (SELECT emitted_at - enqueued_at AS latency_ms FROM audit_outbox CROSS JOIN clock WHERE emitted_at IS NOT NULL AND enqueued_at >= (anchor_s - 21600) * 1000 AND enqueued_at < anchor_s * 1000 AND emitted_at < anchor_s * 1000 AND emitted_at >= enqueued_at), ranked AS (SELECT latency_ms, ROW_NUMBER() OVER (ORDER BY latency_ms) AS row_number, COUNT(*) OVER () AS sample_size FROM valid_latencies) SELECT COUNT(*) AS valid_latency_rows, MIN(latency_ms) AS min_latency_ms, AVG(latency_ms) AS mean_latency_ms, MAX(latency_ms) AS max_latency_ms, AVG(CASE WHEN row_number IN (CAST((sample_size + 1) / 2 AS INTEGER), CAST((sample_size + 2) / 2 AS INTEGER)) THEN latency_ms END) AS median_latency_ms, MAX(CASE WHEN row_number = CAST((sample_size * 90 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p90_latency_ms FROM ranked'
           SQL[heads]='SELECT COUNT(*) AS chain_heads, SUM(CASE WHEN head_signature IS NOT NULL AND length(trim(head_signature)) > 0 THEN 1 ELSE 0 END) AS signed_heads FROM audit_chain_head'
           SQL[partition]='WITH partitions AS (SELECT tenant_id, region, COUNT(*) AS row_count, SUM(CASE WHEN emitted_at IS NULL THEN 1 ELSE 0 END) AS unsealed_rows FROM audit_outbox GROUP BY tenant_id, region) SELECT COUNT(DISTINCT region) AS regions, COALESCE(SUM(row_count), 0) AS partition_rows, COALESCE(SUM(unsealed_rows), 0) AS partition_unsealed_rows, COUNT(*) AS partition_count FROM partitions'
           # The owner readback requires more than a healthy moving window: it
@@ -212,7 +374,7 @@ jobs:
           done
 
           python3 - "$receipt" <<'PY'
-          import json, sys
+          import json, math, sys
           from datetime import datetime, timedelta, timezone
           path = sys.argv[1]
           with open(path, encoding="utf-8") as stream:
@@ -263,6 +425,9 @@ jobs:
               current_anchor = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
               if not complete_hour_buckets or bucket_ends[-1] != current_anchor:
                   failures.append("hourly_window_labels_not_six_complete_consecutive_utc_buckets")
+              first_post_repair_bucket = datetime(2026, 9, 30, 20, 0, tzinfo=timezone.utc)
+              if bucket_starts[0] < first_post_repair_bucket:
+                  failures.append("hourly_window_includes_pre_repair_data")
           except (KeyError, TypeError, ValueError):
               failures.append("hourly_window_labels_invalid")
           if int(population.get("total_rows") or 0) <= 0:
@@ -277,6 +442,12 @@ jobs:
               failures.append("chain_head_control_empty")
           if int(heads.get("signed_heads") or 0) != int(heads.get("chain_heads") or 0):
               failures.append("unsigned_chain_head_detected")
+          for key in ("min_latency_ms", "mean_latency_ms", "median_latency_ms", "p90_latency_ms", "max_latency_ms"):
+              value = latency.get(key)
+              if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                  failures.append(f"latency_{key}_missing_negative_or_invalid")
+          if type(latency.get("valid_latency_rows")) is not int or latency["valid_latency_rows"] <= 0:
+              failures.append("six_hour_latency_sample_empty")
           reconstructed = []
           if len(bucket_counts) == 6 and len(set(boundary_values)) == 1:
               closing = boundary_values[0]
@@ -299,8 +470,6 @@ jobs:
               failures.append("six_hour_window_has_no_arrivals")
           if sum(int(row.get("sealed_rows") or 0) for row in hourly) <= 0:
               failures.append("six_hour_window_has_no_seals")
-          if int(latency.get("valid_latency_rows") or 0) <= 0:
-              failures.append("six_hour_latency_sample_empty")
           if int(burst.get("populated_hours") or 0) <= 0:
               failures.append("seven_day_burst_control_empty")
           if int(burst.get("peak_hour_arrivals") or 0) <= 512:
@@ -328,7 +497,7 @@ jobs:
                   failures.append("six_hour_backlog_growth")
               p90 = latency.get("p90_latency_ms")
               oldest = population.get("oldest_unsealed_age_ms")
-              if type(p90) is not int or p90 < 0 or p90 > 4_200_000:
+              if isinstance(p90, bool) or not isinstance(p90, (int, float)) or not math.isfinite(p90) or p90 > 4_200_000:
                   failures.append("p90_seal_latency_above_70_minutes_or_invalid")
               if type(oldest) is not int or oldest < 0 or oldest > 4_200_000:
                   failures.append("oldest_unsealed_above_70_minutes_or_invalid")
@@ -356,7 +525,7 @@ jobs:
               "head_tail_control": head_tail,
           }
           receipt["owner_threshold"] = {
-              "decision_ref": "https://github.com/HuGR-dev/corelink-server/issues/1668#issuecomment-5855265681",
+              "decision_ref": "https://github.com/HuGR-dev/corelink-server/issues/1668#issuecomment-5861728482",
               "sealed_rows_per_demand_qualified_hour_min": 3141,
               "demand_rows_per_qualified_hour_min": 3141,
               "p90_seal_latency_max_ms": 4_200_000,
