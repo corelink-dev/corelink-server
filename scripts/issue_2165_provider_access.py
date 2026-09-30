@@ -171,7 +171,7 @@ def build_receipt(manifest: Any, env: dict[str, str], activations_raw: Any, clou
         raise ProviderAccessError("AWS caller identity account does not match the protected target")
     caller_arn = caller_identity.get("Arn", "")
     caller_role_name = target["preflight_role"].rsplit("/", 1)[-1]
-    caller_pattern = rf"arn:aws:sts::{re.escape(target["account"])}:assumed-role/{re.escape(caller_role_name)}/[A-Za-z0-9+=,.@_-]{{2,128}}"
+    caller_pattern = rf"arn:aws:sts::{re.escape(target['account'])}:assumed-role/{re.escape(caller_role_name)}/[A-Za-z0-9+=,.@_-]{{2,128}}"
     if not isinstance(caller_arn, str) or not re.fullmatch(caller_pattern, caller_arn):
         raise ProviderAccessError("CloudTrail read caller is not the protected preflight role")
     activations = _activation_rows(activations_raw, target)
