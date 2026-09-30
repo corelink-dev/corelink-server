@@ -26,7 +26,7 @@ def snapshot():
     data = json.loads(text)
     data['deployments'][0]['annotations']['workers/message'] = data['version']['annotations']['workers/message'][:48] + "..."
     data['containers'] = [{'id': completion.APP, 'name': 'corelink-staging-corelinkserver',
-                           'version': 6, 'image': f"registry.cloudflare.com/{completion.ACCOUNT}/corelink-staging-corelinkserver@{completion.PIN['image_digest']}"}]
+                           'version': 9, 'exact_application_health_verified': True, 'image': f"registry.cloudflare.com/{completion.ACCOUNT}/corelink-staging-corelinkserver@{completion.PIN['image_digest']}"}]
     data['schedules'], data['tails'] = [], []
     return data
 
@@ -38,8 +38,8 @@ def validate(data):
 class CompletionTests(unittest.TestCase):
     def test_exact_pin_and_all_resource_negative_controls(self):
         data = snapshot()
-        self.assertEqual(validate(data)['container_application_version'], 6)
-        for field, value in [('id', 'wrong'), ('name', 'wrong'), ('version', 7), ('image', 'wrong')]:
+        self.assertEqual(validate(data)['container_application_version'], 9)
+        for field, value in [('id', 'wrong'), ('name', 'wrong'), ('version', 8), ('exact_application_health_verified', False), ('image', 'wrong')]:
             bad = copy.deepcopy(data)
             bad['containers'][0][field] = value
             with self.assertRaises(Exception):
@@ -98,10 +98,12 @@ class CompletionTests(unittest.TestCase):
                    'receipt': {'contract': 'corelink-staging-d1-binding-runtime-v1', 'outcome': 'pass',
                      'probe_nonce': window['nonce'], 'worker_release': completion.PIN['rollout_sha'],
                      'scheduled_time_ms': window['starts_ms'] + 60000,
+                     'old_probe_release': '0f785fb9b096afe01247f1057d46377b9f604f13',
+                     'old_probe_retired': True, 'old_probe_tables_absent': True, 'v4_probe_catalog_absent': True,
                      **dict.fromkeys(('parameterized_select', 'failed_batch_observed', 'rollback_absence_verified',
                          'probe_table_dropped', 'd1_binding_intercepted', 'authorization_absent', 'cf_api_token_absent'), True)}}
         completion.validate_runtime(receipt, window['starts_ms'], window['starts_ms'] + 60000)
-        for key, value in [('probe_nonce', 'wrong'), ('probe_table_dropped', False), ('scheduled_time_ms', window['starts_ms'] - 1)]:
+        for key, value in [('probe_nonce', 'wrong'), ('old_probe_release', 'wrong'), ('old_probe_retired', False), ('old_probe_tables_absent', False), ('v4_probe_catalog_absent', False), ('probe_table_dropped', False), ('scheduled_time_ms', window['starts_ms'] - 1)]:
             bad = copy.deepcopy(receipt)
             bad['receipt'][key] = value
             with self.assertRaises(RuntimeError):
@@ -129,6 +131,12 @@ class CompletionTests(unittest.TestCase):
             [{'stage': 'tail_cleanup', 'code': 'api_failure', 'http_status': 503}])
         self.assertEqual(completion.host_diagnostics('issue-1700 runtime probe failed {"stage":"secret","code":"secret"}'), [])
         self.assertEqual(completion.host_diagnostics(b'issue-1700 runtime probe failed broken'), [])
+
+    def test_fixed_v5_window_requires_full_75_minute_reserve(self):
+        completion.require_completion_budget(1790791200000)
+        for now in [1790791200000 - 1, 1790812740000 - 75 * 60_000, 1790812740000]:
+            with self.assertRaises(RuntimeError):
+                completion.require_completion_budget(now)
 
     def test_workflow_separates_credentials_and_gates_completion(self):
         workflow = Path('.github/workflows/issue-1700-container-staging-deploy.yml').read_text()

@@ -76,3 +76,12 @@ in both runtimes. Successful closure also requires empty schedules/tails, zero
 canonical staging routes, exact immutable candidate attribution and unchanged
 postflight resources. A code merge or historical receipt alone is not provider
 proof. Root owns publication, protected dispatch, rollback decisions and closure.
+
+
+## Existing v5 candidate completion after account-list staleness
+
+Run `36767025427` deployed reviewed source `cc32b3d819181bf9175e795868f66212aa5456c1` but exhausted its ten-minute Container convergence deadline before runtime. The account-wide list remained at version 8/image e44 while the exact application GET returned version 9/image a70 and five healthy instances. Do not redeploy or treat the stale list as rollback evidence.
+
+The protected `complete_existing` operation is pinned only to this run and its immutable Worker/Container preimages. It reads the exact application endpoint, validates account/application identity, immutable image, version and all health counters, then requires empty schedules/tails and zero canonical staging routes before the existing native probe. Both entry and immediate pre-probe admission require at least 75 minutes remaining in the unchanged v5 window (latest entry strictly before 22:44 UTC). No image rebuild or Worker/Container source change is involved.
+
+A pass requires invocation-fresh release/nonce/image receipts including original retirement and exact v4 catalog absence, plus unchanged candidate/health/routes and empty schedules/tails after cleanup. It does not prove the v4 DO was retired. Failure preserves a sanitized partial/residual receipt; it never triggers a blind legacy rollback or replay when native execution/cleanup is unknown. Operator rollback requires separate exact-ownership and quiescence evidence. Readiness, rotation and teardown remain separate #1700 acceptance requirements.
