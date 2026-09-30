@@ -26,13 +26,13 @@ describe("exact old staging probe SQL retirement", () => {
   });
   it("drops only validated owned tables and proves absence", async () => {
     const { db, drops, prepare } = database();
-    await cleanOldProbeTables(db, () => 1790726460000);
+    await cleanOldProbeTables(db, () => 1790776860000);
     expect(drops).toEqual([`DROP TABLE "${table}"`]);
     expect(prepare.mock.calls.filter(([sql]) => sql.startsWith("SELECT type"))).toHaveLength(2);
   });
   it("empty inventory is idempotent without any DROP", async () => {
     const { db, drops } = database({ objects: [] });
-    await cleanOldProbeTables(db, () => 1790726460000);
+    await cleanOldProbeTables(db, () => 1790776860000);
     expect(drops).toEqual([]);
   });
   it.each([
@@ -44,20 +44,20 @@ describe("exact old staging probe SQL retirement", () => {
     Array.from({ length: 129 }, () => schema),
   ])("rejects whole inventory before any DROP", async (...objects) => {
     const { db, drops } = database({ objects });
-    await expect(cleanOldProbeTables(db, () => 1790726460000)).rejects.toThrow();
+    await expect(cleanOldProbeTables(db, () => 1790776860000)).rejects.toThrow();
     expect(drops).toEqual([]);
   });
   it.each([{ foreign: [{}] }, { rows: { total: 1, invalid: 1 } }, { rows: { total: 2, invalid: 0 } }])("rejects FK or unowned rows without output/destruction", async options => {
     const { db, drops } = database(options);
-    await expect(cleanOldProbeTables(db, () => 1790726460000)).rejects.toThrow();
+    await expect(cleanOldProbeTables(db, () => 1790776860000)).rejects.toThrow();
     expect(drops).toEqual([]);
   });
   it("hard expiry prevents DROP even after inventory validation", async () => {
     const { db, drops } = database();
-    await expect(cleanOldProbeTables(db, () => 1790769600000)).rejects.toThrow("window rejected");
+    await expect(cleanOldProbeTables(db, () => 1790798400000)).rejects.toThrow("window rejected");
     expect(drops).toEqual([]);
   });
   it.each([{ dropFails: true }, { retained: true }])("cleanup uncertainty cannot pass", async options => {
-    await expect(cleanOldProbeTables(database(options).db, () => 1790726460000)).rejects.toThrow();
+    await expect(cleanOldProbeTables(database(options).db, () => 1790776860000)).rejects.toThrow();
   });
 });

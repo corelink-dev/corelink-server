@@ -5,10 +5,18 @@ query run 36653980457 returned 16 events but no attributable native receipt. Exe
 and cleanup remain unknown; do not replay that candidate's nonce or use
 `complete_existing` to retry it. `verify_existing` remains read-only.
 
+Run 36670281036 remained waiting for a distinct reviewer until its compiled v3
+window expired at 12:00 UTC. It never deployed. Root preserves/cancels that run;
+approving or replaying it cannot renew the immutable Worker/Container window.
+This v4 renewal requires both runtimes to be rebuilt, with no runtime expiry
+override and no change to the original retirement target or cleanup ownership.
+Start only with a distinct reviewer available and before 18:45 UTC to retain
+the 75-minute reserve.
+
 One protected `deploy` on reviewed main builds both runtimes with nonce
-`issue-1700-recovery-20260930-v3`. The shared
+`issue-1700-recovery-20260930-v4`. The shared
 `crates/corelink-container/src/routes/staging_d1_probe_window.json` allows only
-**2026-09-30 00:00 through 12:00 UTC**, exclusive at the end. The nonce plus the
+**2026-09-30 14:00 through 20:00 UTC**, exclusive at the end. The nonce plus the
 new merged `SENTRY_RELEASE` selects a fresh dedicated DO. Host receipt freshness
 remains bounded to the current invocation and its 16-minute deadline.
 
