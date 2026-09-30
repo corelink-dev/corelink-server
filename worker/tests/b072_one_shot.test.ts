@@ -137,7 +137,7 @@ describe("B-072 durable one-shot scheduler fence", () => {
     ["wrong serving SHA", authorization({ serving_sha: "f".repeat(40) })],
     ["malformed nonce", authorization({ approval_nonce: "not-a-nonce" })],
     ["wrong issue", authorization({ issue_id: 1700 })],
-    ["too-short propagation", authorization({ starts_at_ms: scheduledAt - 1 })],
+    ["too-short propagation", authorization({ starts_at_ms: authorization().starts_at_ms - 1 })],
     ["oversized window", authorization({ ends_at_ms: scheduledAt + B072_MAX_WINDOW_MS + 1 })],
   ])("fails closed for %s authorization without POST", async (_label, auth) => {
     const post = vi.fn<typeof fetch>();

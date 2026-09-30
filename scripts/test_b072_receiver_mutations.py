@@ -41,6 +41,7 @@ def mutate_and_require_failure(name: str, relative: str, old: str, new: str) -> 
             "scripts/test_b072_terminal_race.py",
             "scripts/verify_b072_receiver.py",
             ".github/workflows/synthetic-pager-worker-deploy.yml",
+            ".github/workflows/issue-1652-b072-evidence.yml",
         ):
             target = copy_root / relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -157,10 +158,64 @@ def main() -> None:
             "options: [staging, prod]",
         ),
         (
-            "drop-deploy-lifecycle-test",
+            "revive-legacy-deploy",
             ".github/workflows/synthetic-pager-worker-deploy.yml",
-            "run: pnpm run test",
-            "run: pnpm run skipped-test",
+            "          exit 1",
+            '          pnpm exec wrangler deploy --env staging',
+        ),
+        (
+            "legacy-auto-trigger",
+            ".github/workflows/synthetic-pager-worker-deploy.yml",
+            "  workflow_dispatch:",
+            "  push:\n    branches: [main]\n  workflow_dispatch:",
+        ),
+        (
+            "legacy-production-option",
+            ".github/workflows/synthetic-pager-worker-deploy.yml",
+            "options: [staging]",
+            "options: [staging, prod]",
+        ),
+        (
+            "legacy-credential-capability",
+            ".github/workflows/synthetic-pager-worker-deploy.yml",
+            "    steps:\n",
+            "    env:\n      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}\n    steps:\n",
+        ),
+        (
+            "operator-missing-staging-environment",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            "    environment: staging\n",
+            "    environment: production\n",
+        ),
+        (
+            "operator-missing-main-guard",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            " && github.ref == 'refs/heads/main'",
+            "",
+        ),
+        (
+            "operator-missing-repository-guard",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            " && github.repository_id == '1232040291'",
+            "",
+        ),
+        (
+            "operator-missing-sha-check",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            '          test "$B072_EXPECTED_SHA" = "$GITHUB_SHA"\n',
+            "",
+        ),
+        (
+            "operator-auto-route",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            "    if: github.event_name == 'workflow_dispatch' && github.repository == 'HuGR-dev/corelink-server'",
+            "    if: always() && github.repository == 'HuGR-dev/corelink-server'",
+        ),
+        (
+            "operator-missing-dispatch",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            "  workflow_dispatch:\n",
+            "  repository_dispatch:\n",
         ),
     ]
     for mutation in mutations:
