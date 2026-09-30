@@ -356,7 +356,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            pnpm --dir apps/signup-worker test -- dsr_consumer.test.ts
+            pnpm --dir apps/signup-worker exec vitest run tests/dsr_consumer.test.ts
             pnpm --dir apps/signup-worker typecheck
             pnpm --dir apps/dsr-alert-receiver typecheck
             pnpm --dir apps/dsr-alert-receiver test
