@@ -32,6 +32,23 @@ class OwnerActionPacketTests(unittest.TestCase):
     def test_exact_closed_population_passes(self) -> None:
         self.assertEqual(MODULE.check_data(self.data), {"items": 29, "population": 29})
 
+    def test_b046_accepted_aws_target_is_source_bound(self) -> None:
+        self.assertEqual(MODULE.check_data(self.data, "B-046"), {"items": 29, "population": 29})
+        item = next(entry for entry in self.data["items"] if entry["id"] == "B-046")
+        self.assertEqual((item["owner"], item["status"]), ("tl", "done"))
+        for mutation in ("status", "evidence_path", "evidence_fields"):
+            with self.subTest(mutation=mutation):
+                altered = copy.deepcopy(self.data)
+                candidate = next(entry for entry in altered["items"] if entry["id"] == "B-046")
+                if mutation == "status":
+                    candidate["status"] = "parked"
+                elif mutation == "evidence_path":
+                    candidate["evidence"]["path"] = "evidence/owner-actions/B-046/object-lock-probe.json"
+                else:
+                    candidate["evidence"]["required_fields"].remove("approval")
+                with self.assertRaises(MODULE.PacketError):
+                    MODULE.check_data(altered, "B-046")
+
     def test_b111_hermetic_cli_passes(self) -> None:
         result = subprocess.run(
             [sys.executable, "-S", "scripts/verify_owner_action_packets.py", "--id", "B-111"],

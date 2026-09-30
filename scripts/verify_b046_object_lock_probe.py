@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -36,6 +37,7 @@ OKF_PATH = ROOT / "docs/knowledge/ops/r2-object-lock-probe.md"
 ADR_PATH = ROOT / "specs/03_architecture/adrs/ADR-0100-r2-object-lock-capability-gate.md"
 CHANGELOG_PATH = ROOT / "changelog.d/b046-r2-object-lock-reprobe.md"
 EVIDENCE_PATH = ROOT / "evidence/owner-actions/B-046/object-lock-probe.json"
+ACCEPTED_EVIDENCE_PATH = ROOT / "evidence/owner-actions/B-046/accepted-aws-target.json"
 WORKFLOW_PATH = ROOT / ".github/workflows/backlog-verify.yml"
 ADAPTER_PATH = ROOT / "crates/corelink-container/src/routes/dsr/adapter_r2_cas_legalhold.rs"
 MIGRATION_PATH = ROOT / "migrations/d1/0102_cas_retention.sql"
@@ -48,6 +50,7 @@ EVIDENCE_STATUSES = {"PASS", "NOT_SUPPORTED", "INDETERMINATE", "SKIPPED"}
 EVIDENCE_VERDICTS = {"BLOCKED", "INDETERMINATE", "SUPPORTED"}
 BUCKET_OPERATION = "CreateBucket with Object Lock enabled"
 OBJECT_OPERATION = "PutObject with COMPLIANCE retention"
+ACCEPTED_EVIDENCE_SHA256 = "0bec97b785b6a68961e8f8fba0a10575cb3cecc01496f57844b02f03175f16fc"
 
 
 class ProbeError(RuntimeError):
@@ -201,6 +204,54 @@ def validate_evidence_record(raw: str) -> None:
     evidence_text = json.dumps(record, ensure_ascii=False)
     if re.search(r"AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|R2_S3_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)", evidence_text):
         raise ProbeError("B-046 evidence contains a credential-shaped field")
+
+
+def validate_accepted_aws_evidence(raw: str) -> None:
+    """Pin the independently accepted synthetic AWS target without changing R2 truth."""
+    if hashlib.sha256(raw.encode("utf-8")).hexdigest() != ACCEPTED_EVIDENCE_SHA256:
+        raise ProbeError("B-046 accepted AWS receipt differs from the reviewed bytes")
+    record = json.loads(raw, object_pairs_hook=_reject_duplicate_json_keys)
+    expected = {
+        "schema", "captured_at_utc", "scope", "source_issues", "target", "proof",
+        "approval", "independent_review", "cleanup", "r2_history", "nonclaims",
+    }
+    if set(record) != expected or record["schema"] != "corelink.b046.accepted_aws_target.v1":
+        raise ProbeError("B-046 accepted AWS receipt schema drifted")
+    if record["source_issues"] != {"implementation_2237": "closed", "external_proof_1877": "closed"}:
+        raise ProbeError("B-046 prerequisites are not terminal")
+    target, proof, approval = record["target"], record["proof"], record["approval"]
+    if target["provider"] != "AWS S3" or target["region"] != "us-east-1" or target["jurisdiction_mapping"] != "United States" or target["synthetic_only"] is not True or target["tenant_data"] is not False:
+        raise ProbeError("B-046 approved target boundary drifted")
+    for field in ("account_sha256", "bucket_sha256", "object_key_sha256", "object_version_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", target[field]):
+            raise ProbeError("B-046 redacted target hash missing")
+    if (
+        proof["source_run"] != 36741245684 or proof["source_attempt"] != 1
+        or proof["source_sha"] != "9d8fdbfa04dd16d4099056de6e16ea8343ebba46"
+        or proof["reconciliation_run"] != 36742484737 or proof["reconciliation_attempt"] != 1
+        or proof["default_mode"] != "COMPLIANCE" or proof["object_mode"] != "COMPLIANCE"
+        or proof["default_retention_days"] != 1 or proof["legal_hold"] != "ON"
+        or proof["same_version_pre_expiry_delete_denied"] is not True
+        or proof["cloudtrail_digest_validation"] != "passed"
+        or proof["put_data_event_present"] is not True
+        or proof["denied_delete_data_event_present"] is not True
+    ):
+        raise ProbeError("B-046 same-version provider proof drifted")
+    if approval["approval_sha256"] != "3d2be1524ff77889bbf87585bdb8b54a2e889ed099e8448626980e82b28e8b06" or approval["maximum_authorized_usd"] != 5:
+        raise ProbeError("B-046 root approval binding drifted")
+    if record["independent_review"]["provider_chain"] != "PASS" or record["independent_review"]["approval_delta"] != "PASS":
+        raise ProbeError("B-046 independent review is not accepted")
+    cleanup = record["cleanup"]
+    if cleanup["owner"] != "gmhelmold" or cleanup["eligible_now"] is not False or cleanup["legal_hold_release_authorized"] is not False or cleanup["cleanup_complete"] is not False or cleanup["retain_until_utc"] != proof["retain_until_utc"]:
+        raise ProbeError("B-046 deferred cleanup custody drifted")
+    if record["r2_history"]["direct_probe_classification"] != "INDETERMINATE" or record["r2_history"]["object_operation"] != "SKIPPED" or record["r2_history"]["platform_object_lock"] != "NotImplemented":
+        raise ProbeError("B-046 R2 historical classification drifted")
+    if (
+        "no production route" not in record["nonclaims"]
+        or "no R2 WORM" not in record["nonclaims"]
+        or "production Compliance mode remains disabled and separately gated" not in record["nonclaims"]
+    ):
+        raise ProbeError("B-046 nonclaims drifted")
 
 
 def redact(value: str, secrets: Sequence[str]) -> str:
@@ -382,6 +433,11 @@ def _required_markers() -> Mapping[str, tuple[str, ...]]:
             '"provider_code": "InvalidArgument"',
             '"status": "SKIPPED"',
         ),
+        ACCEPTED_EVIDENCE_PATH.as_posix(): (
+            '"schema": "corelink.b046.accepted_aws_target.v1"',
+            '"approval_delta": "PASS"',
+            '"direct_probe_classification": "INDETERMINATE"',
+        ),
         WORKFLOW_PATH.as_posix(): (
             "scripts/verify_b046_object_lock_probe.py",
             "tests/test_verify_b046_object_lock_probe.py",
@@ -410,6 +466,7 @@ def validate_repository_contract(files: Mapping[str, str] | None = None) -> None
         ADR_PATH,
         CHANGELOG_PATH,
         EVIDENCE_PATH,
+        ACCEPTED_EVIDENCE_PATH,
         WORKFLOW_PATH,
         ADAPTER_PATH,
         MIGRATION_PATH,
@@ -422,10 +479,11 @@ def validate_repository_contract(files: Mapping[str, str] | None = None) -> None
         if missing:
             raise ProbeError(f"{path} missing contract markers: {', '.join(missing)}")
     validate_evidence_record(texts[EVIDENCE_PATH.as_posix()])
+    validate_accepted_aws_evidence(texts[ACCEPTED_EVIDENCE_PATH.as_posix()])
     backlog = texts[BACKLOG_PATH.as_posix()]
     b046 = _b046_record(backlog)
-    if _record_field(b046, "status") != "parked":
-        raise ProbeError("B-046 status must remain parked without external provider evidence")
+    if _record_field(b046, "status") != "done":
+        raise ProbeError("B-046 accepted AWS target requires a done row")
     if _record_field(b046, "verify") != B046_VERIFY_COMMAND:
         raise ProbeError(f"B-046 verify must remain {B046_VERIFY_COMMAND!r}")
     compact_b046 = " ".join(b046.split())
@@ -442,7 +500,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         validate_repository_contract()
         if not args.probe:
-            print("B-046 contract confirmed: R2 Object-Lock remains open/blocked; no compliance guarantee")
+            print("B-046 exact AWS synthetic target accepted; R2 Object Lock unsupported, no production-mode claim")
             return 0
         print(json.dumps(run_external_probe(), sort_keys=True))
         return 0

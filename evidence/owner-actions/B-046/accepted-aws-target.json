@@ -1,0 +1,80 @@
+{
+  "approval": {
+    "approval_sha256": "3d2be1524ff77889bbf87585bdb8b54a2e889ed099e8448626980e82b28e8b06",
+    "approved_at_utc": "2026-09-30T18:59:01.447743+00:00",
+    "approved_by": "Codex /root, delegated technical lead",
+    "maximum_authorized_usd": 5,
+    "provisioner_create_role_capture_sha256": "ed3e8a62e58785a2151b176f44dd5316ba781b13c69b8e047cbe8599a9862222",
+    "provisioner_principal_sha256": "431f0ceefd4fd1173dbbf4941a3c92e28b3053d7599a669f60036f5807faef1e",
+    "provisioner_sts_capture_sha256": "4c2ede64990a89ac0c217860c19107dcb909ca3abfafd56c746df521358f31c7"
+  },
+  "captured_at_utc": "2026-09-30T19:05:29Z",
+  "cleanup": {
+    "cleanup_complete": false,
+    "eligible_now": false,
+    "legal_hold_release_authorized": false,
+    "owner": "gmhelmold",
+    "retain_until_utc": "2026-10-01T16:03:42Z",
+    "retry_event": "after retain-until and separately authorized hold release; exact-source cleanup workflow"
+  },
+  "independent_review": {
+    "approval_delta": "PASS",
+    "approval_delta_reviewer": "/root/i1877_closing_packet/cold_1877_closure_delta",
+    "provider_chain": "PASS",
+    "reviewed_packet_sha256": "a2fdebd3e905d572ee0a8bc46aa4f3a3b53701150f9db05c3a09542207f43ad0"
+  },
+  "nonclaims": [
+    "no Compliance database mode",
+    "no production route",
+    "no R2 WORM",
+    "no customer contract or global legal opinion",
+    "no account-wide nonprod isolation",
+    "no completed cleanup",
+    "production Compliance mode remains disabled and separately gated"
+  ],
+  "proof": {
+    "bucket_object_lock_enabled": true,
+    "bucket_versioning_enabled": true,
+    "cloudtrail_digest_validation": "passed",
+    "default_mode": "COMPLIANCE",
+    "default_retention_days": 1,
+    "denied_delete_data_event_present": true,
+    "effective_delete_permission": "iam_simulated_allow",
+    "legal_hold": "ON",
+    "object_mode": "COMPLIANCE",
+    "put_data_event_present": true,
+    "reconciliation_artifact_sha256": "727597cf727ef0ea29dd422ad525291415b572879bc18d87651a8432709f8920",
+    "reconciliation_attempt": 1,
+    "reconciliation_run": 36742484737,
+    "redacted_receipt_sha256": "47c74fba6414ab7c43df020bff73ad8ccd7e08fb519e14da6f6e0ebec1caedc8",
+    "retain_until_utc": "2026-10-01T16:03:42Z",
+    "same_version_pre_expiry_delete_denied": true,
+    "source_artifact_sha256": "6ff84f07c48dc8a4154196f778b6a3fd8c202f1033454fe357f2b78737faed74",
+    "source_attempt": 1,
+    "source_run": 36741245684,
+    "source_sha": "9d8fdbfa04dd16d4099056de6e16ea8343ebba46"
+  },
+  "r2_history": {
+    "direct_probe_classification": "INDETERMINATE",
+    "evidence_path": "evidence/owner-actions/B-046/object-lock-probe.json",
+    "object_operation": "SKIPPED",
+    "platform_object_lock": "NotImplemented"
+  },
+  "schema": "corelink.b046.accepted_aws_target.v1",
+  "scope": "approved nonproduction AWS S3 Object-Lock external target proof only; production route and mode remain disabled and separately gated",
+  "source_issues": {
+    "external_proof_1877": "closed",
+    "implementation_2237": "closed"
+  },
+  "target": {
+    "account_sha256": "fa16bb953c1cb3d116120ae361d9719060d0ed49cc7f892f5af851642acfc885",
+    "bucket_sha256": "4e885367439c493a6af334415c207c1172cb5593c2ec390366a38cf9eefbad7c",
+    "jurisdiction_mapping": "United States",
+    "object_key_sha256": "2baa683b524dc6b036fc9b44b4f4550cf52eb497c766db95051a864823e34211",
+    "object_version_sha256": "42dd391a4bc014480c86b1e6f5affc474f6f2daa760f8b3eae72daad7f4bf355",
+    "provider": "AWS S3",
+    "region": "us-east-1",
+    "synthetic_only": true,
+    "tenant_data": false
+  }
+}
