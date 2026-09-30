@@ -22,6 +22,9 @@ on:
 permissions:
   contents: read
 
+env:
+  I2568_EXPECTED_SHA: ${{ inputs.expected_sha }}
+
 concurrency:
   group: issue-2568-sla-credit-real-${{ github.ref }}
   cancel-in-progress: false
@@ -33,7 +36,7 @@ jobs:
       github.repository == 'HuGR-dev/corelink-server' &&
       github.repository_id == '1232040291' &&
       github.event_name == 'workflow_dispatch' &&
-      ((inputs.mode == 'credentialless' && github.ref == 'refs/heads/codex/support03-issue-2568') ||
+      ((inputs.mode == 'credentialless' && (github.ref == 'refs/heads/codex/support03-issue-2568' || github.ref == 'refs/heads/codex/support03-enterprise-credit-correction')) ||
        (inputs.mode == 'full-real' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-24.04
     timeout-minutes: 12
@@ -54,7 +57,7 @@ jobs:
           [[ "$GITHUB_SHA" == "$EXPECTED_SHA" ]]
           [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
           case "$GITHUB_REF" in
-            refs/heads/codex/support03-issue-2568|refs/heads/main) ;;
+            refs/heads/codex/support03-issue-2568|refs/heads/codex/support03-enterprise-credit-correction|refs/heads/main) ;;
             *) echo "workflow ref is outside the admitted branches" >&2; exit 1 ;;
           esac
 
@@ -83,19 +86,19 @@ jobs:
           main_sha="$(git rev-parse refs/remotes/trusted/main)"
           [[ "$main_sha" == "$EXPECTED_SHA" ]]
 
-      - name: Check out the frozen canonical source separately
+      - name: Check out the exact candidate canonical source separately
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
         with:
           repository: HuGR-dev/corelink-server
-          ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4
+          ref: ${{ inputs.expected_sha }}
           path: canonical-source
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify immutable canonical source files
+      - name: Verify exact candidate canonical source files and immutable file digests
         run: python3 -I scripts/issue_2568_sla_credit_real.py verify-source --source-root canonical-source
 
-      - name: Compile private Worker wrapper against frozen canonical source
+      - name: Compile private Worker wrapper against exact candidate canonical source
         run: python3 -I scripts/issue_2568_sla_credit_real.py verify-wrapper --source-root canonical-source
 
       - name: Install pinned actionlint
@@ -121,6 +124,25 @@ jobs:
           python3 -I scripts/verify_issue_2568_sla_credit_real.py --self-test
           python3 -I tests/test_issue_2568_sla_credit_real.py
 
+      - name: Set up pnpm for Enterprise-only runtime negatives
+        if: inputs.mode == 'credentialless'
+        uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # v4.1.0
+        with:
+          version: 10.32.1
+
+      - name: Set up Node for Enterprise-only runtime negatives
+        if: inputs.mode == 'credentialless'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Run focused SLA credit evaluator and sweep negatives
+        if: inputs.mode == 'credentialless'
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --filter @corelink/signup-worker... --ignore-scripts
+          pnpm --filter @corelink/signup-worker exec vitest run tests/sla_credit_cron.test.ts
+
   provider:
     name: Complete bounded real Stripe and D1 test operation
     needs: static
@@ -141,11 +163,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Check out exact frozen canonical source separately
+      - name: Check out exact protected-main canonical source separately
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
         with:
           repository: HuGR-dev/corelink-server
-          ref: 5fabd93e98d805a39319fcb6a22c9ee5267fafd4
+          ref: ${{ inputs.expected_sha }}
           path: canonical-source
           fetch-depth: 1
           persist-credentials: false
