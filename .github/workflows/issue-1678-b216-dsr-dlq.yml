@@ -12,11 +12,26 @@ on:
       - "infra/staging/topology.json"
       - "migrations/d1/0138_dsr_dlq_delivery_receipts.sql"
       - "migrations/d1/0145_dsr_dlq_redrive_authority.sql"
+      - ".github/workflows/b216-receiver-deploy-nonprod.yml"
+      - "apps/dsr-alert-receiver/scripts/deploy-route.mjs"
+      - "apps/dsr-alert-receiver/scripts/run-disable-workers-dev.mjs"
+      - "apps/dsr-alert-receiver/scripts/run-synthetic-exercise.mjs"
+      - "apps/dsr-alert-receiver/scripts/synthetic-exercise.mjs"
+      - "apps/dsr-alert-receiver/tests/deploy-route.test.mjs"
+      - "apps/dsr-alert-receiver/tests/readback-route.test.mjs"
+      - "apps/dsr-alert-receiver/tests/synthetic-exercise.test.mjs"
+      - "apps/dsr-alert-receiver/package.json"
+      - "apps/dsr-alert-receiver/pnpm-lock.yaml"
+      - "scripts/apply_staging_b216_dsr_schema.py"
+      - "scripts/verify-signup-worker-dsr-redrive-schema.sh"
+      - "tests/test_b216_dsr_schema_fence.py"
+      - "docs/operator/b216-staging-dsr-receiver-runbook.md"
       - "docs/internal/b215-b230-runtime-owner-actions.md"
       - "docs/internal/b216-critical-alert-contract.md"
       - "docs/internal/secrets-checklist.md"
       - "BACKLOG.md"
       - "scripts/verify-signup-worker-secrets.sh"
+      - "scripts/verify_staging_topology_contract.py"
       - "scripts/verify_b215_b223_contracts.py"
       - ".github/workflows/signup-worker-deploy.yml"
       - ".github/workflows/issue-1678-b216-dsr-dlq.yml"
@@ -55,6 +70,17 @@ jobs:
         run: pnpm install --frozen-lockfile --filter @corelink/signup-worker... --ignore-scripts
       - name: Exercise B-216 DSR DLQ receipt contract
         run: pnpm --dir apps/signup-worker exec vitest run tests/dsr_consumer.test.ts
+      - name: Install pinned isolated receiver dependencies
+        run: pnpm --dir apps/dsr-alert-receiver install --frozen-lockfile --ignore-workspace --ignore-scripts
+      - name: Exercise fixed receiver deployment and synthetic receipt contract
+        run: pnpm --dir apps/dsr-alert-receiver exec vitest run tests/deploy-route.test.mjs tests/readback-route.test.mjs tests/synthetic-exercise.test.mjs
+      - name: Check the OAuth-only fixed-target schema operator contract
+        run: |
+          set -euo pipefail
+          bash -n scripts/verify-signup-worker-dsr-redrive-schema.sh
+          python3 -B -m unittest -v tests/test_b216_dsr_schema_fence.py
+          python3 -B scripts/apply_staging_b216_dsr_schema.py --check-contract
+          python3 scripts/verify_staging_topology_contract.py --expect ready
       - name: Verify the provider-neutral B-216 alert contract
         run: |
           python3 scripts/verify_b101_proposals.py --id B-216
