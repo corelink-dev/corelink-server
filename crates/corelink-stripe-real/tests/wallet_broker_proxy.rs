@@ -5,7 +5,7 @@
 //! Wallet proxy. Three load-bearing assertions:
 //!
 //! - `client_uses_wallet_proxy_url` — the constructed request URL is
-//!   `{wallet_base}/_wallet/proxy/{stripe_ref}/v1/...` (NOT
+//!   `{wallet_base}/{stripe_ref}/v1/...` (NOT
 //!   `api.stripe.com/...`).
 //! - `client_uses_hugrw_token_auth` — the `Authorization` header is
 //!   `Bearer hugrw_<token>` (NOT `Bearer sk_...` and NOT HTTP Basic
@@ -45,7 +45,7 @@ async fn client_uses_wallet_proxy_url() {
     // `api.stripe.com/v1/customers` directly the mock would never see
     // the request and wiremock would 404 it.
     Mock::given(method("POST"))
-        .and(path("/_wallet/proxy/stripe-prod/v1/customers"))
+        .and(path("/stripe-prod/v1/customers"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_string(r#"{"id":"cus_proxytest","email":"u@example.test"}"#),
@@ -74,10 +74,7 @@ async fn client_uses_wallet_proxy_url() {
     // Defensive: confirm wiremock received exactly the proxy path.
     let received = server.received_requests().await.expect("wiremock log");
     assert_eq!(received.len(), 1);
-    assert_eq!(
-        received[0].url.path(),
-        "/_wallet/proxy/stripe-prod/v1/customers"
-    );
+    assert_eq!(received[0].url.path(), "/stripe-prod/v1/customers");
 }
 
 #[tokio::test]
@@ -89,7 +86,7 @@ async fn client_uses_hugrw_token_auth() {
     // would respond 404 — which the client would surface as
     // StripeError::Generic, failing the assert below.
     Mock::given(method("POST"))
-        .and(path("/_wallet/proxy/stripe-prod/v1/customers"))
+        .and(path("/stripe-prod/v1/customers"))
         .and(header("Authorization", "Bearer hugrw_auth_test"))
         .and(header_exists("Idempotency-Key"))
         .respond_with(
@@ -141,7 +138,7 @@ async fn fails_closed_on_wallet_5xx() {
     // upstream key; a fallback path would be structurally impossible
     // and the charter forbids it).
     Mock::given(method("POST"))
-        .and(path("/_wallet/proxy/stripe-prod/v1/customers"))
+        .and(path("/stripe-prod/v1/customers"))
         .respond_with(ResponseTemplate::new(503).set_body_string(
             r#"{"error":{"type":"api_error","message":"wallet upstream unavailable"}}"#,
         ))
@@ -181,7 +178,7 @@ async fn fails_closed_on_wallet_5xx() {
     for r in &received {
         assert_eq!(
             r.url.path(),
-            "/_wallet/proxy/stripe-prod/v1/customers",
+            "/stripe-prod/v1/customers",
             "every retry MUST hit the wallet proxy (no fallback to direct Stripe)"
         );
     }

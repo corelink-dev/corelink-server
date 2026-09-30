@@ -232,7 +232,7 @@ mod cleanup_fault_injection {
         let server = runtime.block_on(MockServer::start());
         let customer_id = "cus_outside_profile_fixture";
         let session_id = "cs_outside_profile_fixture";
-        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let proxy = "/stripe-prod-test";
         runtime.block_on(async {
             Mock::given(method("POST"))
                 .and(path(format!("{proxy}/v1/customers")))
@@ -307,7 +307,7 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let proxy = "/stripe-prod-test";
         runtime.block_on(async {
             Mock::given(method("GET"))
                 .and(path(format!("{proxy}/v1/account")))
@@ -473,7 +473,7 @@ mod cleanup_fault_injection {
         let server = runtime.block_on(MockServer::start());
         let customer_id = "cus_retry_fixture";
         let session_id = "cs_retry_fixture";
-        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let proxy = "/stripe-prod-test";
         runtime.block_on(async {
             Mock::given(method("POST"))
                 .and(path(format!("{proxy}/v1/customers")))
@@ -554,7 +554,7 @@ mod cleanup_fault_injection {
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
         let customer_id = "cus_create_failure_fixture";
-        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let proxy = "/stripe-prod-test";
 
         runtime.block_on(async {
             Mock::given(method("POST"))
@@ -657,7 +657,7 @@ mod cleanup_fault_injection {
         let server = runtime.block_on(MockServer::start());
         let customer_id = "cus_missing_url_fixture";
         let checkout_id = "cs_missing_url_fixture";
-        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let proxy = "/stripe-prod-test";
         let open_session = serde_json::json!({
             "id": checkout_id,
             "customer": customer_id,
@@ -796,7 +796,7 @@ mod cleanup_fault_injection {
         runtime.block_on(
             Mock::given(method("GET"))
                 .and(path(format!(
-                    "/_wallet/proxy/stripe-prod-test/v1/customers/{customer_id}"
+                    "/stripe-prod-test/v1/customers/{customer_id}"
                 )))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
@@ -867,7 +867,7 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let proxy = "/stripe-prod-test";
         let customer_id = "cus_unknown_mode_fixture";
         let session_id = "cs_unknown_mode_fixture";
         runtime.block_on(async {
@@ -943,7 +943,7 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let proxy = "/stripe-prod-test";
         let customer_id = "cus_unknown_mode_created_fixture";
         runtime.block_on(async {
             Mock::given(method("POST"))
@@ -1006,7 +1006,7 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let proxy = "/stripe-prod-test";
         let customer_id = "cus_checkout_unknown_mode_fixture";
         let session_id = "cs_checkout_unknown_mode_fixture";
         runtime.block_on(async {
@@ -1086,7 +1086,7 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let proxy = "/stripe-prod-test";
         let customer_id = "cus_explicit_live_fixture";
         runtime.block_on(async {
             Mock::given(method("POST"))
@@ -1146,7 +1146,7 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/_wallet/proxy/stripe-prod-test";
+        let proxy = "/stripe-prod-test";
         let customer_id = "cus_explicit_live_checkout_fixture";
         let session_id = "cs_explicit_live_fixture";
         runtime.block_on(async {
