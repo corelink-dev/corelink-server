@@ -34,6 +34,57 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(contents)
 
+    def test_i1652_receiver_requires_entire_exact_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trusted = Path(directory) / "trusted"
+            candidate = Path(directory) / "candidate"
+            trusted.mkdir()
+            candidate.mkdir()
+            pins = {}
+            for path in backlog_verify.I1652_DELIVERY_PINS:
+                old = None if path.endswith(("one-shot.md", "one_shot_fence.sql", "b072_operator.py", "b072_workflow.py", "b072_one_shot.ts", "b072_one_shot.test.ts")) else f"old:{path}\n".encode()
+                new = f"new:{path}\n".encode()
+                if old is not None:
+                    self._write(trusted, path, old)
+                self._write(candidate, path, new)
+                pins[path] = (
+                    None if old is None else (0o644, hashlib.sha256(old).hexdigest()),
+                    (0o644, hashlib.sha256(new).hexdigest()),
+                )
+            # The exact absent/preexisting split is part of the policy surface.
+            self.assertEqual(sum(old is None for old, _ in pins.values()), 7)
+            receiver = "scripts/verify_b072_receiver.py"
+            mutant = "scripts/test_b072_receiver_mutations.py"
+            with patch.object(backlog_verify, "I1652_DELIVERY_PINS", pins), patch.object(
+                backlog_verify, "_candidate_control_paths", return_value={receiver, mutant}
+            ):
+                self.assertTrue(backlog_verify._preauthorized_i1652_receiver(candidate, trusted))
+                backlog_verify.check_candidate_controls(candidate, trusted, [])
+                for relative in pins:
+                    target = candidate / relative
+                    original = target.read_bytes()
+                    target.write_bytes(b"altered\n")
+                    self.assertFalse(backlog_verify._preauthorized_i1652_receiver(candidate, trusted), relative)
+                    target.write_bytes(original)
+                for relative in (receiver, mutant):
+                    target = candidate / relative
+                    target.chmod(0o755)
+                    self.assertFalse(backlog_verify._preauthorized_i1652_receiver(candidate, trusted), relative)
+                    target.chmod(0o644)
+                extra = candidate / "unapproved.txt"
+                extra.write_text("extra\n", encoding="utf-8")
+                self.assertFalse(backlog_verify._preauthorized_i1652_receiver(candidate, trusted))
+                extra.unlink()
+                (trusted / receiver).write_text("wrong preimage\n", encoding="utf-8")
+                self.assertFalse(backlog_verify._preauthorized_i1652_receiver(candidate, trusted))
+
+    def test_i1652_receiver_pins_are_seventeen_and_include_guard_pair(self) -> None:
+        pins = backlog_verify.I1652_DELIVERY_PINS
+        self.assertEqual(len(pins), 17)
+        self.assertIn("scripts/verify_b072_receiver.py", pins)
+        self.assertIn("scripts/test_b072_receiver_mutations.py", pins)
+        self.assertEqual(sum(old is None for old, _ in pins.values()), 7)
+
     def test_b035_closeout_exact_tree_and_mutation_teeth(self) -> None:
         paths = (
             "BACKLOG.md",
