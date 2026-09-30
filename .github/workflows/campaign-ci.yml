@@ -466,7 +466,7 @@ jobs:
             python3 scripts/verify_staging_target.py
             python3 scripts/verify_staging_topology_contract.py --expect ready
             python3 -m unittest -q tests/test_verify_staging_target.py tests/test_verify_staging_topology_contract.py
-            python3 -m pytest -q tests/test_staging_deployment_guard.py tests/test_issue_1700_route_inventory.py tests/test_issue_1700_completion.py
+            python3 -m pytest -q tests/test_staging_deployment_guard.py tests/test_issue_1700_route_inventory.py tests/test_issue_1700_completion.py tests/test_issue_1700_historical_query.py
             node --test scripts/tests/issue_1700_runtime_probe.test.mjs scripts/tests/issue_1700_probe_process.test.mjs
             pnpm --dir worker exec vitest run tests/staging_runtime_d1_probe.test.ts tests/durable_object.test.ts
             pnpm --dir worker exec tsc --noEmit

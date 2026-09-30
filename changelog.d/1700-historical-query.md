@@ -1,0 +1,1 @@
+- Add a protected, fixed historical log query for the interrupted staging D1 proof using the existing repository identity. Retain only sanitized classification and hashes; historical evidence never becomes a new runtime pass.
