@@ -26,6 +26,8 @@ WORKFLOW_PATH = ROOT / ".github/workflows/real-ignored-harnesses.yml"
 CONTRACT_WORKFLOW_PATH = ROOT / ".github/workflows/issue-1650-real-integration-contract.yml"
 CAMPAIGN_WORKFLOW_PATH = ROOT / ".github/workflows/campaign-ci.yml"
 RUNNER_PATH = ROOT / "scripts/run-real-ignored-harnesses.sh"
+R2_TEMP_CREDENTIAL_PATH = ROOT / "scripts/issue_2564_r2_temp_credentials.py"
+R2_TEMP_CREDENTIAL_TESTS_PATH = ROOT / "scripts/test_issue_2564_r2_temp_credentials.py"
 MANIFEST_PATH = ROOT / "scripts/real-ignored-harness-manifest.json"
 SEED_PATH = ROOT / "crates/corelink-pat/tests/emit_e2e_seed.rs"
 
@@ -81,11 +83,11 @@ REQUIRED_TARGET_SOURCES = {
 # run. The self-hosted runner's PATH/toolchain remains the infrastructure trust
 # boundary; this manifest binds the repository-owned selector/source inputs.
 SOURCE_SHA256 = {
-    "crates/corelink-container/src/routes/tier_select_store.rs": "2c8420e87367772276ac807dee0a9c386f304afecbb842e1214a91be3c120602",
+    "crates/corelink-container/src/routes/tier_select_store.rs": "adcecd88d1705a97e5017aa03bbc35dbbcef2b2c090bbd35584b294c7039b5d0",
     "crates/corelink-container/src/storage/d1_http.rs": "258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5",
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
-    "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "0dc7b3f8fe217e420b3e483f97b79f3a443591f3df8b8a751fcfdbaf6b609255",
-    "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "1589c0bf78b5ecee786f39e71e66feb3bcd387ba1465d4ad5f22133cdcf14b4e",
+    "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "cb65c3016cfd62fcf40e63811ae509e4585e174000b297462477997aa70e1269",
+    "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "aefc11f79bff187a2014d13ddc2096de6dd2250cbd6cd631cf8a68fc75771b46",
     "crates/corelink-stripe-real/tests/live_integration.rs": "4667e8354afb20adea5eb18afe33fcadf77bee696e3e91b1f00eefcf7e200b11",
     "crates/corelink-audit-chain/tests/neon_shadow_real.rs": "dfd22738e96d82695b40addf64b3dbaf611fbd8026346f0b4e33b28f10fe79eb",
 }
@@ -102,10 +104,10 @@ STAGING_D1_PROXY_TOPOLOGY_TARGET_SHA256 = (
     "a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14"
 )
 STAGING_D1_PROXY_SOURCE_PREIMAGE_SHA256 = (
-    "57df01654b44a12c57663d4543b1290125c87346e014e3b8210624a2d9cb6dd2"
+    "9e45d69c108533603f94ea3566b6a2ee96d97e3658fd790f80f388a1f140753f"
 )
 STAGING_D1_PROXY_SOURCE_TARGET_SHA256 = (
-    "258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5"
+    "60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d"
 )
 
 
@@ -167,6 +169,8 @@ CONTRACT_TRIGGER_INPUTS = (
     "docs/handoff/2026-09-22-i1650-real-integration-readiness.json",
     "crates/corelink-pat/tests/emit_e2e_seed.rs",
     "crates/corelink-stripe-real/src/client.rs",
+    "crates/corelink-container/src/storage.rs",
+    "crates/corelink-container/src/storage/r2_s3_parts/client_impl.rs",
     "scripts/verify_stripe_harness_cleanup_receipt.py",
     "tests/test_stripe_harness_cleanup_receipt.py",
     "scripts/stripe_test_mode_evidence.py",
@@ -387,7 +391,7 @@ def verify_exact_manifest() -> None:
     }
     expected_env = {
         "d1": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID"),
-        "r2": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID", "R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_TEST_BUCKET"),
+        "r2": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID", "R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_S3_SESSION_TOKEN", "R2_TEST_BUCKET"),
         "stripe": ("HUGR_WALLET_BASE", "HUGR_WALLET_TOKEN", "HUGR_STRIPE_REF", "STRIPE_AUTH_MODE", "STRIPE_PRICE_ID_STARTER", "STRIPE_TEST_ACCOUNT_ID"),
         "neon": ("NEON_TEST_DSN",),
     }
@@ -589,20 +593,76 @@ def assert_contract(workflow: str, runner: str) -> None:
     if 'REAL_HARNESS_PROFILE: ${{ inputs.profile }}' not in wf:
         fail("workflow does not pass the profile through an environment variable")
     expected_r2_parser_fixtures = (
-        "CF_API_TOKEN: ${{ inputs.profile == 'r2' && 'test' || secrets.CF_API_TOKEN }}",
+        "CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}",
         "D1_DATABASE_ID: ${{ inputs.profile == 'r2' && 'test' || secrets.D1_DATABASE_ID }}",
     )
     for expected in expected_r2_parser_fixtures:
         if expected not in wf:
             fail("R2 profile must receive inert D1 parser fixtures, not protected D1 credentials")
+    if 'R2_S3_SESSION_TOKEN: ""' not in wf:
+        fail("R2 session token must be generated in memory, not sourced from a persistent secret")
+    if "secrets.R2_S3_SESSION_TOKEN" in wf or "vars.R2_S3_SESSION_TOKEN" in wf:
+        fail("session credentials must not be stored in protected GitHub bindings")
+    if "for name in CF_API_TOKEN HUGR_WALLET_TOKEN NEON_TEST_DSN R2_S3_ACCESS_KEY_ID; do" not in wf:
+        fail("bootstrap bearer and parent R2 access ID are not masked")
+    if 'echo "::add-mask::${!name}"' not in wf:
+        fail("parent R2 S3 value mask loop is missing")
+    for name in (
+        "R2_PARENT_SCOPE_CONFIRMED_ACCESS_KEY_ID",
+        "R2_PARENT_SCOPE_CONFIRMED_BUCKET",
+        "R2_PARENT_SCOPE_RECEIPT_SHA256",
+    ):
+        expected_binding = f"{name}: ${{{{ inputs.profile == 'r2' && vars.{name} || '' }}}}"
+        if expected_binding not in wf:
+            fail(f"parent R2 identity readback gate is missing or exposed outside R2: {name}")
+    workflow_bootstrap_branch = (
+        'if [[ "$REAL_HARNESS_PROFILE" == "r2" ]]; then\n'
+        '            python3 -S scripts/issue_2564_r2_temp_credentials.py\n'
+        '          else\n'
+        '            bash scripts/run-real-ignored-harnesses.sh "$REAL_HARNESS_PROFILE"\n'
+        '          fi'
+    )
+    if workflow_bootstrap_branch not in workflow:
+        fail("R2 temporary credential bootstrap can execute outside the exact R2 branch")
+    bootstrap = R2_TEMP_CREDENTIAL_PATH.read_text(encoding="utf-8")
+    for required in (
+        "TTL_SECONDS = 7200",
+        '"permission": "object-read-write"',
+        '"ttlSeconds": TTL_SECONDS',
+        '"R2_S3_SESSION_TOKEN"] = credentials.session_token',
+        'env.get("D1_DATABASE_ID") != "test"',
+        'classify_bearer_r2_write(account_id=account_id, bearer=bearer, fetch=fetch)',
+        '"parentAccessKeyId": parent_access_key_id',
+        '"Workers R2 Storage Write"',
+        "verify_parent_scope_receipt(env, parent_access_key_id)",
+        '"R2_PARENT_SCOPE_CONFIRMED_ACCESS_KEY_ID"',
+        '"R2_PARENT_SCOPE_CONFIRMED_BUCKET"',
+        '"R2_PARENT_SCOPE_RECEIPT_SHA256"',
+        'EXPECTED_BUCKET = "corelink-b068-r2-2564-20260927-staging"',
+        'EXPECTED_ACCOUNT = "6a1fc1c626fc2628823e60b9db01f5cd"',
+        'emit(f"::add-mask::{value}")',
+        "child_env.clear()",
+        'RUNNER = ("bash", "scripts/run-real-ignored-harnesses.sh", PROFILE)',
+        '"/user/tokens/verify"',
+        '"/user/tokens/{quote(token_id, safe=\'\')}"',
+        "if status == 403:",
+    ):
+        if required not in bootstrap:
+            fail("R2 temporary credential bootstrap lost its readback, scope, mask, or cleanup contract")
+    if 'child_env["CF_API_TOKEN"] = "test"' not in bootstrap or 'child_env["R2_S3_ACCESS_KEY_ID"] = credentials.access_key_id' not in bootstrap:
+        fail("R2 bearer or parent key ID reaches the test runner")
+    if 'R2_S3_SESSION_TOKEN R2_TEST_BUCKET' not in sh:
+        fail("R2 runner does not fail before Cargo when the derived session token is absent")
     if 'bash scripts/run-real-ignored-harnesses.sh "$REAL_HARNESS_PROFILE"' not in wf:
         fail("workflow interpolates the dispatch input into shell source")
     if 'bash scripts/run-real-ignored-harnesses.sh "${{ inputs.profile }}"' in wf:
         fail("dispatch input is interpolated directly into shell source")
-    for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY"):
+    for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID"):
         expected = f"{name}: ${{{{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.{name} || '' }}}}"
         if expected not in wf:
             fail(f"R2 credential is not restricted to the R2/all profile: {name}")
+    if 'R2_S3_SECRET_ACCESS_KEY: ""' not in wf:
+        fail("R2 parent secret must not enter the bootstrap or executor")
     expected_bucket = "R2_TEST_BUCKET: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && vars.R2_TEST_BUCKET || '' }}"
     if expected_bucket not in wf:
         fail("R2 test bucket is not restricted to the R2/all profile")
@@ -741,6 +801,7 @@ def assert_contract(workflow: str, runner: str) -> None:
         "R2_S3_ENDPOINT",
         "R2_S3_ACCESS_KEY_ID",
         "R2_S3_SECRET_ACCESS_KEY",
+        "R2_S3_SESSION_TOKEN",
         "R2_TEST_BUCKET",
         "HUGR_WALLET_BASE",
         "HUGR_WALLET_TOKEN",
@@ -824,6 +885,17 @@ def assert_hosted_contract_workflow(workflow: str) -> None:
         fail("credentialless contract does not run the readiness verifier")
     if "python3 -S scripts/probe_i2563_d1_token_scope.py --self-test" not in active:
         fail("credentialless contract does not run D1 scope negative fixtures")
+    rust_session_check = (
+        "cargo test --locked --package corelink-server --lib session_token -- --nocapture",
+        "cargo test --locked --package corelink-server --lib storage_env_debug_and_display_redact_all_credentials -- --nocapture",
+        'grep -F "optional_session_token_preserves_static_credential_compatibility ... ok"',
+        'grep -F "r2_credentials_forward_optional_session_token ... ok"',
+        'grep -F "storage_env_debug_and_display_redact_all_credentials ... ok"',
+    )
+    if not all(fragment in active for fragment in rust_session_check):
+        fail("hosted Rust R2 session-token check or expected-test guards are missing")
+    if not re.search(r"(?m)^\s{8}timeout-minutes:\s*20\s*$", active):
+        fail("hosted Rust R2 session-token check is missing its bounded timeout")
     triggered_paths = set(re.findall(r'(?m)^\s{6}- "([^\"]+)"\s*$', active))
     missing = [path for path in CONTRACT_TRIGGER_INPUTS if path not in triggered_paths]
     if missing:
@@ -873,6 +945,7 @@ def assert_campaign_i1650_pack(workflow: str) -> None:
         "R2_S3_ENDPOINT",
         "R2_S3_ACCESS_KEY_ID",
         "R2_S3_SECRET_ACCESS_KEY",
+        "R2_S3_SESSION_TOKEN",
         "HUGR_WALLET_TOKEN",
         "NEON_TEST_DSN",
     )
@@ -978,6 +1051,18 @@ def mutation_checks(workflow: str, runner: str, contract_workflow: str) -> None:
         pass
     else:
         fail("missing readiness verifier mutation was accepted")
+    try:
+        assert_hosted_contract_workflow(
+            contract_workflow.replace(
+                "cargo test --locked --package corelink-server --lib session_token -- --nocapture",
+                "echo 'native R2 test omitted'",
+                1,
+            )
+        )
+    except AssertionError:
+        pass
+    else:
+        fail("missing hosted native R2 session-token test mutation was accepted")
     for path in CONTRACT_TRIGGER_INPUTS:
         path_entry = f'      - "{path}"\n'
         if path_entry not in contract_workflow:
@@ -1072,7 +1157,7 @@ def mutation_checks(workflow: str, runner: str, contract_workflow: str) -> None:
     expect_rejected(
         "D1 receives R2 secret",
         workflow.replace(
-            "R2_S3_SECRET_ACCESS_KEY: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.R2_S3_SECRET_ACCESS_KEY || '' }}",
+            'R2_S3_SECRET_ACCESS_KEY: ""',
             "R2_S3_SECRET_ACCESS_KEY: ${{ secrets.R2_S3_SECRET_ACCESS_KEY }}",
             1,
         ),
@@ -1083,15 +1168,6 @@ def mutation_checks(workflow: str, runner: str, contract_workflow: str) -> None:
         workflow.replace(
             "R2_TEST_BUCKET: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && vars.R2_TEST_BUCKET || '' }}",
             "R2_TEST_BUCKET: ${{ vars.R2_TEST_BUCKET }}",
-            1,
-        ),
-        runner,
-    )
-    expect_rejected(
-        "R2 receives the protected D1 API token",
-        workflow.replace(
-            "CF_API_TOKEN: ${{ inputs.profile == 'r2' && 'test' || secrets.CF_API_TOKEN }}",
-            "CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}",
             1,
         ),
         runner,
@@ -1169,7 +1245,8 @@ def preflight_runtime_checks() -> None:
         "R2_S3_ENDPOINT": "https://r2.example.test",
         "R2_S3_ACCESS_KEY_ID": "access",
         "R2_S3_SECRET_ACCESS_KEY": "secret",
-        "R2_TEST_BUCKET": "bucket",
+        "R2_S3_SESSION_TOKEN": "session",
+        "R2_TEST_BUCKET": "bucket-staging",
         "HUGR_WALLET_BASE": "https://wallet.example.test",
         "HUGR_WALLET_TOKEN": "hugrw_test",
         "HUGR_STRIPE_REF": "stripe-prod-test",
@@ -1181,7 +1258,7 @@ def preflight_runtime_checks() -> None:
     }
     with tempfile.TemporaryDirectory(prefix="b068-preflight-") as temp:
         root = Path(temp)
-        for missing in ("HUGR_WALLET_TOKEN", "STRIPE_PRICE_ID_STARTER", "STRIPE_TEST_ACCOUNT_ID", "NEON_TEST_DSN"):
+        for missing in ("HUGR_WALLET_TOKEN", "STRIPE_PRICE_ID_STARTER", "STRIPE_TEST_ACCOUNT_ID", "NEON_TEST_DSN", "R2_S3_SESSION_TOKEN"):
             marker = root / f"cargo-{missing}"
             fake_cargo = root / "cargo"
             fake_cargo.write_text(
@@ -1195,7 +1272,7 @@ def preflight_runtime_checks() -> None:
             env.update(baseline)
             env.pop(missing, None)
             env["PATH"] = os.pathsep.join((str(root), env.get("PATH", "")))
-            profile = "all" if missing == "NEON_TEST_DSN" else "stripe"
+            profile = "all" if missing == "NEON_TEST_DSN" else ("r2" if missing == "R2_S3_SESSION_TOKEN" else "stripe")
             result = subprocess.run(
                 ["bash", str(RUNNER_PATH), profile],
                 env=env,
@@ -1289,7 +1366,7 @@ def preflight_runtime_checks() -> None:
                 "PATH": os.pathsep.join((str(root), os.environ.get("PATH", ""))),
             }
         )
-        for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_TEST_BUCKET"):
+        for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_S3_SESSION_TOKEN", "R2_TEST_BUCKET"):
             env.pop(name, None)
         result = subprocess.run(
             ["bash", str(RUNNER_PATH), "d1"],
@@ -1335,7 +1412,7 @@ def failure_receipt_runtime_checks() -> None:
                 "PATH": os.pathsep.join((str(root), env.get("PATH", ""))),
             }
         )
-        for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_TEST_BUCKET"):
+        for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_S3_SESSION_TOKEN", "R2_TEST_BUCKET"):
             env.pop(name, None)
         result = subprocess.run(
             ["bash", str(RUNNER_PATH), "d1"],
@@ -1367,6 +1444,23 @@ def failure_receipt_runtime_checks() -> None:
             fail("artifact contains raw private Cargo output")
 
 
+def r2_temporary_credential_tests() -> None:
+    """Run deterministic R2 temporary-credential API tests without exposing failures."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-S", str(R2_TEMP_CREDENTIAL_TESTS_PATH)],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise AssertionError("R2 temporary credential tests could not start") from exc
+    if result.returncode != 0:
+        fail("R2 temporary credential tests failed (captured output omitted)")
+
+
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--classify-failure":
         raw_output = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
@@ -1382,6 +1476,7 @@ def main() -> int:
     assert_campaign_i1650_pack(campaign_workflow)
     mutation_checks(workflow, runner, contract_workflow)
     campaign_mutation_checks(campaign_workflow)
+    r2_temporary_credential_tests()
     preflight_runtime_checks()
     failure_diagnostic_negative_controls()
     failure_receipt_runtime_checks()

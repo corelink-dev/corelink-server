@@ -1296,6 +1296,7 @@ mod tests {
             r2_endpoint: "https://localhost:1".to_owned(),
             r2_access_key_id: "test".to_owned(),
             r2_secret_access_key: "test".to_owned(),
+            r2_session_token: None,
             cloudflare_account_id: "test".to_owned(),
             cf_api_token: "test".to_owned(),
             d1_database_id: "test".to_owned(),

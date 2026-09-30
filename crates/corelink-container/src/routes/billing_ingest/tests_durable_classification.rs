@@ -61,6 +61,7 @@ impl Fixture {
         let env = crate::storage::StorageEnv {
             r2_endpoint: "https://localhost:1".to_owned(), r2_access_key_id: "test".to_owned(),
             r2_secret_access_key: "test".to_owned(), cloudflare_account_id: "test".to_owned(),
+            r2_session_token: None,
             cf_api_token: "test".to_owned(), d1_database_id: "test".to_owned(),
         };
         D1UsageStagingStore::new(Arc::new(D1HttpClient::new_for_loopback_test(&env, &self.endpoint).expect("loopback D1")))

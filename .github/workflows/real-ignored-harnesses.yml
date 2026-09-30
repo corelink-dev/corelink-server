@@ -73,18 +73,25 @@ jobs:
       - name: Execute selected real harnesses
         shell: bash
         env:
-          # Only the R2 profile substitutes inert parser fixtures. Other
-          # profile mappings stay unchanged; `all` is rejected without secrets.
-          # R2 audit-failure controls use hardcoded invalid fixtures, and its
-          # storage tests do not call D1, so D1 credentials are unnecessary.
+          # R2 receives the protected bearer only in this bootstrap step. The
+          # bootstrap classifies it, requests one bucket-scoped trio, then
+          # passes inert D1 parser fixtures to the test executor.
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CF_API_TOKEN: ${{ inputs.profile == 'r2' && 'test' || secrets.CF_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           D1_DATABASE_ID: ${{ inputs.profile == 'r2' && 'test' || secrets.D1_DATABASE_ID }}
           # Keep the sibling provider's credentials out of a D1-only run.
           R2_S3_ENDPOINT: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.R2_S3_ENDPOINT || '' }}
           R2_S3_ACCESS_KEY_ID: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.R2_S3_ACCESS_KEY_ID || '' }}
-          R2_S3_SECRET_ACCESS_KEY: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.R2_S3_SECRET_ACCESS_KEY || '' }}
+          # Parent R2 secret access keys never enter the workflow process.
+          R2_S3_SECRET_ACCESS_KEY: ""
+          # The session trio is returned in-memory for the exact R2 run.
+          R2_S3_SESSION_TOKEN: ""
           R2_TEST_BUCKET: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && vars.R2_TEST_BUCKET || '' }}
+          # These protected metadata bindings are populated only after a
+          # separate official readback verifies parent-key identity/account.
+          R2_PARENT_SCOPE_CONFIRMED_ACCESS_KEY_ID: ${{ inputs.profile == 'r2' && vars.R2_PARENT_SCOPE_CONFIRMED_ACCESS_KEY_ID || '' }}
+          R2_PARENT_SCOPE_CONFIRMED_BUCKET: ${{ inputs.profile == 'r2' && vars.R2_PARENT_SCOPE_CONFIRMED_BUCKET || '' }}
+          R2_PARENT_SCOPE_RECEIPT_SHA256: ${{ inputs.profile == 'r2' && vars.R2_PARENT_SCOPE_RECEIPT_SHA256 || '' }}
           # Stripe live integration uses the wallet broker's test reference;
           # CoreLink never receives a raw Stripe secret key.
           # Expose Stripe inputs only when this protected dispatch selected
@@ -108,12 +115,16 @@ jobs:
             echo "::add-mask::${CF_API_TOKEN:-}"
             python3 -S scripts/probe_i2563_d1_token_scope.py
           fi
-          for name in HUGR_WALLET_TOKEN NEON_TEST_DSN R2_S3_SECRET_ACCESS_KEY; do
+          for name in CF_API_TOKEN HUGR_WALLET_TOKEN NEON_TEST_DSN R2_S3_ACCESS_KEY_ID; do
             if [[ -n "${!name:-}" ]]; then
               echo "::add-mask::${!name}"
             fi
           done
-          bash scripts/run-real-ignored-harnesses.sh "$REAL_HARNESS_PROFILE"
+          if [[ "$REAL_HARNESS_PROFILE" == "r2" ]]; then
+            python3 -S scripts/issue_2564_r2_temp_credentials.py
+          else
+            bash scripts/run-real-ignored-harnesses.sh "$REAL_HARNESS_PROFILE"
+          fi
 
       - name: Upload exact test receipts and logs
         if: always()

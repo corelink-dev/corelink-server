@@ -326,6 +326,7 @@ mod tests {
             r2_endpoint: "https://acct.r2.cloudflarestorage.com".to_owned(),
             r2_access_key_id: "ak".to_owned(),
             r2_secret_access_key: "sk".to_owned(),
+            r2_session_token: None,
             cloudflare_account_id: "acct".to_owned(),
             cf_api_token: "token".to_owned(),
             d1_database_id: "db".to_owned(),
