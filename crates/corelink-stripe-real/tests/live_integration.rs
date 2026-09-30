@@ -733,9 +733,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!(
-                    "{proxy}/v1/prices/price_unknown_mode_fixture"
-                )))
+                .and(path(format!("{proxy}/v1/prices/price_unknownmodefixture")))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
@@ -757,7 +755,7 @@ mod cleanup_fault_injection {
         });
         let client = mock_client(server.uri());
         assert!(client
-            .verify_test_mode_starter_catalog("price_unknown_mode_fixture")
+            .verify_test_mode_starter_catalog("price_unknownmodefixture")
             .is_err());
         assert!(client
             .cleanup_harness_checkout(session_id, customer_id, "424247")
