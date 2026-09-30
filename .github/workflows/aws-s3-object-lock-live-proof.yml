@@ -272,6 +272,30 @@ jobs:
             jq -e --argjson count "$#" '[.EvaluationResults[] | select(.EvalDecision != "allowed")] | length == 0' "$output" >/dev/null
             jq -e --argjson count "$#" '.EvaluationResults | length == $count' "$output" >/dev/null
           }
+          simulate_denied() {
+            local principal="$1" resource="$2" output="$3"; shift 3
+            aws iam simulate-principal-policy --policy-source-arn "$principal" \
+              --action-names "$@" --resource-arns "$resource" \
+              --context-entries \
+                'ContextKeyName=s3:object-lock-legal-hold,ContextKeyValues=OFF,ContextKeyType=string' \
+              > "$output"
+            local expected_actions='["s3:BypassGovernanceRetention","s3:DeleteObjectVersion","s3:PutObjectLegalHold"]'
+            local denied_results_filter='
+              (.IsTruncated != true) and
+              (.EvaluationResults as $results |
+                ($results | length == 3) and
+                ([$results[].EvalActionName] | sort == ["s3:BypassGovernanceRetention","s3:DeleteObjectVersion","s3:PutObjectLegalHold"]) and
+                all($results[];
+                  (.EvalDecision == "implicitDeny" or .EvalDecision == "explicitDeny") and
+                  (.ResourceSpecificResults | length == 1) and
+                  all(.ResourceSpecificResults[];
+                    .EvalResourceName == $resource and
+                    (.EvalResourceDecision == "implicitDeny" or .EvalResourceDecision == "explicitDeny"))))
+            '
+            test "$#" -eq 3
+            test "$(printf '%s\n' "$@" | sort | jq -R -s -c 'split("\n")[:-1] | sort')" = "$expected_actions"
+            jq -e --arg resource "$resource" "$denied_results_filter" "$output" >/dev/null
+          }
           simulate_allowed "$PROBE_ROLE_ARN" "$bucket_arn" "$RUNNER_TEMP/bucket-iam.json" \
             s3:CreateBucket s3:PutBucketVersioning s3:PutBucketObjectLockConfiguration \
             s3:GetBucketVersioning s3:GetBucketObjectLockConfiguration s3:GetBucketLocation
@@ -287,6 +311,8 @@ jobs:
           jq -e '[.EvaluationResults[] | select(.EvalDecision != "allowed")] | length == 0' \
             "$RUNNER_TEMP/writer-put-iam.json" >/dev/null
           jq -e '.EvaluationResults | length == 3' "$RUNNER_TEMP/writer-put-iam.json" >/dev/null
+          simulate_denied "$WORKLOAD_WRITER_ROLE_ARN" "$object_arn" "$RUNNER_TEMP/writer-forbidden-iam.json" \
+            s3:DeleteObjectVersion s3:BypassGovernanceRetention s3:PutObjectLegalHold
 
       - name: Create exact run-bound synthetic bucket and configure Object Lock
         id: create

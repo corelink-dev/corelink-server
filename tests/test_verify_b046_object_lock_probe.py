@@ -1,6 +1,9 @@
 import hashlib
 import importlib.util
 import json
+import re
+import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -380,6 +383,18 @@ class B046ObjectLockProbeTests(unittest.TestCase):
         self.assertIn("s3:PutObject s3:PutObjectRetention s3:PutObjectLegalHold", workflow)
         self.assertIn("s3:object-lock-mode,ContextKeyValues=COMPLIANCE", workflow)
         self.assertIn("s3:object-lock-legal-hold,ContextKeyValues=ON", workflow)
+        self.assertIn("simulate_denied()", workflow)
+        self.assertIn("s3:DeleteObjectVersion s3:BypassGovernanceRetention s3:PutObjectLegalHold", workflow)
+        self.assertIn("s3:object-lock-legal-hold,ContextKeyValues=OFF", workflow)
+        self.assertIn('EvalDecision == "implicitDeny" or .EvalDecision == "explicitDeny"', workflow)
+        self.assertIn(".ResourceSpecificResults | length == 1", workflow)
+        self.assertIn(".EvalResourceName == $resource", workflow)
+        permission_preflight = workflow.split(
+            "      - name: Simulate exact probe and workload-writer permissions before bucket creation", 1
+        )[1]
+        create_bucket = permission_preflight.index("      - name: Create exact run-bound synthetic bucket")
+        denied_simulation = permission_preflight.index("simulate_denied \"$WORKLOAD_WRITER_ROLE_ARN\"")
+        self.assertLess(denied_simulation, create_bucket)
         self.assertEqual(workflow.count("unset-current-credentials: true"), 7)
         self.assertIn("inline-session-policy: ${{ steps.cleanup_source.outputs.cleanup_policy }}", workflow)
         self.assertIn("ReleaseOnlyAuthorizedHoldToOff", workflow)
@@ -393,6 +408,74 @@ class B046ObjectLockProbeTests(unittest.TestCase):
         self.assertIn("workflow_id == $workflow", workflow)
         self.assertIn('"operation":"probe"', workflow)
         self.assertIn("CLEANUP_ROLE_ARN", workflow)
+
+    def test_writer_negative_policy_simulation_rejects_any_broader_allow(self) -> None:
+        workflow = (ROOT / ".github/workflows/aws-s3-object-lock-live-proof.yml").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(
+            r"local denied_results_filter='(.*?)\n            '\n", workflow, re.DOTALL
+        )
+        self.assertIsNotNone(match, "writer deny simulation filter is missing")
+        jq = shutil.which("jq")
+        self.assertIsNotNone(jq, "jq is required by the hosted workflow and this contract test")
+        jq_filter = match.group(1)
+        resource = "arn:aws:s3:::corelink-object-lock-probe-b046-999999999-1/audit/probe-999999999/synthetic.txt"
+        actions = (
+            "s3:DeleteObjectVersion",
+            "s3:BypassGovernanceRetention",
+            "s3:PutObjectLegalHold",
+        )
+
+        def invoke(results: list[dict[str, object]], *, truncated: bool = False) -> bool:
+            document = {"EvaluationResults": results, "IsTruncated": truncated}
+            completed = subprocess.run(
+                [jq, "-e", "--arg", "resource", resource, jq_filter],
+                input=json.dumps(document),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return completed.returncode == 0
+
+        def make_results(
+            decisions: tuple[str, ...], *, wrong_resource: bool = False
+        ) -> list[dict[str, object]]:
+            results = [
+                {
+                    "EvalActionName": action,
+                    "EvalDecision": decision,
+                    "ResourceSpecificResults": [
+                        {
+                            "EvalResourceName": (
+                                "arn:aws:s3:::wrong/object" if wrong_resource else resource
+                            ),
+                            "EvalResourceDecision": decision,
+                        }
+                    ],
+                }
+                for action, decision in zip(actions, decisions, strict=True)
+            ]
+            return results
+
+        expected_denials = make_results(("implicitDeny", "implicitDeny", "implicitDeny"))
+        self.assertTrue(invoke(expected_denials))
+        self.assertTrue(invoke(make_results(("explicitDeny", "implicitDeny", "explicitDeny"))))
+        self.assertFalse(invoke(make_results(("allowed", "implicitDeny", "implicitDeny"))))
+        self.assertFalse(invoke(make_results(("allowed", "allowed", "allowed"))))
+        self.assertFalse(invoke(make_results(("unknown", "implicitDeny", "implicitDeny"))))
+        self.assertFalse(
+            invoke(
+                make_results(("implicitDeny", "implicitDeny", "implicitDeny"), wrong_resource=True)
+            )
+        )
+        self.assertFalse(invoke(expected_denials[:-1]))
+        duplicate_action = [
+            *expected_denials[:-1],
+            {**expected_denials[0], "EvalDecision": "implicitDeny"},
+        ]
+        self.assertFalse(invoke(duplicate_action))
+        self.assertFalse(invoke(expected_denials, truncated=True))
 
     def test_cleanup_expires_retention_before_releasing_exact_version_legal_hold(self) -> None:
         workflow = (ROOT / ".github/workflows/aws-s3-object-lock-live-proof.yml").read_text(
