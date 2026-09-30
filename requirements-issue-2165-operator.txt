@@ -2,3 +2,6 @@
 blake3==1.0.8 \
     --hash=sha256:c7780666dc6be809b49442d6d5ce06fdbe33024a87560b58471103ec17644682 \
     --hash=sha256:7fcfe81b3ae3fb5d2e88be0d3259603ff95f0d5ed69f655c28fdaef31e49a470
+# blake3 1.0.8 requires this on CPython <3.12; pure Python wheel supports both architectures.
+typing-extensions==4.15.0 \
+    --hash=sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548

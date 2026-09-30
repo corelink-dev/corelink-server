@@ -87,6 +87,14 @@ jobs:
           set -euo pipefail
           python3 -m pip install --disable-pip-version-check --no-input pytest==9.0.2
           python3 -m pip install --require-hashes -r requirements-issue-2165-operator.txt
+          # Verify the complete hash-locked wheel closure for both Fargate architectures
+          # and the separate Python 3.12 audit archive before contract tests.
+          python3 -m pip download --disable-pip-version-check --no-input --only-binary=:all: --require-hashes \
+            --platform manylinux2014_aarch64 --python-version 311 --implementation cp --abi cp311 \
+            --dest "$RUNNER_TEMP/b083-op-arm64-lock" -r requirements-issue-2165-operator.txt
+          python3 -m pip download --disable-pip-version-check --no-input --only-binary=:all: --require-hashes \
+            --platform manylinux2014_x86_64 --python-version 312 --implementation cp --abi cp312 \
+            --dest "$RUNNER_TEMP/b083-r2-py312-lock" -r requirements-issue-2165-r2-archive.txt
       - name: Check static workflow contract and focused tests
         env:
           B083_TARGET_ALIAS: static-check-target
