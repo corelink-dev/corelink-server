@@ -73,10 +73,13 @@ jobs:
       - name: Execute selected real harnesses
         shell: bash
         env:
-          # D1 credentials serve the D1 and R2 profiles after protected approval.
+          # Only the R2 profile substitutes inert parser fixtures. Other
+          # profile mappings stay unchanged; `all` is rejected without secrets.
+          # R2 audit-failure controls use hardcoded invalid fixtures, and its
+          # storage tests do not call D1, so D1 credentials are unnecessary.
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          CF_API_TOKEN: ${{ inputs.profile == 'r2' && 'test' || secrets.CF_API_TOKEN }}
+          D1_DATABASE_ID: ${{ inputs.profile == 'r2' && 'test' || secrets.D1_DATABASE_ID }}
           # Keep the sibling provider's credentials out of a D1-only run.
           R2_S3_ENDPOINT: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.R2_S3_ENDPOINT || '' }}
           R2_S3_ACCESS_KEY_ID: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && secrets.R2_S3_ACCESS_KEY_ID || '' }}
