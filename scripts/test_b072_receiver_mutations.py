@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -48,9 +49,52 @@ def mutate_and_require_failure(name: str, relative: str, old: str, new: str) -> 
             shutil.copy2(ROOT / relative_path, target)
         target = copy_root / relative
         text = target.read_text()
-        if old not in text:
-            raise AssertionError(f"mutation {name} did not find its target")
-        target.write_text(text.replace(old, new, 1))
+        if name.startswith("operator-") and name != "operator-missing-dispatch":
+            job = re.search(
+                r"(?ms)^  protected-staging-operator:\n(?P<body>.*?)(?=^  [A-Za-z_][A-Za-z0-9_-]*:|\Z)",
+                text,
+            )
+            if job is None:
+                raise AssertionError(f"mutation {name} did not find protected operator job")
+            body = job.group("body")
+            if body.count(old) != 1:
+                raise AssertionError(
+                    f"mutation {name} expected one target inside protected operator job, "
+                    f"found {body.count(old)}"
+                )
+            mutated_body = body.replace(old, new, 1)
+            replacement_count = (
+                mutated_body.count(new)
+                if new
+                else body.count(old) - mutated_body.count(old)
+            )
+            if replacement_count != 1:
+                raise AssertionError(f"mutation {name} did not produce exactly one replacement")
+            body_start, body_end = job.span("body")
+            text = text[:body_start] + mutated_body + text[body_end:]
+        elif name == "operator-missing-dispatch":
+            trigger_block = re.search(
+                r"(?ms)^on:\n(?P<body>.*?)(?=^[A-Za-z][A-Za-z0-9_-]*:|\Z)",
+                text,
+            )
+            if old != "  workflow_dispatch:\n" or trigger_block is None:
+                raise AssertionError(f"mutation {name} did not find the root workflow trigger")
+            body = trigger_block.group("body")
+            if body.count(old) != 1 or text.count(old) != 1:
+                raise AssertionError(
+                    f"mutation {name} expected one global root trigger, found "
+                    f"{text.count(old)} in file and {body.count(old)} in trigger block"
+                )
+            mutated_body = body.replace(old, new, 1)
+            if mutated_body.count(new) - body.count(new) != 1:
+                raise AssertionError(f"mutation {name} did not produce exactly one replacement")
+            body_start, body_end = trigger_block.span("body")
+            text = text[:body_start] + mutated_body + text[body_end:]
+        else:
+            if old not in text:
+                raise AssertionError(f"mutation {name} did not find its target")
+            text = text.replace(old, new, 1)
+        target.write_text(text)
         result = run_guard(copy_root)
         if result.returncode == 0:
             raise AssertionError(f"mutation {name} unexpectedly passed")
