@@ -49,7 +49,7 @@ use serde::Deserialize;
 #[cfg(feature = "live-integration")]
 use sha2::{Digest, Sha256};
 
-use crate::clock::{Clock, default_clock};
+use crate::clock::{default_clock, Clock};
 use crate::error::StripeError;
 use crate::retry::RetryPolicy;
 

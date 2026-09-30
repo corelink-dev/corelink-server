@@ -471,11 +471,9 @@ mod cleanup_fault_injection {
         let error = client
             .create_checkout_session(&req)
             .expect_err("injected failure");
-        assert!(
-            error
-                .to_string()
-                .contains("run-owned customer cleanup passed")
-        );
+        assert!(error
+            .to_string()
+            .contains("run-owned customer cleanup passed"));
     }
 
     #[test]
@@ -755,21 +753,15 @@ mod cleanup_fault_injection {
                 .await;
         });
         let client = mock_client(server.uri());
-        assert!(
-            client
-                .verify_test_mode_starter_catalog("price_unknown_mode_fixture")
-                .is_err()
-        );
-        assert!(
-            client
-                .cleanup_harness_checkout(session_id, customer_id, "424247")
-                .is_err()
-        );
-        assert!(
-            client
-                .cleanup_harness_customer(customer_id, "424247")
-                .is_err()
-        );
+        assert!(client
+            .verify_test_mode_starter_catalog("price_unknown_mode_fixture")
+            .is_err());
+        assert!(client
+            .cleanup_harness_checkout(session_id, customer_id, "424247")
+            .is_err());
+        assert!(client
+            .cleanup_harness_customer(customer_id, "424247")
+            .is_err());
         runtime.block_on(server.verify());
     }
 
@@ -825,11 +817,9 @@ mod cleanup_fault_injection {
         let error = client
             .create_checkout_session(&request)
             .expect_err("customer without explicit TEST mode must stop before Checkout");
-        assert!(
-            error
-                .to_string()
-                .contains("customer mode is not proven TEST")
-        );
+        assert!(error
+            .to_string()
+            .contains("customer mode is not proven TEST"));
         assert!(error.to_string().contains("retained_recovery_required"));
         assert!(error.to_string().contains("id_sha256"));
         assert!(!error.to_string().contains(customer_id));
