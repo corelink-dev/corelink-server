@@ -25,7 +25,7 @@ class StripeRestrictedKeyContractTests(unittest.TestCase):
         responses = [
             (200, {"object": "account", "id": "acct_expected"}),
             (200, {"data": [{"id": "prod_starter", "name": "CoreLink Starter", "active": True, "livemode": False}], "has_more": False}),
-            (200, {"data": [{"id": "price_starter", "active": True, "livemode": False, "currency": "usd", "unit_amount": 4900, "recurring": {"interval": "month", "interval_count": 1}}], "has_more": False}),
+            (200, {"data": [{"id": "price_starter", "active": True, "livemode": False, "currency": "usd", "unit_amount": 3500, "recurring": {"interval": "month", "interval_count": 1}}], "has_more": False}),
         ]
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "receipt.json"
@@ -46,10 +46,94 @@ class StripeRestrictedKeyContractTests(unittest.TestCase):
             )
             self.assertIs(receipt["starter_price"]["id_present"], False)
             self.assertNotIn("price_starter", receipt_text)
-            self.assertEqual(receipt["starter_price"]["unit_amount"], 4900)
+            self.assertEqual(receipt["starter_price"]["unit_amount"], 3500)
             self.assertIs(receipt["livemode"], False)
             self.assertEqual(receipt["provider_mutations"], 0)
             self.assertNotIn("prod_starter", receipt_text)
+
+    def test_starter_price_mode_rejects_stale_49_price_without_receipt(self) -> None:
+        responses = [
+            (200, {"object": "account", "id": "acct_expected"}),
+            (200, {"data": [{"id": "prod_starter", "name": "CoreLink Starter", "active": True, "livemode": False}], "has_more": False}),
+            (200, {"data": [{"id": "price_stale_49", "active": True, "livemode": False, "currency": "usd", "unit_amount": 4900, "recurring": {"interval": "month", "interval_count": 1}}], "has_more": False}),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "receipt.json"
+            with patch.object(MODULE, "request_json", side_effect=responses) as request:
+                with self.assertRaisesRegex(MODULE.ProbeError, "USD 35 monthly price"):
+                    MODULE.run_starter_price_probe(
+                        "rk_test_fixture", "987654", "acct_expected", output
+                    )
+            self.assertEqual(request.call_count, 3)
+            self.assertTrue(all(call.args[1] == "GET" for call in request.call_args_list))
+            self.assertFalse(output.exists())
+
+    def test_starter_price_mode_rejects_live_or_unknown_product_mode(self) -> None:
+        products = (
+            {"id": "prod_starter", "name": "CoreLink Starter", "active": True, "livemode": True},
+            {"id": "prod_starter", "name": "CoreLink Starter", "active": True},
+        )
+        for product in products:
+            with self.subTest(product=product):
+                responses = [
+                    (200, {"object": "account", "id": "acct_expected"}),
+                    (200, {"data": [product], "has_more": False}),
+                ]
+                with tempfile.TemporaryDirectory() as directory:
+                    output = Path(directory) / "receipt.json"
+                    with patch.object(MODULE, "request_json", side_effect=responses) as request:
+                        with self.assertRaises(MODULE.ProbeError):
+                            MODULE.run_starter_price_probe(
+                                "rk_test_fixture", "987654", "acct_expected", output
+                            )
+                    self.assertEqual(request.call_count, 2)
+                    self.assertTrue(all(call.args[1] == "GET" for call in request.call_args_list))
+                    self.assertFalse(output.exists())
+
+    def test_starter_price_mode_rejects_live_or_malformed_35_prices(self) -> None:
+        invalid_prices = (
+            {"active": True, "livemode": True, "currency": "usd", "unit_amount": 3500, "recurring": {"interval": "month", "interval_count": 1}},
+            {"active": True, "livemode": False, "currency": "eur", "unit_amount": 3500, "recurring": {"interval": "month", "interval_count": 1}},
+            {"active": True, "livemode": False, "currency": "usd", "unit_amount": 3500, "recurring": {"interval": "year", "interval_count": 1}},
+            {"active": True, "livemode": False, "currency": "usd", "unit_amount": 3500, "recurring": {"interval": "month", "interval_count": 12}},
+        )
+        for price in invalid_prices:
+            with self.subTest(price_shape=price):
+                responses = [
+                    (200, {"object": "account", "id": "acct_expected"}),
+                    (200, {"data": [{"id": "prod_starter", "name": "CoreLink Starter", "active": True, "livemode": False}], "has_more": False}),
+                    (200, {"data": [{**price, "id": "price_invalid"}], "has_more": False}),
+                ]
+                with tempfile.TemporaryDirectory() as directory:
+                    output = Path(directory) / "receipt.json"
+                    with patch.object(MODULE, "request_json", side_effect=responses) as request:
+                        with self.assertRaises(MODULE.ProbeError):
+                            MODULE.run_starter_price_probe(
+                                "rk_test_fixture", "987654", "acct_expected", output
+                            )
+                    self.assertEqual(request.call_count, 3)
+                    self.assertTrue(all(call.args[1] == "GET" for call in request.call_args_list))
+                    self.assertFalse(output.exists())
+
+    def test_starter_price_mode_rejects_ambiguous_matching_prices(self) -> None:
+        responses = [
+            (200, {"object": "account", "id": "acct_expected"}),
+            (200, {"data": [{"id": "prod_starter", "name": "CoreLink Starter", "active": True, "livemode": False}], "has_more": False}),
+            (200, {"data": [
+                {"id": "price_starter_a", "active": True, "livemode": False, "currency": "usd", "unit_amount": 3500, "recurring": {"interval": "month", "interval_count": 1}},
+                {"id": "price_starter_b", "active": True, "livemode": False, "currency": "usd", "unit_amount": 3500, "recurring": {"interval": "month", "interval_count": 1}},
+            ], "has_more": False}),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "receipt.json"
+            with patch.object(MODULE, "request_json", side_effect=responses) as request:
+                with self.assertRaisesRegex(MODULE.ProbeError, "USD 35 monthly price"):
+                    MODULE.run_starter_price_probe(
+                        "rk_test_fixture", "987654", "acct_expected", output
+                    )
+            self.assertEqual(request.call_count, 3)
+            self.assertTrue(all(call.args[1] == "GET" for call in request.call_args_list))
+            self.assertFalse(output.exists())
 
     def test_starter_price_mode_checks_account_before_catalog_and_rejects_ambiguity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
