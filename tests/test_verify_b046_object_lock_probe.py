@@ -1,6 +1,9 @@
 import hashlib
 import importlib.util
 import json
+import re
+import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -23,33 +26,62 @@ live_receipt = importlib.util.module_from_spec(LIVE_RECEIPT_SPEC)
 sys.modules[LIVE_RECEIPT_SPEC.name] = live_receipt
 LIVE_RECEIPT_SPEC.loader.exec_module(live_receipt)
 
+TRAIL_RECONCILE_SPEC = importlib.util.spec_from_file_location(
+    "reconcile_b046_object_lock_trail", ROOT / "scripts/reconcile_b046_object_lock_trail.py"
+)
+assert TRAIL_RECONCILE_SPEC and TRAIL_RECONCILE_SPEC.loader
+trail_reconcile = importlib.util.module_from_spec(TRAIL_RECONCILE_SPEC)
+sys.modules[TRAIL_RECONCILE_SPEC.name] = trail_reconcile
+TRAIL_RECONCILE_SPEC.loader.exec_module(trail_reconcile)
+
 
 def live_receipt_inputs() -> dict[str, str]:
     return {
         "GITHUB_REPOSITORY": "HuGR-dev/corelink-server",
         "GITHUB_REPOSITORY_ID": "1232040291",
         "GITHUB_SERVER_URL": "https://github.com",
-        "GITHUB_RUN_ID": "123456789",
-        "GITHUB_RUN_ATTEMPT": "2",
-        "GITHUB_SHA": "a" * 40,
-        "B046_CHECKED_OUT_SHA": "a" * 40,
+        "GITHUB_RUN_ID": "999999999",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_SHA": "b" * 40,
+        "B046_SOURCE_RUN_ID": "123456789",
+        "B046_SOURCE_ATTEMPT": "2",
+        "B046_SOURCE_SHA": "a" * 40,
+        "B046_CHECKED_OUT_SHA": "b" * 40,
         "AWS_ACCOUNT_ID": "123456789012",
         "B046_ACTUAL_ACCOUNT_ID": "123456789012",
         "AWS_REGION": "us-east-1",
+        "AWS_ROLE_ARN": "arn:aws:iam::123456789012:role/corelink-b046-probe",
+        "AWS_WRITER_ROLE_ARN": "arn:aws:iam::123456789012:role/corelink-b046-writer",
+        "AWS_TRAIL_ARN": "arn:aws:cloudtrail:us-east-1:123456789012:trail/corelink-b046-live-proof",
+        "AWS_LOG_BUCKET": "corelink-b046-audit-example",
+        "AWS_LOG_PREFIX": "AWSLogs/123456789012/CloudTrail/",
         "B046_ACTUAL_REGION": "us-east-1",
-        "JURISDICTION": "US-EAST",
-        "AWS_BUCKET_PREFIX": "corelink-object-lock-probe-test",
-        "B046_BUCKET": "corelink-object-lock-probe-test-123456789-2",
+        "AWS_BUCKET_PREFIX": "corelink-object-lock-probe-b046",
+        "B046_BUCKET": "corelink-object-lock-probe-b046-123456789-2",
         "B046_KEY": "audit/probe-123456789/synthetic.txt",
         "B046_VERSION": "opaque-version-id",
-        "B046_PUT_REQUEST_ID": "put-request-123",
-        "B046_CLOUDTRAIL_PUT_EVENT_ID": "put-event-123",
-        "B046_CLOUDTRAIL_DELETE_EVENT_ID": "delete-event-456",
         "B046_RETAIN_UNTIL": "2026-09-26T06:02:42+00:00",
-        "APPROVAL_REFERENCE": "approval-1646",
+        "B046_PROBE_WINDOW_START": "2026-09-25T06:00:00Z",
         "COST_CEILING_USD_MICROS": "5000000",
         "COST_OWNER": "aws-cost-owner",
         "CLEANUP_OWNER": "aws-cleanup-owner",
+    }
+
+
+def live_reconciliation() -> dict[str, object]:
+    uri_hash = hashlib.sha256(b"s3://redacted/CloudTrail/example").hexdigest()
+    return {
+        "put_event_id": "put-event-123",
+        "put_request_id": "put-request-123",
+        "put_event_time": "2026-09-25T06:03:00Z",
+        "delete_event_id": "delete-event-456",
+        "delete_request_id": "delete-request-789",
+        "delete_event_time": "2026-09-25T06:04:00Z",
+        "validated_log_sha256": ["a" * 64],
+        "put_validated_log_uri_sha256": uri_hash,
+        "delete_validated_log_uri_sha256": uri_hash,
+        "events_share_validated_log": True,
+        "validated_log_uri_sha256": [uri_hash],
     }
 
 
@@ -63,17 +95,173 @@ Log file s3://redacted/CloudTrail/example valid
 
 
 class B046ObjectLockProbeTests(unittest.TestCase):
+    def test_trail_reconcile_requires_complete_validation_and_exact_log_uris(self) -> None:
+        output = DIGEST_VALIDATION_OK.replace("1/1 log files valid", "2/2 log files valid") + "Log file s3://redacted/CloudTrail/example-2 valid\n"
+        self.assertEqual(
+            trail_reconcile.validated_log_uris(output),
+            ["s3://redacted/CloudTrail/example", "s3://redacted/CloudTrail/example-2"],
+        )
+        for invalid in (
+            "1/1 digest files valid\n1/1 log files valid\n",
+            DIGEST_VALIDATION_OK + "1/1 digest files valid\n",
+            DIGEST_VALIDATION_OK + "Log file s3://redacted/CloudTrail/bad INVALID\n",
+            DIGEST_VALIDATION_OK + "Log file s3://redacted/CloudTrail/unreported valid\n",
+            "0/1 digest files valid\n1/1 log files valid\nLog file s3://redacted/a valid\n",
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(trail_reconcile.ReconcileError):
+                trail_reconcile.validated_log_uris(invalid)
+
+    def test_trail_reconcile_binds_both_events_to_exact_principal_and_version(self) -> None:
+        import gzip
+        import tempfile
+
+        writer_principal = "arn:aws:iam::123456789012:role/corelink-b046-writer-test"
+        writer_session = "arn:aws:sts::123456789012:assumed-role/corelink-b046-writer-test/corelink-b046-writer-123-2"
+        probe_principal = "arn:aws:iam::123456789012:role/corelink-b046-probe-test"
+        probe_session = "arn:aws:sts::123456789012:assumed-role/corelink-b046-probe-test/corelink-object-lock-123-2"
+        writer_identity = {"arn": writer_session, "sessionContext": {"sessionIssuer": {"arn": writer_principal}}}
+        probe_identity = {"arn": probe_session, "sessionContext": {"sessionIssuer": {"arn": probe_principal}}}
+        put = {
+            "eventCategory": "Data", "eventSource": "s3.amazonaws.com", "eventName": "PutObject",
+            "eventID": "put-event", "requestID": "put-request", "userIdentity": writer_identity,
+            "eventTime": "2026-10-01T00:00:00Z",
+            "requestParameters": {"bucketName": "probe", "key": "audit/key"},
+            "responseElements": {"x-amz-version-id": "version-1"},
+        }
+        delete = {
+            "eventCategory": "Data", "eventSource": "s3.amazonaws.com", "eventName": "DeleteObject",
+            "eventID": "delete-event", "requestID": "delete-request", "userIdentity": probe_identity,
+            "eventTime": "2026-10-01T00:01:00Z",
+            "requestParameters": {"bucketName": "probe", "key": "audit/key", "versionId": "version-1"},
+            "errorCode": "AccessDenied",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "001.json.gz"
+            path.write_bytes(gzip.compress(json.dumps({"Records": [put, delete]}).encode()))
+            result = trail_reconcile.reconcile_events(
+                [path], bucket="probe", key="audit/key", version="version-1",
+                put_principal_arn=writer_principal, put_principal_session_arn=writer_session,
+                delete_principal_arn=probe_principal, delete_principal_session_arn=probe_session,
+                log_uris=["s3://audit-bucket/prefix/log.gz"], log_bucket="audit-bucket", log_prefix="prefix/",
+                expected_put_request_id="put-request", expected_delete_request_id="delete-request",
+                retention_expiry="2026-10-02T00:00:00Z",
+            )
+            self.assertEqual(result["put_event_id"], "put-event")
+            self.assertEqual(result["delete_event_id"], "delete-event")
+            self.assertEqual(result["put_validated_log_uri_sha256"], result["delete_validated_log_uri_sha256"])
+            changed_delete = dict(delete, errorCode="InvalidRequest")
+            path.write_bytes(gzip.compress(json.dumps({"Records": [put, changed_delete]}).encode()))
+            with self.assertRaises(trail_reconcile.ReconcileError):
+                trail_reconcile.reconcile_events(
+                    [path], bucket="probe", key="audit/key", version="version-1",
+                    put_principal_arn=writer_principal, put_principal_session_arn=writer_session,
+                    delete_principal_arn=probe_principal, delete_principal_session_arn=probe_session,
+                    log_uris=["s3://audit-bucket/prefix/log.gz"], log_bucket="audit-bucket", log_prefix="prefix/",
+                    expected_put_request_id="put-request", expected_delete_request_id="delete-request",
+                    retention_expiry="2026-10-02T00:00:00Z",
+                )
+            for changed_put, changed_delete, changes in (
+                (dict(put, userIdentity={"arn": "other", "sessionContext": {"sessionIssuer": {"arn": writer_principal}}}), delete, {}),
+                (dict(put, errorCode="AccessDenied"), delete, {}),
+                (put, dict(delete, userIdentity=writer_identity), {}),
+                (put, delete, {"bucket": "other-bucket"}),
+                (put, delete, {"key": "other/key"}),
+                (put, delete, {"expected_put_request_id": "wrong-request"}),
+                (put, delete, {"expected_delete_request_id": "wrong-request"}),
+            ):
+                path.write_bytes(gzip.compress(json.dumps({"Records": [changed_put, changed_delete]}).encode()))
+                kwargs = {
+                    "bucket": changes.get("bucket", "probe"),
+                    "key": changes.get("key", "audit/key"),
+                    "version": "version-1",
+                    "put_principal_arn": writer_principal, "put_principal_session_arn": writer_session,
+                    "delete_principal_arn": probe_principal, "delete_principal_session_arn": probe_session,
+                    "log_uris": ["s3://audit-bucket/prefix/log.gz"],
+                    "log_bucket": "audit-bucket", "log_prefix": "prefix/",
+                    "expected_put_request_id": changes.get("expected_put_request_id", "put-request"),
+                    "expected_delete_request_id": changes.get("expected_delete_request_id", "delete-request"),
+                    "retention_expiry": "2026-10-02T00:00:00Z",
+                }
+                with self.subTest(changes=changes), self.assertRaises(trail_reconcile.ReconcileError):
+                    trail_reconcile.reconcile_events([path], **kwargs)
+            path.write_bytes(gzip.compress(json.dumps({"Records": [put, delete, delete]}).encode()))
+            with self.assertRaises(trail_reconcile.ReconcileError):
+                trail_reconcile.reconcile_events(
+                    [path], bucket="probe", key="audit/key", version="version-1",
+                    put_principal_arn=writer_principal, put_principal_session_arn=writer_session,
+                    delete_principal_arn=probe_principal, delete_principal_session_arn=probe_session,
+                    log_uris=["s3://audit-bucket/prefix/log.gz"], log_bucket="audit-bucket", log_prefix="prefix/",
+                    expected_put_request_id="put-request", expected_delete_request_id="delete-request",
+                    retention_expiry="2026-10-02T00:00:00Z",
+                )
+            with self.assertRaises(trail_reconcile.ReconcileError):
+                trail_reconcile.reconcile_events(
+                    [path], bucket="probe", key="audit/key", version="version-1",
+                    put_principal_arn=writer_principal, put_principal_session_arn=writer_session,
+                    delete_principal_arn=probe_principal, delete_principal_session_arn=probe_session,
+                    log_uris=["s3://other-bucket/prefix/log.gz"], log_bucket="audit-bucket", log_prefix="prefix/",
+                    expected_put_request_id="put-request", expected_delete_request_id="delete-request",
+                    retention_expiry="2026-10-02T00:00:00Z",
+                )
+            duplicate_id = dict(delete, eventID="put-event")
+            path.write_bytes(gzip.compress(json.dumps({"Records": [put, duplicate_id]}).encode()))
+            with self.assertRaises(trail_reconcile.ReconcileError):
+                trail_reconcile.reconcile_events(
+                    [path], bucket="probe", key="audit/key", version="version-1",
+                    put_principal_arn=writer_principal, put_principal_session_arn=writer_session,
+                    delete_principal_arn=probe_principal, delete_principal_session_arn=probe_session,
+                    log_uris=["s3://audit-bucket/prefix/log.gz"], log_bucket="audit-bucket", log_prefix="prefix/",
+                    expected_put_request_id="put-request", expected_delete_request_id="delete-request",
+                    retention_expiry="2026-10-02T00:00:00Z",
+                )
+            path.write_bytes(b"not gzip")
+            with self.assertRaises(trail_reconcile.ReconcileError):
+                trail_reconcile.reconcile_events(
+                    [path], bucket="probe", key="audit/key", version="version-1",
+                    put_principal_arn=writer_principal, put_principal_session_arn=writer_session,
+                    delete_principal_arn=probe_principal, delete_principal_session_arn=probe_session,
+                    log_uris=["s3://audit-bucket/prefix/log.gz"], log_bucket="audit-bucket", log_prefix="prefix/",
+                    expected_put_request_id="put-request", expected_delete_request_id="delete-request",
+                    retention_expiry="2026-10-02T00:00:00Z",
+                )
+            old_limit = trail_reconcile.MAX_LOG_BYTES
+            trail_reconcile.MAX_LOG_BYTES = 8
+            path.write_bytes(gzip.compress(b"123456789"))
+            with self.assertRaises(trail_reconcile.ReconcileError):
+                trail_reconcile.reconcile_events(
+                    [path], bucket="probe", key="audit/key", version="version-1",
+                    put_principal_arn=writer_principal, put_principal_session_arn=writer_session,
+                    delete_principal_arn=probe_principal, delete_principal_session_arn=probe_session,
+                    log_uris=["s3://audit-bucket/prefix/log.gz"], log_bucket="audit-bucket", log_prefix="prefix/",
+                    expected_put_request_id="put-request", expected_delete_request_id="delete-request",
+                    retention_expiry="2026-10-02T00:00:00Z",
+                )
+            trail_reconcile.MAX_LOG_BYTES = old_limit
+            changed_delete = dict(delete, requestParameters={**delete["requestParameters"], "versionId": "other"})
+            path.write_bytes(gzip.compress(json.dumps({"Records": [put, changed_delete]}).encode()))
+            with self.assertRaises(trail_reconcile.ReconcileError):
+                trail_reconcile.reconcile_events(
+                    [path], bucket="probe", key="audit/key", version="version-1",
+                    put_principal_arn=writer_principal, put_principal_session_arn=writer_session,
+                    delete_principal_arn=probe_principal, delete_principal_session_arn=probe_session,
+                    log_uris=["s3://audit-bucket/prefix/log.gz"], log_bucket="audit-bucket", log_prefix="prefix/",
+                    expected_put_request_id="put-request", expected_delete_request_id="delete-request",
+                    retention_expiry="2026-10-02T00:00:00Z",
+                )
+
     def test_protected_receipt_binds_redacted_target_and_owner_controls(self) -> None:
         inputs = live_receipt_inputs()
         receipt = live_receipt.build_receipt(
-            inputs, digest_validation_output=DIGEST_VALIDATION_OK
+            inputs, digest_validation_output=DIGEST_VALIDATION_OK,
+            reconciliation=live_reconciliation(),
         )
         unsigned = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
         digest = hashlib.sha256(
             json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
 
-        self.assertEqual(receipt["schema"], "corelink.b046.s3-object-lock-protected-proof.v1")
+        self.assertEqual(receipt["schema"], "corelink.b046.s3-object-lock-protected-proof.v2")
+        self.assertEqual(receipt["schema_version"], 2)
         self.assertEqual(receipt["receipt_sha256"], digest)
         self.assertEqual(
             receipt["workflow_url"],
@@ -95,12 +283,20 @@ class B046ObjectLockProbeTests(unittest.TestCase):
             receipt["target"]["object_version_sha256"],
             hashlib.sha256(inputs["B046_VERSION"].encode()).hexdigest(),
         )
+        self.assertEqual(
+            receipt["target"]["workload_writer_role_arn_sha256"],
+            hashlib.sha256(inputs["AWS_WRITER_ROLE_ARN"].encode()).hexdigest(),
+        )
         self.assertEqual(receipt["target"]["region"], "us-east-1")
         self.assertTrue(receipt["target"]["region_matches_configured_target"])
         self.assertTrue(receipt["bucket"]["versioning_enabled"])
         self.assertEqual(receipt["object"]["retain_until"], "2026-09-26T06:02:42Z")
         self.assertEqual(receipt["object"]["put_data_event_id"], "put-event-123")
+        self.assertEqual(receipt["object"]["delete_request_id"], "delete-request-789")
+        self.assertEqual(receipt["object"]["delete_event_time"], "2026-09-25T06:04:00Z")
         self.assertEqual(receipt["object"]["delete_denial_data_event_id"], "delete-event-456")
+        self.assertEqual(receipt["source_probe"]["commit"], "a" * 40)
+        self.assertEqual(receipt["reconciliation"]["commit"], "b" * 40)
         self.assertEqual(receipt["cloudtrail_digest_validation"], "passed")
         self.assertEqual(
             receipt["cloudtrail_digest_output_sha256"],
@@ -122,7 +318,7 @@ class B046ObjectLockProbeTests(unittest.TestCase):
         for field, value in (
             ("B046_ACTUAL_ACCOUNT_ID", "999999999999"),
             ("B046_ACTUAL_REGION", "eu-west-1"),
-            ("B046_CHECKED_OUT_SHA", "b" * 40),
+            ("B046_CHECKED_OUT_SHA", "c" * 40),
             ("COST_CEILING_USD_MICROS", "5000001"),
             ("B046_BUCKET", "unapproved-bucket"),
         ):
@@ -131,8 +327,18 @@ class B046ObjectLockProbeTests(unittest.TestCase):
                 inputs[field] = value
                 with self.assertRaises(live_receipt.ReceiptError):
                     live_receipt.build_receipt(
-                        inputs, digest_validation_output=DIGEST_VALIDATION_OK
+                    inputs, digest_validation_output=DIGEST_VALIDATION_OK,
+                    reconciliation=live_reconciliation(),
                     )
+
+    def test_final_receipt_rejects_event_not_bound_to_a_validated_log_uri(self) -> None:
+        reconciliation = live_reconciliation()
+        reconciliation["put_validated_log_uri_sha256"] = "f" * 64
+        with self.assertRaises(live_receipt.ReceiptError):
+            live_receipt.build_receipt(
+                live_receipt_inputs(), digest_validation_output=DIGEST_VALIDATION_OK,
+                reconciliation=reconciliation,
+            )
 
     def test_protected_receipt_rejects_missing_or_invalid_digest_validation(self) -> None:
         for output in (
@@ -145,7 +351,8 @@ class B046ObjectLockProbeTests(unittest.TestCase):
             with self.subTest(output=output):
                 with self.assertRaises(live_receipt.ReceiptError):
                     live_receipt.build_receipt(
-                        live_receipt_inputs(), digest_validation_output=output
+                        live_receipt_inputs(), digest_validation_output=output,
+                        reconciliation=live_reconciliation(),
                     )
 
     def test_protected_workflow_reads_back_versioning_and_uses_receipt_builder(self) -> None:
@@ -157,12 +364,118 @@ class B046ObjectLockProbeTests(unittest.TestCase):
         self.assertIn("jq -e '.Status == \"Enabled\"'", workflow)
         self.assertIn("scripts/build_b046_object_lock_receipt.py", workflow)
         self.assertIn("ref: ${{ github.sha }}", workflow)
-        self.assertIn('--start-time "$digest_validation_start"', workflow)
-        self.assertIn('--end-time "$digest_validation_end" --verbose', workflow)
+        self.assertIn('--start-time "$(jq -r \'.probe_window_start\' "$source")"', workflow)
+        self.assertIn('--region "$AWS_REGION"', workflow)
+        self.assertIn("scripts/reconcile_b046_object_lock_trail.py", workflow)
+        self.assertIn("--put-principal-session-arn", workflow)
+        self.assertIn("--delete-principal-session-arn", workflow)
+        self.assertIn("OBJECT_LOCK_PROBE_WORKLOAD_WRITER_ROLE_ARN", workflow)
         self.assertIn('--digest-validation-output "$RUNNER_TEMP/digest-validation.txt"', workflow)
         self.assertIn("B046_ACTUAL_ACCOUNT_ID=\"$actual_account\"", workflow)
         self.assertIn("B046_ACTUAL_REGION=\"$actual_region\"", workflow)
         self.assertIn("B046_CHECKED_OUT_SHA=\"$(git rev-parse HEAD)\"", workflow)
+        self.assertIn("OBJECT_LOCK_PROBE_AUDIT_RECONCILE_ROLE_ARN", workflow)
+        self.assertIn("Equals:((.Equals // []) | sort)", workflow)
+        self.assertNotIn("LatestDigestDeliveryTime", workflow)
+        self.assertNotIn("preflight-digest-validation.txt", workflow)
+        self.assertIn("Assume audit-reader for new-trail configuration preflight", workflow)
+        self.assertIn("Assume probe role for scoped policy simulation", workflow)
+        self.assertIn("s3:PutObject s3:PutObjectRetention s3:PutObjectLegalHold", workflow)
+        self.assertIn("s3:object-lock-mode,ContextKeyValues=COMPLIANCE", workflow)
+        self.assertIn("s3:object-lock-legal-hold,ContextKeyValues=ON", workflow)
+        self.assertIn("simulate_denied()", workflow)
+        self.assertIn("s3:DeleteObjectVersion s3:BypassGovernanceRetention s3:PutObjectLegalHold", workflow)
+        self.assertIn("s3:object-lock-legal-hold,ContextKeyValues=OFF", workflow)
+        self.assertIn('EvalDecision == "implicitDeny" or .EvalDecision == "explicitDeny"', workflow)
+        self.assertIn(".ResourceSpecificResults | length == 1", workflow)
+        self.assertIn(".EvalResourceName == $resource", workflow)
+        permission_preflight = workflow.split(
+            "      - name: Simulate exact probe and workload-writer permissions before bucket creation", 1
+        )[1]
+        create_bucket = permission_preflight.index("      - name: Create exact run-bound synthetic bucket")
+        denied_simulation = permission_preflight.index("simulate_denied \"$WORKLOAD_WRITER_ROLE_ARN\"")
+        self.assertLess(denied_simulation, create_bucket)
+        self.assertEqual(workflow.count("unset-current-credentials: true"), 7)
+        self.assertIn("inline-session-policy: ${{ steps.cleanup_source.outputs.cleanup_policy }}", workflow)
+        self.assertIn("ReleaseOnlyAuthorizedHoldToOff", workflow)
+        self.assertIn("Verify exact workload-writer role and put session", workflow)
+        self.assertIn("Verify exact probe role and delete session", workflow)
+        self.assertIn("Verify exact read-only audit role and source-run session", workflow)
+        self.assertIn('--s3-bucket "$AWS_LOG_BUCKET" --s3-prefix "$AWS_LOG_PREFIX"', workflow)
+        self.assertNotIn("AWS_EVENT_DATA_STORE_ID", workflow)
+        self.assertNotIn("start-query", workflow)
+        self.assertIn("actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_ATTEMPT", workflow)
+        self.assertIn("workflow_id == $workflow", workflow)
+        self.assertIn('"operation":"probe"', workflow)
+        self.assertIn("CLEANUP_ROLE_ARN", workflow)
+
+    def test_writer_negative_policy_simulation_rejects_any_broader_allow(self) -> None:
+        workflow = (ROOT / ".github/workflows/aws-s3-object-lock-live-proof.yml").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(
+            r"local denied_results_filter='(.*?)\n            '\n", workflow, re.DOTALL
+        )
+        self.assertIsNotNone(match, "writer deny simulation filter is missing")
+        jq = shutil.which("jq")
+        self.assertIsNotNone(jq, "jq is required by the hosted workflow and this contract test")
+        jq_filter = match.group(1)
+        resource = "arn:aws:s3:::corelink-object-lock-probe-b046-999999999-1/audit/probe-999999999/synthetic.txt"
+        actions = (
+            "s3:DeleteObjectVersion",
+            "s3:BypassGovernanceRetention",
+            "s3:PutObjectLegalHold",
+        )
+
+        def invoke(results: list[dict[str, object]], *, truncated: bool = False) -> bool:
+            document = {"EvaluationResults": results, "IsTruncated": truncated}
+            completed = subprocess.run(
+                [jq, "-e", "--arg", "resource", resource, jq_filter],
+                input=json.dumps(document),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return completed.returncode == 0
+
+        def make_results(
+            decisions: tuple[str, ...], *, wrong_resource: bool = False
+        ) -> list[dict[str, object]]:
+            results = [
+                {
+                    "EvalActionName": action,
+                    "EvalDecision": decision,
+                    "ResourceSpecificResults": [
+                        {
+                            "EvalResourceName": (
+                                "arn:aws:s3:::wrong/object" if wrong_resource else resource
+                            ),
+                            "EvalResourceDecision": decision,
+                        }
+                    ],
+                }
+                for action, decision in zip(actions, decisions, strict=True)
+            ]
+            return results
+
+        expected_denials = make_results(("implicitDeny", "implicitDeny", "implicitDeny"))
+        self.assertTrue(invoke(expected_denials))
+        self.assertTrue(invoke(make_results(("explicitDeny", "implicitDeny", "explicitDeny"))))
+        self.assertFalse(invoke(make_results(("allowed", "implicitDeny", "implicitDeny"))))
+        self.assertFalse(invoke(make_results(("allowed", "allowed", "allowed"))))
+        self.assertFalse(invoke(make_results(("unknown", "implicitDeny", "implicitDeny"))))
+        self.assertFalse(
+            invoke(
+                make_results(("implicitDeny", "implicitDeny", "implicitDeny"), wrong_resource=True)
+            )
+        )
+        self.assertFalse(invoke(expected_denials[:-1]))
+        duplicate_action = [
+            *expected_denials[:-1],
+            {**expected_denials[0], "EvalDecision": "implicitDeny"},
+        ]
+        self.assertFalse(invoke(duplicate_action))
+        self.assertFalse(invoke(expected_denials, truncated=True))
 
     def test_cleanup_expires_retention_before_releasing_exact_version_legal_hold(self) -> None:
         workflow = (ROOT / ".github/workflows/aws-s3-object-lock-live-proof.yml").read_text(
@@ -184,6 +497,15 @@ class B046ObjectLockProbeTests(unittest.TestCase):
         self.assertLess(cleanup.index(hold_release), cleanup.index(delete_version))
         self.assertIn("--legal-hold '{\"Status\":\"OFF\"}'", cleanup)
         self.assertIn("jq -e '.LegalHold.Status == \"OFF\"'", cleanup)
+        self.assertIn("CLEANUP_MODE: ${{ steps.cleanup_source.outputs.cleanup_mode }}", workflow)
+        self.assertIn('echo \'bucket_created=true\' >> "$GITHUB_OUTPUT"', workflow)
+        self.assertIn('"bucket_created":True', workflow)
+        self.assertIn("steps.create.outputs.bucket_created == 'true'", workflow)
+        self.assertIn("empty_bucket_recovery", workflow)
+        self.assertIn('aws s3api list-object-versions --no-paginate --bucket "$bucket"', cleanup)
+        self.assertIn('aws s3api list-objects-v2 --no-paginate --bucket "$bucket"', cleanup)
+        self.assertIn('(.IsTruncated != true) and ((.Versions // []) | length == 0)', cleanup)
+        self.assertIn('(.IsTruncated != true) and ((.Contents // []) | length == 0)', cleanup)
 
     def test_only_explicit_not_implemented_is_provider_block(self) -> None:
         self.assertEqual(verifier.classify_operation(1, "", "NotImplemented"), "NOT_SUPPORTED")
