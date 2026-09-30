@@ -19,7 +19,16 @@
       "provider_receipt": "evidence/owner-actions/B-046/object-lock-probe.json",
       "provider_classification": "INDETERMINATE",
       "launch_availability": "NOT_AVAILABLE_OR_PROMISED",
-      "limitation": "No accepted exact-target production proof establishes Object Lock COMPLIANCE retention or a seven-year storage-enforced guarantee."
+      "limitation": "No accepted exact-target production proof establishes Object Lock COMPLIANCE retention or a seven-year storage-enforced guarantee.",
+      "synthetic_aws_provider_proof": {
+        "status": "PROVEN_FOR_ONE_NONPRODUCTION_SYNTHETIC_VERSION_ONLY",
+        "receipt": "https://github.com/HuGR-dev/corelink-server/issues/1877#issuecomment-5917836175",
+        "probe_run": 36741245684,
+        "digest_reconciliation_run": 36742484737,
+        "retention": "ONE_DAY_COMPLIANCE_WITH_LEGAL_HOLD_ON",
+        "production_runtime": "NOT_ENABLED_OR_PROVEN",
+        "seven_year_guarantee": "NOT_ESTABLISHED"
+      }
     },
     "byok_kill_switch": {
       "public_claim": "Enterprise BYOK kill-switch p99 <= 300 seconds",
@@ -29,7 +38,12 @@
       "revoke_restore": "NOT_EXECUTED",
       "p99_measurement": "NOT_MEASURED",
       "launch_availability": "NOT_AVAILABLE_OR_PROMISED",
-      "limitation": "No authenticated lifecycle proof from the shipped CoreLink runtime or measured production run_loop p99 establishes the claim."
+      "limitation": "No authenticated lifecycle proof from the shipped CoreLink runtime or measured production run_loop p99 establishes the claim.",
+      "public_copy": {
+        "path": "apps/docs/docs/explanation/security/byok.mdx",
+        "state": "PRELAUNCH_LIMITATION_NOT_OFFERED",
+        "provider_module_scope": "NOT_CORELINK_SERVICE_CAPABILITY"
+      }
     },
     "d1_residency": {
       "posture": "ONE_SHARED_GLOBAL_D1_PRELAUNCH_DISCLOSURE",
@@ -59,6 +73,8 @@
   "status": "OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW",
   "provider_chains_closed": false,
   "source_sha256": {
+    "apps/docs/docs/explanation/security/byok.mdx": "5e7c61e4e2dce64a7d8d01c35a65880062d6e634165540f9353df8d55c265316",
+    "compliance/byok-fips-matrix.md": "d3b1ddd846817be3dc4290b4a9bef71cacb2cca0e0ca678c7fe9921fa8e12afd",
     "legal/dpa-residency-amendment.md": "cd6427ab8310624058793f9a7a8e3c4b0a0526ec6dec7943bc5b44e8f0e3fd50",
     "legal/dpa/v1.0.0.en-US.md": "341449b3b76fd923185c11852706b5b55c9ce00a8227eea2a41c76758edc658a",
     "legal/dpa/v1.0.0.es-419.md": "1874ef2bbd8c6e16a70a87ab9c57c7f543d68553677fe0b3ac2f9254098d1587",

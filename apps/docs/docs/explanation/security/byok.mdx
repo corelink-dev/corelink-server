@@ -1,7 +1,7 @@
 ---
 title: "BYOK — customer-managed keys"
 slug: "/security/byok"
-description: "Bring-your-own-key support across AWS KMS, GCP KMS, Azure Key Vault, and HashiCorp Vault."
+description: "Prelaunch BYOK design and current availability limits."
 cross_functional_review: pending
 pending_signoff:
   - "Security Lead"
@@ -9,7 +9,7 @@ pending_signoff:
 sources:
   - "specs/03_architecture/security_model.md#7-criptografia-algoritmos-chaves-rotação"
   - "compliance/byok-fips-matrix.md"
-last_updated: "2026-05-14"
+last_updated: "2026-09-30"
 ---
 
 import { DraftBanner } from "../../../src/components/DraftBanner";
@@ -18,45 +18,47 @@ import { DraftBanner } from "../../../src/components/DraftBanner";
 
 # BYOK — customer-managed keys
 
-> **DRAFT — pending Legal + Finance + Security review.** Provider availability
-> below tracks the engineering rollout in `compliance/byok-fips-matrix.md` and
-> may change before GA.
+> **PRELAUNCH DRAFT — NOT OFFERED OR AVAILABLE.** CoreLink has not launched and
+> has no customers. Legal, Finance, and Security review remains pending. This
+> page describes a proposed design, not an active customer feature or SLA.
 
-CoreLink Enterprise tenants can supply their own root key in a KMS they own.
-CoreLink uses envelope encryption: a per-tenant data encryption key (DEK) is
-generated locally, used to encrypt blobs, and then wrapped by the customer's
-KMS root key. Without the customer's KMS, ciphertext is unrecoverable.
+BYOK is not available or offered in CoreLink's prelaunch service. The repository
+contains a real AWS KMS provider implementation and an envelope-encryption
+design, but no accepted authenticated customer-controlled KMS lifecycle receipt
+from the shipped CoreLink runtime establishes an operable customer feature.
+Current service source uses provider-managed R2 encryption; BYOK does not cover
+the shared D1 control plane. The current limitation is also recorded in
+`docs/customer/byok-kill-switch.md`.
 
-## Supported KMS providers
+## Provider design status
 
-| Provider | FIPS posture | Status |
+| Provider | Provider module information | CoreLink BYOK status |
 | --- | --- | --- |
-| AWS KMS | FIPS 140-3 Level 1 (CMVP #4523) | Available |
-| GCP Cloud KMS | FIPS 140-2 Level 1 | Rollout in progress (WI-S14-005) |
-| Azure Key Vault Premium (HSM) | FIPS 140-2 Level 2 | Rollout in progress (WI-S14-005) |
-| HashiCorp Vault Enterprise (FIPS build) | FIPS 140-3 Level 1 | Rollout in progress (WI-S14-005) |
+| AWS KMS | See `compliance/byok-fips-matrix.md` | Runtime lifecycle unverified; not offered |
+| GCP Cloud KMS | See provider module matrix | Design only; not offered |
+| Azure Key Vault Premium | See provider module matrix | Design only; not offered |
+| HashiCorp Vault Enterprise | See provider module matrix | Design only; not offered |
 
-Provider-by-provider validation evidence lives in `compliance/byok-fips-matrix.md`
-and is reviewed quarterly.
+Provider module certification and source code do not establish CoreLink runtime
+availability, customer-controlled key custody, or a security/compliance approval.
 
-## Operational guarantees
+## Operational boundary
 
-- **Key revocation** — if the customer revokes our IAM grant on the root key,
-  CoreLink cannot decrypt new blob fetches within one DEK cache TTL (≤ 60s).
-- **Rotation** — Tenant Derivation Keys rotate annually; the customer can
-  rotate the underlying root key on any schedule and CoreLink re-wraps DEKs
-  during the next maintenance window.
-- **Break-glass** — `RB-KEY-COMPROMISE` runbook applies; on suspected
-  compromise CoreLink rotates DEKs and invalidates tokens emitted under the
-  compromised key.
+- Key activation, revocation, rotation, crypto-erase, and break-glass behavior
+  remain unverified in an accepted customer-controlled KMS lifecycle.
+- No BYOK kill-switch timing SLO or p99 measurement is offered. The former
+  five-minute claim is not a verified runtime result or customer commitment.
+- The real-KMS lifecycle and production-binary revocation timing are tracked
+  by [#1653](https://github.com/HuGR-dev/corelink-server/issues/1653) and
+  [#2165](https://github.com/HuGR-dev/corelink-server/issues/2165).
 
 ## Limitations
 
-- BYOK is available on the **Enterprise** tier (see [pricing](/pricing)).
-- BYOK does not change the SOC 2 or ISO 27001 scope of CoreLink itself.
-- BYOK does not exempt the customer from RFC 6962 audit-log retention.
+- No tier currently offers BYOK. Future availability requires accepted
+  exact-image provider/runtime evidence and owner approval.
+- This page is not an executed customer instrument or legal approval.
 
 ## Cross-functional review checklist
 
-- [ ] Security Lead — confirm provider list matches current engineering state.
-- [ ] Legal — confirm public BYOK language is consistent with the DPA.
+- [ ] Security Lead — confirm provider list and exact runtime evidence.
+- [ ] Legal — review any future customer-facing BYOK language against the DPA.

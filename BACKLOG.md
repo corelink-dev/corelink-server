@@ -16155,14 +16155,17 @@ The enterprise BYOK case study has not circulated; #2594/#2595 are not applicabl
 remediation and #2596 records no circulation. No customer notice, amendment, or executed remedy
 is claimed.
 
-The linked prelaunch DPA, SLA, privacy, and customer-copy sources now state that seven-year
+The linked prelaunch DPA, SLA, privacy, customer-copy, and BYOK docs sources state that seven-year
 Object Lock COMPLIANCE retention and BYOK customer-managed-key operation/kill-switch p99 are
-unproven and unavailable/not promised. Repository implementation, mocks, configuration, and
-provider-only experiments do not establish a shipped customer capability. The resolution JSON
-retains exact limitations and source hashes. Object Lock evidence remains owned by #1646/#1877;
-KMS lifecycle and measured p99 remain owned by #1653/#2165. B-154 stays open until those parent
-outcomes are terminal and evidence-backed. This record does not create legal approval or close
-either capability parent.
+unproven and unavailable/not promised. The docs provider-module matrix does not establish a
+CoreLink service capability. #1877 closed with one-day synthetic nonproduction AWS Object Lock
+proof for one exact object/version; this does not enable production Compliance mode or prove
+seven-year retention. Repository implementation, mocks, configuration, and provider-only
+experiments do not establish a shipped customer capability. The B-154 prelaunch resolution JSON
+retains exact limitations, synthetic-proof scope, and source hashes. Object Lock runtime/launch
+evidence remains owned by #1646; KMS lifecycle and measured p99 remain owned by #1653/#2165.
+B-154 claim accuracy can complete on these limits while those capability parents stay open. This
+record does not create legal approval or close either capability parent.
 
 ```backlog
 id: B-154
@@ -16176,8 +16179,9 @@ verify: |
 verify-means: |
   The prelaunch receipt, source hashes, active claims, and limitation language must agree.
   The verifier rejects a positive Object Lock/BYOK availability or p99 claim without proof,
-  and the packet must retain no-customer/no-circulation status plus open provider dependencies.
-  B-154 remains open until #1646/#1877 and #1653/#2165 reach terminal evidence-backed outcomes.
+  including a claim hidden behind the BYOK docs draft banner or provider-module certification.
+  The packet retains no-customer/no-circulation status and distinct open provider dependencies.
+  The #1877 receipt proves only one synthetic AWS version; #1646 and #1653/#2165 remain open.
 last-verified: 2026-09-30
 ```
 
