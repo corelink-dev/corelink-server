@@ -588,6 +588,13 @@ def assert_contract(workflow: str, runner: str) -> None:
         fail("workflow does not run the semantic executor guard")
     if 'REAL_HARNESS_PROFILE: ${{ inputs.profile }}' not in wf:
         fail("workflow does not pass the profile through an environment variable")
+    expected_r2_parser_fixtures = (
+        "CF_API_TOKEN: ${{ inputs.profile == 'r2' && 'test' || secrets.CF_API_TOKEN }}",
+        "D1_DATABASE_ID: ${{ inputs.profile == 'r2' && 'test' || secrets.D1_DATABASE_ID }}",
+    )
+    for expected in expected_r2_parser_fixtures:
+        if expected not in wf:
+            fail("R2 profile must receive inert D1 parser fixtures, not protected D1 credentials")
     if 'bash scripts/run-real-ignored-harnesses.sh "$REAL_HARNESS_PROFILE"' not in wf:
         fail("workflow interpolates the dispatch input into shell source")
     if 'bash scripts/run-real-ignored-harnesses.sh "${{ inputs.profile }}"' in wf:
@@ -1076,6 +1083,24 @@ def mutation_checks(workflow: str, runner: str, contract_workflow: str) -> None:
         workflow.replace(
             "R2_TEST_BUCKET: ${{ (inputs.profile == 'r2' || inputs.profile == 'all') && vars.R2_TEST_BUCKET || '' }}",
             "R2_TEST_BUCKET: ${{ vars.R2_TEST_BUCKET }}",
+            1,
+        ),
+        runner,
+    )
+    expect_rejected(
+        "R2 receives the protected D1 API token",
+        workflow.replace(
+            "CF_API_TOKEN: ${{ inputs.profile == 'r2' && 'test' || secrets.CF_API_TOKEN }}",
+            "CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}",
+            1,
+        ),
+        runner,
+    )
+    expect_rejected(
+        "R2 receives the protected D1 database ID",
+        workflow.replace(
+            "D1_DATABASE_ID: ${{ inputs.profile == 'r2' && 'test' || secrets.D1_DATABASE_ID }}",
+            "D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}",
             1,
         ),
         runner,
