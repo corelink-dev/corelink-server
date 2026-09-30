@@ -45,3 +45,6 @@ jobs:
         run: >-
           python -m pytest -q
           tests/test_backlog_verify_trust_boundary.py::BacklogVerifyTrustBoundaryTests::test_concurrency_group_migration_is_monotonic_and_exact
+          tests/test_backlog_verify_trust_boundary.py::BacklogVerifyTrustBoundaryTests::test_i1652_receiver_requires_entire_exact_delivery
+          tests/test_backlog_verify_trust_boundary.py::BacklogVerifyTrustBoundaryTests::test_i1652_receiver_pins_are_seventeen_and_include_guard_pair
+          tests/test_verify_i2176_grpc_deny_gate.py::P0WaveClassifierTests

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import sys
 import unittest
 from pathlib import Path
@@ -17,8 +18,25 @@ import verify_i2176_grpc_deny_gate as verify
 
 
 class P0WaveClassifierTests(unittest.TestCase):
+    def test_two_trusted_checkers_have_identical_i1652_pin_map(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "scripts/backlog_verify.py").read_text(
+            encoding="utf-8"
+        )
+        definitions = [
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "I1652_DELIVERY_PINS"
+        ]
+        self.assertEqual(len(definitions), 1)
+        backlog_pins = ast.literal_eval(definitions[0].value)
+        self.assertEqual(
+            {str(path): pins for path, pins in verify.WAVE_GROUPS["i1652"].items()},
+            backlog_pins,
+        )
+
     def test_four_reviewed_groups_are_finite_and_path_disjoint(self) -> None:
-        expected = {"i1652": 14, "i1648": 4, "i1700": 17, "i2565": 8}
+        expected = {"i1652": 17, "i1648": 4, "i1700": 17, "i2565": 8}
         self.assertEqual(set(verify.WAVE_GROUPS), set(expected))
         seen: set[Path] = set()
         for name, pins in verify.WAVE_GROUPS.items():
@@ -31,7 +49,7 @@ class P0WaveClassifierTests(unittest.TestCase):
                         mode, digest = pin
                         self.assertIn(mode, (0o644, 0o755))
                         self.assertRegex(digest, r"^[0-9a-f]{64}$")
-        self.assertEqual(len(seen), 43)
+        self.assertEqual(len(seen), 46)
         self.assertEqual(len(verify.WAVE_BASE_CONTROLS), 54)
 
     def test_p0_matrix_is_pinned_separately_from_checker_controls(self) -> None:
@@ -47,6 +65,52 @@ class P0WaveClassifierTests(unittest.TestCase):
             "B072_STAGING_CF_ROUTE_READ_TOKEN",
         ):
             self.assertEqual(text.count(f"`{name}`"), 1)
+
+    def test_i1652_full_guard_transition_is_atomic_and_monotonic(self) -> None:
+        paths = verify.WAVE_GROUPS["i1652"]
+        self.assertEqual(len(paths), 17)
+        self.assertIn(Path("scripts/verify_b072_receiver.py"), paths)
+        self.assertIn(Path("scripts/test_b072_receiver_mutations.py"), paths)
+        with tempfile.TemporaryDirectory() as directory:
+            trusted, candidate = Path(directory) / "trusted", Path(directory) / "candidate"
+            trusted.mkdir()
+            candidate.mkdir()
+            fake_pins = {}
+            for relative, (old_pin, _new_pin) in paths.items():
+                old = None if old_pin is None else f"old:{relative}\n".encode()
+                new = f"new:{relative}\n".encode()
+                if old is not None:
+                    target = trusted / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(old)
+                target = candidate / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(new)
+                fake_pins[relative] = (
+                    None if old is None else (0o644, hashlib.sha256(old).hexdigest()),
+                    (0o644, hashlib.sha256(new).hexdigest()),
+                )
+            changed = set(paths)
+            with patch.object(verify, "WAVE_GROUPS", {"i1652": fake_pins}), patch.object(
+                verify, "_wave_common_controls_equal"
+            ), patch.object(verify, "_wave_controls_match", return_value=True):
+                self.assertTrue(verify.validate_wave(trusted, trusted, set()))
+                self.assertTrue(verify.validate_wave(candidate, trusted, changed))
+                with self.assertRaises(verify.ContractError):
+                    verify.validate_wave(trusted, candidate, changed)
+                with self.assertRaises(verify.ContractError):
+                    verify.validate_wave(candidate, trusted, changed - {Path("scripts/verify_b072_receiver.py")})
+                with self.assertRaises(verify.ContractError):
+                    verify.validate_wave(candidate, trusted, changed | {Path("unapproved.txt")})
+                guard = candidate / "scripts/verify_b072_receiver.py"
+                original = guard.read_bytes()
+                guard.write_bytes(b"arbitrary verifier\n")
+                with self.assertRaises(verify.ContractError):
+                    verify.validate_wave(candidate, trusted, changed)
+                guard.write_bytes(original)
+                guard.chmod(0o755)
+                with self.assertRaises(verify.ContractError):
+                    verify.validate_wave(candidate, trusted, changed)
 
 
 class TrustedGrpcDenyGateTests(unittest.TestCase):

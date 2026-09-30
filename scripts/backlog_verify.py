@@ -174,6 +174,28 @@ STAGING_CUSTOM_DOMAIN_TARGETS = {
     "tests/test_verify_staging_topology_contract.py": "bba450e2410791916e7ec80600c7968be86152a21526d02cf1dddf57f2ae909f",
     "infra/staging/topology.json": "586665e34c11bf91a34fb83247fdbafec9fdfb8e7a336ba4da6f5bda8266dd99",
 }
+# #1652 full-delivery pins from source head 8d193a15. The receiver verifier
+# changes only with the complete 17-path delivery.
+I1652_DELIVERY_PINS: dict[str, tuple[tuple[int, str] | None, tuple[int, str] | None]] = {
+    ".github/workflows/issue-1652-b072-evidence.yml": ((0o644, "7902fc5211d88c461554981f635dbbd7948ea358420facb722cd1f06c215aa43"), (0o644, "95f1644aea80a18f5ca4aaffbf1e66c2beecf4326cad465ee55188e4dc6618f1")),
+    ".github/workflows/synthetic-pager-worker-deploy.yml": ((0o644, "3ab28f10f0bdda409be1790b63b18f8c45c2290ac1f5534c872981766af2dace"), (0o644, "3c011375a5477d05fa4211ee9aace75ab253e8c869380e45b1d724e849962c75")),
+    "apps/synthetic-pager-worker/src/contract.ts": ((0o644, "fb4a25030f5ab409cd6af58e33bc7aac64f812a80b06365118d66f4af3668ee2"), (0o644, "db25b1a27776180a63f4e52f232bd36d1d20dffc0861732cfef534c98c9439bb")),
+    "apps/synthetic-pager-worker/src/index.ts": ((0o644, "d1951170489f1dc4d7d794cf993371a912c819ba4b068b1b07f494c9c763f173"), (0o644, "e4bab682267f9409d1546b38c660be6a601a077268c1b4cb0c80f768d98cca97")),
+    "apps/synthetic-pager-worker/tests/receiver.test.ts": ((0o644, "4158b83f17cd34f37357a002c54e73d5a199c86b49f95d110a82d6eeab29df56"), (0o644, "28964c621797a4d87155c0c365badc6eacedc14abac8f30bf001727848f5d5f3")),
+    "changelog.d/1652-b072-one-shot.md": (None, (0o644, "22f60747b272725bcf9d71a32a7e8899970fda47538bffcd8a8b890ca4d4d2db")),
+    "docs/internal/b072-scheduled-drills-owner-packet.md": ((0o644, "27b8ada7c3c84706c82173b9092c1464952ade6419688700fcc9dd1de75ce2fd"), (0o644, "54e33cb943bb961324c3babf2c35eed21acb93b839dbf1616dd54260b7faaa45")),
+    "migrations/d1/0153_b072_one_shot_fence.sql": (None, (0o644, "8ac96c331cb5b44a9f0376ae5c257fc23a783e1fb51ec2415842101da57a67a9")),
+    "scripts/issue_1652_b072_operator.py": (None, (0o644, "0fb4752246e6036e7af9fc8e62d2b9bae7764aacfc219be7148699ae0b35062c")),
+    "scripts/test_b072_receiver_mutations.py": ((0o644, "86c3f91858694327126c5db48af9f151fb5b4603d461634c12dc5ccebaf26297"), (0o644, "761de6a4375d9dbeb74e706b3f2d32c5beb74432178b06f4fe2281d14e8e659a")),
+    "scripts/test_issue_1652_b072_operator.py": (None, (0o644, "74678eb4b42fef3567cac2963d9462da28904964abbcf22372535ce6c6ad0828")),
+    "scripts/test_issue_1652_b072_workflow.py": (None, (0o644, "40501fd987ad3994e32ab58e7fe7269ad8248a537e41d1080f820d8623bd63dc")),
+    "scripts/verify_b072_receiver.py": ((0o644, "3bfa5d552f9d588c424c25a2cb7654dd840f77279cd89ff249f594c052674ecc"), (0o644, "650a2b0ed7d999e7698182f29fa3d2e6f98a252d8e46eac215b80f34b8549d55")),
+    "worker/src/b072_one_shot.ts": (None, (0o644, "0083f893f91aee58f59bb3f290c95e17cba19bc22a3d06c42f0d07f166c56e4c")),
+    "worker/src/index_schedule.ts": ((0o644, "cce9a2f88923fed6f7c6eddb82a6f9145767b9c77617721de2e634961dea3e3d"), (0o644, "390a6458dbcc7bc825105dc5373b017e3044dd41085c4d775cafe6b02913cfdb")),
+    "worker/tests/b072_one_shot.test.ts": (None, (0o644, "ecd19f939fca175b5b29bbb187e73e0ac05a4b582f74f491b9f14fcb4517598c")),
+    "worker/tests/scheduled_drills.test.ts": ((0o644, "7ff36a7bb7bf65fe58c3013b80b397f5432d8dd8d90c87dd2443db171be1b5a5"), (0o644, "d325b36d1bdca9f96e691a917a912033818db9b9e29ae7e56a6a1ef35ceebb90")),
+}
+
 STAGING_CUSTOM_DOMAIN_DELIVERY_PATHS = frozenset({
     ".github/workflows/issue-1700-staging-custom-domain.yml",
     "docs/campaigns/remediation/wp150-workflow-ownership.md",
@@ -848,6 +870,31 @@ def _candidate_tree_entries(root: Path) -> dict[str, tuple[str, int, str]]:
     return entries
 
 
+def _preauthorized_i1652_receiver(candidate_root: Path, trusted_root: Path) -> bool:
+    """Admit the B072 receiver guard only with its complete reviewed delivery.
+
+    Candidate source is never imported or executed. The complete tree delta,
+    file types, modes, bytes, and absent preimages must match the pins.
+    """
+    try:
+        candidate_entries = _candidate_tree_entries(candidate_root)
+        trusted_entries = _candidate_tree_entries(trusted_root)
+    except (OSError, RuntimeError):
+        return False
+    changed = {
+        relative for relative in candidate_entries.keys() | trusted_entries.keys()
+        if candidate_entries.get(relative) != trusted_entries.get(relative)
+    }
+    if changed != set(I1652_DELIVERY_PINS):
+        return False
+    for relative, (old_pin, new_pin) in I1652_DELIVERY_PINS.items():
+        old_entry = None if old_pin is None else ("file", *old_pin)
+        new_entry = None if new_pin is None else ("file", *new_pin)
+        if trusted_entries.get(relative) != old_entry or candidate_entries.get(relative) != new_entry:
+            return False
+    return True
+
+
 def _preauthorized_b057_c0(candidate_root: Path, trusted_root: Path) -> bool:
     """Recognize the sole byte-pinned B-057 trusted-control migration."""
     try:
@@ -1148,6 +1195,10 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
             ):
                 continue
             if relative == "scripts/verify_b029_load_gate.py" and _preauthorized_b029_load_gate(
+                candidate_root, trusted_root
+            ):
+                continue
+            if relative in {"scripts/verify_b072_receiver.py", "scripts/test_b072_receiver_mutations.py"} and _preauthorized_i1652_receiver(
                 candidate_root, trusted_root
             ):
                 continue
