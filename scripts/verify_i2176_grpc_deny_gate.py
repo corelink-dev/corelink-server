@@ -765,7 +765,7 @@ def assert_exact_head(candidate: Path, expected_head: str) -> None:
 # one reviewed target (None means exact absence); modes and bytes are checked.
 WAVE_GROUPS: dict[str, dict[Path, tuple[tuple[int, str] | None, tuple[int, str] | None]]]= {
     "i1652": {
-        Path('.github/workflows/issue-1652-b072-evidence.yml'): ((0o0644, "7902fc5211d88c461554981f635dbbd7948ea358420facb722cd1f06c215aa43"), (0o0644, "62ee0e419915029270c7504eae90e6f7ba508ce4f5e1118dae743e135941aba4")),
+        Path('.github/workflows/issue-1652-b072-evidence.yml'): ((0o0644, "7902fc5211d88c461554981f635dbbd7948ea358420facb722cd1f06c215aa43"), (0o0644, "95f1644aea80a18f5ca4aaffbf1e66c2beecf4326cad465ee55188e4dc6618f1")),
         Path('.github/workflows/synthetic-pager-worker-deploy.yml'): ((0o0644, "3ab28f10f0bdda409be1790b63b18f8c45c2290ac1f5534c872981766af2dace"), (0o0644, "3c011375a5477d05fa4211ee9aace75ab253e8c869380e45b1d724e849962c75")),
         Path('apps/synthetic-pager-worker/src/contract.ts'): ((0o0644, "fb4a25030f5ab409cd6af58e33bc7aac64f812a80b06365118d66f4af3668ee2"), (0o0644, "db25b1a27776180a63f4e52f232bd36d1d20dffc0861732cfef534c98c9439bb")),
         Path('apps/synthetic-pager-worker/src/index.ts'): ((0o0644, "d1951170489f1dc4d7d794cf993371a912c819ba4b068b1b07f494c9c763f173"), (0o0644, "e4bab682267f9409d1546b38c660be6a601a077268c1b4cb0c80f768d98cca97")),
@@ -776,9 +776,12 @@ WAVE_GROUPS: dict[str, dict[Path, tuple[tuple[int, str] | None, tuple[int, str] 
         Path('scripts/issue_1652_b072_operator.py'): (None, (0o0644, "0fb4752246e6036e7af9fc8e62d2b9bae7764aacfc219be7148699ae0b35062c")),
         Path('scripts/test_issue_1652_b072_operator.py'): (None, (0o0644, "74678eb4b42fef3567cac2963d9462da28904964abbcf22372535ce6c6ad0828")),
         Path('scripts/test_issue_1652_b072_workflow.py'): (None, (0o0644, "40501fd987ad3994e32ab58e7fe7269ad8248a537e41d1080f820d8623bd63dc")),
-        Path('worker/src/b072_one_shot.ts'): (None, (0o0644, "b4611f9255b89d645f0edd67450e3d24205a0d060ef727588d499b4a6f29f1a8")),
+        Path('worker/src/b072_one_shot.ts'): (None, (0o0644, "0083f893f91aee58f59bb3f290c95e17cba19bc22a3d06c42f0d07f166c56e4c")),
         Path('worker/src/index_schedule.ts'): ((0o0644, "cce9a2f88923fed6f7c6eddb82a6f9145767b9c77617721de2e634961dea3e3d"), (0o0644, "390a6458dbcc7bc825105dc5373b017e3044dd41085c4d775cafe6b02913cfdb")),
-        Path('worker/tests/b072_one_shot.test.ts'): (None, (0o0644, "f4bc82a1ae90b6bce02c1c4dc27ac50ef3599ca99dfa2bbb71b40703c5788040")),
+        Path('worker/tests/b072_one_shot.test.ts'): (None, (0o0644, "ecd19f939fca175b5b29bbb187e73e0ac05a4b582f74f491b9f14fcb4517598c")),
+        Path('worker/tests/scheduled_drills.test.ts'): ((0o0644, "7ff36a7bb7bf65fe58c3013b80b397f5432d8dd8d90c87dd2443db171be1b5a5"), (0o0644, "d325b36d1bdca9f96e691a917a912033818db9b9e29ae7e56a6a1ef35ceebb90")),
+        Path('scripts/verify_b072_receiver.py'): ((0o0644, "3bfa5d552f9d588c424c25a2cb7654dd840f77279cd89ff249f594c052674ecc"), (0o0644, "650a2b0ed7d999e7698182f29fa3d2e6f98a252d8e46eac215b80f34b8549d55")),
+        Path('scripts/test_b072_receiver_mutations.py'): ((0o0644, "86c3f91858694327126c5db48af9f151fb5b4603d461634c12dc5ccebaf26297"), (0o0644, "761de6a4375d9dbeb74e706b3f2d32c5beb74432178b06f4fe2281d14e8e659a")),
     },
     "i1648": {
         Path('.github/workflows/cf-deploy-prod.yml'): ((0o0644, "dd3606d88be58955fb6c3853e64f355fbc44fd01e9988af1cf3e356f4e20aa64"), (0o0644, "0bd0198cfb7153acace49e9f581d4488956955fa37316b97b60d3c0ff3e92fe3")),
