@@ -2,67 +2,81 @@
   "schema_version": "1.0",
   "capture_commit": "09e253a3699098a1aa18b77c4760befc45f8a324",
   "captured_at": "2026-09-09T06:10:15Z",
-  "decision": "unresolved",
+  "decision": "shared_d1_prelaunch_disclosure",
   "production_bindings": [
     {
       "env": "prod",
       "binding": "CONFIG_DB",
-      "database_name": "corelink-config-prod",
+      "database_name": "corelink-config-prod (Wrangler binding label)",
       "database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
-      "residency_claim": "single global D1; wrangler binding has no jurisdiction key; Cloudflare API reports jurisdiction null and running_in_region ENAM"
+      "residency_claim": "one shared global D1; active CONFIG_DB binding has no jurisdiction key; read-only provider readback reports running_in_region ENAM, jurisdiction null, automatic read replication; metadata is not physical-location guarantee",
+      "provider_target_name": "corelink-prod-d1"
     },
     {
       "env": "prod-sam",
       "binding": "CONFIG_DB",
-      "database_name": "corelink-config-prod",
+      "database_name": "corelink-config-prod (Wrangler binding label)",
       "database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
-      "residency_claim": "single global D1; wrangler binding has no jurisdiction key; Cloudflare API reports jurisdiction null and running_in_region ENAM"
+      "residency_claim": "one shared global D1; active CONFIG_DB binding has no jurisdiction key; read-only provider readback reports running_in_region ENAM, jurisdiction null, automatic read replication; metadata is not physical-location guarantee",
+      "provider_target_name": "corelink-prod-d1"
     },
     {
       "env": "prod-lhr",
       "binding": "CONFIG_DB",
-      "database_name": "corelink-config-prod",
+      "database_name": "corelink-config-prod (Wrangler binding label)",
       "database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
-      "residency_claim": "single global D1; wrangler binding has no jurisdiction key; Cloudflare API reports jurisdiction null and running_in_region ENAM"
+      "residency_claim": "one shared global D1; active CONFIG_DB binding has no jurisdiction key; read-only provider readback reports running_in_region ENAM, jurisdiction null, automatic read replication; metadata is not physical-location guarantee",
+      "provider_target_name": "corelink-prod-d1"
     },
     {
       "env": "prod-nrt",
       "binding": "CONFIG_DB",
-      "database_name": "corelink-config-prod",
+      "database_name": "corelink-config-prod (Wrangler binding label)",
       "database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
-      "residency_claim": "single global D1; wrangler binding has no jurisdiction key; Cloudflare API reports jurisdiction null and running_in_region ENAM"
+      "residency_claim": "one shared global D1; active CONFIG_DB binding has no jurisdiction key; read-only provider readback reports running_in_region ENAM, jurisdiction null, automatic read replication; metadata is not physical-location guarantee",
+      "provider_target_name": "corelink-prod-d1"
     },
     {
       "env": "prod-syd",
       "binding": "CONFIG_DB",
-      "database_name": "corelink-config-prod",
+      "database_name": "corelink-config-prod (Wrangler binding label)",
       "database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
-      "residency_claim": "single global D1; wrangler binding has no jurisdiction key; Cloudflare API reports jurisdiction null and running_in_region ENAM"
+      "residency_claim": "one shared global D1; active CONFIG_DB binding has no jurisdiction key; read-only provider readback reports running_in_region ENAM, jurisdiction null, automatic read replication; metadata is not physical-location guarantee",
+      "provider_target_name": "corelink-prod-d1"
     }
   ],
   "distinct_database_ids": 1,
-  "dpa_status": "PENDING_LEGAL_REVIEW; active Cloudflare sub-processor row says Tenant-pinned (Section 7)",
+  "dpa_status": "PRELAUNCH shared-D1 disclosure drafted; exact D1 metadata and five active Worker version bindings read back 2026-09-30; counsel review pending; no customer instrument exists.",
   "related_legal_surfaces": [
     {
+      "path": "legal/dpa-residency-amendment.md",
+      "observed_claim": "R2/DO regional scope separated from one shared global D1; historical metadata caveat; transfer review pending"
+    },
+    {
       "path": "legal/sub-processors.md",
-      "observed_claim": "D1 control-plane metadata global under SCC/TIA safeguards",
-      "sha256": "a3c5f278d8678b7a4aaa9bfad893760b2ec998374c5ce328458f0af34225e491"
+      "observed_claim": "one shared global D1; transfer basis and safeguards pending counsel review"
     },
     {
       "path": "legal/dpa/SUB-PROCESSOR-COMMITMENTS.md",
-      "observed_claim": "Cloudflare service multi-region and tenant-pinned without a D1-specific qualification",
-      "sha256": "c0c7f3ddd648bf823c66fdf83bbada0f88e5072bb71c37c4b2c33497c8be7350"
+      "observed_claim": "shared D1; historical metadata only; no transfer basis approved"
     },
     {
       "path": "legal/tia-template.md",
-      "observed_claim": "Cloudflare R2/D1/DO/KV/Workers data flow described as stored in tenant-pinned region per DPA Section 7",
-      "sha256": "f4966b0697fb63bc80cb79314da2f5a60f26a6507b3cdb2aff0552c3d27cb733"
+      "observed_claim": "shared D1; transfer assessment pending; provider metadata historical only"
+    },
+    {
+      "path": "legal/dpa/v1.0.0.en-US.md",
+      "observed_claim": "shared D1 disclosure; no customer transfer instrument"
+    },
+    {
+      "path": "legal/privacy-notice/v1.0.0/en-US.md",
+      "observed_claim": "shared D1 prelaunch disclosure; no approved transfer basis"
     }
   ],
   "effective_at": null,
   "signed_document_sha256_or_provider_case": null,
   "reviewer": "read-only executor; not owner or legal counsel",
-  "unresolved_reason": "Owner/counsel must choose between provisioning a jurisdictional D1 and executing a legal amendment disclosing the global D1. The repository and provider facts do not make that legal/cost decision.",
+  "unresolved_reason": "Root selected accurate shared-D1 prelaunch disclosure. Fresh read-only exact-target metadata and active-version reads for all five production Workers on 2026-09-30 confirm one shared D1 ID and matching CONFIG_DB bindings. The provider reports running_in_region=ENAM, jurisdiction=null, and automatic read replication, but does not report or prove physical primary or replica placement. Counsel approval of applicable transfer terms and any physical-placement assurance remains outstanding; no data migration is authorized.",
   "cloudflare_observations": {
     "account_id": "6a1fc1c626fc2628823e60b9db01f5cd",
     "database_name": "corelink-prod-d1",
@@ -86,8 +100,18 @@
   },
   "capability_observation": {
     "wrangler_version": "4.111.0",
-    "create_supports_jurisdiction": ["eu", "fedramp"],
-    "create_supports_location_hint": ["weur", "eeur", "apac", "oc", "wnam", "enam"],
+    "create_supports_jurisdiction": [
+      "eu",
+      "fedramp"
+    ],
+    "create_supports_location_hint": [
+      "weur",
+      "eeur",
+      "apac",
+      "oc",
+      "wnam",
+      "enam"
+    ],
     "create_dry_run": false,
     "create_executed": false
   },
@@ -97,10 +121,10 @@
     "status": "open"
   },
   "source_sha256": {
-    "wrangler.toml": "a7230342badb5dfedabc8bce6911a7c6926caa2730c27f4316f740a172f75ec2",
-    "legal/dpa-residency-amendment.md": "380667ad98b644fe9ed1e2057353c3ba11f687f9420ab9cdc496e705a83965fb",
-    "scripts/verify_b086_d1_residency.py": "6b364b3453b3dd7efc2382929ee2b56f06470ae0f48353389954082fdf10a9c1",
-    "docs/handoff/2026-09-05-owner-action-packets-b008-b154.json": "c4d47f039beef033564029ee32a785cddae73c3700b86ead6e7c1452fc0d0f8e"
+    "wrangler.toml": "568d0e6994ce1156542e350520a9750924a0f3f416e67af07c7275682e24c7a6",
+    "legal/dpa-residency-amendment.md": "cd6427ab8310624058793f9a7a8e3c4b0a0526ec6dec7943bc5b44e8f0e3fd50",
+    "scripts/verify_b086_d1_residency.py": "a28f2bb4792021a3f1ed8a8f7649ef61ac9ebffd0fc01bd74d0e9bc108c98db5",
+    "docs/handoff/2026-09-05-owner-action-packets-b008-b154.json": "d08a1dc56721feb1a55102449581d54f52d7345278545fa901f3852a21d48d27"
   },
   "commands": [
     "CI=1 pnpm exec wrangler whoami",
@@ -109,7 +133,121 @@
     "CI=1 pnpm exec wrangler d1 execute corelink-prod-d1 --remote --command \"PRAGMA table_info(tenant)\" --json",
     "CI=1 pnpm exec wrangler d1 execute corelink-prod-d1 --remote --command \"SELECT primary_region, COUNT(*) AS tenant_count FROM tenant GROUP BY primary_region ORDER BY primary_region\" --json",
     "python3 -S scripts/verify_b086_d1_residency.py --self-test",
-    "python3 -S scripts/verify_owner_action_packets.py --id B-086"
+    "python3 -S scripts/verify_owner_action_packets.py --id B-086",
+    "npx wrangler@latest whoami",
+    "npx wrangler@latest d1 list",
+    "npx wrangler@latest d1 info corelink-prod-d1",
+    "npx wrangler@latest deployments status --name <worker> --json",
+    "Cloudflare API GET /accounts/{account_id}/workers/scripts/{script_name}/versions/{version_id} (read-only; extracted only CONFIG_DB D1 identity, version id/number/date and script etag)"
   ],
-  "mutations_performed": []
+  "mutations_performed": [],
+  "current_owner_decision": {
+    "selected_posture": "Root selected accurate disclosure of one shared global D1 before launch. Five active production Worker versions each expose one CONFIG_DB binding to this D1 ID. No migration, tenant-pinned claim, or legal approval is implied.",
+    "decision_recorded_at": "2026-09-30",
+    "launch_state": "NOT_LAUNCHED",
+    "customers": "NONE_CONFIRMED",
+    "customer_data_migration": "NOT_AUTHORIZED_OR_PERFORMED",
+    "transfer_basis_and_safeguards": "PENDING_COUNSEL_REVIEW; NOT_APPROVED_OR_EXECUTED",
+    "provider_readback_status": "EXACT_TARGET_METADATA_AND_FIVE_ACTIVE_VERSION_BINDINGS_READ_ONLY_READ_BACK_2026-09-30; exact CONFIG_DB IDs match; metadata does not establish physical location; counsel review pending.",
+    "historical_metadata_caveat": "The older saved record had inconsistent names; current Wrangler readback resolves provider target corelink-prod-d1 by database ID. Wrangler production CONFIG_DB binding labels it corelink-config-prod. No physical-location guarantee follows from running_in_region=ENAM.",
+    "closure_status": "OPEN_EXTERNAL"
+  },
+  "provider_readback": {
+    "captured_at": "2026-09-30T14:42:49Z",
+    "method": "npx wrangler@latest d1 info corelink-prod-d1 (read-only)",
+    "wrangler_version": "4.145.0",
+    "target_name": "corelink-prod-d1",
+    "database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
+    "created_at": "2026-05-26T18:47:15.549Z",
+    "num_tables": 162,
+    "running_in_region": "ENAM",
+    "jurisdiction": null,
+    "read_replication_mode": "auto",
+    "physical_location_conclusion": "NOT_INFERRED_FROM_PROVIDER_METADATA",
+    "mutations_performed": [],
+    "schema": "corelink.cloudflare.d1-target-readback.v1"
+  },
+  "deployed_active_readback": {
+    "captured_at": "2026-09-30T14:37:23Z",
+    "method": "Wrangler deployments status --json + Cloudflare API GET Worker Script Version (read-only)",
+    "wrangler_version": "4.145.0",
+    "api_route": "GET /accounts/{account_id}/workers/scripts/{script_name}/versions/{version_id}",
+    "d1_database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
+    "active_workers": [
+      {
+        "environment": "prod",
+        "worker": "corelink-prod",
+        "deployment_id": "8a8296a7-e262-4025-bc45-9288090361f1",
+        "deployment_created_on": "2026-09-21T17:25:25.751417Z",
+        "active_percentage": 100,
+        "version_id": "0b77d7b0-f91f-4905-aedb-2361de494b69",
+        "version_number": 433,
+        "version_created_on": "2026-09-21T17:25:25.751417Z",
+        "script_etag": "668f84ddda1116b2f86c1ba9904e1c148e1b9cf81775a8b19f7df44d5e3eda0d",
+        "CONFIG_DB_binding_count": 1,
+        "CONFIG_DB_database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
+        "deployment_active_version_id": "0b77d7b0-f91f-4905-aedb-2361de494b69"
+      },
+      {
+        "environment": "prod-sam",
+        "worker": "corelink-prod-sam",
+        "deployment_id": "e7bf583f-651c-48d0-b197-0c82304acfa2",
+        "deployment_created_on": "2026-09-21T17:25:27.924938Z",
+        "active_percentage": 100,
+        "version_id": "3ae4e50a-3da0-4d55-9736-f6f46c80cdba",
+        "version_number": 254,
+        "version_created_on": "2026-09-21T17:25:27.924938Z",
+        "script_etag": "668f84ddda1116b2f86c1ba9904e1c148e1b9cf81775a8b19f7df44d5e3eda0d",
+        "CONFIG_DB_binding_count": 1,
+        "CONFIG_DB_database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
+        "deployment_active_version_id": "3ae4e50a-3da0-4d55-9736-f6f46c80cdba"
+      },
+      {
+        "environment": "prod-lhr",
+        "worker": "corelink-prod-lhr",
+        "deployment_id": "1e01f3e4-e348-46be-9b60-a92b6d6cbc47",
+        "deployment_created_on": "2026-09-21T17:25:29.871193Z",
+        "active_percentage": 100,
+        "version_id": "96b4e9f3-d881-4d4e-b8d1-30ff9394daa5",
+        "version_number": 245,
+        "version_created_on": "2026-09-21T17:25:29.871193Z",
+        "script_etag": "668f84ddda1116b2f86c1ba9904e1c148e1b9cf81775a8b19f7df44d5e3eda0d",
+        "CONFIG_DB_binding_count": 1,
+        "CONFIG_DB_database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
+        "deployment_active_version_id": "96b4e9f3-d881-4d4e-b8d1-30ff9394daa5"
+      },
+      {
+        "environment": "prod-nrt",
+        "worker": "corelink-prod-nrt",
+        "deployment_id": "31412183-c29b-47a1-b671-279831f3497e",
+        "deployment_created_on": "2026-09-21T17:25:32.016849Z",
+        "active_percentage": 100,
+        "version_id": "2a50e990-ff4c-40e3-8e2b-db0e50828af9",
+        "version_number": 268,
+        "version_created_on": "2026-09-21T17:25:32.016849Z",
+        "script_etag": "668f84ddda1116b2f86c1ba9904e1c148e1b9cf81775a8b19f7df44d5e3eda0d",
+        "CONFIG_DB_binding_count": 1,
+        "CONFIG_DB_database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
+        "deployment_active_version_id": "2a50e990-ff4c-40e3-8e2b-db0e50828af9"
+      },
+      {
+        "environment": "prod-syd",
+        "worker": "corelink-prod-syd",
+        "deployment_id": "3d367708-4c85-459f-b2e2-c74986fe2869",
+        "deployment_created_on": "2026-09-21T17:25:35.141928Z",
+        "active_percentage": 100,
+        "version_id": "a8a53e51-6a70-4479-8902-b62aa47e10ba",
+        "version_number": 259,
+        "version_created_on": "2026-09-21T17:25:35.141928Z",
+        "script_etag": "668f84ddda1116b2f86c1ba9904e1c148e1b9cf81775a8b19f7df44d5e3eda0d",
+        "CONFIG_DB_binding_count": 1,
+        "CONFIG_DB_database_id": "d64742ea-e102-40b2-a844-ff02e3f94562",
+        "deployment_active_version_id": "a8a53e51-6a70-4479-8902-b62aa47e10ba"
+      }
+    ],
+    "mutations_performed": [],
+    "secrets_or_variable_values_recorded": false,
+    "schema": "corelink.cloudflare.workers-active-d1-bindings.v1"
+  },
+  "updated_at": "2026-09-30T14:42:49Z"
 }

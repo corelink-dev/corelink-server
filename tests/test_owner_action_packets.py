@@ -579,47 +579,21 @@ class OwnerActionPacketTests(unittest.TestCase):
             with self.assertRaises(MODULE.PacketError):
                 MODULE.check_data(self.data, "B-097")
 
-    def test_b086_unresolved_receipt_mutations_fail_closed(self) -> None:
+    def test_b086_shared_d1_owner_and_active_readback_mutations_fail_closed(self) -> None:
         original = MODULE._read_json_evidence
-        record = copy.deepcopy(original(MODULE.B086_EVIDENCE_PATH, MODULE.B086_EVIDENCE_REQUIRED_FIELDS, "B-086"))
-        record["decision"] = "jurisdictional_d1"
-
-        def read_decision(path, fields, label):
-            return record if path == MODULE.B086_EVIDENCE_PATH else original(path, fields, label)
-
-        with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_decision):
-            with self.assertRaises(MODULE.PacketError):
-                MODULE.check_data(self.data, "B-086")
-
-        record = copy.deepcopy(original(MODULE.B086_EVIDENCE_PATH, MODULE.B086_EVIDENCE_REQUIRED_FIELDS, "B-086"))
-        record["mutations_performed"] = ["created jurisdictional D1"]
-
-        def read_mutation(path, fields, label):
-            return record if path == MODULE.B086_EVIDENCE_PATH else original(path, fields, label)
-
-        with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_mutation):
-            with self.assertRaises(MODULE.PacketError):
-                MODULE.check_data(self.data, "B-086")
-
-        record = copy.deepcopy(original(MODULE.B086_EVIDENCE_PATH, MODULE.B086_EVIDENCE_REQUIRED_FIELDS, "B-086"))
-        record["source_sha256"]["wrangler.toml"] = "0" * 64
-
-        def read_source_hash(path, fields, label):
-            return record if path == MODULE.B086_EVIDENCE_PATH else original(path, fields, label)
-
-        with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_source_hash):
-            with self.assertRaises(MODULE.PacketError):
-                MODULE.check_data(self.data, "B-086")
-
-        record = copy.deepcopy(original(MODULE.B086_EVIDENCE_PATH, MODULE.B086_EVIDENCE_REQUIRED_FIELDS, "B-086"))
-        record["capture_commit"] = "0" * 40
-
-        def read_capture_commit(path, fields, label):
-            return record if path == MODULE.B086_EVIDENCE_PATH else original(path, fields, label)
-
-        with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_capture_commit):
-            with self.assertRaises(MODULE.PacketError):
-                MODULE.check_data(self.data, "B-086")
+        baseline = original(MODULE.B086_EVIDENCE_PATH, MODULE.B086_EVIDENCE_REQUIRED_FIELDS, "B-086")
+        for mutate in (
+            lambda value: value.update(decision="unresolved"),
+            lambda value: value["current_owner_decision"].update(closure_status="CLOSED"),
+            lambda value: value["deployed_active_readback"]["active_workers"][0].update(CONFIG_DB_database_id="00000000-0000-4000-8000-000000000000"),
+        ):
+            record = copy.deepcopy(baseline)
+            mutate(record)
+            def read_candidate(path, fields, label, candidate=record):
+                return candidate if path == MODULE.B086_EVIDENCE_PATH else original(path, fields, label)
+            with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_candidate):
+                with self.assertRaises(MODULE.PacketError):
+                    MODULE.check_data(self.data, "B-086")
 
     def test_b086_packet_cannot_call_pending_template_executed(self) -> None:
         packet = copy.deepcopy(self.data)
@@ -631,64 +605,24 @@ class OwnerActionPacketTests(unittest.TestCase):
         with self.assertRaises(MODULE.PacketError):
             MODULE.check_data(packet, "B-086")
 
-    def test_b154_unresolved_receipt_mutations_fail_closed(self) -> None:
+    def test_b154_prelaunch_claim_mutations_fail_closed(self) -> None:
         original = MODULE._read_json_evidence
         baseline = original(MODULE.B154_EVIDENCE_PATH, MODULE.B154_EVIDENCE_REQUIRED_FIELDS, "B-154")
-        self.assertEqual(baseline["capability_evidence"]["object_lock"]["status"], "INDETERMINATE")
-        for field, value in (
-            ("status", "NOT_IMPLEMENTED"),
-            ("historical_report", {"date": "2026-09-09", "classification": "NOT_IMPLEMENTED"}),
-        ):
-            with self.subTest(object_lock_field=field):
-                stale = copy.deepcopy(baseline)
-                stale["capability_evidence"]["object_lock"][field] = value
-
-                def read_stale(path, fields, label, receipt=stale):
-                    return receipt if path == MODULE.B154_EVIDENCE_PATH else original(path, fields, label)
-
-                with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_stale):
-                    with self.assertRaises(MODULE.PacketError):
-                        MODULE.check_data(self.data, "B-154")
-
-        record = copy.deepcopy(original(MODULE.B154_EVIDENCE_PATH, MODULE.B154_EVIDENCE_REQUIRED_FIELDS, "B-154"))
-        record["notices"][0]["status"] = "EXECUTED"
-
-        def read_notice(path, fields, label):
-            return record if path == MODULE.B154_EVIDENCE_PATH else original(path, fields, label)
-
-        with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_notice):
-            with self.assertRaises(MODULE.PacketError):
-                MODULE.check_data(self.data, "B-154")
-
-        record = copy.deepcopy(original(MODULE.B154_EVIDENCE_PATH, MODULE.B154_EVIDENCE_REQUIRED_FIELDS, "B-154"))
-        record["capability_evidence"]["byok_kill_switch"]["status"] = "PASS"
-
-        def read_capability(path, fields, label):
-            return record if path == MODULE.B154_EVIDENCE_PATH else original(path, fields, label)
-
-        with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_capability):
-            with self.assertRaises(MODULE.PacketError):
-                MODULE.check_data(self.data, "B-154")
-
-        record = copy.deepcopy(original(MODULE.B154_EVIDENCE_PATH, MODULE.B154_EVIDENCE_REQUIRED_FIELDS, "B-154"))
-        record["surfaces"][0]["evidence_reference"] = "legal/dpa/v1.0.0.en-US.md:110; sha256 " + "0" * 64
-
-        def read_reference(path, fields, label):
-            return record if path == MODULE.B154_EVIDENCE_PATH else original(path, fields, label)
-
-        with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_reference):
-            with self.assertRaises(MODULE.PacketError):
-                MODULE.check_data(self.data, "B-154")
-
-        record = copy.deepcopy(original(MODULE.B154_EVIDENCE_PATH, MODULE.B154_EVIDENCE_REQUIRED_FIELDS, "B-154"))
-        record["signed_documents"][0]["sha256"] = "0" * 64
-
-        def read_signed_hash(path, fields, label):
-            return record if path == MODULE.B154_EVIDENCE_PATH else original(path, fields, label)
-
-        with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_signed_hash):
-            with self.assertRaises(MODULE.PacketError):
-                MODULE.check_data(self.data, "B-154")
+        mutations = (
+            lambda value: value["lifecycle"].update(customers="ONE"),
+            lambda value: value.update(provider_chains_closed=True),
+            lambda value: value["claims"]["object_lock"].update(launch_availability="AVAILABLE"),
+            lambda value: value["claims"]["byok_kill_switch"].update(p99_measurement="PASS"),
+            lambda value: value["source_sha256"].update({next(iter(value["source_sha256"])): "0" * 64}),
+        )
+        for mutate in mutations:
+            record = copy.deepcopy(baseline)
+            mutate(record)
+            def read_candidate(path, fields, label, candidate=record):
+                return candidate if path == MODULE.B154_EVIDENCE_PATH else original(path, fields, label)
+            with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_candidate):
+                with self.assertRaises(MODULE.PacketError):
+                    MODULE.check_data(self.data, "B-154")
 
     def test_base_sha_provenance_disclaimer_is_mandatory(self) -> None:
         missing = copy.deepcopy(self.data)

@@ -107,7 +107,7 @@ Os titulares afetados são: *(descrever categorias — ex.: usuários da platafo
 **Medidas técnicas de proteção em vigor no momento do incidente**:
 - Criptografia em repouso (R2 SSE-S3 + D1/Neon SSE) conforme INV-CONF-AT-REST.
 - Piso TLS 1.2 em todos os endpoints, com 1.3 negociado por todo cliente capaz, conforme INV-CONF-IN-FLIGHT (ADR-0072).
-- Audit log append-only com Object Lock 7 anos conforme INV-AUDIT-APPEND-ONLY.
+- Os controles de integridade da auditoria devem ser verificados para o incidente. A retenção COMPLIANCE de produção do R2 Object Lock e uma garantia de sete anos imposta pelo armazenamento não estão comprovadas; não declare isso sem evidência atual vinculada ao alvo.
 - Isolamento de tenant conforme INV-TENANT-ISOLATION.
 
 **Medidas de contenção aplicadas**:

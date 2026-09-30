@@ -1,26 +1,28 @@
 ---
 version: "1.0.0"
-published_at: "2026-05-13T00:00:00Z"
+published_at: null
+historical_source_date: "2026-05-13T00:00:00Z"
+publication_status: "not_published_prelaunch_internal_review"
 bump_type: "initial"
 material_change: false
-changelog_summary: "Initial privacy notice publication. Covers data categories, purposes, legal basis, sub-processors, DSR rights, DPO contact per LGPD Art. 9 + GDPR Art. 13/14 + CCPA §1798.100(b)."
+changelog_summary: "Historical proposed source retained for attribution; corrected to internal prelaunch review status. Not published or operative."
 
 locales:
   pt-BR:
     file: "pt-BR.md"
-    native_speaker_reviewed: true
+    native_speaker_reviewed: false
     native_speaker_reviewer: "[Privacy Officer / Native Speaker BR — pending pre-GA]"
     legal_review_evt-044_path: "evidence-legal/v1.0.0-pt-BR.pdf"
     notice_text_hash: "[computed by CI hook — placeholder]"
   en-US:
     file: "en-US.md"
-    native_speaker_reviewed: true
+    native_speaker_reviewed: false
     native_speaker_reviewer: "[Privacy Officer / Native Speaker EN — pending pre-GA]"
     legal_review_evt-044_path: "evidence-legal/v1.0.0-en-US.pdf"
     notice_text_hash: "[computed by CI hook — placeholder]"
   es-MX:
     file: "es-MX.md"
-    native_speaker_reviewed: true
+    native_speaker_reviewed: false
     native_speaker_reviewer: "[Privacy Officer / Native Speaker ES — pending pre-GA]"
     legal_review_evt-044_path: "evidence-legal/v1.0.0-es-MX.pdf"
     notice_text_hash: "[computed by CI hook — placeholder]"
