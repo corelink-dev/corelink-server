@@ -32,7 +32,7 @@ function scheduledFrame(value = receipt) {
   };
 }
 
-function harness({ schedules: initial = [], sendReceipt = true, driftAfterReceipt = false, emittedReceipt = receipt, frameKind = "text", openMode = "open" } = {}) {
+function harness({ schedules: initial = [], installReadback, sendReceipt = true, driftAfterReceipt = false, emittedReceipt = receipt, frameKind = "text", openMode = "open" } = {}) {
   let schedules = initial;
   let socket;
   let tailDeleted = false;
@@ -44,6 +44,9 @@ function harness({ schedules: initial = [], sendReceipt = true, driftAfterReceip
     const method = init.method ?? "GET";
     if (path.endsWith("/schedules") && method === "GET") {
       scheduleReads += 1;
+      if (scheduleReads === 2 && installReadback !== undefined) {
+        return response({ success: true, result: { schedules: installReadback } });
+      }
       if (driftAfterReceipt && scheduleReads === 3) schedules = [{ cron: "0 0 * * *" }];
       return response({ success: true, result: { schedules } });
     }
@@ -119,6 +122,59 @@ test("rejects preexisting schedules before creating a tail or mutating", async (
   }), /preexisting Worker schedules/);
   assert.deepEqual(h.puts, []);
   assert.equal(h.tailDeleted, false);
+});
+
+test("failed install readback records bounded shape without weakening guards or cleanup", async () => {
+  const cases = [
+    { rows: [], matches: 0 },
+    { rows: [{ cron: PROBE_CRON }, { cron: "0 0 * * *" }], matches: 1 },
+    { rows: [{ cron: PROBE_CRON, next_run: "private-value-never-output" }], matches: 1 },
+    { rows: [{ cron: "* * 30 SEP *" }], matches: 0 },
+  ];
+  for (const { rows, matches } of cases) {
+    const h = harness({ installReadback: rows });
+    await assert.rejects(runRuntimeProbe({ token: "token", release, expectedSha: release,
+      imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now,
+    }), error => {
+      const diagnostic = failureDiagnostic(error);
+      assert.equal(diagnostic.stage, "schedule_install");
+      assert.equal(diagnostic.code, "schedule_readback");
+      assert.equal(diagnostic.schedule_readback.count, rows.length);
+      assert.equal(diagnostic.schedule_readback.expected_cron_matches, matches);
+      assert.deepEqual(diagnostic.schedule_readback.entries.map(entry => entry.keys), rows.map(row => Object.keys(row).sort()));
+      assert.deepEqual(diagnostic.schedule_readback.entries.map(entry => entry.cron), rows.map(row => row.cron));
+      assert.ok(!JSON.stringify(diagnostic).includes("private-value"));
+      return true;
+    });
+    assert.deepEqual(h.schedules, []);
+    assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+    assert.equal(h.tailDeleted, true);
+  }
+});
+
+test("schedule diagnostics redact payload-like cron and keys, cap output, and reject injected evidence", async () => {
+  const rows = Array.from({ length: 20 }, () => ({ cron: "Bearer secret-token", "secret-token-value": "customer-payload" }));
+  rows[1].cron = "12345678901234567890 1 1 1 1";
+  const h = harness({ installReadback: rows });
+  await assert.rejects(runRuntimeProbe({ token: "token", release, expectedSha: release,
+    imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now,
+  }), error => {
+    const summary = failureDiagnostic(error).schedule_readback;
+    assert.equal(summary.count, 20);
+    assert.equal(summary.entries.length, 8);
+    assert.equal(summary.truncated, true);
+    assert.equal(summary.entries[0].cron, "[redacted]");
+    assert.equal(summary.entries[1].cron, "[redacted]");
+    assert.deepEqual(summary.entries[0].keys, ["cron", "[redacted]"]);
+    assert.ok(!JSON.stringify(summary).includes("secret-token"));
+    assert.ok(!JSON.stringify(summary).includes("customer-payload"));
+    return true;
+  });
+  assert.equal(failureDiagnostic(Object.assign(new Error("installed schedule readback rejected"), {
+    schedule_readback: { token: "secret" },
+  })).schedule_readback, undefined);
+  assert.deepEqual(h.schedules, []);
+  assert.equal(h.tailDeleted, true);
 });
 
 test("does not overwrite schedule drift during cleanup and still deletes the tail", async () => {
