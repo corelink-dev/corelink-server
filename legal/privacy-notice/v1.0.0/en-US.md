@@ -1,7 +1,11 @@
 # Privacy Notice — HuGR CoreLink
 
+> **PRELAUNCH INTERNAL REVIEW DRAFT — NOT PUBLISHED OR OPERATIVE.** CoreLink has not launched and has no customers. The present-tense descriptions below are preserved historical proposed notice text; they do not state current collection, use, sharing, retention, or processing practices and create no current commitment. Counsel review and owner approval are pending before any future customer use.
+>
+> **Source status:** The owner confirms CoreLink has not launched and has no customers. Counsel review and approval of processing, residency, and transfer terms are pending; this notice does not establish an approved transfer basis.
+
 **Version:** 1.0.0
-**Published:** 2026-05-13
+**Historical source date (not published):** 2026-05-13
 **DPO Contact:** privacy@hugr.dev
 
 ---
@@ -15,7 +19,7 @@
 
 ## 2. Categories of Personal Data Collected
 
-We collect the following categories of personal data:
+The historical proposed notice listed the following categories of personal data; this is not a statement of current collection:
 
 - **Identity data:** name, email address, data subject UUID.
 - **Authentication data:** PAT (Personal Access Token) credentials, WebAuthn keys.
@@ -49,7 +53,7 @@ We process your personal data for the following purposes:
 
 ## 5. Sub-processors
 
-We use the following sub-processors to deliver the service:
+The historical proposed notice listed the following sub-processors for a future service; this is not a statement of current customer-data processing:
 
 | Sub-processor | Purpose | Region |
 |---|---|---|
@@ -64,12 +68,7 @@ You will be notified at least 30 days before any changes to our sub-processor li
 
 ## 6. International Transfers
 
-Your data may be processed in the following countries/regions:
-- **Brazil (SAM):** primary region.
-- **United States (WNAM/ENAM):** Cloudflare, Stripe, Neon.
-- **European Union (WEUR):** Cloudflare EU, Grafana Labs.
-
-International transfers outside the EU/EEA are governed by Standard Contractual Clauses (SCCs) per GDPR Art. 46.2(c).
+No customer region is currently offered. The production Worker environments reference one shared global D1 control-plane database that is not tenant-pinned. It contains tenant, membership, PAT, quota, billing-state, and audit-outbox records. A read-only Wrangler 4.145.0 readback on 2026-09-30 identified `corelink-prod-d1` (ID `d64742ea-e102-40b2-a844-ff02e3f94562`), with `running_in_region=ENAM`, `jurisdiction=null`, automatic read replication, and 162 tables. The reported region is metadata, not a physical-location guarantee; this is the root owner’s technical launch posture, not legal approval. No transfer basis or supplementary measure for this shared D1 posture has been approved. This notice is a draft and makes no regional processing or international-transfer commitment.
 
 ---
 
@@ -78,7 +77,7 @@ International transfers outside the EU/EEA are governed by Standard Contractual 
 | Category | Retention Period | Basis |
 |---|---|---|
 | Account data | Duration of contract + 5 years | Fiscal compliance |
-| Audit logs | 7 years | R2 Object Lock (regulatory) |
+| Audit logs | Retention period is not established here | No Object Lock guarantee; production COMPLIANCE retention is unavailable or unproven |
 | Build logs (artifacts) | As configured by data subject | Contractual |
 | Billing data | 5 years (fiscal) | Legal obligation |
 | Consent records | 7 years | GDPR Art. 7(1) (demonstrability) + LGPD Art. 8 (consent regime) |
@@ -109,7 +108,7 @@ We implement the following security measures:
 - Encryption in transit (TLS 1.2 minimum; TLS 1.3 negotiated where supported).
 - Encryption at rest (R2 + Neon).
 - Multi-factor authentication (WebAuthn FIDO2).
-- Append-only audit log with hash chain (BLAKE3).
+- Tamper-evident audit-chain source controls; production Object Lock immutability and a fixed retention duration are not established.
 - Regular security testing (SOC 2 Type II in preparation).
 
 ---

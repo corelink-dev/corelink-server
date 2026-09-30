@@ -1,13 +1,13 @@
 ---
 id: "DPA-ONBOARDING"
 type: "customer_doc"
-doc_status: "ACTIVE"
+doc_status: "PRELAUNCH_REVIEW_REQUIRED"
 version: "1.1.0"
 created: "2026-05-14"
-updated: "2026-06-15"
+updated: "2026-09-30"
 owner: "Gustavo Schneiter"
-audience: "enterprise_customer"
-distribution: "post-NDA"
+audience: "internal_prelaunch_review"
+distribution: "not_for_customer_distribution"
 wi: "WI-S14-008"
 tags:
   - "dpa"
@@ -24,38 +24,19 @@ superseded_by: null
 # CoreLink DPA Onboarding Guide
 ## Enterprise Customer — Data Processing Agreement
 
-> **Distribution**: This document is shared with enterprise customers under NDA, as part of the DPA onboarding process.
+> **PRELAUNCH — DO NOT DISTRIBUTE OR USE AS A CUSTOMER COMMITMENT.** The owner confirms CoreLink has not launched, has no customers, and this guide is not approved for customer distribution. Its prior customer-onboarding wording is retained only as a historical source. Counsel has not approved the current shared-D1 transfer posture or the feature claims below.
 
 ---
 
 ## Overview
 
-CoreLink is a content-addressable shared cache service by HuGR Labs. For enterprise customers, CoreLink provides:
-
-- A **Data Processing Agreement (DPA)** covering data residency commitments, security measures, and GDPR/LGPD compliance obligations.
-- A **Schrems II Transfer Impact Assessment (TIA)** documenting supplementary measures per EDPB Recommendations 01/2020.
-- A **technical evidence pack** providing cryptographic evidence of data security and erasure.
-
-This guide walks through the DPA onboarding process.
+CoreLink is a content-addressable shared cache service by HuGR Labs. CoreLink is prelaunch. No customer DPA package, approved transfer impact assessment, or customer evidence pack is currently offered. This document is a draft inventory for counsel review only.
 
 ---
 
 ## Step 1 — Select Your Data Residency Region
 
-CoreLink stores and processes data exclusively in your chosen region. Available regions at launch:
-
-| Region Code | Geography | Data Location | Status |
-|---|---|---|---|
-| **WNAM** | Western North America | Cloudflare us-west infrastructure | **Available** |
-| **ENAM** | Eastern North America | Cloudflare us-east infrastructure | **Available** |
-| **WEUR** | Western Europe | Cloudflare eu-west infrastructure | Phase 2 — not yet available |
-| **SAM** | South America | Cloudflare sa-east infrastructure | Phase 2 — not yet available |
-
-> **Launch posture (US-only):** At launch, CoreLink provisions tenants exclusively in US regions (WNAM / ENAM). New signup requests selecting WEUR or SAM are rejected during this phase. EU/EEA and Brazil residency support (including the enforcement commitments described below for those regions) is on the roadmap for Phase 2 and will be communicated when available. DPA signers requiring EU or SAM residency should confirm availability with CoreLink before signing.
-
-**WEUR (Phase 2)**: When enabled, EU/EEA customer data will be stored exclusively in EU infrastructure with Cloudflare's `jurisdictional_restriction = "eu"` enforcement. Data will not replicate outside the EU.
-
-**SAM (Phase 2)**: When enabled, Brazilian customer data will be stored in sa-east and governed by LGPD Art. 33 §1.
+The source configuration has regional R2/DO paths, but these do not establish D1 placement or a customer residency commitment. Five production Worker environments reference one shared D1 database without a D1 jurisdiction binding. D1 holds tenant, membership, PAT, quota, billing-state, and audit-outbox records. A read-only Wrangler 4.145.0 readback on 2026-09-30 identified `corelink-prod-d1` (ID `d64742ea-e102-40b2-a844-ff02e3f94562`), with `running_in_region=ENAM`, `jurisdiction=null`, automatic read replication, and 162 tables. These are provider metadata, not a physical-location guarantee or legal approval; the root owner selected this technical prelaunch posture. No region-specific D1 placement or transfer basis is approved. CoreLink has not launched and no customer data migration is authorized.
 
 ---
 
@@ -63,13 +44,13 @@ CoreLink stores and processes data exclusively in your chosen region. Available 
 
 Your DPA package includes:
 
-1. **DPA Amendment Template** (`legal/dpa-residency-amendment.md`) — reviewed by an external GDPR-experienced law firm. Covers:
+1. **DPA Amendment Template** (`legal/dpa-residency-amendment.md`) — structural draft pending qualified counsel review. It is not approved or executed. Covers:
    - 15 sections: parties, definitions, data categories, residency commitment, sub-processors, security measures, data subject rights, breach notification, international transfers, audit rights, termination.
    - 3 appendices: technical measures evidence pack, organisational measures, contractual measures.
 
-2. **Schrems II TIA** (`legal/tia-template.md`) — EDPB Recommendations 01/2020 framework. Documents CoreLink's supplementary measures for US sub-processor jurisdiction risk. **Note:** The TIA's encryption effectiveness argument assumes customer-managed key (BYOK) encryption of stored blobs. BYOK is not yet enabled for the launched data plane (see Section 3 below). Until BYOK is enabled, the TIA's Schrems-II mitigations should be assessed against the current posture: tenant-isolated, content-addressed storage on Cloudflare R2 with Cloudflare-managed encryption at rest, protected by Cloudflare's SCCs and EU-US DPF commitments.
+2. **Transfer Impact Assessment template** (`legal/tia-template.md`) — an incomplete assessment framework, not an approved conclusion. Counsel must assess the shared D1 control plane separately. SCCs, Cloudflare contract terms, and provider-managed encryption do not by themselves establish an approved transfer basis or effective supplementary measures. BYOK is not available at launch and does not cover D1.
 
-3. **Technical Evidence Pack** — available under NDA:
+3. **Technical evidence** — no customer evidence pack is available; these are source references for future review:
    - BYOK FIPS compliance documentation (`docs/compliance/byok-fips-evidence.md`) — available when BYOK is provisioned
    - Erasure attestation mechanism (Ed25519-signed; WI-S14-007)
    - SOC 2 Type II report (available on request)
@@ -80,30 +61,29 @@ Your DPA package includes:
 ## Step 3 — Key DPA Commitments
 
 ### Data Residency
-- Your data is stored exclusively in your chosen region (Section 7 of DPA).
-- Failover is restricted to jurisdictionally compatible sibling regions only.
-- CoreLink does not transfer your data outside your region without your consent.
+- No customer residency offer is currently active.
+- R2/DO source controls and regional Worker bindings do not establish placement for the shared D1 control plane.
+- The shared D1 transfer basis and applicable safeguards remain pending counsel review; this draft makes no physical-location or no-transfer guarantee.
 
 ### Encryption and Storage Security
 
-**Current launch posture:** CoreLink stores data as tenant-isolated, content-addressed objects in Cloudflare R2. All data is encrypted in transit (TLS) and at rest using Cloudflare-managed AES-256 encryption. Tenant isolation is enforced via HMAC-derived key prefixes — no cross-tenant access is possible at the storage layer, even for CoreLink operators. Cloudflare's encryption at rest is covered by Cloudflare's sub-processor DPA and SOC 2 Type II.
+**Prelaunch source posture:** No customer data is being processed. The service source uses provider-managed R2 encryption for object storage. This does not establish placement or encryption controls for all shared D1 control-plane records. The historical Cloudflare contract and security certifications are not a transfer assessment or approval.
 
-**BYOK (Bring Your Own Key) — planned, not yet available:** CoreLink's roadmap includes customer-managed key (BYOK) envelope encryption, in which every blob is wrapped by a Data Encryption Key (DEK) that is itself wrapped by the customer's Customer-Managed Key (CMK) held in an external KMS. Under this model, CoreLink cannot decrypt stored data without the customer CMK. BYOK is a planned Enterprise-tier feature and is **not yet wired into the CAS storage path in the launched data plane.** It will be communicated explicitly when available, along with the supported KMS providers and FIPS validation documentation.
+**BYOK (Bring Your Own Key): unavailable at launch.** Although source code contains a BYOK provider feature, no authenticated evidence establishes a complete customer-controlled KMS lifecycle in the shipped CoreLink runtime. BYOK, CMK activation, key revocation, crypto-erase, and FIPS-backed BYOK are not available or offered. No provider support or customer capability is implied by repository code.
 
-**Kill-switch and CMK revocation:** When BYOK is active, revoking the CMK renders stored data irrecoverably inaccessible within ≤ 5 minutes globally. This control is **not available** until BYOK is provisioned for your tenant.
+**Kill switch:** The previously listed ≤ 5-minute p99 target is not a verified measurement or active SLA. No kill-switch timing commitment is made.
 
 ### Erasure — Cryptographic Proof
-When you request erasure or terminate service:
-- CoreLink issues an **Ed25519-signed erasure attestation** — a cryptographic receipt proving data erasure, suitable for regulatory submissions.
+Erasure uses the ordinary DSR workflow. This draft does not claim that a signed erasure attestation or Object Lock retention is currently issued or available.
 
 ### Breach Notification
 - CoreLink will notify your DPO within **72 hours** of becoming aware of any breach affecting your Personal Data (GDPR Art. 33 / LGPD Art. 48).
 
 ### Sub-processors
-CoreLink uses the following sub-processors at launch:
+The current source configuration includes the following provider; no customer data processing has launched:
 1. **Cloudflare, Inc.** — infrastructure (Workers, R2, D1, KV, Durable Objects). Cloudflare DPA: `https://www.cloudflare.com/cloudflare-customer-dpa/`
 
-When BYOK is provisioned, your chosen KMS provider (AWS KMS, Google Cloud KMS, Azure Key Vault, or HashiCorp Vault) will also be engaged as a sub-processor for key management. CoreLink will provide 30-day advance notice prior to adding that sub-processor.
+No BYOK KMS provider is currently enabled or represented as an active sub-processor. Any future provider requires separate security, legal, and launch approval.
 
 No other sub-processors access your Personal Data.
 
@@ -112,14 +92,12 @@ No other sub-processors access your Personal Data.
 ## Step 4 — DPA Signing Process
 
 ```
-1. CoreLink Sales provides DPA package + TIA + evidence pack (under NDA)
-2. Your Legal reviews DPA + TIA
-3. Iteration cycle (comments → CoreLink + Legal externo review)
-4. DPA signed by authorised representatives of both parties
-5. Onboarding proceeds: region selected → CoreLink operational (BYOK configuration follows when that feature is provisioned for your tier)
+1. No customer onboarding is currently offered.
+2. Counsel reviews the DPA, transfer basis, and evidence against the actual deployed target.
+3. No customer instrument is effective until approved through the applicable legal and release process.
 ```
 
-**Typical timeline**: 2-4 weeks from package delivery to DPA signing (dependent on your Legal review cycle).
+No signing timeline is promised.
 
 **CoreLink DPO contact**: `dpo@corelink.io`
 
@@ -138,35 +116,34 @@ CoreLink will notify you at least **30 days** before engaging a new sub-processo
 ### Data Subject Rights
 CoreLink's admin API enables you to:
 - Export all tenant data (right of access / portability).
-- Delete all tenant data (right of erasure — secure deletion + Ed25519-signed attestation; CMK revocation accelerated crypto-erase is available when BYOK is provisioned).
+- The ordinary DSR workflow supports erasure requests; this draft does not promise a signed attestation or CMK-based crypto-erase.
 - Restrict processing (disable tenant).
 
 ### Termination
 Upon termination:
-- Your data is deleted within 30 days. Where BYOK is active, deletion is accelerated via CMK revocation (crypto-erase per NIST SP 800-88 Rev.1 §2.4); otherwise data is deleted by secure R2 object deletion.
-- You receive an Ed25519-signed erasure attestation.
-- Anonymised audit logs may be retained up to 7 years for CoreLink's internal compliance obligations.
+- Applicable retention and deletion timing must be established in the approved service terms; this draft does not claim a BYOK path or Object Lock guarantee.
+- No signed erasure-attestation availability or audit-log retention duration is established here.
 
 ---
 
 ## Frequently Asked Questions
 
-**Q: What happens if Cloudflare receives a US government data request (FISA 702 / CLOUD Act)?**
-A: This depends on whether BYOK is active for your tenant. **With BYOK (planned, not yet available at launch):** Cloudflare holds only ciphertext encrypted with DEKs wrapped by your CMK; without your CMK — which Cloudflare does not hold — any data produced in response to a government order is unreadable. Our TIA documents this effectiveness argument per EDPB Recommendations 01/2020 §83. **Without BYOK (current launch posture):** Cloudflare holds data encrypted with Cloudflare-managed keys, subject to Cloudflare's own legal challenge process and SCCs/DPF commitments. Customers with heightened Schrems-II exposure should await BYOK availability or consult their legal counsel on the current posture before signing.
+**Q: What transfer safeguards apply to shared D1 data?**
+A: The shared D1 control plane is not tenant-pinned. Its transfer basis and supplementary measures have not been approved. BYOK does not cover D1 and is unavailable at launch. No conclusion about government access or transfer compliance is made in this draft; counsel must assess the actual target and applicable terms before any launch.
 
-**Q: Is CoreLink compliant with GDPR Art. 28?**
-A: Yes. Our DPA is drafted to satisfy GDPR Art. 28 requirements and has been reviewed by an external GDPR-experienced law firm.
+**Q: Is this an approved customer DPA?**
+A: No. This is a prelaunch draft pending qualified counsel review; CoreLink has no customers and this copy has not been distributed.
 
-**Q: What about LGPD compliance (for Brazil)?**
-A: The SAM region (Cloudflare sa-east, Brazil) is on the roadmap and is **not yet available at launch.** Brazilian tenants cannot currently be provisioned; new signup attempts are rejected. When SAM is enabled, our DPA will cover LGPD Art. 33 §1 (international transfers), Art. 46 (security measures), and Art. 48 (breach notification), with ANPD audit cooperation documented. Brazilian customers should confirm SAM availability with CoreLink before signing a DPA.
+**Q: Is customer data stored in Brazil, the EU, or a selected region?**
+A: No customer region is currently offered. A shared global D1 database serves the production Worker environments; the 2026-09-30 provider readback reports `running_in_region=ENAM` and `jurisdiction=null`, which does not establish physical residency. Transfer and regional terms require counsel approval.
 
 **Q: Can we request custom DPA clauses?**
 A: Yes, for enterprise customers. Custom clauses require a review cycle with our external legal counsel. Timeline: +2-4 weeks; potential additional cost.
 
 **Q: Is there a lighthouse customer reference?**
-A: Yes. CoreLink has executed its DPA with a lighthouse enterprise customer (available as reference under NDA upon request).
+A: No. CoreLink has no customers; no customer DPA or BYOK case study exists or has been distributed.
 
 ---
 
 *Version 1.1.0 · 2026-06-15 · WI-S14-008 · Distribution: post-NDA enterprise customers.*
-*Change note: Corrected residency table (WEUR/SAM marked Phase 2 — not yet available); corrected BYOK/Schrems-II section to reflect launched data plane posture (Cloudflare-managed encryption at rest; customer-managed BYOK is planned, not yet wired into CAS storage); updated FISA/LGPD FAQs accordingly.*
+*Historical change note retained for attribution. Superseding prelaunch correction: CoreLink has not launched, has no customers, and this guide is not approved for customer distribution. The current draft discloses one shared D1 control plane, removes unproved Object Lock and BYOK/SLO claims, and leaves transfer terms pending counsel review.*

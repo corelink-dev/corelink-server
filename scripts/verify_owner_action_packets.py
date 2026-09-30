@@ -26,6 +26,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKET = ROOT / "docs/handoff/2026-09-05-owner-action-packets-b008-b154.json"
 sys.path.insert(0, str(ROOT / "scripts"))
+from verify_b086_d1_residency import VerificationError as B086ReadbackError
+from verify_b086_d1_residency import verify_readback_record as verify_b086_readback_record
 from verify_b083_kms_lifecycle_evidence import EvidenceError as B083EvidenceError
 from verify_b083_kms_lifecycle_evidence import validate_record as validate_b083_evidence
 EXPECTED_IDS = (
@@ -324,23 +326,24 @@ B097_EVIDENCE_REQUIRED_FIELDS = [
     "read_only_capture",
 ]
 B086_EVIDENCE_PATH = "evidence/owner-actions/B-086/d1-residency-resolution.json"
-B086_PACKET_REQUIRED_FIELDS = [
-    "schema_version", "captured_at", "decision", "production_bindings",
-    "distinct_database_ids", "dpa_status", "effective_at",
-    "signed_document_sha256_or_provider_case", "reviewer",
-]
 B086_EVIDENCE_REQUIRED_FIELDS = [
     "schema_version", "capture_commit", "captured_at", "decision", "production_bindings",
-    "distinct_database_ids", "dpa_status", "related_legal_surfaces",
-    "effective_at", "signed_document_sha256_or_provider_case", "reviewer",
-    "unresolved_reason", "cloudflare_observations", "capability_observation",
-    "verification", "source_sha256", "commands", "mutations_performed",
+    "distinct_database_ids", "dpa_status", "related_legal_surfaces", "effective_at",
+    "signed_document_sha256_or_provider_case", "reviewer", "unresolved_reason",
+    "cloudflare_observations", "capability_observation", "verification", "source_sha256",
+    "commands", "mutations_performed", "current_owner_decision", "provider_readback",
+    "deployed_active_readback", "updated_at",
 ]
-B154_EVIDENCE_PATH = "evidence/owner-actions/B-154/executed-instrument-resolution.json"
+B086_PACKET_REQUIRED_FIELDS = B086_EVIDENCE_REQUIRED_FIELDS
+B154_EVIDENCE_PATH = "evidence/owner-actions/B-154/prelaunch-claim-resolution.json"
 B154_EVIDENCE_REQUIRED_FIELDS = [
-    "schema_version", "captured_at", "surfaces", "decisions",
-    "signed_documents", "notices", "capability_evidence", "operator",
+    "schema_version", "issue", "parent_issue", "capture_commit", "captured_at",
+    "lifecycle", "claims", "historical_remediation", "status",
+    "provider_chains_closed", "source_sha256",
 ]
+B035_EVIDENCE_PATH = "evidence/owner-actions/B-035/tls-legal-remediation.json"
+B035_SOURCE_SHA = "ff232e5c53f69872ed8108e5f5defb185655b0ae"
+B035_ARTIFACT_SHA256 = "060de7b927cc46a3035f646b03348ccc92f4b60673d1edee44a4d9a04c0d3761"
 RECEIPT_STATUSES = frozenset({"PASS", "FAIL", "BLOCKED", "NOT_EXECUTED"})
 PACKET_BASE_SHA = "908d3bdc86f17a8b41a280baaea9352d7ed450ab"
 BASE_SHA_PROVENANCE_DISCLAIMER = (
@@ -1268,78 +1271,32 @@ def _check_b097_evidence(item: dict[str, object]) -> None:
 
 
 def _check_b086_evidence(item: dict[str, object]) -> None:
-    procedure = " ".join(item["procedure"])
-    if "pending legal-review template, not an executed instrument" not in procedure:
-        raise PacketError("B-086 packet must distinguish the pending residency template from an executed instrument")
-    if "any subsequently executed residency claim" not in item["expected_postcondition"]:
-        raise PacketError("B-086 packet must not assert a current executed residency claim")
     evidence = item["evidence"]
     assert isinstance(evidence, dict)
     if evidence["path"] != B086_EVIDENCE_PATH or evidence["format"] != "json":
         raise PacketError("B-086 evidence binding drifted")
     if evidence["required_fields"] != B086_PACKET_REQUIRED_FIELDS:
         raise PacketError("B-086 evidence required fields drifted")
+    if "pending legal-review template, not an executed instrument" not in " ".join(item["procedure"]):
+        raise PacketError("B-086 packet must distinguish the pending template from an executed instrument")
     record = _read_json_evidence(B086_EVIDENCE_PATH, B086_EVIDENCE_REQUIRED_FIELDS, "B-086")
-    if record["schema_version"] != "1.0" or not isinstance(record["captured_at"], str) or not record["captured_at"].strip():
-        raise PacketError("B-086 evidence capture metadata drifted")
-    capture_commit = record["capture_commit"]
-    if not isinstance(capture_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", capture_commit):
-        raise PacketError("B-086 source hashes need an explicit full capture commit")
-    expected_sources = {
-        "wrangler.toml",
-        "legal/dpa-residency-amendment.md",
-        "scripts/verify_b086_d1_residency.py",
-        "docs/handoff/2026-09-05-owner-action-packets-b008-b154.json",
-    }
-    source_hashes = _exact_keys(record["source_sha256"], expected_sources, "B-086 source_sha256")
-    for source_path, expected_hash in source_hashes.items():
-        if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
-            raise PacketError(f"B-086 source hash is malformed: {source_path}")
-        try:
-            captured = subprocess.run(
-                ["git", "show", f"{capture_commit}:{source_path}"],
-                cwd=ROOT,
-                check=True,
-                capture_output=True,
-            ).stdout
-        except (OSError, subprocess.CalledProcessError) as exc:
-            raise PacketError(f"B-086 capture commit cannot read {source_path}") from exc
-        actual_hash = hashlib.sha256(captured).hexdigest()
-        if expected_hash != actual_hash:
-            raise PacketError(f"B-086 source hash does not match capture commit: {source_path}")
-    if record["decision"] != "unresolved" or record["effective_at"] is not None:
-        raise PacketError("B-086 evidence must retain the unresolved decision boundary")
-    bindings = record["production_bindings"]
-    if not isinstance(bindings, list) or len(bindings) != 5:
-        raise PacketError("B-086 production binding population drifted")
-    expected_envs = {"prod", "prod-sam", "prod-lhr", "prod-nrt", "prod-syd"}
-    actual_envs: set[str] = set()
-    database_ids: set[str] = set()
-    for index, binding in enumerate(bindings):
-        row = _exact_keys(
-            binding,
-            {"env", "binding", "database_name", "database_id", "residency_claim"},
-            f"B-086 production_bindings[{index}]",
-        )
-        if not all(isinstance(row[field], str) and row[field].strip() for field in row):
-            raise PacketError(f"B-086 production_bindings[{index}] contains an empty field")
-        actual_envs.add(row["env"])
-        database_ids.add(row["database_id"])
-        if row["binding"] != "CONFIG_DB":
-            raise PacketError("B-086 production binding is not CONFIG_DB")
-    if actual_envs != expected_envs or len(database_ids) != 1 or record["distinct_database_ids"] != 1:
-        raise PacketError("B-086 D1 identity census drifted")
-    if not isinstance(record["dpa_status"], str) or "PENDING_LEGAL_REVIEW" not in record["dpa_status"]:
-        raise PacketError("B-086 DPA status must remain pending legal review")
-    if not isinstance(record["signed_document_sha256_or_provider_case"], (str, type(None))):
-        raise PacketError("B-086 signed/provider reference shape drifted")
-    if record["signed_document_sha256_or_provider_case"] is not None:
-        raise PacketError("B-086 unresolved evidence must not invent a signed/provider reference")
-    if not isinstance(record["unresolved_reason"], str) or "Owner/counsel" not in record["unresolved_reason"]:
-        raise PacketError("B-086 unresolved reason is missing the owner/counsel boundary")
-    verification = _exact_keys(record["verification"], {"b086_self_test", "owner_action_packet", "status"}, "B-086 verification")
-    if verification != {"b086_self_test": "pass", "owner_action_packet": "pass (29 items)", "status": "open"}:
-        raise PacketError("B-086 verification receipt drifted")
+    if record["schema_version"] != "1.0" or record["decision"] != "shared_d1_prelaunch_disclosure":
+        raise PacketError("B-086 must record the selected shared-D1 prelaunch posture")
+    owner = _exact_keys(
+        record["current_owner_decision"],
+        {"selected_posture", "decision_recorded_at", "launch_state", "customers", "customer_data_migration", "transfer_basis_and_safeguards", "provider_readback_status", "historical_metadata_caveat", "closure_status"},
+        "B-086 current_owner_decision",
+    )
+    if owner["selected_posture"] != "Root selected accurate disclosure of one shared global D1 before launch. Five active production Worker versions each expose one CONFIG_DB binding to this D1 ID. No migration, tenant-pinned claim, or legal approval is implied." or owner["launch_state"] != "NOT_LAUNCHED" or owner["customers"] != "NONE_CONFIRMED" or owner["customer_data_migration"] != "NOT_AUTHORIZED_OR_PERFORMED" or owner["transfer_basis_and_safeguards"] != "PENDING_COUNSEL_REVIEW; NOT_APPROVED_OR_EXECUTED" or owner["closure_status"] != "OPEN_EXTERNAL":
+        raise PacketError("B-086 owner posture/launch boundary drifted")
+    if record["effective_at"] is not None or record["signed_document_sha256_or_provider_case"] is not None:
+        raise PacketError("B-086 must not invent an executed instrument or provider case")
+    if record["distinct_database_ids"] != 1 or not isinstance(record["production_bindings"], list) or len(record["production_bindings"]) != 5:
+        raise PacketError("B-086 shared-D1 binding census drifted")
+    try:
+        verify_b086_readback_record(record, (ROOT / "wrangler.toml").read_text(encoding="utf-8"))
+    except (OSError, B086ReadbackError) as exc:
+        raise PacketError(f"B-086 authenticated target/active-version readback failed: {exc}") from exc
     if record["mutations_performed"] != []:
         raise PacketError("B-086 evidence must remain read-only")
 
@@ -1352,116 +1309,37 @@ def _check_b154_evidence(item: dict[str, object]) -> None:
     if evidence["required_fields"] != B154_EVIDENCE_REQUIRED_FIELDS:
         raise PacketError("B-154 evidence required fields drifted")
     record = _read_json_evidence(B154_EVIDENCE_PATH, B154_EVIDENCE_REQUIRED_FIELDS, "B-154")
-    if record["schema_version"] != 1 or not isinstance(record["captured_at"], str) or not record["captured_at"].strip():
-        raise PacketError("B-154 evidence capture metadata drifted")
-    expected_surfaces = {
-        "legal/dpa/v1.0.0.en-US.md": "dpa_object_lock",
-        "legal/sla/v1.0.0.md": "sla_byok_kill_switch",
-        "marketing/launch/CASE-STUDIES/enterprise-byok.md": "case_study_attribution",
-    }
-    surfaces = record["surfaces"]
-    if not isinstance(surfaces, list) or len(surfaces) != len(expected_surfaces):
-        raise PacketError("B-154 surface population drifted")
-    seen_surfaces: set[str] = set()
-    for index, surface in enumerate(surfaces):
-        row = _exact_keys(surface, {"surface", "original_claim", "decision", "effective_at", "evidence_reference"}, f"B-154 surfaces[{index}]")
-        path = row["surface"]
-        if path not in expected_surfaces or path in seen_surfaces:
-            raise PacketError("B-154 surface identity drifted")
-        seen_surfaces.add(path)
-        if not isinstance(row["original_claim"], str) or not row["original_claim"].strip():
-            raise PacketError("B-154 original claim is missing")
-        if row["decision"] != "unresolved" or row["effective_at"] is not None:
-            raise PacketError("B-154 receipt must not imply an executed remedy")
-        reference = row["evidence_reference"]
-        if not isinstance(reference, str) or not reference.strip():
-            raise PacketError("B-154 evidence reference is missing")
-        reference_match = re.fullmatch(
-            re.escape(path) + r":[^;]+; sha256 ([0-9a-f]{64})", reference
-        )
-        if reference_match is None:
-            raise PacketError(f"B-154 evidence reference is not source-bound: {path}")
-        source_path = ROOT / path
-        if not source_path.is_file() or source_path.is_symlink():
-            raise PacketError(f"B-154 evidence source is missing/non-regular: {path}")
-        actual_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
-        if reference_match.group(1) != actual_hash:
-            raise PacketError(f"B-154 evidence reference hash does not match source: {path}")
-    decisions = _exact_keys(record["decisions"], set(expected_surfaces.values()), "B-154 decisions")
-    if any(not isinstance(value, str) or not value.startswith("unresolved:") for value in decisions.values()):
-        raise PacketError("B-154 decisions must retain explicit unresolved boundaries")
-    signed_documents = record["signed_documents"]
-    if not isinstance(signed_documents, list) or len(signed_documents) != 2:
-        raise PacketError("B-154 signed-document population drifted")
-    seen_documents: set[str] = set()
-    for index, document in enumerate(signed_documents):
-        row = _exact_keys(document, {"path", "version", "sha256"}, f"B-154 signed_documents[{index}]")
-        if row["path"] not in {"legal/dpa/v1.0.0.en-US.md", "legal/sla/v1.0.0.md"} or row["path"] in seen_documents:
-            raise PacketError("B-154 signed-document identity drifted")
-        seen_documents.add(row["path"])
-        if row["version"] != "1.0.0" or not isinstance(row["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", row["sha256"]):
-            raise PacketError("B-154 signed-document hash/version drifted")
-        source_path = ROOT / row["path"]
-        try:
-            actual_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
-        except OSError as exc:
-            raise PacketError(f"B-154 signed-document source is unreadable: {row['path']}") from exc
-        if row["sha256"] != actual_sha256:
-            raise PacketError(f"B-154 signed-document hash does not match source: {row['path']}")
-    notices = record["notices"]
-    if not isinstance(notices, list) or len(notices) != 3:
-        raise PacketError("B-154 notice population drifted")
-    for index, notice in enumerate(notices):
-        row = _exact_keys(notice, {"surface", "status", "effective_at", "reference", "blocker"}, f"B-154 notices[{index}]")
-        if row["status"] != "NOT_EXECUTED" or row["effective_at"] is not None or row["reference"] is not None:
-            raise PacketError("B-154 notice receipt would overstate external execution")
-        if not isinstance(row["blocker"], str) or not row["blocker"].strip():
-            raise PacketError("B-154 notice blocker is missing")
-    capability = _exact_keys(record["capability_evidence"], {"object_lock", "byok_kill_switch", "case_study"}, "B-154 capability_evidence")
-    object_lock = _exact_keys(
-        capability["object_lock"], {"status", "reference", "historical_report"},
-        "B-154 capability_evidence.object_lock",
-    )
-    probe_path = "evidence/owner-actions/B-046/object-lock-probe.json"
-    if object_lock["status"] != "INDETERMINATE" or object_lock["reference"] != probe_path:
-        raise PacketError("B-154 latest Object Lock classification must remain indeterminate")
-    probe_file = ROOT / probe_path
-    if not probe_file.is_file() or probe_file.is_symlink():
-        raise PacketError("B-154 latest Object Lock probe is missing/non-regular")
-    try:
-        probe = json.loads(probe_file.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise PacketError(f"B-154 latest Object Lock probe is unreadable: {exc}") from exc
-    if probe.get("classification") != "INDETERMINATE":
-        raise PacketError("B-154 Object Lock receipt disagrees with latest probe")
-    history = _exact_keys(
-        object_lock["historical_report"],
-        {"date", "classification", "reference", "raw_probe_artifact"},
-        "B-154 capability_evidence.object_lock.historical_report",
-    )
-    if history != {
-        "date": "2026-08-25",
-        "classification": "REPORTED_NOT_IMPLEMENTED",
-        "reference": "BACKLOG.md#B-046",
-        "raw_probe_artifact": "NOT_LINKED_IN_B046",
-    }:
-        raise PacketError("B-154 historical Object Lock report is not source-bound")
-    expected_capabilities = {
-        "byok_kill_switch": "UNVERIFIED_RUNTIME_P99",
-        "case_study": "NOT_PUBLISHED",
-    }
-    for name, expected_status in expected_capabilities.items():
-        row = _exact_keys(capability[name], {"status", "reference"}, f"B-154 capability_evidence.{name}")
-        if row["status"] != expected_status or not isinstance(row["reference"], str) or not row["reference"].strip():
-            raise PacketError(f"B-154 capability evidence drifted for {name}")
-    if not isinstance(record["operator"], str) or "read-only" not in record["operator"]:
-        raise PacketError("B-154 operator boundary drifted")
-
-
-
-B035_EVIDENCE_PATH = "evidence/owner-actions/B-035/tls-legal-remediation.json"
-B035_SOURCE_SHA = "ff232e5c53f69872ed8108e5f5defb185655b0ae"
-B035_ARTIFACT_SHA256 = "060de7b927cc46a3035f646b03348ccc92f4b60673d1edee44a4d9a04c0d3761"
+    if record["schema_version"] != 1 or record["issue"] != 2597 or record["parent_issue"] != 1676:
+        raise PacketError("B-154 prelaunch resolution identity drifted")
+    lifecycle = _exact_keys(record["lifecycle"], {"service_launched", "customers", "customer_instruments_executed", "customer_notices", "enterprise_byok_case_study", "customer_data_migration"}, "B-154 lifecycle")
+    if lifecycle != {"service_launched": False, "customers": "NONE_CONFIRMED", "customer_instruments_executed": "NONE_CONFIRMED", "customer_notices": "NOT_APPLICABLE_NO_CUSTOMERS", "enterprise_byok_case_study": "NO_CIRCULATION_CONFIRMED", "customer_data_migration": "NOT_AUTHORIZED_OR_PERFORMED"}:
+        raise PacketError("B-154 may not imply customer execution, notices, circulation, launch, or migration")
+    claims = _exact_keys(record["claims"], {"object_lock", "byok_kill_switch", "d1_residency"}, "B-154 claims")
+    for name in ("object_lock", "byok_kill_switch"):
+        row = claims[name]
+        if not isinstance(row, dict) or row.get("capability_status") != "UNPROVEN" or row.get("launch_availability") != "NOT_AVAILABLE_OR_PROMISED":
+            raise PacketError(f"B-154 {name} claim must remain unproven and unavailable")
+        if not isinstance(row.get("limitation"), str) or not row["limitation"].strip():
+            raise PacketError(f"B-154 {name} limitation is missing")
+    if claims["object_lock"].get("provider_classification") != "INDETERMINATE" or claims["byok_kill_switch"].get("provider_runtime_state") != "BLOCKED" or claims["byok_kill_switch"].get("p99_measurement") != "NOT_MEASURED":
+        raise PacketError("B-154 provider evidence classification must not be promoted")
+    d1 = claims["d1_residency"]
+    if not isinstance(d1, dict) or d1.get("posture") != "ONE_SHARED_GLOBAL_D1_PRELAUNCH_DISCLOSURE" or d1.get("physical_location") != "NOT_INFERRED_FROM_PROVIDER_METADATA" or d1.get("transfer_basis") != "PENDING_COUNSEL_REVIEW" or d1.get("active_workers_verified") != 5 or d1.get("active_config_db_bindings_match") is not True:
+        raise PacketError("B-154 D1 boundary or active binding evidence drifted")
+    if record["status"] != "OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW" or record["provider_chains_closed"] is not False:
+        raise PacketError("B-154 must remain open until provider parents reach evidence-backed outcomes")
+    remediation = _exact_keys(record["historical_remediation"], {"issue_2594", "issue_2595", "issue_2596", "notice_or_amendment"}, "B-154 historical remediation")
+    if remediation["issue_2594"] != "CLOSED_NOT_PLANNED_NO_EXECUTED_CUSTOMER_DPA_REMEDIATION" or remediation["issue_2595"] != "CLOSED_NOT_PLANNED_NO_EXECUTED_CUSTOMER_SLA_REMEDIATION" or remediation["issue_2596"] != "CLOSED_NO_CIRCULATION" or remediation["notice_or_amendment"] != "NONE_CLAIMED":
+        raise PacketError("B-154 historical no-customer disposition drifted")
+    source_hashes = record["source_sha256"]
+    if not isinstance(source_hashes, dict) or not source_hashes:
+        raise PacketError("B-154 source-bound claim receipt is missing")
+    for path_text, expected in source_hashes.items():
+        if not isinstance(path_text, str) or not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise PacketError("B-154 source hash is malformed")
+        source = ROOT / path_text
+        if not source.is_file() or source.is_symlink() or hashlib.sha256(source.read_bytes()).hexdigest() != expected:
+            raise PacketError(f"B-154 source hash does not match current source: {path_text}")
 
 
 def _check_b035_record(record: object) -> None:

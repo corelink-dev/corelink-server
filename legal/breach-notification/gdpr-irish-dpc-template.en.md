@@ -107,7 +107,7 @@ On `{{breach_detected_at}}` (UTC), HuGR Labs became aware of a personal data bre
 **Technical security measures in place at time of breach**:
 - Encryption at rest (INV-CONF-AT-REST: R2 SSE-S3, D1/Neon server-side encryption).
 - TLS 1.2 floor on all endpoints, 1.3 negotiated by every capable client (INV-CONF-IN-FLIGHT; ADR-0072).
-- Append-only audit log with R2 Object Lock 7-year retention (INV-AUDIT-APPEND-ONLY).
+- Current audit-integrity controls must be verified for the incident. Production R2 Object Lock COMPLIANCE retention and a seven-year storage-enforced guarantee are not established; do not state them without fresh target-bound evidence.
 - Tenant isolation enforced at infrastructure level (INV-TENANT-ISOLATION).
 
 **Containment measures applied**:
