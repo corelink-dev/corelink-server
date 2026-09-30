@@ -318,7 +318,7 @@ class B046ObjectLockProbeTests(unittest.TestCase):
         for field, value in (
             ("B046_ACTUAL_ACCOUNT_ID", "999999999999"),
             ("B046_ACTUAL_REGION", "eu-west-1"),
-            ("B046_CHECKED_OUT_SHA", "b" * 40),
+            ("B046_CHECKED_OUT_SHA", "c" * 40),
             ("COST_CEILING_USD_MICROS", "5000001"),
             ("B046_BUCKET", "unapproved-bucket"),
         ):
@@ -378,7 +378,7 @@ class B046ObjectLockProbeTests(unittest.TestCase):
         self.assertIn("Equals:((.Equals // []) | sort)", workflow)
         self.assertNotIn("LatestDigestDeliveryTime", workflow)
         self.assertNotIn("preflight-digest-validation.txt", workflow)
-        self.assertIn("Assume audit-reader for probe preflight", workflow)
+        self.assertIn("Assume audit-reader for new-trail configuration preflight", workflow)
         self.assertIn("Assume probe role for scoped policy simulation", workflow)
         self.assertIn("s3:PutObject s3:PutObjectRetention s3:PutObjectLegalHold", workflow)
         self.assertIn("s3:object-lock-mode,ContextKeyValues=COMPLIANCE", workflow)
@@ -498,7 +498,9 @@ class B046ObjectLockProbeTests(unittest.TestCase):
         self.assertIn("--legal-hold '{\"Status\":\"OFF\"}'", cleanup)
         self.assertIn("jq -e '.LegalHold.Status == \"OFF\"'", cleanup)
         self.assertIn("CLEANUP_MODE: ${{ steps.cleanup_source.outputs.cleanup_mode }}", workflow)
-        self.assertIn("bucket_created=True", workflow)
+        self.assertIn('echo \'bucket_created=true\' >> "$GITHUB_OUTPUT"', workflow)
+        self.assertIn('"bucket_created":True', workflow)
+        self.assertIn("steps.create.outputs.bucket_created == 'true'", workflow)
         self.assertIn("empty_bucket_recovery", workflow)
         self.assertIn('aws s3api list-object-versions --no-paginate --bucket "$bucket"', cleanup)
         self.assertIn('aws s3api list-objects-v2 --no-paginate --bucket "$bucket"', cleanup)
