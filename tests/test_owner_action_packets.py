@@ -109,14 +109,17 @@ class OwnerActionPacketTests(unittest.TestCase):
         with self.assertRaises(MODULE.PacketError):
             MODULE.check_data(stale, "B-013")
 
-    def test_b065_evidence_handles_observed_disabled_and_new_retirement(self) -> None:
+    def test_b065_closed_evidence_is_source_bound_and_read_only(self) -> None:
         item = next(entry for entry in self.data["items"] if entry["id"] == "B-065")
         evidence = item["evidence"]
         self.assertEqual(evidence["required_fields"], MODULE.B065_EVIDENCE_REQUIRED_FIELDS)
+        self.assertEqual((item["owner"], item["status"]), ("tl", "done"))
+        self.assertEqual(evidence["path"], MODULE.B065_CLOSURE_EVIDENCE_PATH)
         schema = evidence["item_schema"]
         for marker in (
-            "signup_worker", "corelink_prd_container", "observed_disabled",
-            "disabled_now", "disabled_at is required only for disabled_now",
+            "source_original.sha256", "destination_inventory[]", "api_version (v1 or v2)",
+            "signup_worker", "corelink_prd_container", "resolution.mode=observed_disabled",
+            "correlation.possible=false", "duplicate_events_resolved remains false",
         ):
             self.assertIn(marker, schema)
         self.assertEqual(MODULE.check_data(self.data, "B-065"), {"items": 29, "population": 29})
@@ -127,8 +130,8 @@ class OwnerActionPacketTests(unittest.TestCase):
                 "retained_endpoint_id", "retired_at", "billing_health_runs",
                 "duplicate_events_resolved", "operator",
             ])),
-            ("missing already-disabled path", lambda entry: entry["evidence"].update(
-                item_schema=entry["evidence"]["item_schema"].replace("observed_disabled", "unknown")
+            ("missing no-mutation path", lambda entry: entry["evidence"].update(
+                item_schema=entry["evidence"]["item_schema"].replace("resolution.mode=observed_disabled", "resolution.mode=unknown")
             )),
             ("missing second legitimate endpoint", lambda entry: entry["evidence"].update(
                 item_schema=entry["evidence"]["item_schema"].replace("corelink_prd_container", "container")
@@ -139,6 +142,12 @@ class OwnerActionPacketTests(unittest.TestCase):
                 mutation(next(entry for entry in mutated["items"] if entry["id"] == "B-065"))
                 with self.assertRaises(MODULE.PacketError):
                     MODULE.check_data(mutated, "B-065")
+
+        stale = copy.deepcopy(self.data)
+        stale_item = next(entry for entry in stale["items"] if entry["id"] == "B-065")
+        stale_item.update(owner="owner", status="open")
+        with self.assertRaises(MODULE.PacketError):
+            MODULE.check_data(stale, "B-065")
 
     def test_b110_reconciled_closure_matches_backlog(self) -> None:
         self.assertEqual(

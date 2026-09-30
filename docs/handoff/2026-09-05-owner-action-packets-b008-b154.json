@@ -150,8 +150,8 @@
     },
     {
       "id": "B-065",
-      "owner": "owner",
-      "status": "open",
+      "owner": "tl",
+      "status": "done",
       "action_type": "stripe_webhook_endpoint_retirement",
       "procedure": [
         "UI: With authorized live Stripe access, enumerate both paginated v1 webhook endpoints and v2 event destinations; record IDs, URL, status, event coverage and last delivery time without secrets or payloads. The 30-day dual-ID detector alone does not prove current duplicate destinations.",
@@ -163,12 +163,12 @@
         "credentials": "An authorized live Stripe dashboard session or scoped read credential for both v1 and v2 destinations is required for inventory; disabling any active destination requires the owner's explicit decision. Webhook signing secrets are never exported, logged, or placed in evidence."
       },
       "evidence": {
-        "path": "evidence/owner-actions/B-065/stripe-endpoint-retirement.json",
+        "path": "evidence/owner-actions/B-065/stripe-endpoint-retirement-closure.json",
         "format": "json",
-        "required_fields": ["schema_version", "captured_at", "account", "destination_inventory", "retained_endpoint_ids", "resolution", "billing_health_runs", "duplicate_events_resolved", "operator"],
-        "item_schema": "destination_inventory[] contains api_version (v1 or v2), endpoint_id, URL host/path, status, event_types, and observed_at; retained_endpoint_ids contains separate signup_worker and corelink_prd_container IDs. resolution contains mode (observed_disabled or disabled_now), endpoint_id, status_before, status_after, observed_at, mutation_performed, and owner_authorization; disabled_at is required only for disabled_now and optional when historically observed_disabled. Legacy retired_endpoint_id, retained_endpoint_id, and retired_at may be included as aliases but never replace the typed resolution or either retained ID. billing_health_runs[] contains run_id, completed_at, anomaly_count, and conclusion; endpoint URLs are redacted to host/path and secrets are forbidden."
+        "required_fields": ["schema_version", "captured_at", "source_original", "account", "destination_inventory", "retained_endpoint_ids", "resolution", "billing_health_runs", "duplicate_events_resolved", "correlation", "operator", "mutation_performed", "secrets_or_customer_payloads_accessed"],
+        "item_schema": "source_original.sha256 records the immutable source receipt SHA-256; destination_inventory[] contains each API observation with api_version (v1 or v2), endpoint ID, URL host/path, status, livemode, destination_api_version, workbench_api_version, event_payload, event_types, observed_at, last_delivery_at (explicit null when none), and delivery_observation. Each of the seven normalized rows is compared exactly with source_original. The complete observed population is three v1 rows and four v2 rows. retained_endpoint_ids.signup_worker and retained_endpoint_ids.corelink_prd_container preserve the two legitimate IDs. resolution.mode=observed_disabled records the thin destination before/after status, resolution.mutation_performed=false, and no owner authorization claim. correlation.possible=false and same_event_ids=[] when current destination delivery queries return no rows; duplicate_events_resolved remains false. billing_health_runs[] records three successful runs with exact created_at/completed_at, SHA, status and conclusion from GitHub Actions run metadata; completed_at and SHA also match source_original. No secrets or customer payloads are accessed."
       },
-      "expected_postcondition": "Any confirmed redundant active destination is disabled, both legitimate signup-worker and Corelink prd container destinations are unchanged, and billing-health-daily passes three consecutive times; if the redundant destination was already disabled, record that without another mutation. B-065 remains open until evidence proves closure.",
+      "expected_postcondition": "Both legitimate signup-worker and Corelink prd container destinations remain intact. The exact complete read-only v1/v2 inventory, API-version distinctions, delivery-history observations, no-correlation limitation, prior already-disabled thin state, and three successful billing-health runs are source-bound in the closure receipt. No Stripe mutation or duplicate-event resolution is claimed.",
       "retry_and_rollback": "Before retrying, reload the endpoint list and stop if the target is already disabled or IDs changed. Do not re-enable an endpoint after duplicate processing without a new owner decision; if an accidental enable occurs, disable it again and record the incident.",
       "references": ["BACKLOG.md#B-065", "scripts/check_billing_health.py", ".github/workflows/billing-health-daily.yml"]
     },
