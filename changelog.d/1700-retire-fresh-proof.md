@@ -1,0 +1,1 @@
+- Fence and retire the exact interrupted staging probe, verify ownership before removing its synthetic D1 tables, and require that cleanup before a fresh nonce-bound native proof. Bound rollout convergence and preserve incomplete runtime diagnostics.

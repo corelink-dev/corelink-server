@@ -1,3 +1,4 @@
+import { OLD_PROBE_NAME, OLD_PROBE_RELEASE, type OldProbeRetirement } from "./staging_d1_probe_retirement.js";
 import window from "../../crates/corelink-container/src/routes/staging_d1_probe_window.json";
 export const STAGING_D1_PROBE_WINDOW = window;
 import type { Env } from "./index_common.js";
@@ -21,6 +22,7 @@ export interface StagingD1RuntimeProbeReceipt {
 }
 
 interface StagingD1RuntimeProbeStub {
+  retireStagingD1RuntimeProbe(scheduledTime: number): Promise<OldProbeRetirement>;
   runStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt>;
 }
 
@@ -28,7 +30,7 @@ interface StagingD1RuntimeProbeStub {
 export async function runStagingD1BindingRuntimeProbe(
   env: Env,
   scheduledTime: number,
-): Promise<StagingD1RuntimeProbeReceipt> {
+): Promise<StagingD1RuntimeProbeReceipt & OldProbeRetirement> {
   const release = env.SENTRY_RELEASE ?? "";
   if (
     env.ENVIRONMENT !== "staging" ||
@@ -37,6 +39,11 @@ export async function runStagingD1BindingRuntimeProbe(
   ) {
     throw new Error("staging runtime probe target rejected");
   }
+  const oldId = env.CORELINK_SERVER.idFromName(OLD_PROBE_NAME);
+  const oldStub = env.CORELINK_SERVER.get(oldId) as unknown as StagingD1RuntimeProbeStub;
+  const retired = await oldStub.retireStagingD1RuntimeProbe(scheduledTime);
+  if (retired.old_probe_release !== OLD_PROBE_RELEASE || retired.old_probe_retired !== true ||
+      retired.old_probe_tables_absent !== true) throw new Error("old probe retirement rejected");
   const id = env.CORELINK_SERVER.idFromName(`${STAGING_D1_RUNTIME_PROBE_DO_PREFIX}${release}`);
   const stub = env.CORELINK_SERVER.get(id) as unknown as StagingD1RuntimeProbeStub;
   const receipt = await stub.runStagingD1RuntimeProbe(scheduledTime);
@@ -62,5 +69,5 @@ export async function runStagingD1BindingRuntimeProbe(
   ) {
     throw new Error("staging runtime probe receipt rejected");
   }
-  return receipt;
+  return { ...receipt, old_probe_release: OLD_PROBE_RELEASE, old_probe_retired: true, old_probe_tables_absent: true };
 }
