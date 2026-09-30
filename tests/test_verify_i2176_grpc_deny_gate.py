@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import sys
 import unittest
 from pathlib import Path
@@ -14,14 +15,24 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import verify_i2176_grpc_deny_gate as verify
-import backlog_verify as backlog_policy
 
 
 class P0WaveClassifierTests(unittest.TestCase):
     def test_two_trusted_checkers_have_identical_i1652_pin_map(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "scripts/backlog_verify.py").read_text(
+            encoding="utf-8"
+        )
+        definitions = [
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "I1652_DELIVERY_PINS"
+        ]
+        self.assertEqual(len(definitions), 1)
+        backlog_pins = ast.literal_eval(definitions[0].value)
         self.assertEqual(
             {str(path): pins for path, pins in verify.WAVE_GROUPS["i1652"].items()},
-            backlog_policy.I1652_DELIVERY_PINS,
+            backlog_pins,
         )
 
     def test_four_reviewed_groups_are_finite_and_path_disjoint(self) -> None:
