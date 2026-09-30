@@ -1,0 +1,1 @@
+Fix #1700 probe CLI termination after awaited cleanup and synchronous proof/diagnostic output so an unacknowledged WebSocket close cannot pin the process. Preserve allowlisted partial diagnostics on the completion subprocess deadline without treating timeout output as a successful proof.
