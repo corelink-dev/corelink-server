@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "issue": 1649,
+  "surface": "B-065 Stripe LIVE webhook and event destination inventory",
+  "account": {
+    "display_name": "Humangr",
+    "account_id": "acct_1TDAg8Lh0hhAZjwo",
+    "livemode": true,
+    "verification": "Authenticated existing Stripe Dashboard > Workbench; all retrieved objects report livemode=true. Workbench Shell displayed read-only mode.",
+    "observed_at": "2026-09-30T14:54:58Z"
+  },
+  "pagination": {
+    "v1": {"resource": "/v1/webhook_endpoints", "page_size": 100, "pages_observed": 1, "objects": 3, "has_more": false, "complete": true},
+    "v2": {"resource": "/v2/core/event_destinations", "page_size": 100, "include": ["webhook_endpoint.url"], "pages_observed": 1, "objects": 4, "next_page_url": null, "complete": true}
+  },
+  "destinations": [
+    {
+      "name": "signup-worker",
+      "api_surfaces": ["v1 webhook_endpoint", "v2 core event_destination"],
+      "id": "we_1ToligLh0hhAZjwoI8PERw8x",
+      "url": "https://corelink-signup.humangr.com/webhooks/stripe",
+      "status": "enabled",
+      "livemode": true,
+      "api_version": {"v1_returned": null, "v2_snapshot_api_version": null, "workbench_display": "2026-02-25.clover"},
+      "event_payload": "snapshot",
+      "enabled_events": ["checkout.session.async_payment_failed", "checkout.session.async_payment_succeeded", "checkout.session.completed", "customer.subscription.created", "customer.subscription.deleted", "customer.subscription.updated", "invoice.payment_failed"],
+      "observed_at": "2026-09-30T14:54:58Z",
+      "last_delivery_at": null,
+      "delivery_history_observation": "Current Workbench > destination > Event deliveries page returned 'Nenhuma entrega de evento encontrada'; overview period 'Esta semana' showed total 0 and failed 0. No event id/result exists in this readback."
+    },
+    {
+      "name": "exquisite-rhythm-thin",
+      "api_surfaces": ["v2 core event_destination"],
+      "id": "ed_61Up55mmoh5aeEa5U16UMYdU7v9Px7f35nqL2wHU8N6W",
+      "url": "https://corelink-api.humangr.com/v1/billing/stripe-webhook",
+      "status": "disabled",
+      "status_details": {"disabled": {"reason": "user"}},
+      "livemode": true,
+      "api_version": {"snapshot_api_version": null},
+      "event_payload": "thin",
+      "enabled_events": ["v1.billing.meter.error_report_triggered", "v1.billing.meter.no_meter_found", "v2.commerce.product_catalog.imports.failed", "v2.commerce.product_catalog.imports.processing", "v2.commerce.product_catalog.imports.succeeded", "v2.commerce.product_catalog.imports.succeeded_with_errors", "v2.core.account.closed", "v2.core.account.created", "v2.core.account.updated", "v2.core.account[configuration.customer].capability_status_updated", "v2.core.account[configuration.customer].updated", "v2.core.account[configuration.merchant].capability_status_updated", "v2.core.account[configuration.merchant].updated", "v2.core.account[configuration.recipient].capability_status_updated", "v2.core.account[configuration.recipient].updated", "v2.core.account[defaults].updated", "v2.core.account[future_requirements].updated", "v2.core.account[identity].updated", "v2.core.account[requirements].updated", "v2.core.account_link.returned", "v2.core.account_person.created", "v2.core.account_person.deleted", "v2.core.account_person.updated", "v2.core.health.event_generation_failure.resolved"],
+      "observed_at": "2026-09-30T14:54:58Z",
+      "provider_updated_at": "2026-08-03T21:56:28.282Z",
+      "last_delivery_at": null,
+      "delivery_history_observation": "Current Workbench > destination > Event deliveries page returned 'Nenhuma entrega de evento encontrada'; no event id/result exists in this readback.",
+      "resolution": {"mode": "observed_disabled", "mutation_performed": false, "status_before": "disabled", "status_before_observed_at": "2026-09-22T23:05:00Z", "status_before_source": "Prior read-only Dashboard Workbench observation recorded in issue packet and ledger."}
+    },
+    {
+      "name": "Corelink prd",
+      "api_surfaces": ["v1 webhook_endpoint", "v2 core event_destination"],
+      "id": "we_1Tfh8PLh0hhAZjwoCnqvruqC",
+      "url": "https://corelink-api.humangr.com/v1/billing/stripe-webhook",
+      "status": "enabled",
+      "livemode": true,
+      "api_version": {"v1": "2026-02-25.clover", "v2_snapshot_api_version": "2026-02-25.clover"},
+      "event_payload": "snapshot",
+      "enabled_events": ["charge.dispute.created", "charge.refunded", "customer.created", "customer.subscription.created", "customer.subscription.deleted", "customer.subscription.trial_will_end", "customer.subscription.updated", "invoice.created", "invoice.paid", "invoice.payment_failed"],
+      "observed_at": "2026-09-30T14:54:58Z",
+      "last_delivery_at": null,
+      "delivery_history_observation": "Current Workbench > destination > Event deliveries page returned 'Nenhuma entrega de evento encontrada'; no event id/result exists in this readback."
+    },
+    {
+      "name": "wallet",
+      "api_surfaces": ["v1 webhook_endpoint", "v2 core event_destination"],
+      "id": "we_1TJ1YZLh0hhAZjwoTXnh9mTD",
+      "url": "https://api.humangr.com/_wallet/stripe/webhook",
+      "status": "disabled",
+      "livemode": true,
+      "api_version": {"v1_returned": null, "v2_snapshot_api_version": null},
+      "event_payload": "snapshot",
+      "enabled_events": ["checkout.session.completed", "customer.subscription.deleted", "customer.subscription.updated", "invoice.payment_failed"],
+      "description": "DISABLED 2026-08-23 — route 404s (hugr worker has no /_wallet/stripe/webhook). Re-enable only if the wallet project ships that route.",
+      "observed_at": "2026-09-30T14:54:58Z",
+      "last_delivery_at": null,
+      "delivery_history_observation": "Current Workbench > destination > Event deliveries page returned 'Nenhuma entrega de evento encontrada'; no event id/result exists in this readback."
+    }
+  ],
+  "correlation": {
+    "possible": false,
+    "same_event_id_observed": null,
+    "reason": "No current event delivery rows were returned for any of the four destination-specific Workbench event-delivery queries, so no identical evt_… and timestamp/result pair was available to compare. Aggregate health counts and mixed ID schemes were not used as a correlation claim."
+  },
+  "preserved_destinations": ["we_1ToligLh0hhAZjwoI8PERw8x", "we_1Tfh8PLh0hhAZjwoCnqvruqC"],
+  "mutation_performed": false,
+  "secrets_or_customer_payloads_accessed": false,
+  "health_runs": [
+    {"id": 36158413576, "observed_at": "2026-09-25T16:04:54Z", "sha": "09871a8dbb7f2bbd73dfb529ca2a4e5a2b8a93d5", "result": "BILLING HEALTH: OK"},
+    {"id": 35803767730, "observed_at": "2026-09-23T00:50:32Z", "sha": "a5c34e6e46e8571b141590e124336620fd04e2b6", "result": "BILLING HEALTH: OK"},
+    {"id": 35681550304, "observed_at": "2026-09-22T03:00:50Z", "sha": "683df028a56a07b32384013c48ab38b5b8b9d981", "result": "BILLING HEALTH: OK"}
+  ],
+  "source_limitations": ["Workbench delivery pages returned no records; therefore latest delivery is explicitly null and correlation is unavailable, rather than inferred from aggregate type counts.", "For signup-worker, v1 api_version was null and the Workbench detail renders 2026-02-25.clover; both raw and rendered values are recorded.", "The v2 list and per-object retrieved values were observed through read-only Stripe Shell; no raw customer event or secret value was read."]
+}

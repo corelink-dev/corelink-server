@@ -38,8 +38,8 @@ EXPECTED_IDS = (
 # Terminal owner decisions move to the repository-side ``tl`` owner only after
 # their source-bound closure evidence receives a strict focal verifier. Other
 # legacy rows remain owner-controlled until their actions are evidenced.
-LEGACY_OWNER_IDS = frozenset(EXPECTED_IDS[:12]) - {"B-012", "B-013", "B-035", "B-110"}
-CLOSED_PACKET_IDS = frozenset({"B-012", "B-013", "B-035", "B-110", "B-165"})
+LEGACY_OWNER_IDS = frozenset(EXPECTED_IDS[:12]) - {"B-012", "B-013", "B-035", "B-065", "B-110"}
+CLOSED_PACKET_IDS = frozenset({"B-012", "B-013", "B-035", "B-065", "B-110", "B-165"})
 B089_SURFACES = (
     "legal/sla/v1.0.0.md",
     "apps/docs/src/pages/legal/terms.tsx",
@@ -155,16 +155,22 @@ B008_STAGING_TOPOLOGY_PATH = "infra/staging/topology.json"
 B008_STAGING_ROOT_WORKER = "corelink-staging"
 B008_STAGING_SERVICE_BINDING = "SCHEDULED_DRILL_DELIVERY"
 B008_STAGING_RECEIVER = "corelink-synthetic-pager-staging"
+B065_CLOSURE_EVIDENCE_PATH = "evidence/owner-actions/B-065/stripe-endpoint-retirement-closure.json"
+B065_SOURCE_PATH = "evidence/owner-actions/B-065/stripe-endpoint-retirement.json"
+B065_SOURCE_SHA256 = "7e953d4c97885ab2928c42ca4b4161bed76c7382195c4f6fbe2dbd53edadfd2c"
 B065_EVIDENCE_REQUIRED_FIELDS = [
-    "schema_version", "captured_at", "account", "destination_inventory",
-    "retained_endpoint_ids", "resolution", "billing_health_runs",
-    "duplicate_events_resolved", "operator",
+    "schema_version", "captured_at", "source_original", "account", "destination_inventory",
+    "retained_endpoint_ids", "resolution", "billing_health_runs", "duplicate_events_resolved",
+    "correlation", "operator", "mutation_performed", "secrets_or_customer_payloads_accessed",
 ]
 B065_SCHEMA_REQUIRED_TERMS = (
-    "v1 or v2", "signup_worker", "corelink_prd_container",
-    "observed_disabled", "disabled_now", "mutation_performed",
-    "disabled_at is required only for disabled_now", "Legacy retired_endpoint_id",
-    "never replace the typed resolution or either retained ID",
+    "destination_inventory[]", "api_version (v1 or v2)", "destination_api_version",
+    "workbench_api_version", "event_payload", "event_types", "last_delivery_at",
+    "delivery_observation", "retained_endpoint_ids.signup_worker",
+    "retained_endpoint_ids.corelink_prd_container", "resolution.mode=observed_disabled",
+    "resolution.mutation_performed=false", "correlation.possible=false",
+    "same_event_ids=[]", "billing_health_runs[]", "source_original.sha256",
+    "created_at", "GitHub Actions run metadata", "compared exactly with source_original",
 )
 B083_PROCEDURE_MARKERS = (
     ("protected, isolated nonproduction AWS runtime", "exact shipped byok-aws-real image", "sha256 image digest"),
@@ -1511,6 +1517,115 @@ def _check_b035_evidence(path: Path) -> None:
     _check_b035_record(record)
 
 
+def _check_b065_closure_evidence(path: Path) -> None:
+    if not path.is_file() or path.is_symlink():
+        raise PacketError("B-065 closure evidence file missing or non-regular")
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise PacketError("B-065 closure evidence unreadable or malformed") from exc
+    if not isinstance(record, dict) or record.get("schema_version") != 1:
+        raise PacketError("B-065 closure evidence schema_version must be 1")
+    source = record.get("source_original")
+    if source != {"path": B065_SOURCE_PATH, "sha256": B065_SOURCE_SHA256}:
+        raise PacketError("B-065 closure evidence source receipt provenance mismatch")
+    source_path = ROOT / B065_SOURCE_PATH
+    try:
+        source_bytes = source_path.read_bytes()
+        source_digest = hashlib.sha256(source_bytes).hexdigest()
+        source_record = json.loads(source_bytes)
+    except OSError as exc:
+        raise PacketError("B-065 immutable source receipt missing or unreadable") from exc
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise PacketError("B-065 immutable source receipt unreadable or malformed") from exc
+    if source_digest != B065_SOURCE_SHA256:
+        raise PacketError("B-065 immutable source receipt SHA-256 mismatch")
+    if not isinstance(source_record, dict) or source_record.get("schema_version") != 1:
+        raise PacketError("B-065 immutable source receipt schema mismatch")
+    account = record.get("account")
+    source_account = source_record.get("account")
+    if not isinstance(account, dict) or not isinstance(source_account, dict) or any(
+        account.get(field) != source_account.get(field)
+        for field in ("display_name", "account_id", "livemode", "verification")
+    ) or account.get("livemode") is not True:
+        raise PacketError("B-065 closure evidence must identify the observed LIVE account")
+    inventory = record.get("destination_inventory")
+    source_destinations = source_record.get("destinations")
+    if not isinstance(inventory, list) or len(inventory) != 7 or not isinstance(source_destinations, list):
+        raise PacketError("B-065 closure evidence must include all seven v1/v2 observations")
+    expected_inventory: list[dict[str, object]] = []
+    for destination in source_destinations:
+        if not isinstance(destination, dict):
+            raise PacketError("B-065 source destination inventory is malformed")
+        versions = destination.get("api_version")
+        surfaces = destination.get("api_surfaces")
+        if not isinstance(versions, dict) or not isinstance(surfaces, list):
+            raise PacketError("B-065 source destination API/version fields are malformed")
+        for surface in surfaces:
+            if not isinstance(surface, str) or not surface.startswith(("v1 ", "v2 ")):
+                raise PacketError("B-065 source destination API surface is malformed")
+            api = surface[:2]
+            expected_inventory.append({
+                "api_version": api,
+                "endpoint_id": destination.get("id"),
+                "display_name": destination.get("name"),
+                "url": destination.get("url"),
+                "status": destination.get("status"),
+                "livemode": destination.get("livemode"),
+                "destination_api_version": (versions.get("v1_returned", versions.get("v1")) if api == "v1" else versions.get("v2_snapshot_api_version")),
+                "workbench_api_version": versions.get("workbench_display"),
+                "event_payload": None if api == "v1" else destination.get("event_payload"),
+                "event_types": destination.get("enabled_events"),
+                "observed_at": destination.get("observed_at"),
+                "last_delivery_at": destination.get("last_delivery_at"),
+                "delivery_observation": destination.get("delivery_history_observation"),
+                "provider_updated_at": destination.get("provider_updated_at"),
+                "provider_status_details": destination.get("status_details"),
+            })
+    expected_inventory.sort(key=lambda row: (row["api_version"], row["endpoint_id"]))
+    actual_inventory = sorted(
+        inventory,
+        key=lambda row: (row.get("api_version"), row.get("endpoint_id")) if isinstance(row, dict) else ("", ""),
+    )
+    if actual_inventory != expected_inventory:
+        raise PacketError("B-065 normalized destination rows differ from the immutable source receipt")
+    retained = record.get("retained_endpoint_ids")
+    if retained != {
+        "signup_worker": "we_1ToligLh0hhAZjwoI8PERw8x",
+        "corelink_prd_container": "we_1Tfh8PLh0hhAZjwoCnqvruqC",
+    }:
+        raise PacketError("B-065 closure evidence must preserve both legitimate destinations")
+    resolution = record.get("resolution")
+    if not isinstance(resolution, dict) or resolution.get("mode") != "observed_disabled" or resolution.get("endpoint_id") != "ed_61Up55mmoh5aeEa5U16UMYdU7v9Px7f35nqL2wHU8N6W" or resolution.get("status_before") != "disabled" or resolution.get("status_after") != "disabled" or resolution.get("mutation_performed") is not False or resolution.get("owner_authorization") is not None:
+        raise PacketError("B-065 resolution must record the already-disabled no-mutation observation")
+    if record.get("duplicate_events_resolved") is not False:
+        raise PacketError("B-065 closure must not claim unobserved duplicate-event resolution")
+    correlation = record.get("correlation")
+    if not isinstance(correlation, dict) or correlation.get("possible") is not False or correlation.get("same_event_ids") != []:
+        raise PacketError("B-065 closure must preserve unavailable delivery correlation")
+    runs = record.get("billing_health_runs")
+    source_runs = source_record.get("health_runs")
+    created_at = {
+        36158413576: "2026-09-25T16:04:35Z",
+        35803767730: "2026-09-23T00:50:15Z",
+        35681550304: "2026-09-22T03:00:31Z",
+    }
+    if not isinstance(runs, list) or len(runs) != 3 or not isinstance(source_runs, list) or len(source_runs) != 3:
+        raise PacketError("B-065 closure must cite three successful billing health runs")
+    for run, source_run in zip(runs, source_runs, strict=True):
+        if not isinstance(run, dict) or not isinstance(source_run, dict):
+            raise PacketError("B-065 billing health run records are malformed")
+        run_id = source_run.get("id")
+        if run.get("run_id") != run_id or run.get("completed_at") != source_run.get("observed_at") or run.get("sha") != source_run.get("sha") or run.get("conclusion") != source_run.get("result") or run.get("anomaly_count") != 0:
+            raise PacketError("B-065 billing health tuple differs from immutable source evidence")
+        if run.get("created_at") != created_at.get(run_id) or run.get("status") != "completed" or run.get("metadata_source") != "GitHub Actions run metadata from read-only gh run view; updatedAt is recorded as completed_at.":
+            raise PacketError("B-065 billing health GitHub run metadata differs from read-only run metadata")
+    if record.get("mutation_performed") is not False or record.get("secrets_or_customer_payloads_accessed") is not False:
+        raise PacketError("B-065 closure must affirm read-only handling")
+    _text(record.get("captured_at"), "B-065.captured_at")
+    _text(record.get("operator"), "B-065.operator")
+
+
 def _check_item(
     item: object,
     expected_id: str,
@@ -1589,14 +1704,18 @@ def _check_item(
     if expected_id == "B-089":
         _check_b089_surface_contract(item)
     if expected_id == "B-065":
+        if canonical_status == "done" and path != B065_CLOSURE_EVIDENCE_PATH:
+            raise PacketError("B-065 done packet must use the strict closure evidence receipt")
         if evidence["required_fields"] != B065_EVIDENCE_REQUIRED_FIELDS:
-            raise PacketError("B-065 evidence must retain the two destination IDs and typed resolution")
+            raise PacketError("B-065 evidence must retain the complete read-only closure fields")
         schema = evidence["item_schema"]
         if any(term not in schema for term in B065_SCHEMA_REQUIRED_TERMS):
-            raise PacketError("B-065 evidence schema omits a resolution or destination invariant")
+            raise PacketError("B-065 evidence schema omits a source, delivery, or destination invariant")
         procedure_text = " ".join(procedure)
         if not all(term in procedure_text for term in ("v1", "v2", "explicit decision", "if already disabled")):
             raise PacketError("B-065 procedure must distinguish readback, mutation, and no-op")
+        if canonical_status == "done":
+            _check_b065_closure_evidence(ROOT / path)
     if expected_id == "B-012":
         # A token can make bot-PR CI unattended, but a missing runner or a
         # zero-job startup failure is a different boundary. Keep the owner
