@@ -77,6 +77,24 @@ class PolicyTests(unittest.TestCase):
     def test_closed_world_and_self_alteration_fail(self) -> None:
         policy.self_test()
 
+    def test_wallet_route_dispatch_loads_trusted_base_checker_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base_script = root / "base/scripts/verify_i2176_grpc_deny_gate.py"
+            candidate_script = root / "candidate/scripts/verify_i2176_grpc_deny_gate.py"
+            base_script.parent.mkdir(parents=True)
+            candidate_script.parent.mkdir(parents=True)
+            base_script.write_text(
+                "def validate_wallet_route_candidate(base, candidate):\n    return 'trusted-base'\n"
+            )
+            marker = root / "candidate-executed"
+            candidate_script.write_text(
+                f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
+                "def validate_wallet_route_candidate(base, candidate):\n    return 'candidate'\n"
+            )
+            self.assertEqual(policy.validate_wallet_route_transition(root / "base", root / "candidate"), "trusted-base")
+            self.assertFalse(marker.exists())
+
     def test_receiver_boundary_scopes_path_allowlist_but_keeps_privacy_scan(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
