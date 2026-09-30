@@ -30,6 +30,8 @@ from verify_b086_d1_residency import VerificationError as B086ReadbackError
 from verify_b086_d1_residency import verify_readback_record as verify_b086_readback_record
 from verify_b083_kms_lifecycle_evidence import EvidenceError as B083EvidenceError
 from verify_b083_kms_lifecycle_evidence import validate_record as validate_b083_evidence
+from verify_b046_object_lock_probe import ProbeError as B046ProbeError
+from verify_b046_object_lock_probe import validate_accepted_aws_evidence
 EXPECTED_IDS = (
     "B-008", "B-012", "B-013", "B-032", "B-035", "B-065",
     "B-086", "B-089", "B-097", "B-110", "B-111", "B-154",
@@ -41,7 +43,7 @@ EXPECTED_IDS = (
 # their source-bound closure evidence receives a strict focal verifier. Other
 # legacy rows remain owner-controlled until their actions are evidenced.
 LEGACY_OWNER_IDS = frozenset(EXPECTED_IDS[:12]) - {"B-012", "B-013", "B-035", "B-065", "B-110"}
-CLOSED_PACKET_IDS = frozenset({"B-012", "B-013", "B-035", "B-065", "B-110", "B-165"})
+CLOSED_PACKET_IDS = frozenset({"B-012", "B-013", "B-035", "B-046", "B-065", "B-110", "B-165"})
 B089_SURFACES = (
     "legal/sla/v1.0.0.md",
     "apps/docs/src/pages/legal/terms.tsx",
@@ -1577,6 +1579,18 @@ def _check_item(
         if path != B035_EVIDENCE_PATH:
             raise PacketError("B-035 evidence locator drifted")
         _check_b035_evidence(ROOT / path)
+    if expected_id == "B-046":
+        expected_path = "evidence/owner-actions/B-046/accepted-aws-target.json"
+        expected_fields = [
+            "schema", "captured_at_utc", "scope", "source_issues", "target", "proof",
+            "approval", "independent_review", "cleanup", "r2_history", "nonclaims",
+        ]
+        if path != expected_path or evidence["required_fields"] != expected_fields:
+            raise PacketError("B-046 accepted AWS evidence locator or fields drifted")
+        try:
+            validate_accepted_aws_evidence((ROOT / path).read_text(encoding="utf-8"))
+        except (OSError, B046ProbeError) as exc:
+            raise PacketError("B-046 accepted AWS proof is missing or invalid") from exc
     if expected_id == "B-008":
         _check_b008_action_contract(item)
     if expected_id == "B-089":

@@ -567,7 +567,23 @@ class B046ObjectLockProbeTests(unittest.TestCase):
         backlog = verifier.BACKLOG_PATH.as_posix()
         b046_start = mutated[backlog].index("id: B-046")
         prefix, suffix = mutated[backlog][:b046_start], mutated[backlog][b046_start:]
-        mutated[backlog] = prefix + suffix.replace("status: parked", "status: done", 1)
+        mutated[backlog] = prefix + suffix.replace("status: done", "status: parked", 1)
+        with self.assertRaises(verifier.ProbeError):
+            verifier.validate_repository_contract(mutated)
+
+        mutated = dict(paths)
+        accepted = verifier.ACCEPTED_EVIDENCE_PATH.as_posix()
+        mutated[accepted] = mutated[accepted].replace(
+            '"approval_delta": "PASS"', '"approval_delta": "FAIL"', 1
+        )
+        with self.assertRaises(verifier.ProbeError):
+            verifier.validate_repository_contract(mutated)
+
+        mutated = dict(paths)
+        mutated[accepted] = mutated[accepted].replace(
+            '"same_version_pre_expiry_delete_denied": true',
+            '"same_version_pre_expiry_delete_denied": false', 1,
+        )
         with self.assertRaises(verifier.ProbeError):
             verifier.validate_repository_contract(mutated)
 

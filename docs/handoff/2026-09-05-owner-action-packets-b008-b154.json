@@ -425,26 +425,26 @@
     {
       "id": "B-046",
       "owner": "tl",
-      "status": "open",
-      "action_type": "object_lock_provider_probe",
+      "status": "done",
+      "action_type": "approved_aws_object_lock_external_proof",
       "procedure": [
-        "RUN: With temporary R2 S3 credentials supplied through the protected environment, run python3 scripts/verify_b046_object_lock_probe.py --probe; the probe creates only a named temporary bucket and test object.",
-        "RUN: Record the provider response for bucket Object Lock creation and per-object COMPLIANCE retention, classifying only explicit NotImplemented as BLOCKED and all credential, network, permission, or unknown errors as INDETERMINATE.",
-        "UI: If the provider remains blocked, record the platform result and customer-contract decision for any alternate Object-Lock backend; do not add a Compliance database mode from this packet."
+        "RUN: Read exact protected main source run 36741245684 and read-only digest reconciliation run 36742484737, then bind their artifact digests and redacted target hashes to current root technical approval and independent cold review.",
+        "RUN: Keep the historical R2 Object-Lock receipt INDETERMINATE and provider NotImplemented classification separate from accepted AWS S3 synthetic target proof; do not claim a production route or Compliance database mode.",
+        "UI: Retain the exact source-bound cleanup custody with gmhelmold; release hold and clean up only after retention expiry and a separately authorized hold-release decision."
       ],
       "inputs_and_credentials_boundary": {
-        "inputs": ["R2 S3 endpoint", "temporary probe bucket name", "provider account", "probe script"],
-        "credentials": "Owner supplies temporary R2 access key and secret through a protected environment; values are never printed, committed, or written to evidence."
+        "inputs": ["approved synthetic AWS target hashes", "protected source and reconciliation runs", "current root technical approval", "independent provider and approval cold review", "historical R2 receipt"],
+        "credentials": "Use protected OIDC identities and private 0600 provider captures; the repository receipt stores only target and principal hashes, artifact digests, and redacted references."
       },
       "evidence": {
-        "path": "evidence/owner-actions/B-046/object-lock-probe.json",
+        "path": "evidence/owner-actions/B-046/accepted-aws-target.json",
         "format": "json",
-        "required_fields": ["schema_version", "captured_at", "provider", "bucket_operation", "object_operation", "classification", "bucket_cleanup", "operator"],
-        "item_schema": "bucket_operation and object_operation record outcome, provider_code, and redacted request reference; classification is BLOCKED, INDETERMINATE, or SUPPORTED and cleanup records the temporary resources."
+        "required_fields": ["schema", "captured_at_utc", "scope", "source_issues", "target", "proof", "approval", "independent_review", "cleanup", "r2_history", "nonclaims"],
+        "item_schema": "Exact approved AWS S3 synthetic target hashes, source/reconcile run and artifact digests, current root approval, distinct provisioning identity, independent cold review, deferred cleanup, and R2 INDETERMINATE history; no production route or Compliance database mode."
       },
-      "expected_postcondition": "Current provider capability is recorded without confusing a probe with a product guarantee; B-046 remains open unless a supported backend is separately approved and implemented.",
-      "retry_and_rollback": "Use a fresh temporary bucket for a retry after checking credentials and account. Delete only the probe bucket and object after capture; never alter the production retention bucket or legal-hold rows.",
-      "references": ["BACKLOG.md#B-046", "scripts/verify_b046_object_lock_probe.py", "docs/knowledge/ops/r2-object-lock-probe.md"]
+      "expected_postcondition": "B-046 approved nonproduction external target proof accepted: #2237 merged, #1877 closed, approved same-version COMPLIANCE/hold/delete-denial/audit receipt bound. R2 remains unsupported; production route and mode remain disabled and separately gated.",
+      "retry_and_rollback": "No repeat provider probe or rollback. Future exact-source cleanup only after retain-until and separately authorized hold release; preserve the legal hold now.",
+      "references": ["BACKLOG.md#B-046", "https://github.com/HuGR-dev/corelink-server/issues/1646", "https://github.com/HuGR-dev/corelink-server/issues/1877", "evidence/owner-actions/B-046/accepted-aws-target.json", "evidence/owner-actions/B-046/object-lock-probe.json", "scripts/verify_b046_object_lock_probe.py"]
     },
     {
       "id": "B-054",
