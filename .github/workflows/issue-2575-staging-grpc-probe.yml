@@ -1,0 +1,162 @@
+name: issue 2575 protected staging gRPC probe
+
+on:
+  pull_request:
+    paths:
+      - '.actionlint.yaml'
+      - '.github/workflows/issue-2575-staging-grpc-probe.yml'
+      - 'scripts/i2575_grpc_probe_client.py'
+      - 'scripts/verify_i2575_readiness.py'
+      - 'tests/test_i2575_grpc_probe_client.py'
+      - 'tests/test_verify_i2575_readiness.py'
+  workflow_dispatch:
+    inputs:
+      run_protected_probe:
+        description: Run exactly one standard gRPC diagnostic against the protected staging endpoint
+        required: true
+        type: boolean
+        default: false
+      deployment_sha:
+        description: Exact SHA approved and read back by the successful #1700 staging run
+        required: false
+        type: string
+      container_readiness_run_id:
+        description: Successful #1700 exact-SHA deployment and runtime readback run ID
+        required: false
+        type: string
+      endpoint_readiness_run_id:
+        description: Successful #1700 Custom Domain publish and public health readback run ID
+        required: false
+        type: string
+      confirm:
+        description: Type run-i2575-staging-probe to authorize the one bounded probe
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: issue-2575-protected-staging-grpc-probe
+  cancel-in-progress: false
+
+jobs:
+  credentialless-contract:
+    name: credentialless client contract
+    if: github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Assert exact workflow source
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+      - name: Run credentialless protocol and fail-closed binding tests
+        run: >-
+          python3 -S -m unittest -v
+          tests/test_i2575_grpc_probe_client.py
+          tests/test_verify_i2575_readiness.py
+
+  protected-probe:
+    name: one protected staging diagnostic
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.repository_id == '1232040291' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      inputs.run_protected_probe == true &&
+      inputs.confirm == 'run-i2575-staging-probe'
+    needs: credentialless-contract
+    runs-on: ubuntu-24.04
+    environment: staging
+    timeout-minutes: 12
+    env:
+      CONTAINER_READINESS_RUN_ID: ${{ inputs.container_readiness_run_id }}
+      ENDPOINT_READINESS_RUN_ID: ${{ inputs.endpoint_readiness_run_id }}
+      PROBE_CONFIRM: ${{ inputs.confirm }}
+      CORELINK_STAGING_GRPC_PROBE_EXPIRES_AT_MS: ${{ vars.CORELINK_STAGING_GRPC_PROBE_EXPIRES_AT_MS }}
+      CORELINK_STAGING_GRPC_PROBE_DEPLOYMENT_SHA: ${{ vars.CORELINK_STAGING_GRPC_PROBE_DEPLOYMENT_SHA }}
+      CORELINK_STAGING_GRPC_PROBE_WORKER_NAME: ${{ vars.CORELINK_STAGING_GRPC_PROBE_WORKER_NAME }}
+      CORELINK_STAGING_GRPC_PROBE_WORKER_VERSION_ID: ${{ vars.CORELINK_STAGING_GRPC_PROBE_WORKER_VERSION_ID }}
+      CORELINK_STAGING_GRPC_PROBE_CONTAINER_IMAGE_DIGEST: ${{ vars.CORELINK_STAGING_GRPC_PROBE_CONTAINER_IMAGE_DIGEST }}
+      CORELINK_ENVIRONMENT: ${{ vars.CORELINK_ENVIRONMENT }}
+      ENVIRONMENT: ${{ vars.ENVIRONMENT }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Assert exact protected workflow source
+        env:
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
+      - name: Verify both exact-SHA #1700 runs and download immutable readback artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_SHA: ${{ inputs.deployment_sha }}
+        run: |
+          set -euo pipefail
+          test "$PROBE_CONFIRM" = 'run-i2575-staging-probe'
+          [[ "$INPUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CONTAINER_READINESS_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$ENDPOINT_READINESS_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          test "$INPUT_SHA" = "$CORELINK_STAGING_GRPC_PROBE_DEPLOYMENT_SHA"
+          gh api "repos/HuGR-dev/corelink-server/actions/runs/$CONTAINER_READINESS_RUN_ID" \
+            > "$RUNNER_TEMP/i2575-container-run.json"
+          gh api "repos/HuGR-dev/corelink-server/actions/runs/$ENDPOINT_READINESS_RUN_ID" \
+            > "$RUNNER_TEMP/i2575-endpoint-run.json"
+          mkdir -m 700 "$RUNNER_TEMP/i2575-container-receipts" "$RUNNER_TEMP/i2575-endpoint-receipts"
+          gh run download "$CONTAINER_READINESS_RUN_ID" --repo HuGR-dev/corelink-server \
+            --name "issue-1700-route-free-deployment-$CONTAINER_READINESS_RUN_ID" \
+            --dir "$RUNNER_TEMP/i2575-container-receipts"
+          gh run download "$ENDPOINT_READINESS_RUN_ID" --repo HuGR-dev/corelink-server \
+            --name "staging-custom-domain-$ENDPOINT_READINESS_RUN_ID" \
+            --dir "$RUNNER_TEMP/i2575-endpoint-receipts"
+          python3 scripts/verify_i2575_readiness.py \
+            --container-run "$RUNNER_TEMP/i2575-container-run.json" \
+            --endpoint-run "$RUNNER_TEMP/i2575-endpoint-run.json" \
+            --container-receipt-dir "$RUNNER_TEMP/i2575-container-receipts" \
+            --endpoint-receipt-dir "$RUNNER_TEMP/i2575-endpoint-receipts" \
+            --endpoint-run-id "$ENDPOINT_READINESS_RUN_ID" \
+            --expected-sha "$INPUT_SHA" \
+            --expected-worker-version "$CORELINK_STAGING_GRPC_PROBE_WORKER_VERSION_ID" \
+            --expected-image-digest "$CORELINK_STAGING_GRPC_PROBE_CONTAINER_IMAGE_DIGEST" \
+            --output "$RUNNER_TEMP/i2575-verified-readiness.json"
+      - name: Assert exact source and protected bindings
+        env:
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
+          [[ "$CORELINK_STAGING_GRPC_PROBE_EXPIRES_AT_MS" =~ ^(0|[1-9][0-9]*)$ ]]
+          [[ "$CORELINK_STAGING_GRPC_PROBE_CONTAINER_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$CORELINK_STAGING_GRPC_PROBE_WORKER_NAME" = corelink-staging
+          test "$CORELINK_ENVIRONMENT" = staging
+          test "$ENVIRONMENT" = staging
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install pinned standard gRPC client
+        run: python -m pip install --disable-pip-version-check --no-cache-dir 'grpcio==1.75.1'
+      - name: Run the bounded standard gRPC diagnostic once
+        env:
+          CORELINK_STAGING_GRPC_PROBE_TOKEN: ${{ secrets.CORELINK_STAGING_GRPC_PROBE_TOKEN }}
+          I2575_RECEIPT_PATH: ${{ runner.temp }}/i2575-redacted-receipt.json
+        run: |
+          set -euo pipefail
+          set +x
+          python scripts/i2575_grpc_probe_client.py
+      - name: Upload redacted receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: i2575-redacted-staging-grpc-receipt-${{ github.run_id }}
+          path: ${{ runner.temp }}/i2575-redacted-receipt.json
+          if-no-files-found: error
+          retention-days: 7
