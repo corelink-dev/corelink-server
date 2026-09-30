@@ -10,6 +10,10 @@ on:
         description: 'Type "run-b125-read-only" to authorize the bounded read'
         required: true
         type: string
+      deployment_receipt_ref:
+        description: 'Exact #1648 issue-comment URL for the verified active repaired-image rollout'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -23,6 +27,7 @@ jobs:
     name: B-125 six-hour D1 read
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    environment: production
     steps:
       - name: Checkout without write credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -41,6 +46,7 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           BILLING_D1_DATABASE_ID: ${{ secrets.CORELINK_BILLING_D1_DATABASE_ID }}
+          DEPLOYMENT_RECEIPT_REF: ${{ inputs.deployment_receipt_ref }}
         shell: bash
         run: |
           set -euo pipefail
@@ -90,9 +96,23 @@ jobs:
           }
 
           [[ "$CONFIRM" == "run-b125-read-only" ]] || fail_closed "confirmation_mismatch"
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || fail_closed "protected_main_ref_required"
           [[ -n "${CF_ACCOUNT_ID:-}" ]] || fail_closed "CF_ACCOUNT_ID_missing"
           [[ -n "${CF_API_TOKEN:-}" ]] || fail_closed "CF_API_TOKEN_missing"
           echo "::add-mask::${CF_API_TOKEN}"
+
+          # Bind the read to the frozen #1648 production repair artifact and
+          # the exact deployment receipt reviewed before dispatch. This lane
+          # cannot query Container runtime state; the receipt is the authority
+          # for the active digest and must be read back by the operator first.
+          repair_source_sha="46e2d1cbe7c00a303c0942e8f46751dce75e5c14"
+          repair_image_digest="sha256:ecd63379d2040c6a891edaeb140fd388f26b5ffc181987c9c777060ced633e8a"
+          expected_account_id="6a1fc1c626fc2628823e60b9db01f5cd"
+          expected_database_id="d64742ea-e102-40b2-a844-ff02f3e94562"
+          expected_config_blob_sha="5ffec8b882bcb99dcaf1df964c609e9d2c35838d"
+          expected_config_sha256="568d0e6994ce1156542e350520a9750924a0f3f416e67af07c7275682e24c7a6"
+          [[ "$CF_ACCOUNT_ID" == "$expected_account_id" ]] || fail_closed "cloudflare_account_target_mismatch"
+          [[ "$DEPLOYMENT_RECEIPT_REF" =~ ^https://github\.com/HuGR-dev/corelink-server/issues/1648#issuecomment-[0-9]+$ ]] || fail_closed "deployment_receipt_reference_invalid"
 
           # The canonical production UUID is source-derived. If the optional
           # repo secret is present it must match; a mismatch can never select a
@@ -113,6 +133,47 @@ jobs:
           fi
           D1_DATABASE_ID="${BILLING_D1_DATABASE_ID:-$canonical_ids}"
           [[ "$D1_DATABASE_ID" =~ ^[0-9a-f-]{36}$ ]] || fail_closed "database_uuid_invalid"
+          [[ "$D1_DATABASE_ID" == "$expected_database_id" ]] || fail_closed "database_target_mismatch"
+
+          expected_images=(
+            "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-corelinkserver-prod:46e2d1cbe-r1"
+            "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-sam-corelinkserver-prod:46e2d1cbe-r1"
+            "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-lhr-corelinkserver-prod:46e2d1cbe-r1"
+            "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-nrt-corelinkserver-prod:46e2d1cbe-r1"
+            "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-syd-corelinkserver-prod:46e2d1cbe-r1"
+          )
+          for image in "${expected_images[@]}"; do
+            [[ "$(grep -Fc "image = \"$image\"" wrangler.toml)" -eq 1 ]] || fail_closed "production_image_pin_mismatch"
+          done
+          config_sha256="$(sha256sum wrangler.toml | cut -d ' ' -f 1)"
+          config_blob_sha="$(git rev-parse "$GITHUB_SHA:wrangler.toml")"
+          [[ "$config_blob_sha" == "$expected_config_blob_sha" ]] || fail_closed "production_config_blob_mismatch"
+          [[ "$config_sha256" == "$expected_config_sha256" ]] || fail_closed "production_config_sha256_mismatch"
+
+          python3 - "$receipt" "$DEPLOYMENT_RECEIPT_REF" "$GITHUB_SHA" "$config_sha256" "$config_blob_sha" "$expected_account_id" "$D1_DATABASE_ID" "$repair_source_sha" "$repair_image_digest" <<'PY'
+          import json, sys
+          (path, receipt_ref, capture_sha, config_sha256, config_blob_sha,
+           account_id, database_id, source_sha, image_digest) = sys.argv[1:]
+          with open(path, encoding="utf-8") as stream:
+              receipt = json.load(stream)
+          receipt["deployment_pin"] = {
+              "receipt_ref": receipt_ref,
+              "capture_main_sha": capture_sha,
+              "production_config_sha256": config_sha256,
+              "production_config_blob_sha": config_blob_sha,
+              "target_account_id": account_id,
+              "target_database_id": database_id,
+              "repair_source_sha": source_sha,
+              "repair_image_digest": image_digest,
+              "repair_image_tag": "46e2d1cbe-r1",
+              "runtime_digest_verified_by_workflow": False,
+              "runtime_verification_receipt_ref": receipt_ref,
+              "scope": "all five production container image pins",
+          }
+          with open(path, "w", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2, sort_keys=True)
+              stream.write("\n")
+          PY
 
           corepack enable
           export CLOUDFLARE_API_TOKEN="$CF_API_TOKEN"
@@ -126,7 +187,7 @@ jobs:
           # audit_outbox scan. The former correlated subqueries rescanned the
           # 84k-row production table twelve times and failed in the D1 lane.
           SQL[hourly]='WITH hour_offsets(hour_offset) AS (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5), clock AS (SELECT CAST(strftime("%s", "now") AS INTEGER) / 3600 * 3600 AS anchor_s), aggregate_counts AS (SELECT c.anchor_s, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 3600) * 1000 AND enqueued_at < c.anchor_s * 1000 THEN 1 END) AS arrivals_0, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 3600) * 1000 AND emitted_at < c.anchor_s * 1000 THEN 1 END) AS sealed_0, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 7200) * 1000 AND enqueued_at < (c.anchor_s - 3600) * 1000 THEN 1 END) AS arrivals_1, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 7200) * 1000 AND emitted_at < (c.anchor_s - 3600) * 1000 THEN 1 END) AS sealed_1, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 10800) * 1000 AND enqueued_at < (c.anchor_s - 7200) * 1000 THEN 1 END) AS arrivals_2, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 10800) * 1000 AND emitted_at < (c.anchor_s - 7200) * 1000 THEN 1 END) AS sealed_2, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 14400) * 1000 AND enqueued_at < (c.anchor_s - 10800) * 1000 THEN 1 END) AS arrivals_3, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 14400) * 1000 AND emitted_at < (c.anchor_s - 10800) * 1000 THEN 1 END) AS sealed_3, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 18000) * 1000 AND enqueued_at < (c.anchor_s - 14400) * 1000 THEN 1 END) AS arrivals_4, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 18000) * 1000 AND emitted_at < (c.anchor_s - 14400) * 1000 THEN 1 END) AS sealed_4, COUNT(CASE WHEN enqueued_at >= (c.anchor_s - 21600) * 1000 AND enqueued_at < (c.anchor_s - 18000) * 1000 THEN 1 END) AS arrivals_5, COUNT(CASE WHEN emitted_at >= (c.anchor_s - 21600) * 1000 AND emitted_at < (c.anchor_s - 18000) * 1000 THEN 1 END) AS sealed_5, COUNT(CASE WHEN enqueued_at < c.anchor_s * 1000 AND (emitted_at IS NULL OR emitted_at >= c.anchor_s * 1000) THEN 1 END) AS boundary_unsealed FROM audit_outbox CROSS JOIN clock c), bucket_counts AS (SELECT h.hour_offset, a.anchor_s, CASE h.hour_offset WHEN 0 THEN a.arrivals_0 WHEN 1 THEN a.arrivals_1 WHEN 2 THEN a.arrivals_2 WHEN 3 THEN a.arrivals_3 WHEN 4 THEN a.arrivals_4 WHEN 5 THEN a.arrivals_5 END AS arrivals, CASE h.hour_offset WHEN 0 THEN a.sealed_0 WHEN 1 THEN a.sealed_1 WHEN 2 THEN a.sealed_2 WHEN 3 THEN a.sealed_3 WHEN 4 THEN a.sealed_4 WHEN 5 THEN a.sealed_5 END AS sealed_rows, a.boundary_unsealed FROM hour_offsets h CROSS JOIN aggregate_counts a) SELECT strftime("%Y-%m-%dT%H:00:00Z", anchor_s - (hour_offset + 1) * 3600, "unixepoch") AS window_start_utc, strftime("%Y-%m-%dT%H:00:00Z", anchor_s - hour_offset * 3600, "unixepoch") AS window_end_utc, arrivals, sealed_rows, boundary_unsealed FROM bucket_counts ORDER BY hour_offset DESC'
-          SQL[latency]='SELECT COUNT(*) AS valid_latency_rows, MIN(emitted_at - enqueued_at) AS min_latency_ms, AVG(emitted_at - enqueued_at) AS mean_latency_ms, MAX(emitted_at - enqueued_at) AS max_latency_ms, (SELECT latency_ms FROM (SELECT emitted_at - enqueued_at AS latency_ms, ROW_NUMBER() OVER (ORDER BY emitted_at - enqueued_at) AS row_number, COUNT(*) OVER () AS sample_size FROM audit_outbox WHERE emitted_at IS NOT NULL AND enqueued_at >= (strftime("%s", "now") - 21600) * 1000 AND emitted_at >= enqueued_at) ranked WHERE row_number = CAST((sample_size + 1) / 2 AS INTEGER)) AS median_latency_ms, (SELECT latency_ms FROM (SELECT emitted_at - enqueued_at AS latency_ms, ROW_NUMBER() OVER (ORDER BY emitted_at - enqueued_at) AS row_number, COUNT(*) OVER () AS sample_size FROM audit_outbox WHERE emitted_at IS NOT NULL AND enqueued_at >= (strftime("%s", "now") - 21600) * 1000 AND emitted_at >= enqueued_at) ranked WHERE row_number = CAST((sample_size * 90 + 99) / 100 AS INTEGER)) AS p90_latency_ms FROM audit_outbox WHERE emitted_at IS NOT NULL AND enqueued_at >= (strftime("%s", "now") - 21600) * 1000 AND emitted_at >= enqueued_at'
+          SQL[latency]='WITH clock AS (SELECT CAST(strftime("%s", "now") AS INTEGER) / 3600 * 3600 AS anchor_s), valid_latencies AS (SELECT emitted_at - enqueued_at AS latency_ms FROM audit_outbox CROSS JOIN clock WHERE emitted_at IS NOT NULL AND enqueued_at >= (anchor_s - 21600) * 1000 AND enqueued_at < anchor_s * 1000 AND emitted_at < anchor_s * 1000 AND emitted_at >= enqueued_at), ranked AS (SELECT latency_ms, ROW_NUMBER() OVER (ORDER BY latency_ms) AS row_number, COUNT(*) OVER () AS sample_size FROM valid_latencies) SELECT COUNT(*) AS valid_latency_rows, MIN(latency_ms) AS min_latency_ms, AVG(latency_ms) AS mean_latency_ms, MAX(latency_ms) AS max_latency_ms, AVG(CASE WHEN row_number IN (CAST((sample_size + 1) / 2 AS INTEGER), CAST((sample_size + 2) / 2 AS INTEGER)) THEN latency_ms END) AS median_latency_ms, MAX(CASE WHEN row_number = CAST((sample_size * 90 + 99) / 100 AS INTEGER) THEN latency_ms END) AS p90_latency_ms FROM ranked'
           SQL[heads]='SELECT COUNT(*) AS chain_heads, SUM(CASE WHEN head_signature IS NOT NULL AND length(trim(head_signature)) > 0 THEN 1 ELSE 0 END) AS signed_heads FROM audit_chain_head'
           SQL[partition]='WITH partitions AS (SELECT tenant_id, region, COUNT(*) AS row_count, SUM(CASE WHEN emitted_at IS NULL THEN 1 ELSE 0 END) AS unsealed_rows FROM audit_outbox GROUP BY tenant_id, region) SELECT COUNT(DISTINCT region) AS regions, COALESCE(SUM(row_count), 0) AS partition_rows, COALESCE(SUM(unsealed_rows), 0) AS partition_unsealed_rows, COUNT(*) AS partition_count FROM partitions'
           # The owner readback requires more than a healthy moving window: it
@@ -212,7 +273,7 @@ jobs:
           done
 
           python3 - "$receipt" <<'PY'
-          import json, sys
+          import json, math, sys
           from datetime import datetime, timedelta, timezone
           path = sys.argv[1]
           with open(path, encoding="utf-8") as stream:
@@ -277,6 +338,12 @@ jobs:
               failures.append("chain_head_control_empty")
           if int(heads.get("signed_heads") or 0) != int(heads.get("chain_heads") or 0):
               failures.append("unsigned_chain_head_detected")
+          for key in ("min_latency_ms", "mean_latency_ms", "median_latency_ms", "p90_latency_ms", "max_latency_ms"):
+              value = latency.get(key)
+              if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                  failures.append(f"latency_{key}_missing_negative_or_invalid")
+          if type(latency.get("valid_latency_rows")) is not int or latency["valid_latency_rows"] <= 0:
+              failures.append("six_hour_latency_sample_empty")
           reconstructed = []
           if len(bucket_counts) == 6 and len(set(boundary_values)) == 1:
               closing = boundary_values[0]
@@ -299,8 +366,6 @@ jobs:
               failures.append("six_hour_window_has_no_arrivals")
           if sum(int(row.get("sealed_rows") or 0) for row in hourly) <= 0:
               failures.append("six_hour_window_has_no_seals")
-          if int(latency.get("valid_latency_rows") or 0) <= 0:
-              failures.append("six_hour_latency_sample_empty")
           if int(burst.get("populated_hours") or 0) <= 0:
               failures.append("seven_day_burst_control_empty")
           if int(burst.get("peak_hour_arrivals") or 0) <= 512:
@@ -328,7 +393,7 @@ jobs:
                   failures.append("six_hour_backlog_growth")
               p90 = latency.get("p90_latency_ms")
               oldest = population.get("oldest_unsealed_age_ms")
-              if type(p90) is not int or p90 < 0 or p90 > 4_200_000:
+              if isinstance(p90, bool) or not isinstance(p90, (int, float)) or not math.isfinite(p90) or p90 > 4_200_000:
                   failures.append("p90_seal_latency_above_70_minutes_or_invalid")
               if type(oldest) is not int or oldest < 0 or oldest > 4_200_000:
                   failures.append("oldest_unsealed_above_70_minutes_or_invalid")
@@ -356,7 +421,7 @@ jobs:
               "head_tail_control": head_tail,
           }
           receipt["owner_threshold"] = {
-              "decision_ref": "https://github.com/HuGR-dev/corelink-server/issues/1668#issuecomment-5855265681",
+              "decision_ref": "https://github.com/HuGR-dev/corelink-server/issues/1668#issuecomment-5861728482",
               "sealed_rows_per_demand_qualified_hour_min": 3141,
               "demand_rows_per_qualified_hour_min": 3141,
               "p90_seal_latency_max_ms": 4_200_000,

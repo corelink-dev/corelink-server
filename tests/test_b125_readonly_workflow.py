@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sqlite3
 import subprocess
@@ -76,6 +77,13 @@ def _hourly_sql() -> str:
     return match.group(1)
 
 
+def _latency_sql() -> str:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(r"^\s*SQL\[latency\]='([^']+)'$", source, re.MULTILINE)
+    assert match, "latency SQL must remain an explicit shell allowlist entry"
+    return match.group(1)
+
+
 def test_hourly_sql_is_one_select_only_aggregate_with_six_offsets() -> None:
     sql = _hourly_sql()
     assert sql.startswith("WITH hour_offsets")
@@ -109,6 +117,30 @@ def test_hourly_sql_executes_as_six_row_sqlite_aggregate() -> None:
     assert all(row[4] == 2 for row in result)
 
 
+def test_latency_sql_uses_conventional_even_sample_median() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE audit_outbox (enqueued_at INTEGER, emitted_at INTEGER)")
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    anchor_ms = now_ms // 3_600_000 * 3_600_000
+    connection.executemany(
+        "INSERT INTO audit_outbox VALUES (?, ?)",
+        [(anchor_ms - 100_000, anchor_ms - 100_000 + latency) for latency in (1_000, 2_000, 3_000, 4_000)],
+    )
+    row = connection.execute(_latency_sql()).fetchone()
+    assert row is not None
+    assert row[0] == 4
+    assert row[1:4] == (1_000, 2_500, 4_000)
+    assert row[4] == 2_500
+    assert row[5] == 4_000
+
+    connection.execute("DELETE FROM audit_outbox")
+    connection.executemany(
+        "INSERT INTO audit_outbox VALUES (?, ?)",
+        [(anchor_ms - 100_000, anchor_ms - 100_000 + latency) for latency in (1_000, 2_000, 4_000)],
+    )
+    assert connection.execute(_latency_sql()).fetchone()[4] == 2_000
+
+
 def test_aggregate_fixtures_preserve_six_row_redacted_shape() -> None:
     expected: list[dict[str, object]] | None = None
     for name in FIXTURE_NAMES:
@@ -132,6 +164,36 @@ def test_workflow_keeps_all_required_query_ids_and_remote_only_execution() -> No
     assert "--local" not in source
     assert "contents: read" in source
     assert "persist-credentials: false" in source
+    assert "environment: production" in source
+    assert '[[ "$GITHUB_REF" == "refs/heads/main" ]]' in source
+    assert "deployment_receipt_ref:" in source
+    assert "deployment_receipt_reference_invalid" in source
+    assert "cloudflare_account_target_mismatch" in source
+    assert "database_target_mismatch" in source
+    assert "production_image_pin_mismatch" in source
+    assert "production_config_blob_mismatch" in source
+    assert "production_config_sha256_mismatch" in source
+    assert '"production_config_sha256": config_sha256' in source
+    assert '"production_config_blob_sha": config_blob_sha' in source
+    assert '"target_account_id": account_id' in source
+    assert '"repair_source_sha": source_sha' in source
+    assert '"repair_image_digest": image_digest' in source
+    assert '"runtime_digest_verified_by_workflow": False' in source
+    assert "issuecomment-5861728482" in source
+
+
+def test_workflow_pins_the_frozen_b063_repair_across_all_five_prod_images() -> None:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    config = (ROOT / "wrangler.toml").read_text(encoding="utf-8")
+    assert 'repair_source_sha="46e2d1cbe7c00a303c0942e8f46751dce75e5c14"' in source
+    assert 'repair_image_digest="sha256:ecd63379d2040c6a891edaeb140fd388f26b5ffc181987c9c777060ced633e8a"' in source
+    assert 'expected_config_blob_sha="5ffec8b882bcb99dcaf1df964c609e9d2c35838d"' in source
+    assert 'expected_config_sha256="568d0e6994ce1156542e350520a9750924a0f3f416e67af07c7275682e24c7a6"' in source
+    assert hashlib.sha256(config.encode()).hexdigest() == "568d0e6994ce1156542e350520a9750924a0f3f416e67af07c7275682e24c7a6"
+    for region in ("", "-sam", "-lhr", "-nrt", "-syd"):
+        repository = f"corelink-prod{region}-corelinkserver-prod"
+        assert f"/{repository}:46e2d1cbe-r1" in source
+        assert config.count(f'image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/{repository}:46e2d1cbe-r1"') == 1
 
 
 def test_all_production_control_queries_are_single_read_only_selects() -> None:
@@ -385,6 +447,15 @@ def test_real_receipt_gate_rejects_invalid_or_inconclusive_boundaries(tmp_path: 
     slow_without_demand = _complete_receipt(arrivals=12, seals=12)
     slow_without_demand["queries"][3]["rows"][0]["p90_latency_ms"] = 4_200_001
     mutations.append((slow_without_demand, "FAIL", "p90_seal_latency_above_70_minutes_or_invalid"))
+    missing_latency_metric = _complete_receipt()
+    del missing_latency_metric["queries"][3]["rows"][0]["median_latency_ms"]
+    mutations.append((missing_latency_metric, "INVALID", "latency_median_latency_ms_missing_negative_or_invalid"))
+    negative_latency_metric = _complete_receipt()
+    negative_latency_metric["queries"][3]["rows"][0]["mean_latency_ms"] = -1
+    mutations.append((negative_latency_metric, "INVALID", "latency_mean_latency_ms_missing_negative_or_invalid"))
+    nonfinite_latency_metric = _complete_receipt()
+    nonfinite_latency_metric["queries"][3]["rows"][0]["max_latency_ms"] = float("inf")
+    mutations.append((nonfinite_latency_metric, "INVALID", "latency_max_latency_ms_missing_negative_or_invalid"))
     below_throughput = _complete_receipt(arrivals=3141, seals=3140, boundary=6)
     mutations.append((below_throughput, "FAIL", "throughput_below_3141_bucket_0"))
     growing_backlog = _complete_receipt(arrivals=3142, seals=3141, boundary=6)
