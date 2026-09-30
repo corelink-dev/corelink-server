@@ -29,3 +29,20 @@ canonical-route inventory; unrelated drift stops rollback for operator inspectio
 
 Protected dispatch and issue closure belong to the lead after the focused pack and independent
 review pass. This code correction does not itself prove D1 provider execution or close #1700.
+
+
+The protected `complete_existing` operation finishes only rollout run 36646546021
+(release 0f785fb9b096afe01247f1057d46377b9f604f13), active Worker 8753a6ba/516d7e11
+and Container app version 6/image e44e139e. It verifies the immutable original
+Worker and Container preimages, full version marker, compatibility settings,
+empty canonical routes, empty schedules and empty tails before installing the
+single temporary cron. It then requires all these resources unchanged and
+empty schedules/tails after successful native runtime proof.
+
+Completion performs no deployment or blind rollback. If the runtime receipt is
+missing, native D1 execution/cleanup is unproven: rolling back could remove the
+compatible cleanup runtime without proving the data state. Preserve the isolated
+candidate and emit an explicit residual-state receipt for the lead's decision.
+Postflight ownership drift likewise forbids automatic rollback. This is a failed
+completion, never an issue-closing receipt. The host still attempts exact-owned
+schedule/tail cleanup in all probe failure paths.
