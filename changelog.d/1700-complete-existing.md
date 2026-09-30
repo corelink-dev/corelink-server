@@ -1,0 +1,1 @@
+Add protected, exact-candidate #1700 runtime completion without deployment, with immutable rollout/preimage attribution and post-probe resource readbacks. Split route-read credentials in existing verification and preserve explicit residual-state receipts on failure.
