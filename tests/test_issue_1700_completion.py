@@ -2,6 +2,7 @@
 import copy
 import json
 import unittest
+import subprocess
 from pathlib import Path
 
 from scripts import complete_issue_1700_existing as completion
@@ -105,6 +106,29 @@ class CompletionTests(unittest.TestCase):
             bad['receipt'][key] = value
             with self.assertRaises(RuntimeError):
                 completion.validate_runtime(bad, window['starts_ms'], window['starts_ms'] + 60000)
+
+    def test_timeout_preserves_only_safe_partial_diagnostics_and_never_passes(self):
+        message = b'issue-1700 runtime probe failed {"stage":"receipt_wait","code":"receipt_timeout"}\n'
+        def timed_out(*args, **kwargs):
+            self.assertEqual(kwargs['timeout'], 22 * 60)
+            raise subprocess.TimeoutExpired(args[0], 22 * 60,
+                output=b'{"outcome":"pass","secret":"do-not-echo"}', stderr=message)
+        result = completion.complete(snapshot, lambda: completion.run_runtime_process({}, 0, runner=timed_out), validate)
+        self.assertEqual(result['outcome'], 'failed')
+        self.assertEqual(result['runtime_failure'], {'code': 'subprocess_timeout', 'timeout_seconds': 1320,
+            'host_diagnostics': [{'stage': 'receipt_wait', 'code': 'receipt_timeout'}]})
+        self.assertNotIn('do-not-echo', json.dumps(result))
+        self.assertEqual(result['residual_state'], 'exact_candidate_route_free_no_schedule_or_tail')
+
+    def test_nonzero_exit_keeps_stage_and_strips_arbitrary_stderr(self):
+        message = 'issue-1700 runtime probe failed {"stage":"tail_cleanup","code":"api_failure","http_status":503,"secret":"hidden"}\n'
+        result = subprocess.CompletedProcess([], 1, '', 'private tail URL\n' + message)
+        with self.assertRaises(completion.ProbeProcessFailure) as raised:
+            completion.run_runtime_process({}, 0, runner=lambda *a, **k: result)
+        self.assertEqual(raised.exception.details['host_diagnostics'],
+            [{'stage': 'tail_cleanup', 'code': 'api_failure', 'http_status': 503}])
+        self.assertEqual(completion.host_diagnostics('issue-1700 runtime probe failed {"stage":"secret","code":"secret"}'), [])
+        self.assertEqual(completion.host_diagnostics(b'issue-1700 runtime probe failed broken'), [])
 
     def test_workflow_separates_credentials_and_gates_completion(self):
         workflow = Path('.github/workflows/issue-1700-container-staging-deploy.yml').read_text()
