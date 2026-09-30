@@ -10,6 +10,7 @@ package hook, build, test, or import is executed.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import importlib.util
 import os
@@ -18,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
 
@@ -104,6 +106,73 @@ def is_regular_digest(root: Path, relative: Path, expected: str) -> bool:
 
 def is_absent(root: Path, relative: Path) -> bool:
     return node_kind(root / relative) == "absent"
+
+
+# One exact BASE-authorized transition admits the #2575 client/probe delivery.
+# The old actionlint configuration is the only preimage; every other path must
+# be absent. Once merged, the complete target tree is immutable under this gate.
+I2575_PREIMAGES: dict[Path, tuple[int, str] | None] = {
+    Path(".actionlint.yaml"): (0o644, "2e1ad216236818322adb7baed2e25dcc836cd7a030493fd799f4d4fc06702576"),
+    Path(".github/workflows/issue-2575-staging-grpc-probe.yml"): None,
+    Path("docs/internal/issue-2575-postflight-handoff.md"): None,
+    Path("scripts/i2575_grpc_probe_client.py"): None,
+    Path("scripts/verify_i2575_readiness.py"): None,
+    Path("tests/test_i2575_grpc_probe_client.py"): None,
+    Path("tests/test_verify_i2575_readiness.py"): None,
+}
+I2575_TARGETS: dict[Path, tuple[int, str]] = {
+    Path(".actionlint.yaml"): (0o644, "fac3a8d8271a9d2b4763ecaa966890f693cf025167f5b3f1f6cd945f706282df"),
+    Path(".github/workflows/issue-2575-staging-grpc-probe.yml"): (0o644, "6055fd324f55df7549d47944e239f6e70849548c47026302e85d98b89ebc988c"),
+    Path("docs/internal/issue-2575-postflight-handoff.md"): (0o644, "44f912211ef866e9d6d0ec20a1d7ca7f4280aaddd60ffa430aad604b551b2bd9"),
+    Path("scripts/i2575_grpc_probe_client.py"): (0o755, "7e2eb08c70a29089afc084ed499fd60176bca96c41f363aca802ec3989461611"),
+    Path("scripts/verify_i2575_readiness.py"): (0o644, "931ead0889c3cafc223141b97d933d0b1f571439a16bc57fda41e7440f238239"),
+    Path("tests/test_i2575_grpc_probe_client.py"): (0o644, "88041922a3c27e82288daf1c5d379b900338937438eedd312fd880fee0f7b7e8"),
+    Path("tests/test_verify_i2575_readiness.py"): (0o644, "77f6d855686a3aced792eeaa166758e19b31e5fb13f6a5e4c4dae1d0703c67cf"),
+}
+I2575_DELIVERY_PATHS = frozenset(I2575_TARGETS)
+I2575_ACTIONLINT_PREIMAGE_ZLIB_B64 = (
+    "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"
+)
+
+
+def matches_pinned_file(root: Path, relative: Path, pin: tuple[int, str]) -> bool:
+    mode, digest = pin
+    path = root / relative
+    return (
+        node_kind(path) == "regular"
+        and path.lstat().st_mode & 0o777 == mode
+        and sha256_file(root, relative) == digest
+    )
+
+
+def i2575_base_state(root: Path) -> str:
+    if set(I2575_PREIMAGES) != I2575_DELIVERY_PATHS or set(I2575_TARGETS) != I2575_DELIVERY_PATHS:
+        return "unknown"
+    preimage = all(
+        is_absent(root, relative) if pin is None else matches_pinned_file(root, relative, pin)
+        for relative, pin in I2575_PREIMAGES.items()
+    )
+    delivered = all(matches_pinned_file(root, relative, pin) for relative, pin in I2575_TARGETS.items())
+    if preimage:
+        return "preimage"
+    if delivered:
+        return "delivered"
+    return "partial-or-unknown"
+
+
+def preauthorized_i2575_delivery(candidate: Path, trusted_base: Path, changes: set[Path]) -> bool:
+    if len(I2575_DELIVERY_PATHS) != 7 or not I2575_DELIVERY_PATHS <= changes:
+        return False
+    structural = changes - I2575_DELIVERY_PATHS
+    if any(
+        node_kind(candidate / path) != "directory"
+        or not any(target.is_relative_to(path) for target in I2575_DELIVERY_PATHS)
+        for path in structural
+    ):
+        return False
+    if i2575_base_state(trusted_base) != "preimage":
+        return False
+    return all(matches_pinned_file(candidate, relative, pin) for relative, pin in I2575_TARGETS.items())
 
 
 def changed_paths(base: Path, candidate: Path) -> set[Path]:
@@ -695,6 +764,19 @@ def validate(candidate: Path, trusted_base: Path) -> None:
     if set(MIGRATABLE_CI_PATHS) & set(LOCKED_PERIMETER_PATHS):
         raise ContractError("migratable CI paths must not bypass the locked perimeter")
     changes = changed_paths(trusted_base, candidate)
+    i2575_state = i2575_base_state(trusted_base)
+    if i2575_state == "partial-or-unknown":
+        raise ContractError("partial or unknown #2575 trusted BASE state")
+    if i2575_state == "delivered":
+        if not all(matches_pinned_file(candidate, path, pin) for path, pin in I2575_TARGETS.items()):
+            raise ContractError("delivered #2575 client tree was downgraded or altered")
+    elif changes & I2575_DELIVERY_PATHS:
+        if preauthorized_i2575_delivery(candidate, trusted_base, changes):
+            # This exact seven-path transition changes no verifier, worker,
+            # policy, or other path; BASE admits only the reviewed bytes/modes.
+            return
+        raise ContractError("partial, altered, or self-authorizing #2575 delivery")
+
     staging_d1_proxy_tree = preauthorized_staging_d1_proxy_tree(
         candidate, trusted_base, changes
     )
@@ -835,7 +917,13 @@ def write_fixture_base(root: Path) -> None:
     )
     for relative in LOCKED_PERIMETER_PATHS:
         write(root, relative, f"protected base fixture: {relative}\n")
-    write(root, Path(".actionlint.yaml"), "self-test actionlint fixture\n")
+    actionlint_bytes = zlib.decompress(base64.b64decode(I2575_ACTIONLINT_PREIMAGE_ZLIB_B64))
+    if hashlib.sha256(actionlint_bytes).hexdigest() != I2575_PREIMAGES[Path(".actionlint.yaml")][1]:
+        raise ContractError("self-test actionlint baseline no longer matches the trusted pin")
+    actionlint_path = root / ".actionlint.yaml"
+    actionlint_path.parent.mkdir(parents=True, exist_ok=True)
+    actionlint_path.write_bytes(actionlint_bytes)
+    actionlint_path.chmod(0o644)
     (root / CANONICAL_SYMLINK).parent.mkdir(parents=True, exist_ok=True)
     os.symlink(CANONICAL_SYMLINK_TARGET, root / CANONICAL_SYMLINK)
     write(root, WORKFLOW, BOOTSTRAP_WORKFLOW_SOURCE)

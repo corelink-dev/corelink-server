@@ -81,6 +81,50 @@ def validate_runtime(receipt, started_ms, now_ms):
     return receipt
 
 
+class ProbeProcessFailure(RuntimeError):
+    def __init__(self, details):
+        super().__init__('runtime process failed')
+        self.details = details
+
+
+def host_diagnostics(stderr):
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode('utf-8', errors='replace')
+    stages = set('probe_preflight schedule_preflight tail_create tail_connect schedule_install receipt_wait schedule_cleanup tail_cleanup local_validation'.split())
+    codes = set('probe_preflight preexisting_schedule api_envelope api_failure api_transport tail_envelope tail_open_timeout tail_initialization tail_protocol tail_stream tail_closed receipt_timeout schedule_envelope schedule_readback schedule_cleanup schedule_drift unexpected_error'.split())
+    found = []
+    for line in (stderr or '')[-8192:].splitlines():
+        prefix = 'issue-1700 runtime probe failed '
+        if not line.startswith(prefix) or len(line) > 512:
+            continue
+        try:
+            value = json.loads(line[len(prefix):])
+            if not isinstance(value, dict) or value.get('stage') not in stages or value.get('code') not in codes:
+                continue
+            clean = {'stage': value['stage'], 'code': value['code']}
+            if type(value.get('http_status')) is int and 100 <= value['http_status'] <= 599:
+                clean['http_status'] = value['http_status']
+            found.append(clean)
+        except (ValueError, TypeError):
+            continue
+    return found[-4:]
+
+
+def run_runtime_process(env, started_ms, *, runner=subprocess.run):
+    try:
+        result = runner(['node', 'scripts/issue_1700_runtime_probe.mjs'], env=env,
+                        capture_output=True, text=True, timeout=22 * 60)
+    except subprocess.TimeoutExpired as error:
+        # TimeoutExpired carries partial bytes even with text=True. Never promote
+        # its stdout to a PASS: process completion and cleanup were not confirmed.
+        raise ProbeProcessFailure({'code': 'subprocess_timeout', 'timeout_seconds': 22 * 60,
+            'host_diagnostics': host_diagnostics(error.stderr)}) from None
+    if result.returncode:
+        raise ProbeProcessFailure({'code': 'subprocess_failed', 'exit_code': result.returncode,
+            'host_diagnostics': host_diagnostics(result.stderr)})
+    return validate_runtime(json.loads(result.stdout), started_ms, int(time.time() * 1000))
+
+
 def complete(collect, probe, validate):
     """A missing runtime/cleanup receipt never becomes a success or an auto-rollback."""
     result = {'contract': 'issue-1700-existing-runtime-completion-v1', 'outcome': 'failed',
@@ -95,7 +139,9 @@ def complete(collect, probe, validate):
         stage = 'postflight'
         result['after'] = validate(collect())
         result['outcome'] = 'pass'
-    except Exception:
+    except Exception as error:
+        if isinstance(error, ProbeProcessFailure):
+            result['runtime_failure'] = error.details
         # Never print raw provider errors, subprocess output, credentials or tail URLs.
         result['failed_stage'] = stage
         result['rollback_unsafe_reason'] = {'preflight': 'no_mutation_admitted', 'runtime_probe': 'native_d1_execution_or_cleanup_unproven', 'postflight': 'current_ownership_or_cleanup_unproven'}[stage]
@@ -146,20 +192,7 @@ def main():
     def probe():
         env = {**os.environ, 'SENTRY_RELEASE': PIN['rollout_sha'], 'EXPECTED_SHA': PIN['rollout_sha'], 'IMAGE_DIGEST': PIN['image_digest']}
         started_ms = int(time.time() * 1000)
-        result = subprocess.run(['node', 'scripts/issue_1700_runtime_probe.mjs'], env=env,
-                                capture_output=True, text=True, timeout=22 * 60)
-        if result.returncode:
-            # The host's allowlisted diagnostic remains visible; no arbitrary stderr.
-            for line in result.stderr.splitlines():
-                prefix = 'issue-1700 runtime probe failed '
-                if line.startswith(prefix):
-                    diagnostic = json.loads(line[len(prefix):])
-                    if set(diagnostic) <= {'stage', 'code', 'http_status'} and all(
-                        isinstance(v, int) or (isinstance(v, str) and v.replace('_', '').isalnum() and len(v) < 50)
-                        for v in diagnostic.values()):
-                        print(json.dumps(diagnostic), file=sys.stderr)
-            raise RuntimeError('runtime probe failed')
-        return validate_runtime(json.loads(result.stdout), started_ms, int(time.time() * 1000))
+        return run_runtime_process(env, started_ms)
 
     receipt = complete(collect, probe, lambda state: validate_state(state, run, log, sha))
     receipt['verification_sha'] = sha

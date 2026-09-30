@@ -10,6 +10,7 @@ on:
           - deploy
           - verify_existing
           - complete_existing
+          - historical_query
       expected_sha:
         required: true
         type: string
@@ -819,3 +820,32 @@ jobs:
           path: ${{ runner.temp }}/issue-1700-completion-receipt.json
           retention-days: 30
           if-no-files-found: warn
+
+  historical_query:
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      inputs.operation == 'historical_query' &&
+      inputs.confirm == 'historical-query-staging-1700'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Query only the original runtime invocation without persistence
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: python3 scripts/issue_1700_historical_query.py
+      - name: Preserve sanitized historical classification
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: issue-1700-historical-classification-${{ github.run_id }}
+          path: ${{ runner.temp }}/issue-1700-historical-classification.json
+          retention-days: 30
+          if-no-files-found: error

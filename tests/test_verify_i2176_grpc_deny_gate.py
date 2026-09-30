@@ -17,6 +17,97 @@ import verify_i2176_grpc_deny_gate as verify
 
 
 class TrustedGrpcDenyGateTests(unittest.TestCase):
+    def _i2575_fixture(self, delivered: bool = False):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        trusted, candidate = root / "trusted", root / "candidate"
+        verify.write_fixture_base(trusted)
+        paths = verify.I2575_DELIVERY_PATHS
+        preimages = {
+            path: (0o644, hashlib.sha256((trusted / path).read_bytes()).hexdigest())
+            if path == Path(".actionlint.yaml") else None
+            for path in paths
+        }
+        targets = {
+            path: (0o755 if path == Path("scripts/i2575_grpc_probe_client.py") else 0o644,
+                   hashlib.sha256(f"reviewed #2575 {path}\n".encode()).hexdigest())
+            for path in paths
+        }
+        for name, value in (("I2575_PREIMAGES", preimages), ("I2575_TARGETS", targets),
+                            ("I2575_DELIVERY_PATHS", frozenset(paths))):
+            patcher = patch.object(verify, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        shutil.copytree(trusted, candidate, dirs_exist_ok=True, symlinks=True)
+        if delivered:
+            for root_path in (candidate, trusted):
+                for path, (mode, _digest) in targets.items():
+                    target = root_path / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(f"reviewed #2575 {path}\n".encode())
+                    target.chmod(mode)
+        return trusted, candidate, targets
+
+    def test_i2575_transition_pins_exact_seven_path_delivery(self) -> None:
+        expected = {
+            Path(".actionlint.yaml"): (0o644, "fac3a8d8271a9d2b4763ecaa966890f693cf025167f5b3f1f6cd945f706282df"),
+            Path(".github/workflows/issue-2575-staging-grpc-probe.yml"): (0o644, "6055fd324f55df7549d47944e239f6e70849548c47026302e85d98b89ebc988c"),
+            Path("docs/internal/issue-2575-postflight-handoff.md"): (0o644, "44f912211ef866e9d6d0ec20a1d7ca7f4280aaddd60ffa430aad604b551b2bd9"),
+            Path("scripts/i2575_grpc_probe_client.py"): (0o755, "7e2eb08c70a29089afc084ed499fd60176bca96c41f363aca802ec3989461611"),
+            Path("scripts/verify_i2575_readiness.py"): (0o644, "931ead0889c3cafc223141b97d933d0b1f571439a16bc57fda41e7440f238239"),
+            Path("tests/test_i2575_grpc_probe_client.py"): (0o644, "88041922a3c27e82288daf1c5d379b900338937438eedd312fd880fee0f7b7e8"),
+            Path("tests/test_verify_i2575_readiness.py"): (0o644, "77f6d855686a3aced792eeaa166758e19b31e5fb13f6a5e4c4dae1d0703c67cf"),
+        }
+        self.assertEqual(verify.I2575_TARGETS, expected)
+        self.assertEqual(len(verify.I2575_DELIVERY_PATHS), 7)
+        self.assertEqual(set(verify.I2575_PREIMAGES), verify.I2575_DELIVERY_PATHS)
+        self.assertEqual(set(verify.I2575_TARGETS), verify.I2575_DELIVERY_PATHS)
+        trusted, candidate, targets = self._i2575_fixture()
+        for path, (mode, _digest) in targets.items():
+            target = candidate / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(f"reviewed #2575 {path}\n".encode())
+            target.chmod(mode)
+        verify.validate(candidate, trusted)
+
+    def test_fixture_keeps_pinned_actionlint_preimage_after_repository_advances(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "trusted"
+            verify.write_fixture_base(fixture)
+            pin = verify.I2575_PREIMAGES[Path(".actionlint.yaml")]
+            self.assertIsNotNone(pin)
+            self.assertTrue(verify.matches_pinned_file(fixture, Path(".actionlint.yaml"), pin))
+
+    def test_i2575_transition_rejects_partial_digest_mode_and_policy_changes(self) -> None:
+        for mutation in ("partial", "digest", "mode", "policy", "old_actionlint"):
+            with self.subTest(mutation=mutation):
+                trusted, candidate, targets = self._i2575_fixture()
+                for path, (mode, _digest) in targets.items():
+                    target = candidate / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(f"reviewed #2575 {path}\n".encode())
+                    target.chmod(mode)
+                if mutation == "partial":
+                    (candidate / Path("tests/test_verify_i2575_readiness.py")).unlink()
+                elif mutation == "digest":
+                    (candidate / Path("scripts/verify_i2575_readiness.py")).write_text("altered\n")
+                elif mutation == "mode":
+                    (candidate / Path("scripts/i2575_grpc_probe_client.py")).chmod(0o644)
+                elif mutation == "policy":
+                    verify.write(candidate, "scripts/verify_i2176_grpc_deny_gate.py", "self-authorize\n")
+                else:
+                    (candidate / Path(".actionlint.yaml")).write_text("old actionlint\n")
+                with self.assertRaises(verify.ContractError):
+                    verify.validate(candidate, trusted)
+
+    def test_i2575_delivered_tree_rejects_downgrade_or_alteration(self) -> None:
+        trusted, candidate, _targets = self._i2575_fixture(delivered=True)
+        verify.validate(candidate, trusted)
+        (candidate / Path("scripts/i2575_grpc_probe_client.py")).write_text("downgrade\n")
+        with self.assertRaisesRegex(verify.ContractError, "downgraded or altered"):
+            verify.validate(candidate, trusted)
+
     def _staging_d1_proxy_fixture(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
