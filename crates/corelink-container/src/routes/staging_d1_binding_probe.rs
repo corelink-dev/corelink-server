@@ -209,7 +209,7 @@ mod tests {
     use super::*;
 
     const RELEASE: &str = "0123456789abcdef0123456789abcdef01234567";
-    const TIME: u64 = 1790719260000;
+    const TIME: u64 = 1790726460000;
 
     fn input() -> ProbeRequest {
         ProbeRequest {
@@ -246,7 +246,7 @@ mod tests {
     fn probe_table_identifier_is_derived_only_from_hex_release_and_time() {
         assert_eq!(
             format!("corelink_staging_d1_probe_{}_{}", &RELEASE[..16], TIME),
-            "corelink_staging_d1_probe_0123456789abcdef_1790719260000"
+            "corelink_staging_d1_probe_0123456789abcdef_1790726460000"
         );
     }
 }

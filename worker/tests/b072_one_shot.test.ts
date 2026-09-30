@@ -10,6 +10,13 @@ const receiverVersion = "cf-receiver-one-shot-v9";
 const drillId = `SP-${scheduledAt}`;
 const correlationId = `PAT-CORRELATION-ID-001:${drillId}`;
 
+function scheduledCtx(): ExecutionContext {
+  return {
+    waitUntil: (_promise: Promise<unknown>) => undefined,
+    passThroughOnException: () => undefined,
+  } as unknown as ExecutionContext;
+}
+
 function authorization(overrides: Record<string, unknown> = {}) {
   const authorizedAt = scheduledAt - 30 * 60_000;
   return {
@@ -95,7 +102,7 @@ describe("B-072 durable one-shot scheduler fence", () => {
     const tick = controller();
     const now = vi.spyOn(Date, "now").mockReturnValue(scheduledAt);
 
-    await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, db), {} as ExecutionContext)).resolves.toBeUndefined();
+    await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, db), scheduledCtx())).resolves.toBeUndefined();
 
     expect(db.prepare).toHaveBeenCalledTimes(2);
     expect(String(db.prepare.mock.calls[1]?.[0])).toContain("INSERT OR IGNORE INTO b072_one_shot_claim");
@@ -120,7 +127,7 @@ describe("B-072 durable one-shot scheduler fence", () => {
     const post = vi.fn<typeof fetch>();
     const tick = controller();
     const env = { ...stagingEnv(post), ...override } as unknown as Env;
-    await expect(workerHandler.scheduled!(tick.value, env, {} as ExecutionContext)).rejects.toThrow("B-072 one-shot rejected");
+    await expect(workerHandler.scheduled!(tick.value, env, scheduledCtx())).rejects.toThrow("B-072 one-shot rejected");
     expect(post).not.toHaveBeenCalled();
     expect(tick.noRetry).toHaveBeenCalledOnce();
   });
@@ -137,7 +144,7 @@ describe("B-072 durable one-shot scheduler fence", () => {
     const db = fakeDatabase({ auth });
     const tick = controller();
     const now = vi.spyOn(Date, "now").mockReturnValue(scheduledAt);
-    await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, db), {} as ExecutionContext)).rejects.toThrow("B-072 one-shot rejected");
+    await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, db), scheduledCtx())).rejects.toThrow("B-072 one-shot rejected");
     expect(post).not.toHaveBeenCalled();
     expect(tick.noRetry).toHaveBeenCalledOnce();
     now.mockRestore();
@@ -152,7 +159,7 @@ describe("B-072 durable one-shot scheduler fence", () => {
       const post = vi.fn<typeof fetch>();
       const tick = controller(tickTime);
       const now = vi.spyOn(Date, "now").mockReturnValue(nowValue);
-      await expect(workerHandler.scheduled!(tick.value, stagingEnv(post), {} as ExecutionContext)).rejects.toThrow("B-072 one-shot rejected");
+      await expect(workerHandler.scheduled!(tick.value, stagingEnv(post), scheduledCtx())).rejects.toThrow("B-072 one-shot rejected");
       expect(post).not.toHaveBeenCalled();
       expect(tick.noRetry).toHaveBeenCalledOnce();
       now.mockRestore();
@@ -165,7 +172,7 @@ describe("B-072 durable one-shot scheduler fence", () => {
     const post = vi.fn<typeof fetch>().mockResolvedValue(terminalAt(startsAt));
     const tick = controller(startsAt);
     const now = vi.spyOn(Date, "now").mockReturnValue(startsAt);
-    await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, db), {} as ExecutionContext)).resolves.toBeUndefined();
+    await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, db), scheduledCtx())).resolves.toBeUndefined();
     expect(post).toHaveBeenCalledOnce();
     expect(tick.noRetry).not.toHaveBeenCalled();
     now.mockRestore();
@@ -177,7 +184,7 @@ describe("B-072 durable one-shot scheduler fence", () => {
       const db = fakeDatabase({ claimChanges: 0 });
       const tick = controller();
       const now = vi.spyOn(Date, "now").mockReturnValue(scheduledAt);
-      await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, db), {} as ExecutionContext)).rejects.toThrow("B-072 one-shot rejected");
+      await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, db), scheduledCtx())).rejects.toThrow("B-072 one-shot rejected");
       expect(post).not.toHaveBeenCalled();
       expect(tick.noRetry).toHaveBeenCalledOnce();
       now.mockRestore();
@@ -196,11 +203,11 @@ describe("B-072 durable one-shot scheduler fence", () => {
       const post = vi.fn<typeof globalThis.fetch>().mockImplementation(fetch);
       const tick = controller();
       const now = vi.spyOn(Date, "now").mockReturnValue(scheduledAt);
-      await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, db), {} as ExecutionContext)).rejects.toThrow("B-072 one-shot rejected");
+      await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, db), scheduledCtx())).rejects.toThrow("B-072 one-shot rejected");
       expect(post).toHaveBeenCalledOnce();
       expect(tick.noRetry).toHaveBeenCalledOnce();
       const later = controller();
-      await expect(workerHandler.scheduled!(later.value, stagingEnv(post, db), {} as ExecutionContext)).rejects.toThrow("B-072 one-shot rejected");
+      await expect(workerHandler.scheduled!(later.value, stagingEnv(post, db), scheduledCtx())).rejects.toThrow("B-072 one-shot rejected");
       expect(post).toHaveBeenCalledOnce();
       now.mockRestore();
     }
@@ -219,7 +226,7 @@ describe("B-072 durable one-shot scheduler fence", () => {
     const post = vi.fn<typeof fetch>().mockResolvedValue(terminalResponse(fields));
     const tick = controller();
     const now = vi.spyOn(Date, "now").mockReturnValue(scheduledAt);
-    await expect(workerHandler.scheduled!(tick.value, stagingEnv(post), {} as ExecutionContext)).rejects.toThrow("B-072 one-shot rejected");
+    await expect(workerHandler.scheduled!(tick.value, stagingEnv(post), scheduledCtx())).rejects.toThrow("B-072 one-shot rejected");
     expect(post).toHaveBeenCalledOnce();
     expect(tick.noRetry).toHaveBeenCalledOnce();
     now.mockRestore();
@@ -229,7 +236,7 @@ describe("B-072 durable one-shot scheduler fence", () => {
     const post = vi.fn<typeof fetch>();
     const tick = controller();
     const now = vi.spyOn(Date, "now").mockReturnValue(scheduledAt);
-    await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, fakeDatabase({ readError: true })), {} as ExecutionContext))
+    await expect(workerHandler.scheduled!(tick.value, stagingEnv(post, fakeDatabase({ readError: true })), scheduledCtx()))
       .rejects.toThrow("B-072 one-shot rejected");
     expect(tick.noRetry).toHaveBeenCalledOnce();
     expect(post).not.toHaveBeenCalled();
@@ -239,7 +246,7 @@ describe("B-072 durable one-shot scheduler fence", () => {
     const claimPost = vi.fn<typeof fetch>();
     const claimNow = vi.spyOn(Date, "now").mockReturnValue(scheduledAt);
     await expect(workerHandler.scheduled!(claimFailure.value,
-      stagingEnv(claimPost, fakeDatabase({ claimError: true })), {} as ExecutionContext))
+      stagingEnv(claimPost, fakeDatabase({ claimError: true })), scheduledCtx()))
       .rejects.toThrow("B-072 one-shot rejected");
     expect(claimFailure.noRetry).toHaveBeenCalledOnce();
     expect(claimPost).not.toHaveBeenCalled();
@@ -249,7 +256,7 @@ describe("B-072 durable one-shot scheduler fence", () => {
     (weekly.value as unknown as { cron: string }).cron = "0 14 * * 1";
     const weeklyPost = vi.fn<typeof fetch>().mockRejectedValue(new Error("transport"));
     await expect(workerHandler.scheduled!(weekly.value, { ENVIRONMENT: "dev", SCHEDULED_DRILL_DELIVERY: { fetch: weeklyPost } } as Env,
-      {} as ExecutionContext)).rejects.toThrow("scheduled drill delivery failed");
+      scheduledCtx())).rejects.toThrow("scheduled drill delivery failed");
     expect(weekly.noRetry).not.toHaveBeenCalled();
   });
 });

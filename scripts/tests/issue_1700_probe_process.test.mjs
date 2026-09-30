@@ -15,7 +15,7 @@ test(`CLI exits ${cleanupFails ? "failure" : "success"} after cleanup settles de
   const receipt = { contract: "corelink-staging-d1-binding-runtime-v1", outcome: "pass",
     worker_release: release, probe_nonce: PROBE_WINDOW.nonce, scheduled_time_ms: now,
     parameterized_select: true, failed_batch_observed: true, rollback_absence_verified: true,
-    probe_table_dropped: true, d1_binding_intercepted: true, authorization_absent: true, cf_api_token_absent: true };
+    probe_table_dropped: true, d1_binding_intercepted: true, authorization_absent: true, cf_api_token_absent: true, old_probe_release: "0f785fb9b096afe01247f1057d46377b9f604f13", old_probe_retired: true, old_probe_tables_absent: true };
   let peer, schedules = [], tailDeleted = false;
   const server = createServer(async (request, response) => {
     let body = "";

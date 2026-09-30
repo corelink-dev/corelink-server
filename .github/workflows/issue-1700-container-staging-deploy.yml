@@ -56,7 +56,7 @@ jobs:
       inputs.confirm == 'deploy-container-staging-1700'
     runs-on: ubuntu-latest
     environment: staging
-    timeout-minutes: 60
+    timeout-minutes: 75
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: 6a1fc1c626fc2628823e60b9db01f5cd
@@ -82,6 +82,14 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Require a full deployment and cleanup budget inside the compiled window
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import { PROBE_WINDOW } from "./scripts/issue_1700_runtime_probe.mjs";
+            if (Date.now() < PROBE_WINDOW.starts_ms || Date.now() + 75 * 60_000 >= PROBE_WINDOW.expires_ms) process.exit(1);
+          '
+
       - name: Prove hosted Docker and Cloudflare Worker access
         run: |
           set -euo pipefail
@@ -140,16 +148,9 @@ jobs:
             "$RUNNER_TEMP/staging-containers-before.json" \
             "$RUNNER_TEMP/staging-container-preimage.json"
 
-      - name: Require a full deployment and cleanup budget inside the compiled window
-        run: |
-          set -euo pipefail
-          node --input-type=module -e '
-            import { PROBE_WINDOW } from "./scripts/issue_1700_runtime_probe.mjs";
-            if (Date.now() < PROBE_WINDOW.starts_ms || Date.now() + 60 * 60_000 >= PROBE_WINDOW.expires_ms) process.exit(1);
-          '
-
       - name: Deploy root with container rollout and no route
         id: deploy
+        timeout-minutes: 30
         continue-on-error: true
         env:
           DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
@@ -176,6 +177,7 @@ jobs:
 
       - name: Capture the exact candidate Container application state
         id: candidate_container
+        timeout-minutes: 11
         if: always() && steps.deploy.outcome == 'success' && steps.deployed_image.outcome == 'success'
         continue-on-error: true
         env:
@@ -434,6 +436,7 @@ jobs:
 
       - name: Prove native D1 binding read and batch rollback through staging Container
         id: runtime_probe
+        timeout-minutes: 18
         if: steps.verify.outcome == 'success' && steps.candidate_route.outcome == 'success' && steps.deployed_image.outcome == 'success'
         env:
           EXPECTED_SHA: ${{ github.sha }}
@@ -442,8 +445,11 @@ jobs:
         run: |
           set -euo pipefail
           node -e 'if (Number(process.versions.node.split(".")[0]) !== 22 || typeof WebSocket !== "function") process.exit(1)'
+          echo '{"outcome":"incomplete","stage":"runtime_probe","new_runtime_proof":false}' > "$RUNNER_TEMP/staging-runtime-probe-progress.json"
           node scripts/issue_1700_runtime_probe.mjs \
-            > "$RUNNER_TEMP/staging-runtime-probe-receipt.json"
+            > "$RUNNER_TEMP/staging-runtime-probe-receipt.json" \
+            2> >(tee "$RUNNER_TEMP/staging-runtime-probe-diagnostic.log" >&2)
+          echo '{"outcome":"complete","stage":"runtime_probe"}' > "$RUNNER_TEMP/staging-runtime-probe-progress.json"
 
       - name: Reverify unchanged rollout and record complete runtime proof
         if: steps.runtime_probe.outcome == 'success'
@@ -518,6 +524,7 @@ jobs:
 
       - name: Roll back only this run after runtime acceptance failure
         id: runtime_rollback
+        timeout-minutes: 12
         if: always() && failure() && steps.verify_candidate.outcome == 'success' && steps.verify.outcome == 'success' && steps.early_rollback.outcome == 'skipped'
         env:
           ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
@@ -580,6 +587,7 @@ jobs:
           restored=tomllib.loads(Path(sys.argv[2]).read_text())
           assert restored['containers'][0]['image']==image
           PY
+          python3 scripts/issue_1700_rollback_quiescence.py
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/rollback-runtime.toml" \
             --strict --message "$ROLLBACK_MARKER"
@@ -591,6 +599,7 @@ jobs:
           MIN_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
             node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
             "$RUNNER_TEMP/staging-runtime-containers-image-restored.json"
+          ROLLBACK_CONTAINER_RESTORE_ATTEMPTED=1 python3 scripts/issue_1700_rollback_quiescence.py
           pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --yes --message "$ROLLBACK_MARKER"
@@ -641,6 +650,9 @@ jobs:
             ${{ runner.temp }}/staging-worker-settings-final.json
             ${{ runner.temp }}/staging-route-inventory-after-runtime-probe.json
             ${{ runner.temp }}/staging-runtime-probe-receipt.json
+            ${{ runner.temp }}/staging-rollback-quiescence.json
+            ${{ runner.temp }}/staging-runtime-probe-progress.json
+            ${{ runner.temp }}/staging-runtime-probe-diagnostic.log
           retention-days: 30
           if-no-files-found: warn
 
