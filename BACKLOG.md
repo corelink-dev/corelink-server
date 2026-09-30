@@ -3988,33 +3988,30 @@ verify-means: |
 last-verified: 2026-09-05
 ```
 
-### B-170 — owner must reconcile executed legal claims and superseded questionnaire recipients
+### B-170 — prelaunch owner reconciliation complete; provider follow-ups remain pending
 
-B-087 closed the engineering-controlled questionnaire wording without pretending that
-executed agreements, PagerDuty evidence, or communications to prior recipients had been
-changed. The exact action packet is
-`docs/internal/b087-questionnaire-owner-actions.md`. Completion requires three independent
-owner artifacts: Legal's disposition for the executed DPA/SLA claims and the pending residency-amendment template,
-Operations' PagerDuty rotation export, and Sales/Legal's decision on notification of
-recipients of superseded questionnaire copies. Engineering cannot sign, export, or make
-those external decisions.
+The current prelaunch charter in #2600 supersedes the former four-artifact owner packet. The canonical packet is `reports/owner-actions/b170-prelaunch-reconciliation.md`; it records the accepted #1654 shared-D1 disclosure, merged #2597 source, prelaunch/no-customer/no-circulation disposition, and PagerDuty deferral. It makes no tenant-pinned D1, production Object Lock, seven-year retention, real-KMS lifecycle, or p99 claim. The source bindings are #1654 receipt https://github.com/HuGR-dev/corelink-server/issues/1654#issuecomment-5916652829 at revision 99468014e84b9c68d5446c931b5c3dfd4b9e247c dated 2026-09-30, and #2597 PR https://github.com/HuGR-dev/corelink-server/pull/2807 at merge revision f2ab5d43b1f7a5dc691f30e0cae419155b4643c5 dated 2026-09-30. B-170's prelaunch reconciliation is done; provider capability follow-ups are separate and pending: #1646 is closed without an approved production target or seven-year proof, while #1653 and #2165 remain open for authenticated BYOK lifecycle/p99 evidence.
 
 ```backlog
 id: B-170
 repo: corelink-server
-owner: owner
-status: open
+owner: tl
+status: done
 verify: |
   python3 -S scripts/verify_b170_owner_actions.py
 verify-means: |
-  `open` — o pacote operacional precisa existir, ser um arquivo regular e nomear
-  exatamente as três decisões externas; o comando passa enquanto pelo menos um
-  dos três artefatos canônicos ainda não existe. Symlink, diretório, arquivo vazio
-  ou packet adulterado dá `INSTRUMENT BROKEN` (exit 2). Quando os três aparecerem,
-  fica vermelho de propósito para forçar validação de conteúdo, transição para
-  `done` e inversão do guard. Nenhuma assinatura, exportação ou notificação é
-  alegada pela presença dos arquivos.
-last-verified: 2026-09-22
+  `prelaunch_reconciliation_done` — this row and the canonical packet agree on
+  the accepted #1654 receipt/source and merged #2597 PR #2807/source/date; the
+  prelaunch lifecycle, no-customer/no-circulation disposition, PagerDuty deferral,
+  and bounded Object Lock/BYOK claims. This `done` status closes only B-170's
+  truthful prelaunch reconciliation. `closure_ready: false` means separate
+  positive provider/runtime capability evidence remains pending. Provider outcome:
+  #1646 closed without an approved production target or seven-year proof;
+  #1653/#2165 real-KMS lifecycle and p99 evidence pending. No production
+  provider capability is claimed. Hosted exact-head verification, independent
+  cold review, merge, and integrated-main readback remain required before native
+  #2600 closure.
+last-verified: 2026-09-30
 ```
 
 ### B-171 — Degraded-prefix fallback produces a SHARED (not isolated) namespace and the storage op still PROCEEDS — empty prefix collapses all non-UUID tenants into one keyspace
