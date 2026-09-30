@@ -223,8 +223,10 @@ class P0WaveClassifierTests(unittest.TestCase):
         for workflow in (protected, supplemental):
             for relative in paths:
                 self.assertIn(f'"{relative}"', workflow)
-        self.assertIn("workflow_dispatch:", protected)
-        self.assertIn("candidate_sha:", protected)
+        self.assertIn("pull_request_target:", protected)
+        self.assertNotIn("workflow_dispatch:", protected)
+        self.assertIn('ref: ${{ github.event.pull_request.base.sha }}', protected)
+        self.assertIn('ref: ${{ github.event.pull_request.head.sha }}', protected)
         self.assertIn("trusted-base/scripts/verify_i2176_grpc_deny_gate.py", protected)
         self.assertIn("trusted-base/scripts/verify_i2574_grpc_diagnostic_policy.py", protected)
 
