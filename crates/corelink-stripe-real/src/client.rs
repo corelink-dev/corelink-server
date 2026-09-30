@@ -458,12 +458,29 @@ impl StripeRealClient {
         &self.base_url
     }
 
-    /// Verify that the configured Wallet broker ref is backed by Stripe TEST
-    /// mode and that the configured Starter price belongs to the expected
-    /// active product. Uses only read-only GETs through this client's normal
-    /// transport; absent `livemode` is unknown and fails closed.
+    /// Verify that the configured Wallet broker ref resolves to the expected
+    /// Stripe account and that the configured Starter price and product are
+    /// explicitly in TEST mode. Stripe Account objects do not expose
+    /// `livemode`; account identity is checked against the owner-supplied
+    /// expected test account ID, while Price and Product must each report
+    /// `livemode=false`. Uses only read-only GETs through this client's normal
+    /// transport.
     #[cfg(feature = "live-integration")]
-    pub fn verify_test_mode_starter_catalog(&self, price_id: &str) -> Result<(), StripeError> {
+    pub fn verify_test_mode_starter_catalog(
+        &self,
+        expected_account_id: &str,
+        price_id: &str,
+    ) -> Result<(), StripeError> {
+        if !expected_account_id.starts_with("acct_")
+            || expected_account_id.len() <= "acct_".len()
+            || !expected_account_id["acct_".len()..]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return Err(StripeError::InvalidRequest(
+                "expected Stripe TEST account id is invalid".into(),
+            ));
+        }
         if !price_id.starts_with("price_")
             || price_id.len() <= "price_".len()
             || !price_id["price_".len()..]
@@ -475,9 +492,11 @@ impl StripeRealClient {
             ));
         }
         let account: serde_json::Value = self.get("/v1/account")?;
-        if account.get("livemode").and_then(serde_json::Value::as_bool) != Some(false) {
+        if account.get("object").and_then(serde_json::Value::as_str) != Some("account")
+            || account.get("id").and_then(serde_json::Value::as_str) != Some(expected_account_id)
+        {
             return Err(StripeError::InvalidRequest(
-                "configured Stripe account is not proven to be in test mode".into(),
+                "configured Stripe account does not match expected TEST account".into(),
             ));
         }
         let price: serde_json::Value = self.get(&format!("/v1/prices/{price_id}"))?;

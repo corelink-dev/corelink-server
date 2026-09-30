@@ -55,8 +55,10 @@ fn require_wallet_token() -> StripeRealClient {
     let client = StripeRealClient::from_env().expect("client init");
     let price_id = env::var("STRIPE_PRICE_ID_STARTER")
         .expect("STRIPE_PRICE_ID_STARTER must be set for the Stripe profile");
+    let expected_account_id = env::var("STRIPE_TEST_ACCOUNT_ID")
+        .expect("STRIPE_TEST_ACCOUNT_ID must be set for the Stripe profile");
     client
-        .verify_test_mode_starter_catalog(&price_id)
+        .verify_test_mode_starter_catalog(&expected_account_id, &price_id)
         .expect("Stripe Wallet ref and Starter catalog must be proven TEST mode before writes");
     client
 }
@@ -292,6 +294,172 @@ mod cleanup_fault_injection {
             ))
             .build()
             .expect("mock client")
+    }
+
+    fn catalog_result(
+        account: serde_json::Value,
+        price: Option<serde_json::Value>,
+        product: Option<serde_json::Value>,
+        expected_success: bool,
+    ) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        let proxy = "/_wallet/proxy/stripe-prod-test";
+        runtime.block_on(async {
+            Mock::given(method("GET"))
+                .and(path(format!("{proxy}/v1/account")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(account))
+                .expect(1)
+                .mount(&server)
+                .await;
+            if let Some(price) = price {
+                Mock::given(method("GET"))
+                    .and(path(format!("{proxy}/v1/prices/price_catalogfixture")))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(price))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            } else {
+                Mock::given(method("GET"))
+                    .and(path(format!("{proxy}/v1/prices/price_catalogfixture")))
+                    .respond_with(ResponseTemplate::new(200))
+                    .expect(0)
+                    .mount(&server)
+                    .await;
+            }
+            if let Some(product) = product {
+                Mock::given(method("GET"))
+                    .and(path(format!("{proxy}/v1/products/prod_catalogfixture")))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(product))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            } else {
+                Mock::given(method("GET"))
+                    .and(path(format!("{proxy}/v1/products/prod_catalogfixture")))
+                    .respond_with(ResponseTemplate::new(200))
+                    .expect(0)
+                    .mount(&server)
+                    .await;
+            }
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(500))
+                .expect(0)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .respond_with(ResponseTemplate::new(500))
+                .expect(0)
+                .mount(&server)
+                .await;
+        });
+        let result = mock_client(server.uri())
+            .verify_test_mode_starter_catalog("acct_catalogfixture", "price_catalogfixture");
+        assert_eq!(
+            result.is_ok(),
+            expected_success,
+            "catalog result: {result:?}"
+        );
+        runtime.block_on(server.verify());
+    }
+
+    fn valid_test_price() -> serde_json::Value {
+        serde_json::json!({
+            "id": "price_catalogfixture",
+            "product": "prod_catalogfixture",
+            "livemode": false,
+            "active": true,
+            "currency": "usd",
+            "unit_amount": 3500,
+            "recurring": {"interval": "month", "interval_count": 1}
+        })
+    }
+
+    fn valid_test_product() -> serde_json::Value {
+        serde_json::json!({
+            "id": "prod_catalogfixture",
+            "livemode": false,
+            "active": true,
+            "name": "CoreLink Starter"
+        })
+    }
+
+    #[test]
+    fn test_account_identity_without_livemode_accepts_valid_test_catalog() {
+        // Stripe Account does not provide livemode. The owner-bound account
+        // identity is checked first; Price and Product prove TEST mode.
+        catalog_result(
+            serde_json::json!({"object": "account", "id": "acct_catalogfixture"}),
+            Some(valid_test_price()),
+            Some(valid_test_product()),
+            true,
+        );
+    }
+
+    #[test]
+    fn bad_account_identity_stops_before_price_or_any_mutation() {
+        for account in [
+            serde_json::json!({}),
+            serde_json::json!({"object": "customer", "id": "acct_catalogfixture"}),
+            serde_json::json!({"object": "account"}),
+            serde_json::json!({"object": "account", "id": "acct_bad!"}),
+            serde_json::json!({"object": "account", "id": "acct_otherfixture"}),
+        ] {
+            catalog_result(account, None, None, false);
+        }
+    }
+
+    #[test]
+    fn price_requires_exact_test_mode_and_expected_price_id() {
+        let account = serde_json::json!({"object": "account", "id": "acct_catalogfixture"});
+        // Unknown mode, explicit LIVE mode, and a different returned ID all
+        // stop before product lookup or any provider mutation.
+        let mut unknown_mode = valid_test_price();
+        unknown_mode
+            .as_object_mut()
+            .expect("price object")
+            .remove("livemode");
+        catalog_result(account.clone(), Some(unknown_mode), None, false);
+
+        let mut live_mode = valid_test_price();
+        live_mode["livemode"] = serde_json::Value::Bool(true);
+        catalog_result(account.clone(), Some(live_mode), None, false);
+
+        let mut mismatched = valid_test_price();
+        mismatched["id"] = serde_json::Value::String("price_otherfixture".to_string());
+        catalog_result(account, Some(mismatched), None, false);
+    }
+
+    #[test]
+    fn product_requires_exact_test_mode_and_expected_product_id() {
+        let account = serde_json::json!({"object": "account", "id": "acct_catalogfixture"});
+        let mut unknown_mode = valid_test_product();
+        unknown_mode
+            .as_object_mut()
+            .expect("product object")
+            .remove("livemode");
+        catalog_result(
+            account.clone(),
+            Some(valid_test_price()),
+            Some(unknown_mode),
+            false,
+        );
+
+        let mut live_mode = valid_test_product();
+        live_mode["livemode"] = serde_json::Value::Bool(true);
+        catalog_result(
+            account.clone(),
+            Some(valid_test_price()),
+            Some(live_mode),
+            false,
+        );
+
+        let mut mismatched = valid_test_product();
+        mismatched["id"] = serde_json::Value::String("prod_otherfixture".to_string());
+        catalog_result(account, Some(valid_test_price()), Some(mismatched), false);
     }
 
     #[test]
@@ -755,7 +923,7 @@ mod cleanup_fault_injection {
         });
         let client = mock_client(server.uri());
         assert!(client
-            .verify_test_mode_starter_catalog("price_unknownmodefixture")
+            .verify_test_mode_starter_catalog("acct_catalogfixture", "price_unknownmodefixture")
             .is_err());
         assert!(client
             .cleanup_harness_checkout(session_id, customer_id, "424247")
