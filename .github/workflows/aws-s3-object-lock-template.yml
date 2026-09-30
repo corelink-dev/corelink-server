@@ -84,12 +84,26 @@ jobs:
           grep -F "github.ref == 'refs/heads/main'" "$proof"
           grep -F 'id-token: write' "$proof"
           grep -F 'environment: s3-object-lock-live-proof' "$proof"
-          grep -F 'ref: main' "$proof"
-          grep -F 'AWS_EVENT_DATA_STORE_ID' "$proof"
-          grep -F "eventcategory = 'Data'" "$proof"
-          grep -F 'start-query' "$proof"
-          if grep -nF 'lookup-events' "$proof"; then
-            echo "LookupEvents cannot establish S3 data-event evidence" >&2
+          grep -E 'ref:.*github[.]sha' "$proof"
+          grep -F "options: [probe, reconcile, cleanup]" "$proof"
+          grep -F 'OBJECT_LOCK_PROBE_AUDIT_RECONCILE_ROLE_ARN' "$proof"
+          grep -F 'OBJECT_LOCK_PROBE_WORKLOAD_WRITER_ROLE_ARN' "$proof"
+          grep -F 'OBJECT_LOCK_PROBE_CLEANUP_ROLE_ARN' "$proof"
+          grep -F 'inline-session-policy:' "$proof"
+          grep -F 'ReleaseOnlyAuthorizedHoldToOff' "$proof"
+          grep -F 'unset-current-credentials: true' "$proof"
+          grep -F 'Verify exact workload-writer role and put session' "$proof"
+          grep -F 'Verify exact probe role and delete session' "$proof"
+          grep -F 's3:PutObjectRetention s3:PutObjectLegalHold' "$proof"
+          grep -F 'ContextKeyValues=COMPLIANCE,ContextKeyType=string' "$proof"
+          grep -F 'ContextKeyValues=ON,ContextKeyType=string' "$proof"
+          grep -F -- '--put-principal-session-arn' "$proof"
+          grep -F -- '--delete-principal-session-arn' "$proof"
+          grep -F 'cloudtrail validate-logs' "$proof"
+          grep -F 'scripts/reconcile_b046_object_lock_trail.py' "$proof"
+          grep -F "steps.create.outputs.bucket_created == 'true'" "$proof"
+          if grep -nE 'EVENT_DATA_STORE|start-query|get-query-results|lookup-events' "$proof"; then
+            echo "The digest-backed proof must not query CloudTrail Lake or LookupEvents" >&2
             exit 1
           fi
           if grep -nE 'aws_access_key_id|aws_secret_access_key' "$proof"; then
@@ -97,8 +111,33 @@ jobs:
             exit 1
           fi
 
+  scope:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      adapter_changed: ${{ steps.diff.outputs.adapter_changed }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+          if grep -qE '^(infra/terraform/modules/audit-object-lock-aws/|crates/corelink-audit-chain/|crates/corelink-container/src/routes/dsr/adapter_r2_cas_legalhold\.rs$|migrations/d1/|Cargo\.lock$|tests/test_s3_object_lock_migration\.py$)' "$RUNNER_TEMP/changed-files.txt"; then
+            echo 'adapter_changed=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'adapter_changed=false' >> "$GITHUB_OUTPUT"
+          fi
+
   adapter-conformance:
     name: immutable archive adapter conformance
+    needs: [scope]
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.scope.outputs.adapter_changed == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

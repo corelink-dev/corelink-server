@@ -9,13 +9,17 @@ on:
         description: Run the proof or clean up an expired synthetic probe.
         required: true
         type: choice
-        options: [probe, cleanup]
+        options: [probe, reconcile, cleanup]
       source_run_id:
         description: Original probe run ID (cleanup only; bucket name is derived from the fixed prefix).
         required: false
         type: string
       source_attempt:
-        description: Original probe run attempt (cleanup only).
+        description: Original probe run attempt (reconcile/cleanup only).
+        required: false
+        type: string
+      cleanup_authorization:
+        description: Root-approved hold-release/cleanup reference (cleanup only).
         required: false
         type: string
 
@@ -28,25 +32,30 @@ concurrency:
 
 jobs:
   proof:
-    if: github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: inputs.operation != 'reconcile' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     environment: s3-object-lock-live-proof
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
       id-token: write
     env:
       AWS_ACCOUNT_ID: ${{ vars.OBJECT_LOCK_PROBE_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.OBJECT_LOCK_PROBE_REGION }}
-      JURISDICTION: ${{ vars.OBJECT_LOCK_PROBE_JURISDICTION }}
-      AWS_ROLE_ARN: ${{ vars.OBJECT_LOCK_PROBE_ROLE_ARN }}
+      AWS_ROLE_ARN: ${{ inputs.operation == 'cleanup' && vars.OBJECT_LOCK_PROBE_CLEANUP_ROLE_ARN || vars.OBJECT_LOCK_PROBE_ROLE_ARN }}
+      PROBE_ROLE_ARN: ${{ vars.OBJECT_LOCK_PROBE_ROLE_ARN }}
+      WORKLOAD_WRITER_ROLE_ARN: ${{ vars.OBJECT_LOCK_PROBE_WORKLOAD_WRITER_ROLE_ARN }}
+      CLEANUP_ROLE_ARN: ${{ vars.OBJECT_LOCK_PROBE_CLEANUP_ROLE_ARN }}
       AWS_BUCKET_PREFIX: ${{ vars.OBJECT_LOCK_PROBE_BUCKET_PREFIX }}
       AWS_TRAIL_ARN: ${{ vars.OBJECT_LOCK_PROBE_CLOUDTRAIL_TRAIL_ARN }}
-      AWS_EVENT_DATA_STORE_ID: ${{ vars.OBJECT_LOCK_PROBE_CLOUDTRAIL_EVENT_DATA_STORE_ID }}
-      APPROVAL_REFERENCE: ${{ vars.OBJECT_LOCK_PROBE_APPROVAL_REFERENCE }}
+      AWS_LOG_BUCKET: ${{ vars.OBJECT_LOCK_PROBE_CLOUDTRAIL_LOG_BUCKET }}
+      AWS_LOG_PREFIX: ${{ vars.OBJECT_LOCK_PROBE_CLOUDTRAIL_LOG_PREFIX }}
+      AUDIT_RECONCILE_ROLE_ARN: ${{ vars.OBJECT_LOCK_PROBE_AUDIT_RECONCILE_ROLE_ARN }}
       COST_CEILING_USD_MICROS: ${{ vars.OBJECT_LOCK_PROBE_COST_CEILING_USD_MICROS }}
       COST_OWNER: ${{ vars.OBJECT_LOCK_PROBE_COST_OWNER }}
       CLEANUP_OWNER: ${{ vars.OBJECT_LOCK_PROBE_CLEANUP_OWNER }}
+      CLEANUP_AUTHORIZATION: ${{ inputs.cleanup_authorization }}
       OPERATION: ${{ inputs.operation }}
       SOURCE_RUN_ID: ${{ inputs.source_run_id }}
       SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
@@ -65,44 +74,227 @@ jobs:
           test "$GITHUB_REF_PROTECTED" = true
           [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
           [[ "$AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]]
-          [[ "$JURISDICTION" =~ ^[A-Z][A-Z0-9-]{1,31}$ ]]
           [[ "$AWS_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
-          [[ "$AWS_BUCKET_PREFIX" =~ ^corelink-object-lock-probe-[a-z0-9-]{3,24}$ ]]
+          [[ "$PROBE_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
+          [[ "$WORKLOAD_WRITER_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
+          [[ "$CLEANUP_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
+          [[ "$AUDIT_RECONCILE_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
+          test "$PROBE_ROLE_ARN" != "$WORKLOAD_WRITER_ROLE_ARN"
+          test "$PROBE_ROLE_ARN" != "$CLEANUP_ROLE_ARN"
+          test "$WORKLOAD_WRITER_ROLE_ARN" != "$CLEANUP_ROLE_ARN"
+          test "$PROBE_ROLE_ARN" != "$AUDIT_RECONCILE_ROLE_ARN"
+          test "$WORKLOAD_WRITER_ROLE_ARN" != "$AUDIT_RECONCILE_ROLE_ARN"
+          test "$CLEANUP_ROLE_ARN" != "$AUDIT_RECONCILE_ROLE_ARN"
+          [[ "$PROBE_ROLE_ARN" =~ :role/[^/]+$ ]]
+          [[ "$WORKLOAD_WRITER_ROLE_ARN" =~ :role/[^/]+$ ]]
+          [[ "$AUDIT_RECONCILE_ROLE_ARN" =~ :role/[^/]+$ ]]
+          test "$AWS_BUCKET_PREFIX" = corelink-object-lock-probe-b046
           [[ "$COST_CEILING_USD_MICROS" =~ ^[1-9][0-9]*$ ]]
           (( COST_CEILING_USD_MICROS <= 5000000 ))
           test -n "$AWS_TRAIL_ARN"
-          [[ "$AWS_EVENT_DATA_STORE_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
-          test -n "$APPROVAL_REFERENCE"
+          [[ "$AWS_TRAIL_ARN" == "arn:aws:cloudtrail:${AWS_REGION}:${AWS_ACCOUNT_ID}:trail/"* ]]
+          test -n "$AWS_LOG_BUCKET" -a -n "$AWS_LOG_PREFIX"
           test -n "$COST_OWNER"
           test -n "$CLEANUP_OWNER"
           test "${#AWS_BUCKET_PREFIX}" -le 34
           if [ "$OPERATION" = cleanup ]; then
+            test "$AWS_ROLE_ARN" = "$CLEANUP_ROLE_ARN"
+            test "$AWS_ROLE_ARN" != "$PROBE_ROLE_ARN"
             [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
             [[ "$SOURCE_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
             test "$SOURCE_RUN_ID" -lt "$GITHUB_RUN_ID"
+            test -n "$CLEANUP_AUTHORIZATION"
           else
             test "$OPERATION" = probe
+            test "$AWS_ROLE_ARN" = "$PROBE_ROLE_ARN"
           fi
 
-      - name: Assume the fixed non-production probe role through GitHub OIDC
+      - name: Download and authenticate cleanup source-run custody
+        if: inputs.operation == 'cleanup'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          workflow_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/aws-s3-object-lock-live-proof.yml" --jq '.id')"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_ATTEMPT" > "$RUNNER_TEMP/source-run.json"
+          jq -e --argjson repo "$GITHUB_REPOSITORY_ID" --argjson workflow "$workflow_id" \
+            --argjson run "$SOURCE_RUN_ID" --argjson attempt "$SOURCE_ATTEMPT" \
+            '.id == $run and .run_attempt == $attempt and .repository.id == $repo and
+             .workflow_id == $workflow and .path == ".github/workflows/aws-s3-object-lock-live-proof.yml" and
+             .event == "workflow_dispatch" and .head_branch == "main" and
+             .status == "completed" and (.conclusion == "success" or .conclusion == "failure")' "$RUNNER_TEMP/source-run.json" >/dev/null
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts" > "$RUNNER_TEMP/source-artifacts.json"
+          artifact_name="s3-object-lock-proof-${SOURCE_RUN_ID}-${SOURCE_ATTEMPT}"
+          jq -e --arg name "$artifact_name" \
+            '[.artifacts[] | select(.name == $name and .expired == false and (.digest | type == "string"))] | length == 1' \
+            "$RUNNER_TEMP/source-artifacts.json" >/dev/null
+
+      - name: Download the exact cleanup-source artifact
+        if: inputs.operation == 'cleanup'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v4.1.8
+        with:
+          name: s3-object-lock-proof-${{ inputs.source_run_id }}-${{ inputs.source_attempt }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/source-custody
+
+      - name: Verify cleanup source target before assuming cleanup role
+        id: cleanup_source
+        if: inputs.operation == 'cleanup'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/source-custody/custody.json"
+          test -f "$source" -a ! -L "$source"
+          source_sha="$(jq -er '.commit' "$source")"
+          jq -e --arg sha "$source_sha" '.head_sha == $sha' "$RUNNER_TEMP/source-run.json" >/dev/null
+          bucket="${AWS_BUCKET_PREFIX}-${SOURCE_RUN_ID}-${SOURCE_ATTEMPT}"
+          key="audit/probe-${SOURCE_RUN_ID}/synthetic.txt"
+          source_sha="$(jq -er '.head_sha' "$RUNNER_TEMP/source-run.json")"
+          python3 - "$source" "$bucket" "$key" "$source_sha" <<'PY'
+          import hashlib, json, os, pathlib, re, sys
+          record=json.loads(pathlib.Path(sys.argv[1]).read_text())
+          bucket,key,source_sha=sys.argv[2:]
+          if record.get("schema")!="corelink.b046.custody.v1" or record.get("operation")!="probe" or record.get("status")!="PROVISIONAL_DIGEST_PENDING": raise SystemExit("source artifact is not an exact probe custody receipt")
+          if record.get("run_id")!=os.environ["SOURCE_RUN_ID"] or record.get("run_attempt")!=os.environ["SOURCE_ATTEMPT"] or record.get("commit")!=source_sha: raise SystemExit("source run/attempt/SHA mismatch")
+          if record.get("bucket_sha256")!=hashlib.sha256(bucket.encode()).hexdigest() or record.get("key_sha256")!=hashlib.sha256(key.encode()).hexdigest(): raise SystemExit("derived cleanup target differs from custody")
+          if record.get("probe_role_arn_sha256")!=hashlib.sha256(os.environ["PROBE_ROLE_ARN"].encode()).hexdigest() or record.get("writer_role_arn_sha256")!=hashlib.sha256(os.environ["WORKLOAD_WRITER_ROLE_ARN"].encode()).hexdigest(): raise SystemExit("cleanup source role identities differ from protected vars")
+          if record.get("bucket_created") is not True: raise SystemExit("cleanup source lacks bucket-created custody")
+          version_hash=record.get("version_sha256")
+          if version_hash is None:
+            if (record.get("retain_until") is not None or record.get("bucket_versioning_enabled") is not False or record.get("bucket_object_lock_enabled") is not False or any(record.get(field) is not None for field in ("default_retention_mode","default_retention_days","object_retention_mode","legal_hold"))): raise SystemExit("empty-bucket recovery source contains partial object-lock claims")
+            with open(os.environ["GITHUB_OUTPUT"],"a",encoding="utf-8") as output: output.write("cleanup_mode=empty_bucket_recovery\n")
+          else:
+            if not re.fullmatch(r"[0-9a-f]{64}",str(version_hash)) or not record.get("retain_until"): raise SystemExit("cleanup source lacks exact version and retention custody")
+            with open(os.environ["GITHUB_OUTPUT"],"a",encoding="utf-8") as output: output.write("cleanup_mode=exact_version\n")
+          bucket_arn=f"arn:aws:s3:::{bucket}"
+          object_arn=f"{bucket_arn}/{key}"
+          policy={"Version":"2012-10-17","Statement":[
+            {"Sid":"ExactProbeBucketReadAndList","Effect":"Allow","Action":["s3:GetBucketLocation","s3:ListBucket","s3:ListBucketVersions"],"Resource":bucket_arn},
+            {"Sid":"ExactProbeObjectReadAndVersionDelete","Effect":"Allow","Action":["s3:GetObjectRetention","s3:GetObjectLegalHold","s3:DeleteObjectVersion"],"Resource":object_arn},
+            {"Sid":"ReleaseOnlyAuthorizedHoldToOff","Effect":"Allow","Action":"s3:PutObjectLegalHold","Resource":object_arn,"Condition":{"StringEquals":{"s3:object-lock-legal-hold":"OFF"}}},
+            {"Sid":"DeleteOnlyExactProbeBucket","Effect":"Allow","Action":"s3:DeleteBucket","Resource":bucket_arn}]}
+          with open(os.environ["GITHUB_OUTPUT"],"a",encoding="utf-8") as output:
+            output.write("cleanup_policy<<B046CLEANUPPOLICY\n"+json.dumps(policy,separators=(",",":"))+"\nB046CLEANUPPOLICY\n")
+          PY
+
+      - name: Assume audit-reader for new-trail configuration preflight
+        if: inputs.operation == 'probe'
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
-          role-to-assume: ${{ vars.OBJECT_LOCK_PROBE_ROLE_ARN }}
+          role-to-assume: ${{ vars.OBJECT_LOCK_PROBE_AUDIT_RECONCILE_ROLE_ARN }}
           aws-region: ${{ vars.OBJECT_LOCK_PROBE_REGION }}
-          role-session-name: corelink-object-lock-${{ github.run_id }}
+          role-session-name: corelink-b046-audit-preflight-${{ github.run_id }}-${{ github.run_attempt }}
           mask-aws-account-id: true
+          unset-current-credentials: true
 
-      - name: Run bounded synthetic Object Lock proof
-        id: proof
+      - name: Assume cleanup role with exact-source inline session policy
+        if: inputs.operation == 'cleanup'
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.OBJECT_LOCK_PROBE_CLEANUP_ROLE_ARN }}
+          aws-region: ${{ vars.OBJECT_LOCK_PROBE_REGION }}
+          role-session-name: corelink-b046-cleanup-${{ github.run_id }}
+          inline-session-policy: ${{ steps.cleanup_source.outputs.cleanup_policy }}
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Verify exact initial OIDC role and session
+        if: inputs.operation != 'reconcile'
+        run: |
+          set -euo pipefail
+          if [ "$OPERATION" = cleanup ]; then
+            selected_role="$CLEANUP_ROLE_ARN"
+            expected_session="corelink-b046-cleanup-${GITHUB_RUN_ID}"
+          else
+            selected_role="$AUDIT_RECONCILE_ROLE_ARN"
+            expected_session="corelink-b046-audit-preflight-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          fi
+          expected_arn="arn:aws:sts::${AWS_ACCOUNT_ID}:assumed-role/${selected_role##*/}/${expected_session}"
+          actual_arn="$(aws sts get-caller-identity --query Arn --output text)"
+          test "$actual_arn" = "$expected_arn" || { echo 'initial AWS principal/session mismatch' >&2; exit 1; }
+
+      - name: Read-only preflight for dedicated validated B-046 trail
         if: inputs.operation == 'probe'
         run: |
           set -euo pipefail
           actual_account="$(aws sts get-caller-identity --query Account --output text)"
           test "$actual_account" = "$AWS_ACCOUNT_ID"
-          # IAM simulation accepts the configured IAM role entity, not the
-          # STS assumed-role session ARN returned by get-caller-identity.
-          # The fixed role is independently pinned to this account above.
-          principal="$AWS_ROLE_ARN"
+          trail_name="$(aws cloudtrail describe-trails --trail-name-list "$AWS_TRAIL_ARN" --query 'trailList[0].Name' --output text)"
+          test -n "$trail_name" -a "$trail_name" != None
+          aws cloudtrail get-trail-status --name "$AWS_TRAIL_ARN" > "$RUNNER_TEMP/trail-status.json"
+          aws cloudtrail describe-trails --trail-name-list "$AWS_TRAIL_ARN" > "$RUNNER_TEMP/trail.json"
+          aws cloudtrail get-event-selectors --trail-name "$AWS_TRAIL_ARN" > "$RUNNER_TEMP/trail-selectors.json"
+          jq -e '.IsLogging == true' "$RUNNER_TEMP/trail-status.json" >/dev/null
+          jq -e --arg bucket "$AWS_LOG_BUCKET" --arg prefix "$AWS_LOG_PREFIX" --arg region "$AWS_REGION" \
+            '.trailList | length == 1 and .[0].S3BucketName == $bucket and .[0].S3KeyPrefix == $prefix and .[0].LogFileValidationEnabled == true and .[0].HomeRegion == $region and .[0].IsMultiRegionTrail == false' \
+            "$RUNNER_TEMP/trail.json" >/dev/null
+          jq -e --arg prefix "arn:aws:s3:::$AWS_BUCKET_PREFIX-" '
+            (.EventSelectors | length == 0) and (.AdvancedEventSelectors | length == 1) and
+            any(.AdvancedEventSelectors[]; (.FieldSelectors | length == 4) and
+              (([.FieldSelectors[] | {Field, Equals:((.Equals // []) | sort), StartsWith:((.StartsWith // []) | sort)}] | sort_by(.Field)) ==
+               ([{Field:"eventCategory",Equals:["Data"],StartsWith:[]},
+                 {Field:"eventName",Equals:["DeleteObject","PutObject"],StartsWith:[]},
+                 {Field:"resources.ARN",Equals:[],StartsWith:[$prefix]},
+                 {Field:"resources.type",Equals:["AWS::S3::Object"],StartsWith:[]}] | sort_by(.Field))))' \
+            "$RUNNER_TEMP/trail-selectors.json" >/dev/null
+      - name: Assume probe role for scoped policy simulation and one probe
+        if: inputs.operation == 'probe'
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.OBJECT_LOCK_PROBE_ROLE_ARN }}
+          aws-region: ${{ vars.OBJECT_LOCK_PROBE_REGION }}
+          role-session-name: corelink-object-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Verify exact probe role and simulation session
+        if: inputs.operation == 'probe'
+        run: |
+          set -euo pipefail
+          expected_arn="arn:aws:sts::${AWS_ACCOUNT_ID}:assumed-role/${PROBE_ROLE_ARN##*/}/corelink-object-lock-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          actual_arn="$(aws sts get-caller-identity --query Arn --output text)"
+          test "$actual_arn" = "$expected_arn" || { echo 'probe simulation principal/session mismatch' >&2; exit 1; }
+
+      - name: Simulate exact probe and workload-writer permissions before bucket creation
+        if: inputs.operation == 'probe'
+        run: |
+          set -euo pipefail
+          bucket="${AWS_BUCKET_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          key="audit/probe-${GITHUB_RUN_ID}/synthetic.txt"
+          bucket_arn="arn:aws:s3:::${bucket}"
+          object_arn="${bucket_arn}/${key}"
+          simulate_allowed() {
+            local principal="$1" resource="$2" output="$3"; shift 3
+            aws iam simulate-principal-policy --policy-source-arn "$principal" \
+              --action-names "$@" --resource-arns "$resource" > "$output"
+            jq -e --argjson count "$#" '[.EvaluationResults[] | select(.EvalDecision != "allowed")] | length == 0' "$output" >/dev/null
+            jq -e --argjson count "$#" '.EvaluationResults | length == $count' "$output" >/dev/null
+          }
+          simulate_allowed "$PROBE_ROLE_ARN" "$bucket_arn" "$RUNNER_TEMP/bucket-iam.json" \
+            s3:CreateBucket s3:PutBucketVersioning s3:PutBucketObjectLockConfiguration \
+            s3:GetBucketVersioning s3:GetBucketObjectLockConfiguration s3:GetBucketLocation
+          simulate_allowed "$PROBE_ROLE_ARN" "$object_arn" "$RUNNER_TEMP/probe-delete-iam.json" \
+            s3:DeleteObjectVersion s3:GetObjectRetention s3:GetObjectLegalHold
+          aws iam simulate-principal-policy --policy-source-arn "$WORKLOAD_WRITER_ROLE_ARN" \
+            --action-names s3:PutObject s3:PutObjectRetention s3:PutObjectLegalHold \
+            --resource-arns "$object_arn" \
+            --context-entries \
+              'ContextKeyName=s3:object-lock-mode,ContextKeyValues=COMPLIANCE,ContextKeyType=string' \
+              'ContextKeyName=s3:object-lock-legal-hold,ContextKeyValues=ON,ContextKeyType=string' \
+            > "$RUNNER_TEMP/writer-put-iam.json"
+          jq -e '[.EvaluationResults[] | select(.EvalDecision != "allowed")] | length == 0' \
+            "$RUNNER_TEMP/writer-put-iam.json" >/dev/null
+          jq -e '.EvaluationResults | length == 3' "$RUNNER_TEMP/writer-put-iam.json" >/dev/null
+
+      - name: Create exact run-bound synthetic bucket and configure Object Lock
+        id: create
+        if: inputs.operation == 'probe'
+        run: |
+          set -euo pipefail
+          actual_account="$(aws sts get-caller-identity --query Account --output text)"
+          test "$actual_account" = "$AWS_ACCOUNT_ID"
           bucket="${AWS_BUCKET_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           ((${#bucket} <= 63))
           key="audit/probe-${GITHUB_RUN_ID}/synthetic.txt"
@@ -112,6 +304,30 @@ jobs:
             aws s3api create-bucket --bucket "$bucket" --object-lock-enabled-for-bucket \
               --create-bucket-configuration "LocationConstraint=$AWS_REGION"
           fi
+          echo 'bucket_created=true' >> "$GITHUB_OUTPUT"
+          echo "B046_PROBE_BUCKET=$bucket" >> "$GITHUB_ENV"
+          key="audit/probe-${GITHUB_RUN_ID}/synthetic.txt"
+          echo "B046_PROBE_KEY=$key" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/object-lock-receipt"
+          python3 - "$bucket" "$key" <<'PY'
+          import hashlib, json, os, pathlib, sys
+          bucket, key = sys.argv[1:]
+          receipt = {"schema":"corelink.b046.custody.v1","operation":"probe","status":"PROVISIONAL_DIGEST_PENDING","bucket_created":True,
+                     "run_id":os.environ["GITHUB_RUN_ID"],"run_attempt":os.environ["GITHUB_RUN_ATTEMPT"],
+                     "commit":os.environ["GITHUB_SHA"],"bucket_sha256":hashlib.sha256(bucket.encode()).hexdigest(),
+                     "key_sha256":hashlib.sha256(key.encode()).hexdigest(),"version_sha256":None,
+                     "probe_role_arn_sha256":hashlib.sha256(os.environ["PROBE_ROLE_ARN"].encode()).hexdigest(),
+                     "writer_role_arn_sha256":hashlib.sha256(os.environ["WORKLOAD_WRITER_ROLE_ARN"].encode()).hexdigest(),
+                     "retain_until":None,"probe_window_start":__import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                     "put_request_id":None,"delete_request_id":None,
+                     "bucket_versioning_enabled":False,"bucket_object_lock_enabled":False,
+                     "default_retention_mode":None,"default_retention_days":None,
+                     "object_retention_mode":None,"legal_hold":None,
+                     "cost_ceiling_usd_micros":int(os.environ["COST_CEILING_USD_MICROS"]),
+                     "cost_owner":os.environ["COST_OWNER"],"cleanup_owner":os.environ["CLEANUP_OWNER"],
+                     "cleanup_due":"after_retention_and_authorized_hold_release"}
+          pathlib.Path(os.environ["RUNNER_TEMP"],"object-lock-receipt","custody.json").write_text(json.dumps(receipt,sort_keys=True)+"\n")
+          PY
           aws s3api put-bucket-versioning --bucket "$bucket" \
             --versioning-configuration Status=Enabled
           aws s3api get-bucket-versioning --bucket "$bucket" > "$RUNNER_TEMP/versioning.json"
@@ -123,95 +339,172 @@ jobs:
           actual_region="$(aws s3api get-bucket-location --bucket "$bucket" --query LocationConstraint --output text)"
           if [ "$actual_region" = None ]; then actual_region=us-east-1; fi
           test "$actual_region" = "$AWS_REGION"
+
+      - name: Assume distinct workload-writer role for the one synthetic PutObject
+        if: inputs.operation == 'probe'
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.OBJECT_LOCK_PROBE_WORKLOAD_WRITER_ROLE_ARN }}
+          aws-region: ${{ vars.OBJECT_LOCK_PROBE_REGION }}
+          role-session-name: corelink-b046-writer-${{ github.run_id }}-${{ github.run_attempt }}
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Verify exact workload-writer role and put session
+        if: inputs.operation == 'probe'
+        run: |
+          set -euo pipefail
+          expected_arn="arn:aws:sts::${AWS_ACCOUNT_ID}:assumed-role/${WORKLOAD_WRITER_ROLE_ARN##*/}/corelink-b046-writer-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          actual_arn="$(aws sts get-caller-identity --query Arn --output text)"
+          test "$actual_arn" = "$expected_arn" || { echo 'writer principal/session mismatch' >&2; exit 1; }
+
+      - name: Put exactly one synthetic object with COMPLIANCE and legal hold ON
+        if: inputs.operation == 'probe'
+        run: |
+          set -euo pipefail
+          actual_account="$(aws sts get-caller-identity --query Account --output text)"
+          test "$actual_account" = "$AWS_ACCOUNT_ID"
           retain_until="$(date -u -d '+1 day' '+%Y-%m-%dT%H:%M:%SZ')"
+          printf '%s\n' "$retain_until" > "$RUNNER_TEMP/retain-until.txt"
           printf 'synthetic object lock proof: %s\n' "$GITHUB_RUN_ID" > "$RUNNER_TEMP/synthetic.txt"
-          put="$(aws s3api put-object --bucket "$bucket" --key "$key" --body "$RUNNER_TEMP/synthetic.txt" --object-lock-mode COMPLIANCE --object-lock-retain-until-date "$retain_until" --object-lock-legal-hold-status ON)"
+          put="$(aws s3api put-object --bucket "$B046_PROBE_BUCKET" --key "$B046_PROBE_KEY" --body "$RUNNER_TEMP/synthetic.txt" --object-lock-mode COMPLIANCE --object-lock-retain-until-date "$retain_until" --object-lock-legal-hold-status ON)"
           version="$(jq -r '.VersionId // empty' <<<"$put")"
           test -n "$version"
+          printf '%s' "$version" > "$RUNNER_TEMP/object-version.txt"
+          python3 - "$version" <<'PY'
+          import hashlib, json, os, pathlib, sys
+          version=sys.argv[1]
+          path=pathlib.Path(os.environ["RUNNER_TEMP"],"object-lock-receipt","custody.json")
+          receipt=json.loads(path.read_text()); receipt.update({"version_sha256":hashlib.sha256(version.encode()).hexdigest()})
+          path.write_text(json.dumps(receipt,sort_keys=True)+"\n")
+          PY
+      - name: Re-assume probe role for same-version Object Lock readbacks and denial
+        if: inputs.operation == 'probe'
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.OBJECT_LOCK_PROBE_ROLE_ARN }}
+          aws-region: ${{ vars.OBJECT_LOCK_PROBE_REGION }}
+          role-session-name: corelink-b046-readback-${{ github.run_id }}-${{ github.run_attempt }}
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Verify exact probe role and readback session
+        if: inputs.operation == 'probe'
+        run: |
+          set -euo pipefail
+          expected_arn="arn:aws:sts::${AWS_ACCOUNT_ID}:assumed-role/${PROBE_ROLE_ARN##*/}/corelink-b046-readback-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          actual_arn="$(aws sts get-caller-identity --query Arn --output text)"
+          test "$actual_arn" = "$expected_arn" || { echo 'probe readback principal/session mismatch' >&2; exit 1; }
+
+      - name: Verify bucket and object readbacks by exact version
+        if: inputs.operation == 'probe'
+        run: |
+          set -euo pipefail
+          bucket="$B046_PROBE_BUCKET" key="$B046_PROBE_KEY" version="$(cat "$RUNNER_TEMP/object-version.txt")"
+          aws s3api get-bucket-versioning --bucket "$bucket" > "$RUNNER_TEMP/versioning.json"
+          jq -e '.Status == "Enabled"' "$RUNNER_TEMP/versioning.json" >/dev/null
+          aws s3api get-object-lock-configuration --bucket "$bucket" > "$RUNNER_TEMP/lock.json"
+          jq -e '.ObjectLockConfiguration.ObjectLockEnabled == "Enabled" and .ObjectLockConfiguration.Rule.DefaultRetention.Mode == "COMPLIANCE" and .ObjectLockConfiguration.Rule.DefaultRetention.Days == 1' "$RUNNER_TEMP/lock.json" >/dev/null
           aws s3api get-object-retention --bucket "$bucket" --key "$key" --version-id "$version" > "$RUNNER_TEMP/retention.json"
           aws s3api get-object-legal-hold --bucket "$bucket" --key "$key" --version-id "$version" > "$RUNNER_TEMP/legal-hold.json"
           jq -e '.Retention.Mode == "COMPLIANCE" and .Retention.RetainUntilDate != null' "$RUNNER_TEMP/retention.json" >/dev/null
           actual_expiry="$(jq -r '.Retention.RetainUntilDate' "$RUNNER_TEMP/retention.json")"
-          test "$(date -u -d "$actual_expiry" +%s)" = "$(date -u -d "$retain_until" +%s)"
+          test "$(date -u -d "$actual_expiry" +%s)" = "$(date -u -d "$(cat "$RUNNER_TEMP/retain-until.txt")" +%s)"
           jq -e '.LegalHold.Status == "ON"' "$RUNNER_TEMP/legal-hold.json" >/dev/null
-          aws iam simulate-principal-policy --policy-source-arn "$principal" \
-            --action-names s3:DeleteObjectVersion \
-            --resource-arns "arn:aws:s3:::${bucket}/${key}" > "$RUNNER_TEMP/permission.json"
-          jq -e '.EvaluationResults | length == 1 and .[0].EvalDecision == "allowed"' "$RUNNER_TEMP/permission.json" >/dev/null
+          python3 - "$actual_expiry" <<'PY'
+          import hashlib, json, os, pathlib, sys
+          expiry=sys.argv[1]
+          path=pathlib.Path(os.environ["RUNNER_TEMP"],"object-lock-receipt","custody.json")
+          receipt=json.loads(path.read_text()); receipt.update({"retain_until":expiry,
+            "bucket_versioning_enabled":True,"bucket_object_lock_enabled":True,"default_retention_mode":"COMPLIANCE",
+            "default_retention_days":1,"object_retention_mode":"COMPLIANCE","legal_hold":"ON"})
+          path.write_text(json.dumps(receipt,sort_keys=True)+"\n")
+          PY
+
+      - name: Assume separate probe role for exact-version pre-expiry DELETE attempt
+        if: inputs.operation == 'probe'
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.OBJECT_LOCK_PROBE_ROLE_ARN }}
+          aws-region: ${{ vars.OBJECT_LOCK_PROBE_REGION }}
+          role-session-name: corelink-object-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Verify exact probe role and delete session
+        if: inputs.operation == 'probe'
+        run: |
+          set -euo pipefail
+          expected_arn="arn:aws:sts::${AWS_ACCOUNT_ID}:assumed-role/${PROBE_ROLE_ARN##*/}/corelink-object-lock-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          actual_arn="$(aws sts get-caller-identity --query Arn --output text)"
+          test "$actual_arn" = "$expected_arn" || { echo 'probe delete principal/session mismatch' >&2; exit 1; }
+
+      - name: Require S3 Object Lock to deny permanent deletion of that version
+        id: proof
+        if: inputs.operation == 'probe'
+        run: |
+          set -euo pipefail
+          actual_account="$(aws sts get-caller-identity --query Account --output text)"
+          test "$actual_account" = "$AWS_ACCOUNT_ID"
+          bucket="$B046_PROBE_BUCKET" key="$B046_PROBE_KEY" version="$(cat "$RUNNER_TEMP/object-version.txt")"
           if aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version" > "$RUNNER_TEMP/delete.json" 2> "$RUNNER_TEMP/delete.err"; then
             echo 'Object Lock probe unexpectedly deleted the exact retained version' >&2
             exit 1
           fi
-          grep -q 'AccessDenied\|InvalidRequest' "$RUNNER_TEMP/delete.err"
-          # CloudTrail LookupEvents exposes management events only. The proof
-          # queries the approved Event Data Store for S3 *data* events using
-          # the CloudTrail event-record schema, not integration eventData.
-          query_window_start="$(date -u -d '-20 minutes' '+%Y-%m-%d %H:%M:%S')"
-          digest_validation_start="$(date -u -d '-20 minutes' '+%Y-%m-%dT%H:%M:%SZ')"
-          query="SELECT eventid, eventname, requestid, requestparameters, responseelements, errorcode FROM ${AWS_EVENT_DATA_STORE_ID} WHERE eventcategory = 'Data' AND eventsource = 's3.amazonaws.com' AND eventtime >= timestamp '${query_window_start}'"
-          query_id="$(aws cloudtrail start-query --query-statement "$query" --query QueryId --output text)"
-          trail_event=''
-          delete_event=''
-          for _ in $(seq 1 20); do
-            aws cloudtrail get-query-results --query-id "$query_id" > "$RUNNER_TEMP/cloudtrail-data-events.json"
-            query_status="$(jq -r '.QueryStatus' "$RUNNER_TEMP/cloudtrail-data-events.json")"
-            test "$query_status" != FAILED -a "$query_status" != CANCELLED -a "$query_status" != TIMED_OUT
-            lake_rows="$(jq -c '[.QueryResultRows[]? | reduce .[] as $field ({}; . + $field)]' "$RUNNER_TEMP/cloudtrail-data-events.json")"
-            trail_event="$(jq -c --arg bucket "$bucket" --arg key "$key" --arg version "$version" '
-              [.[] | select(.eventname == "PutObject") | . as $row | ($row.requestparameters | fromjson) as $request | ($row.responseelements | fromjson) as $response
-               | select($request.bucketName == $bucket and $request.key == $key and $response["x-amz-version-id"] == $version)
-               | {eventID: $row.eventid, requestID: ($response["x-amz-request-id"] // $row.requestid)}] | first // empty' \
-              <<<"$lake_rows")"
-            delete_event="$(jq -c --arg bucket "$bucket" --arg key "$key" --arg version "$version" '
-              [.[] | select(.eventname == "DeleteObject") | . as $row | ($row.requestparameters | fromjson) as $request
-               | select($request.bucketName == $bucket and $request.key == $key and $request.versionId == $version and $row.errorcode != null)
-               | {eventID: $row.eventid, requestID: $row.requestid}] | first // empty' \
-              <<<"$lake_rows")"
-            test -n "$trail_event" -a -n "$delete_event" && break
-            sleep 15
-          done
-          test -n "$trail_event" -a -n "$delete_event"
-          jq -e '.eventID != null and .requestID != null' <<<"$trail_event" >/dev/null
-          jq -e '.eventID != null and .requestID != null' <<<"$delete_event" >/dev/null
-          request_id="$(jq -r '.requestID' <<<"$trail_event")"
-          # Validate the linked approved trail's digest chain separately from
-          # the Event Data Store query. A live receipt records both links.
-          digest_validation_end="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-          aws cloudtrail validate-logs --trail-arn "$AWS_TRAIL_ARN" \
-            --start-time "$digest_validation_start" --end-time "$digest_validation_end" --verbose \
-            > "$RUNNER_TEMP/digest-validation.txt"
-          mkdir -p "$RUNNER_TEMP/object-lock-receipt"
-          B046_ACTUAL_ACCOUNT_ID="$actual_account" \
-          B046_ACTUAL_REGION="$actual_region" \
-          B046_CHECKED_OUT_SHA="$(git rev-parse HEAD)" \
-          B046_BUCKET="$bucket" \
-          B046_KEY="$key" \
-          B046_VERSION="$version" \
-          B046_PUT_REQUEST_ID="$request_id" \
-          B046_RETAIN_UNTIL="$actual_expiry" \
-          B046_CLOUDTRAIL_PUT_EVENT_ID="$(jq -r '.eventID' <<<"$trail_event")" \
-          B046_CLOUDTRAIL_DELETE_EVENT_ID="$(jq -r '.eventID' <<<"$delete_event")" \
-            python3 scripts/build_b046_object_lock_receipt.py \
-              --output "$RUNNER_TEMP/object-lock-receipt/redacted-proof.json" \
-              --digest-validation-output "$RUNNER_TEMP/digest-validation.txt"
+          grep -Eq '\(AccessDenied\) when calling the DeleteObject operation' "$RUNNER_TEMP/delete.err"
+          if grep -Eqi 'explicit deny|service control policy|resource control policy|permissions boundary' "$RUNNER_TEMP/delete.err"; then
+            echo 'Delete denial is attributable to policy context, not established Object Lock behavior' >&2
+            exit 1
+          fi
 
       - name: Clean up the exact expired synthetic probe
         id: cleanup
         if: inputs.operation == 'cleanup'
+        env:
+          CLEANUP_MODE: ${{ steps.cleanup_source.outputs.cleanup_mode }}
         run: |
           set -euo pipefail
           bucket="${AWS_BUCKET_PREFIX}-${SOURCE_RUN_ID}-${SOURCE_ATTEMPT}"
           ((${#bucket} <= 63))
           [[ "$bucket" =~ ^${AWS_BUCKET_PREFIX}-[0-9]+-[1-9][0-9]*$ ]]
           expected_key="audit/probe-${SOURCE_RUN_ID}/synthetic.txt"
-          aws s3api get-bucket-location --bucket "$bucket" > "$RUNNER_TEMP/location.json"
+          actual_region="$(aws s3api get-bucket-location --bucket "$bucket" --query LocationConstraint --output text)"
+          if [ "$actual_region" = None ]; then actual_region=us-east-1; fi
+          test "$actual_region" = "$AWS_REGION"
           actual_account="$(aws sts get-caller-identity --query Account --output text)"
           test "$actual_account" = "$AWS_ACCOUNT_ID"
+          if [ "$CLEANUP_MODE" = empty_bucket_recovery ]; then
+            aws s3api list-object-versions --no-paginate --bucket "$bucket" > "$RUNNER_TEMP/empty-recovery-versions.json"
+            jq -e '(.IsTruncated != true) and ((.Versions // []) | length == 0) and ((.DeleteMarkers // []) | length == 0)' \
+              "$RUNNER_TEMP/empty-recovery-versions.json" >/dev/null
+            aws s3api list-objects-v2 --no-paginate --bucket "$bucket" > "$RUNNER_TEMP/empty-recovery-objects.json"
+            jq -e '(.IsTruncated != true) and ((.Contents // []) | length == 0)' \
+              "$RUNNER_TEMP/empty-recovery-objects.json" >/dev/null
+            aws s3api delete-bucket --bucket "$bucket"
+            mkdir -p "$RUNNER_TEMP/object-lock-receipt"
+            printf '{"synthetic":true,"source_run_id":"%s","cleanup":"empty_bucket_recovered_no_object"}\n' "$SOURCE_RUN_ID" \
+              > "$RUNNER_TEMP/object-lock-receipt/redacted-cleanup.json"
+            exit 0
+          fi
+          test "$CLEANUP_MODE" = exact_version
           aws s3api list-object-versions --bucket "$bucket" --prefix "$expected_key" > "$RUNNER_TEMP/versions.json"
           jq -e --arg key "$expected_key" '[.Versions[]? | select(.Key == $key)] | length == 1' "$RUNNER_TEMP/versions.json" >/dev/null
+          jq -e '.DeleteMarkers // [] | length == 0' "$RUNNER_TEMP/versions.json" >/dev/null
           version="$(jq -r --arg key "$expected_key" '.Versions[] | select(.Key == $key) | .VersionId' "$RUNNER_TEMP/versions.json")"
           aws s3api get-object-retention --bucket "$bucket" --key "$expected_key" --version-id "$version" > "$RUNNER_TEMP/retention.json"
           expiry="$(jq -r '.Retention.RetainUntilDate' "$RUNNER_TEMP/retention.json")"
+          python3 - "$RUNNER_TEMP/source-custody/custody.json" "$version" "$expiry" <<'PY'
+          import datetime, hashlib, json, pathlib, sys
+          source,version,expiry=sys.argv[1:]
+          record=json.loads(pathlib.Path(source).read_text())
+          def utc(value):
+            parsed=datetime.datetime.fromisoformat(value.replace("Z","+00:00"))
+            if parsed.tzinfo is None or parsed.utcoffset()!=datetime.timedelta(0): raise SystemExit("cleanup expiry is not UTC")
+            return parsed.astimezone(datetime.timezone.utc)
+          if hashlib.sha256(version.encode()).hexdigest()!=record.get("version_sha256"): raise SystemExit("cleanup object version differs from source custody")
+          if utc(expiry)!=utc(record["retain_until"]): raise SystemExit("cleanup retention differs from source custody")
+          if utc(expiry)>datetime.datetime.now(datetime.timezone.utc): raise SystemExit("cleanup retention has not expired")
+          PY
           test "$(date -u -d "$expiry" +%s)" -le "$(date -u +%s)"
           aws s3api get-object-legal-hold --bucket "$bucket" --key "$expected_key" --version-id "$version" > "$RUNNER_TEMP/legal-hold.json"
           hold_status="$(jq -er '.LegalHold.Status | select(. == "ON" or . == "OFF")' "$RUNNER_TEMP/legal-hold.json")"
@@ -222,18 +515,266 @@ jobs:
           aws s3api get-object-legal-hold --bucket "$bucket" --key "$expected_key" --version-id "$version" > "$RUNNER_TEMP/legal-hold.json"
           jq -e '.LegalHold.Status == "OFF"' "$RUNNER_TEMP/legal-hold.json" >/dev/null
           aws s3api delete-object --bucket "$bucket" --key "$expected_key" --version-id "$version" >/dev/null
-          remaining="$(aws s3api list-object-versions --bucket "$bucket" --query 'length(Versions[])' --output text)"
-          test "$remaining" = 0
+          aws s3api list-object-versions --bucket "$bucket" > "$RUNNER_TEMP/remaining.json"
+          jq -e '([.Versions[]?] | length == 0) and ([.DeleteMarkers[]?] | length == 0)' "$RUNNER_TEMP/remaining.json" >/dev/null
           aws s3api delete-bucket --bucket "$bucket"
           mkdir -p "$RUNNER_TEMP/object-lock-receipt"
           printf '{"synthetic":true,"source_run_id":"%s","cleanup":"complete"}\n' "$SOURCE_RUN_ID" \
             > "$RUNNER_TEMP/object-lock-receipt/redacted-cleanup.json"
 
       - name: Publish redacted proof and cleanup obligation
-        if: always() && (steps.proof.outcome == 'success' || steps.cleanup.outcome == 'success')
+        if: always() && (steps.create.outputs.bucket_created == 'true' || steps.cleanup.outcome == 'success')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: s3-object-lock-proof-${{ github.run_id }}
+          name: s3-object-lock-proof-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/object-lock-receipt/*.json
+          retention-days: 90
+          if-no-files-found: error
+
+  reconcile:
+    if: inputs.operation == 'reconcile' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    environment: s3-object-lock-live-proof
+    timeout-minutes: 130
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.OBJECT_LOCK_PROBE_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.OBJECT_LOCK_PROBE_REGION }}
+      AWS_ROLE_ARN: ${{ vars.OBJECT_LOCK_PROBE_ROLE_ARN }}
+      AWS_WRITER_ROLE_ARN: ${{ vars.OBJECT_LOCK_PROBE_WORKLOAD_WRITER_ROLE_ARN }}
+      CLEANUP_ROLE_ARN: ${{ vars.OBJECT_LOCK_PROBE_CLEANUP_ROLE_ARN }}
+      AWS_BUCKET_PREFIX: ${{ vars.OBJECT_LOCK_PROBE_BUCKET_PREFIX }}
+      AWS_TRAIL_ARN: ${{ vars.OBJECT_LOCK_PROBE_CLOUDTRAIL_TRAIL_ARN }}
+      AWS_LOG_BUCKET: ${{ vars.OBJECT_LOCK_PROBE_CLOUDTRAIL_LOG_BUCKET }}
+      AWS_LOG_PREFIX: ${{ vars.OBJECT_LOCK_PROBE_CLOUDTRAIL_LOG_PREFIX }}
+      AUDIT_RECONCILE_ROLE_ARN: ${{ vars.OBJECT_LOCK_PROBE_AUDIT_RECONCILE_ROLE_ARN }}
+      COST_CEILING_USD_MICROS: ${{ vars.OBJECT_LOCK_PROBE_COST_CEILING_USD_MICROS }}
+      COST_OWNER: ${{ vars.OBJECT_LOCK_PROBE_COST_OWNER }}
+      CLEANUP_OWNER: ${{ vars.OBJECT_LOCK_PROBE_CLEANUP_OWNER }}
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
+    steps:
+      - name: Checkout current reconciliation verifier without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Validate source-run request
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$SOURCE_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          test "$SOURCE_RUN_ID" -lt "$GITHUB_RUN_ID"
+          [[ "$AUDIT_RECONCILE_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
+          [[ "$AWS_WRITER_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
+          [[ "$CLEANUP_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
+          [[ "$AWS_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
+          [[ "$AWS_ROLE_ARN" =~ :role/[^/]+$ ]]
+          [[ "$AWS_WRITER_ROLE_ARN" =~ :role/[^/]+$ ]]
+          [[ "$AUDIT_RECONCILE_ROLE_ARN" =~ :role/[^/]+$ ]]
+          [[ "$AWS_ROLE_ARN" != "$AUDIT_RECONCILE_ROLE_ARN" && "$AWS_ROLE_ARN" != "$AWS_WRITER_ROLE_ARN" ]]
+          [[ "$CLEANUP_ROLE_ARN" != "$AWS_ROLE_ARN" && "$CLEANUP_ROLE_ARN" != "$AUDIT_RECONCILE_ROLE_ARN" && "$CLEANUP_ROLE_ARN" != "$AWS_WRITER_ROLE_ARN" ]]
+          [[ "$AUDIT_RECONCILE_ROLE_ARN" != "$AWS_WRITER_ROLE_ARN" ]]
+          test "$AWS_BUCKET_PREFIX" = corelink-object-lock-probe-b046
+          test -n "$AWS_TRAIL_ARN" -a -n "$AWS_LOG_BUCKET" -a -n "$AWS_LOG_PREFIX"
+          [[ "$COST_CEILING_USD_MICROS" =~ ^[1-9][0-9]*$ ]]
+          (( COST_CEILING_USD_MICROS <= 5000000 ))
+          test -n "$COST_OWNER" -a -n "$CLEANUP_OWNER"
+
+      - name: Download only the exact source-run custody artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v4.1.8
+        with:
+          name: s3-object-lock-proof-${{ inputs.source_run_id }}-${{ inputs.source_attempt }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/source-custody
+
+      - name: Authenticate source run and immutable artifact metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          workflow_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/aws-s3-object-lock-live-proof.yml" --jq '.id')"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_ATTEMPT" > "$RUNNER_TEMP/source-run.json"
+          jq -e --argjson repo "$GITHUB_REPOSITORY_ID" --argjson workflow "$workflow_id" \
+            --argjson run "$SOURCE_RUN_ID" --argjson attempt "$SOURCE_ATTEMPT" \
+            '.id == $run and .run_attempt == $attempt and .repository.id == $repo and
+             .workflow_id == $workflow and .path == ".github/workflows/aws-s3-object-lock-live-proof.yml" and
+             .event == "workflow_dispatch" and .head_branch == "main" and
+             .status == "completed" and (.conclusion == "success" or .conclusion == "failure")' "$RUNNER_TEMP/source-run.json" >/dev/null
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts" > "$RUNNER_TEMP/source-artifacts.json"
+          artifact_name="s3-object-lock-proof-${SOURCE_RUN_ID}-${SOURCE_ATTEMPT}"
+          jq -e --arg name "$artifact_name" \
+            '[.artifacts[] | select(.name == $name and .expired == false and (.digest | type == "string"))] | length == 1' \
+            "$RUNNER_TEMP/source-artifacts.json" >/dev/null
+          source_sha="$(jq -er '.commit' "$RUNNER_TEMP/source-custody/custody.json")"
+          jq -e --arg sha "$source_sha" '.head_sha == $sha' "$RUNNER_TEMP/source-run.json" >/dev/null
+
+      - name: Assume read-only audit reconciliation role through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.OBJECT_LOCK_PROBE_AUDIT_RECONCILE_ROLE_ARN }}
+          aws-region: ${{ vars.OBJECT_LOCK_PROBE_REGION }}
+          role-session-name: corelink-b046-audit-${{ inputs.source_run_id }}
+          mask-aws-account-id: true
+          unset-current-credentials: true
+
+      - name: Verify exact read-only audit role and source-run session
+        run: |
+          set -euo pipefail
+          expected_arn="arn:aws:sts::${AWS_ACCOUNT_ID}:assumed-role/${AUDIT_RECONCILE_ROLE_ARN##*/}/corelink-b046-audit-${SOURCE_RUN_ID}"
+          actual_arn="$(aws sts get-caller-identity --query Arn --output text)"
+          test "$actual_arn" = "$expected_arn" || { echo 'audit principal/session mismatch' >&2; exit 1; }
+
+      - name: Reconcile digest-covered audit logs for this source run
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/source-custody/custody.json"
+          test -f "$source" -a ! -L "$source"
+          bucket="${AWS_BUCKET_PREFIX}-${SOURCE_RUN_ID}-${SOURCE_ATTEMPT}"
+          key="audit/probe-${SOURCE_RUN_ID}/synthetic.txt"
+          python3 - "$source" "$bucket" "$key" <<'PY'
+          import hashlib, json, os, pathlib, sys
+          record=json.loads(pathlib.Path(sys.argv[1]).read_text())
+          bucket,key=sys.argv[2:]
+          if record.get("schema")!="corelink.b046.custody.v1" or record.get("operation")!="probe" or record.get("status")!="PROVISIONAL_DIGEST_PENDING": raise SystemExit("source artifact is not provisional probe custody")
+          if record.get("run_id")!=os.environ["SOURCE_RUN_ID"] or record.get("run_attempt")!=os.environ["SOURCE_ATTEMPT"]: raise SystemExit("source artifact run identity mismatch")
+          if record.get("commit") is None or not __import__("re").fullmatch(r"[0-9a-f]{40}",record["commit"]): raise SystemExit("source artifact commit malformed")
+          if record.get("bucket_sha256")!=hashlib.sha256(bucket.encode()).hexdigest() or record.get("key_sha256")!=hashlib.sha256(key.encode()).hexdigest(): raise SystemExit("derived target differs from source artifact")
+          if record.get("probe_role_arn_sha256")!=hashlib.sha256(os.environ["AWS_ROLE_ARN"].encode()).hexdigest() or record.get("writer_role_arn_sha256")!=hashlib.sha256(os.environ["AWS_WRITER_ROLE_ARN"].encode()).hexdigest(): raise SystemExit("source artifact role identities differ from protected vars")
+          if not record.get("version_sha256") or not record.get("retain_until") or not record.get("probe_window_start"): raise SystemExit("source artifact lacks exact-version custody")
+          if (record.get("bucket_versioning_enabled") is not True or record.get("bucket_object_lock_enabled") is not True or record.get("default_retention_mode")!="COMPLIANCE" or record.get("default_retention_days")!=1 or record.get("object_retention_mode")!="COMPLIANCE" or record.get("legal_hold")!="ON"): raise SystemExit("source artifact lacks required Object Lock readbacks")
+          if int(record.get("cost_ceiling_usd_micros",0))>5000000 or not record.get("cost_owner") or not record.get("cleanup_owner"): raise SystemExit("source artifact lacks cost/cleanup custody")
+          PY
+          aws sts get-caller-identity --query Account --output text | grep -Fx "$AWS_ACCOUNT_ID" >/dev/null
+          aws s3api list-object-versions --bucket "$bucket" --prefix "$key" > "$RUNNER_TEMP/versions.json"
+          version="$(jq -er --arg key "$key" '[.Versions[]? | select(.Key == $key)] | if length == 1 then .[0].VersionId else error("expected exactly one object version") end' "$RUNNER_TEMP/versions.json")"
+          jq -e '.DeleteMarkers // [] | length == 0' "$RUNNER_TEMP/versions.json" >/dev/null
+          aws s3api get-object-retention --bucket "$bucket" --key "$key" --version-id "$version" > "$RUNNER_TEMP/retention.json"
+          aws s3api get-object-legal-hold --bucket "$bucket" --key "$key" --version-id "$version" > "$RUNNER_TEMP/legal-hold.json"
+          python3 - "$source" "$version" "$RUNNER_TEMP/retention.json" "$RUNNER_TEMP/legal-hold.json" <<'PY'
+          import datetime, hashlib, json, pathlib, sys
+          source,version,retention_path,hold_path=sys.argv[1:]
+          record=json.loads(pathlib.Path(source).read_text())
+          retention=json.loads(pathlib.Path(retention_path).read_text()).get("Retention",{})
+          hold=json.loads(pathlib.Path(hold_path).read_text()).get("LegalHold",{})
+          if hashlib.sha256(version.encode()).hexdigest()!=record["version_sha256"]: raise SystemExit("exact object version differs from provisional custody")
+          def utc(value):
+            parsed=datetime.datetime.fromisoformat(value.replace("Z","+00:00"))
+            if parsed.tzinfo is None or parsed.utcoffset()!=datetime.timedelta(0): raise SystemExit("retention expiry is not UTC")
+            return parsed.astimezone(datetime.timezone.utc)
+          if retention.get("Mode")!="COMPLIANCE" or utc(retention.get("RetainUntilDate",""))!=utc(record["retain_until"]) or hold.get("Status")!="ON": raise SystemExit("retention or legal-hold readback differs from custody")
+          PY
+          deadline=$((SECONDS + 7200))
+          found=false
+          probe_session="corelink-object-lock-${SOURCE_RUN_ID}-${SOURCE_ATTEMPT}"
+          probe_session_arn="$(python3 - "$AWS_ROLE_ARN" "$AWS_ACCOUNT_ID" "$probe_session" <<'PY'
+          import sys
+          arn,account,session=sys.argv[1:]
+          prefix=f"arn:aws:iam::{account}:role/"
+          if not arn.startswith(prefix): raise SystemExit("probe role ARN/account mismatch")
+          print(f"arn:aws:sts::{account}:assumed-role/{arn[len(prefix):]}/{session}")
+          PY
+          )"
+          writer_session="corelink-b046-writer-${SOURCE_RUN_ID}-${SOURCE_ATTEMPT}"
+          writer_session_arn="$(python3 - "$AWS_WRITER_ROLE_ARN" "$AWS_ACCOUNT_ID" "$writer_session" <<'PY'
+          import sys
+          arn,account,session=sys.argv[1:]
+          prefix=f"arn:aws:iam::{account}:role/"
+          if not arn.startswith(prefix) or "/" in arn[len(prefix):]: raise SystemExit("writer role ARN/account mismatch or unsupported path")
+          print(f"arn:aws:sts::{account}:assumed-role/{arn[len(prefix):]}/{session}")
+          PY
+          )"
+          while (( SECONDS < deadline )); do
+            end_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            if aws cloudtrail validate-logs --trail-arn "$AWS_TRAIL_ARN" --region "$AWS_REGION" \
+              --s3-bucket "$AWS_LOG_BUCKET" --s3-prefix "$AWS_LOG_PREFIX" \
+              --start-time "$(jq -r '.probe_window_start' "$source")" --end-time "$end_time" --verbose \
+              > "$RUNNER_TEMP/digest-validation.txt" 2> "$RUNNER_TEMP/digest-validation.err"; then
+              if grep -qE '\b(INVALID|invalid)\b' "$RUNNER_TEMP/digest-validation.txt"; then
+                echo 'CloudTrail digest/log validation is invalid; stopping without mutation' >&2; exit 1
+              fi
+              sed -nE 's/^[[:space:]]*Log file[[:space:]]+(s3:\/\/[^[:space:]]+)[[:space:]]+valid[[:space:]]*$/\1/p' \
+                "$RUNNER_TEMP/digest-validation.txt" > "$RUNNER_TEMP/validated-log-uris.txt"
+              uri_count="$(wc -l < "$RUNNER_TEMP/validated-log-uris.txt" | tr -d ' ')"
+              (( uri_count <= 64 )) || { echo 'validated log count exceeds the bounded reconciliation limit' >&2; exit 1; }
+              mkdir -p "$RUNNER_TEMP/validated-logs"
+              index=0
+              total_bytes=0
+              while IFS= read -r uri; do
+                [[ "$uri" =~ ^s3://([^/]+)/([^[:space:]?#%]+)$ ]]
+                log_bucket="${BASH_REMATCH[1]}"
+                log_key="${BASH_REMATCH[2]}"
+                test "$log_bucket" = "$AWS_LOG_BUCKET"
+                [[ "$log_key" == "${AWS_LOG_PREFIX%/}/"* ]]
+                log_bytes="$(aws s3api head-object --bucket "$log_bucket" --key "$log_key" --query ContentLength --output text)"
+                [[ "$log_bytes" =~ ^[0-9]+$ ]]
+                (( log_bytes <= 67108864 ))
+                total_bytes=$((total_bytes + log_bytes))
+                (( total_bytes <= 67108864 )) || { echo 'validated log download total exceeds the 64 MiB bound' >&2; exit 1; }
+                printf -v filename '%03d.json.gz' "$index"
+                aws s3 cp --only-show-errors "$uri" "$RUNNER_TEMP/validated-logs/$filename"
+                ((index+=1))
+                (( index <= 64 ))
+              done < "$RUNNER_TEMP/validated-log-uris.txt"
+              if (( index > 0 )); then
+                if python3 scripts/reconcile_b046_object_lock_trail.py \
+                  --validation-output "$RUNNER_TEMP/digest-validation.txt" \
+                  --logs-dir "$RUNNER_TEMP/validated-logs" --log-uris "$RUNNER_TEMP/validated-log-uris.txt" \
+                  --bucket "$bucket" --key "$key" --version "$version" \
+                  --put-principal-arn "$AWS_WRITER_ROLE_ARN" --put-principal-session-arn "$writer_session_arn" \
+                  --delete-principal-arn "$AWS_ROLE_ARN" --delete-principal-session-arn "$probe_session_arn" \
+                  --log-bucket "$AWS_LOG_BUCKET" --log-prefix "$AWS_LOG_PREFIX" \
+                  --retention-expiry "$(jq -r '.retain_until' "$source")" \
+                  --output "$RUNNER_TEMP/event-pair.json" 2> "$RUNNER_TEMP/reconcile.err"; then
+                  found=true
+                  break
+                else
+                  reconcile_status=$?
+                  if (( reconcile_status != 2 )); then
+                    echo 'Validated trail data contradicts the source run; stopping without mutation' >&2
+                    exit 1
+                  fi
+                fi
+              fi
+            else
+              if grep -qE '\b(INVALID|invalid)\b|AccessDenied|Unauthorized|InvalidTrailName|TrailNotFound|InvalidTimeRange' "$RUNNER_TEMP/digest-validation.txt" "$RUNNER_TEMP/digest-validation.err"; then
+                echo 'CloudTrail validation returned a terminal error; stopping without mutation' >&2; exit 1
+              fi
+              if ! grep -qiE 'digest.*(not found|not available|not yet delivered)|log files not found|no log files' "$RUNNER_TEMP/digest-validation.err"; then
+                echo 'CloudTrail validation failed for an unclassified reason; stopping closed' >&2; exit 1
+              fi
+            fi
+            sleep 60
+          done
+          test "$found" = true || { echo 'digest-covered event pair not ready within 120-minute bound; source remains provisional' >&2; exit 1; }
+          actual_account="$(aws sts get-caller-identity --query Account --output text)"
+          actual_region="$(aws s3api get-bucket-location --bucket "$bucket" --query LocationConstraint --output text)"
+          if [ "$actual_region" = None ]; then actual_region=us-east-1; fi
+          test "$actual_account" = "$AWS_ACCOUNT_ID" -a "$actual_region" = "$AWS_REGION"
+          mkdir -p "$RUNNER_TEMP/object-lock-receipt"
+          B046_SOURCE_RUN_ID="$SOURCE_RUN_ID" B046_SOURCE_ATTEMPT="$SOURCE_ATTEMPT" \
+          B046_SOURCE_SHA="$(jq -r '.commit' "$source")" \
+          B046_CHECKED_OUT_SHA="$(git rev-parse HEAD)" \
+          B046_ACTUAL_ACCOUNT_ID="$actual_account" B046_ACTUAL_REGION="$actual_region" \
+          AWS_WRITER_ROLE_ARN="$AWS_WRITER_ROLE_ARN" \
+          B046_BUCKET="$bucket" B046_KEY="$key" B046_VERSION="$version" \
+          B046_RETAIN_UNTIL="$(jq -r '.retain_until' "$source")" \
+          B046_PROBE_WINDOW_START="$(jq -r '.probe_window_start' "$source")" \
+            python3 scripts/build_b046_object_lock_receipt.py \
+              --output "$RUNNER_TEMP/object-lock-receipt/redacted-proof.json" \
+              --digest-validation-output "$RUNNER_TEMP/digest-validation.txt" \
+              --reconciliation-output "$RUNNER_TEMP/event-pair.json"
+
+      - name: Publish final redacted digest-reconciled receipt
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: s3-object-lock-reconciled-${{ inputs.source_run_id }}-${{ inputs.source_attempt }}
+          path: ${{ runner.temp }}/object-lock-receipt/redacted-proof.json
           retention-days: 90
           if-no-files-found: error

@@ -51,25 +51,38 @@ Consequently, `VerifiedObjectLockArchive::connect` must not be wired into an
 archive route. This is a production-approval blocker, not a reason to represent
 R2, lifecycle rules, conditional writes, or an in-memory adapter as WORM.
 
-## Required live probe
+## Synthetic prelaunch proof and production gate
 
-Run only from the protected canonical-main workflow after the listed approvals.
-It creates a new bounded synthetic bucket and uses a temporary narrowly scoped
-delete probe identity. No production route may rely on a probe as its durable
-audit source.
+The protected canonical-main workflow can run a synthetic-only technical
+proof before production approvals, using a new run/attempt-derived bucket and
+no archive or tenant data. This does not assert that the target is a
+non-production account, establish residency, or enable a production route.
+Root authorization fixes the exact account/region, ≤USD 5 ceiling, and cleanup
+custody before provider mutation. Production deployment still requires the
+external decisions above. Runtime uses four pairwise-distinct OIDC roles:
+probe (create/configure and denied delete), workload writer (one put only),
+read-only audit reconciler, and cleanup. Central IAM provisioning is separate
+from the runtime workflow; break-glass is separately human-controlled. The
+workload writer cannot delete versions, bypass retention, or release holds.
 
 1. Read the bucket Object Lock configuration and verify the configured default
    mode is `COMPLIANCE` and retention is the approved value.
 2. Put a unique test object with `COMPLIANCE` retention and legal hold enabled.
 3. Read back the object's retain-until timestamp and legal-hold state; both
    must exactly match the request.
-4. Attempt deletion before expiry using the separately approved probe identity.
-   Record S3's retention or legal-hold denial. A successful deletion fails the
-   gate.
-5. Obtain the corresponding durable provider audit record and bind its event
-   identifier to the object key and S3 request/version identifiers.
-6. Record the bucket region and approved jurisdiction mapping, then verify it
-   matches the adapter request's `ArchiveResidency` value.
+4. IAM-simulate `s3:DeleteObjectVersion` as allowed for the exact probe role and
+   object, then permanently delete the exact version before expiry. Only S3
+   `AccessDenied` qualifies; `InvalidRequest`, policy-deny context, or success
+   fails closed.
+5. A dedicated B-046 trail must be actively logging, validate log files, and
+   select S3 `PutObject`/`DeleteObject` data events for the new probe prefix.
+   A separate read-only reconcile operation polls the hourly digest chain,
+   downloads only exact S3 log URIs reported valid by `validate-logs`, then
+   binds the exact-run events to bucket/key/version and distinct assumed-role
+   sessions (writer for PutObject, probe for denied DeleteObject). CloudTrail
+   Lake is neither required nor queried.
+6. Record region readback; the synthetic proof makes no jurisdiction or
+   `ArchiveResidency` claim.
 
 Any missing configuration, authorization failure, incomplete readback,
 unavailable audit receipt, or deletion success is a failed negotiation before
@@ -95,12 +108,10 @@ The generated SDK `PutObject` output used here exposes a provider request ID
 but no modeled write timestamp. The receipt's S3 request ID is the
 provider-issued correlation value. Its `observed_at_unix_ms` field is the
 adapter's local clock reading immediately after the successful response; it is
-not an S3 event timestamp. Use the provider's durable CloudTrail event and
-digest as the external audit record. `LookupEvents` is management-event history
-and cannot prove S3 object data events. The protected workflow queries the
-approved CloudTrail Lake Event Data Store with `eventCategory = 'Data'`, binds
-the matching put and denied-delete events to the exact bucket/key/version, and
-validates the linked approved trail's digest chain separately.
+not an S3 event timestamp. Use the dedicated protected CloudTrail trail's
+digest-validated S3 log objects as the external audit record. `LookupEvents` is
+management-event history and cannot prove S3 object data events; CloudTrail
+Lake is intentionally not part of this synthetic proof route.
 
 Capability negotiation requires a separate probe configuration and the exact
 key/version of an already locked synthetic object. The adapter constructs both
@@ -136,18 +147,21 @@ retention, delete a locked version, erase its metadata, or route it to R2.
 entrypoint. It accepts no role, bucket, region, or account from dispatch
 inputs; it runs only from protected canonical `main`, waits on the
 `s3-object-lock-live-proof` environment, and obtains short-lived credentials
-through GitHub OIDC. Its repository variables must identify the approved
-non-production account, role, region, bucket prefix, CloudTrail trail and
-CloudTrail Lake Event Data Store,
-jurisdiction, approval reference, cost ceiling (capped at USD 5), and named
-cost and cleanup owners. The proof is limited to one new bucket, one synthetic
-object, one region, and one day of Compliance retention. Missing values fail
-before AWS access. The proof creates a uniquely named synthetic
-bucket, verifies the locked object and its matching CloudTrail event, and
-publishes a redacted receipt containing the put and denied-delete CloudTrail
-event references. Cleanup is a separate dispatch derived from the
-original run ID and attempt; it refuses unless the exact synthetic version has
-legal hold OFF and its Compliance retention has expired.
+through GitHub OIDC. Protected variables identify the exact account, region,
+four distinct runtime roles (probe, one-put workload writer, read-only audit
+reconciler, and cleanup), bucket prefix, dedicated trail ARN, CloudTrail log
+bucket/prefix, cost ceiling (≤USD 5), and named cost and cleanup owners. The
+synthetic proof creates one new bucket and one object
+with one-day COMPLIANCE retention and legal hold ON. It uploads a
+`PROVISIONAL_DIGEST_PENDING` hashed custody record even when a post-create
+check fails. A separate `reconcile` operation authenticates the exact source
+run/attempt, validates the hourly trail digest, binds PutObject to the writer
+session and denied DeleteObject to the probe session for the exact bucket/key/
+version, then publishes a separate redacted final receipt. No jurisdiction or
+production-readiness claim follows from this
+technical proof. Cleanup is separately dispatched for the exact source run and
+attempt, and refuses before retention expiry or absent explicit cleanup
+authorization; ambiguity preserves the object and its evidence.
 
 The adapter's durable audit event and write receipt both carry the exact S3
 bucket. A failed put or post-write verification attempts an append-only failure
