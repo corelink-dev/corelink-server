@@ -16,15 +16,117 @@ def fail(message: str) -> None:
 
 
 def _has_staging_deploy(deploy_source: str) -> bool:
-    """Require env-bound input, an exact staging guard, and the deploy command."""
-    return all(
+    """Accept only the inert, manual, fail-closed legacy workflow shape."""
+    trigger_block = re.search(
+        r"(?ms)^on:\n(?P<body>.*?)(?=^[A-Za-z][A-Za-z0-9_-]*:|\Z)",
+        deploy_source,
+    )
+    if trigger_block is None:
+        return False
+    triggers = trigger_block.group("body")
+    if not re.search(r"(?m)^  workflow_dispatch:\s*$", triggers):
+        return False
+    if re.findall(r"(?m)^  ([A-Za-z_][A-Za-z0-9_-]*):", triggers) != ["workflow_dispatch"]:
+        return False
+    if re.search(r"(?m)^\s*(?:&[A-Za-z0-9_-]+|\*[A-Za-z0-9_-]+|<<:)", deploy_source):
+        return False
+    jobs = re.search(
+        r"(?ms)^jobs:\n(?P<body>.*?)(?=^[A-Za-z][A-Za-z0-9_-]*:|\Z)",
+        deploy_source,
+    )
+    if jobs is None or re.findall(
+        r"(?m)^  ([A-Za-z_][A-Za-z0-9_-]*):", jobs.group("body")
+    ) != ["retired"]:
+        return False
+
+    # The old route may remain discoverable, but it must consist of exactly
+    # one explicit refusal. This also prevents adding an executable second step.
+    if not all(
         fragment in deploy_source
         for fragment in (
-            "DEPLOY_ENV: ${{ inputs.environment }}",
-            'if [[ "$DEPLOY_ENV" != "staging" ]]',
-            'pnpm exec wrangler deploy --env "$DEPLOY_ENV"',
+            "name: synthetic pager receiver — deprecated fail-closed",
+            "options: [staging]",
+            "permissions:\n  contents: read\n",
+            "  retired:\n",
+            "    steps:\n",
+            'echo "::error::legacy receiver deployment is retired; use issue-1652 B-072 protected staging operator"',
+            "          exit 1",
         )
+    ):
+        return False
+    if len(re.findall(r"(?m)^      - name:", deploy_source)) != 1:
+        return False
+    if len(re.findall(r"(?m)^        run: \|$", deploy_source)) != 1:
+        return False
+    permissions = re.search(r"(?ms)^permissions:\n(?P<body>(?:  [^\n]*\n)+)", deploy_source)
+    if permissions is None or permissions.group("body").splitlines() != ["  contents: read"]:
+        return False
+    forbidden = re.compile(
+        r"(?i)(?:\$\{\{\s*secrets\.|\b(?:wrangler|cloudflare|cloudflared|deploy|upload-artifact)\b\s+(?:deploy|upload|publish)|\buses:\s*|\b(?:push|pull_request|schedule|workflow_run|repository_dispatch):|\b(?:prod|production)\b|\b(?:CF_API_TOKEN|CLOUDFLARE_API_TOKEN|CLOUDFLARE_ACCOUNT_ID)\b)"
     )
+    # Deployment wording in the refusal itself is expected; executable content
+    # is separately constrained to the single echo followed by exit 1.
+    executable = re.search(r"(?ms)^        run: \|\n(?P<body>.*?)(?=^\S|\Z)", deploy_source)
+    if executable is None:
+        return False
+    body = executable.group("body")
+    if re.search(r"(?im)^[ \t]*(?!echo\s|exit\s+1\s*$)(?:\S.*)$", body):
+        return False
+    if re.search(
+        r"(?i)(?:\$\{\{\s*secrets\.|\bwrangler\b|\bcloudflare\b|\bpnpm\s+exec\b|\buses:)",
+        body,
+    ):
+        return False
+    uncommented = "\n".join(
+        line for line in deploy_source.splitlines() if not line.lstrip().startswith("#")
+    )
+    return not forbidden.search(uncommented.replace("deployment is retired", ""))
+
+
+def _has_protected_operator(source: str) -> bool:
+    """Require the manual exact-main operator and keep it separate from PR CI."""
+    trigger_block = re.search(
+        r"(?ms)^on:\n(?P<body>.*?)(?=^[A-Za-z][A-Za-z0-9_-]*:|\Z)", source
+    )
+    if trigger_block is None or re.findall(
+        r"(?m)^  ([A-Za-z_][A-Za-z0-9_-]*):", trigger_block.group("body")
+    ) != ["pull_request", "workflow_dispatch"]:
+        return False
+    if re.search(r"(?m)^\s*(?:&[A-Za-z0-9_-]+|\*[A-Za-z0-9_-]+|<<:)", source):
+        return False
+    if source.count('python3 scripts/issue_1652_b072_operator.py "${args[@]}"') != 1:
+        return False
+    permissions = re.search(r"(?ms)^permissions:\n(?P<body>(?:  [^\n]*\n)+)", source)
+    if permissions is None or permissions.group("body").splitlines() != [
+        "  contents: read",
+        "  actions: read",
+    ]:
+        return False
+    operator_job = re.search(
+        r"(?ms)^  protected-staging-operator:\n(?P<body>.*?)(?=^  [A-Za-z_][A-Za-z0-9_-]*:|\Z)",
+        source,
+    )
+    if operator_job is None:
+        return False
+    operator_body = operator_job.group("body")
+    required = (
+        "    if: github.event_name == 'workflow_dispatch' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected",
+        "    environment: staging",
+        "          test \"$B072_EXPECTED_SHA\" = \"$GITHUB_SHA\"",
+        '          python3 scripts/issue_1652_b072_operator.py "${args[@]}"',
+    )
+    if not all(fragment in operator_body for fragment in required):
+        return False
+    operator_if = operator_body.find("    if: github.event_name == 'workflow_dispatch'")
+    exact_sha = operator_body.find('          test "$B072_EXPECTED_SHA" = "$GITHUB_SHA"')
+    invoke = operator_body.find('          python3 scripts/issue_1652_b072_operator.py "${args[@]}"')
+    if not (operator_if < exact_sha < invoke):
+        return False
+    if "pull_request:" not in source:
+        return False
+    # Automatic events may run evidence, but the operator job itself has an
+    # explicit workflow_dispatch-only condition above.
+    return True
 
 
 def main(root: Path) -> None:
@@ -37,7 +139,8 @@ def main(root: Path) -> None:
     migration = root / "migrations/d1/0116_synthetic_page_delivery_lifecycle.sql"
     workspace = root / "pnpm-workspace.yaml"
     deploy_workflow = root / ".github/workflows/synthetic-pager-worker-deploy.yml"
-    for path in (root_config, staging_contract, receiver_config, scheduler, receiver, contract, migration, workspace, deploy_workflow):
+    operator_workflow = root / ".github/workflows/issue-1652-b072-evidence.yml"
+    for path in (root_config, staging_contract, receiver_config, scheduler, receiver, contract, migration, workspace, deploy_workflow, operator_workflow):
         if not path.is_file():
             fail(f"missing B-072 contract file: {path.relative_to(root)}")
 
@@ -111,6 +214,7 @@ def main(root: Path) -> None:
     scheduler_source = scheduler.read_text()
     workspace_source = workspace.read_text()
     deploy_source = deploy_workflow.read_text()
+    operator_source = operator_workflow.read_text()
     required_fragments = {
         "production environment guard": 'environment === "prod" || environment?.startsWith("prod-")',
         "activation gate": 'env.SYNTHETIC_DRILL_ENABLED !== "true"',
@@ -166,22 +270,10 @@ def main(root: Path) -> None:
         "zone_name": "humangr.com",
     }]:
         fail("root must own the sole exact canonical staging Custom Domain")
-    if not re.search(r"(?m)^\s+workflow_dispatch:\s*$", deploy_source):
-        fail("receiver deploy must be manually dispatched")
-    if re.search(r"(?m)^\s+(push|pull_request|schedule):\s*$", deploy_source):
-        fail("receiver deploy must not have an automatic trigger")
-    for label, fragment in {
-        "staging-only input": "options: [staging]",
-        "staging environment": "environment: synthetic-drill-staging",
-        "inert pre-deploy guard": "python3 scripts/verify_b072_receiver.py",
-        "receiver typecheck": "pnpm run typecheck",
-        "receiver lifecycle test": "pnpm run test",
-        "terminal race test": "python3 scripts/test_b072_terminal_race.py",
-    }.items():
-        if fragment not in deploy_source:
-            fail(f"missing {label}")
     if not _has_staging_deploy(deploy_source):
-        fail("missing staging deploy")
+        fail("legacy receiver workflow is not a single-step fail-closed retirement")
+    if not _has_protected_operator(operator_source):
+        fail("protected B-072 operator workflow lost its manual exact-main guard")
 
     print("B-072 receiver/schedule guard: PASS")
 

@@ -3,11 +3,17 @@ import type { ScheduledController } from "@cloudflare/workers-types";
 import type { Env } from "./index_common.js";
 import { scheduledDrillForCron, scheduledWeekNumber, syntheticRegionForWeek, syntheticEmitAtMs, SYNTHETIC_PAGE_CONTRACT } from "./index_common.js";
 import { runStagingD1BindingRuntimeProbe, STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
+import { B072_ONE_SHOT_CRON, runB072OneShot } from "./b072_one_shot.js";
 
 export const STAGING_D1_RUNTIME_PROBE_CRON = STAGING_D1_PROBE_WINDOW.cron;
 export const STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS = STAGING_D1_PROBE_WINDOW.expires_ms;
 
 export async function runScheduled(controller: ScheduledController, env: Env): Promise<void> {
+    if (controller.cron === B072_ONE_SHOT_CRON) {
+      await runB072OneShot(controller, env);
+      return;
+    }
+
     if (controller.cron === STAGING_D1_RUNTIME_PROBE_CRON) {
       if (
         env.ENVIRONMENT !== "staging" ||

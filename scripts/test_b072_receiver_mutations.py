@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -41,15 +42,59 @@ def mutate_and_require_failure(name: str, relative: str, old: str, new: str) -> 
             "scripts/test_b072_terminal_race.py",
             "scripts/verify_b072_receiver.py",
             ".github/workflows/synthetic-pager-worker-deploy.yml",
+            ".github/workflows/issue-1652-b072-evidence.yml",
         ):
             target = copy_root / relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative_path, target)
         target = copy_root / relative
         text = target.read_text()
-        if old not in text:
-            raise AssertionError(f"mutation {name} did not find its target")
-        target.write_text(text.replace(old, new, 1))
+        if name.startswith("operator-") and name != "operator-missing-dispatch":
+            job = re.search(
+                r"(?ms)^  protected-staging-operator:\n(?P<body>.*?)(?=^  [A-Za-z_][A-Za-z0-9_-]*:|\Z)",
+                text,
+            )
+            if job is None:
+                raise AssertionError(f"mutation {name} did not find protected operator job")
+            body = job.group("body")
+            if body.count(old) != 1:
+                raise AssertionError(
+                    f"mutation {name} expected one target inside protected operator job, "
+                    f"found {body.count(old)}"
+                )
+            mutated_body = body.replace(old, new, 1)
+            replacement_count = (
+                mutated_body.count(new)
+                if new
+                else body.count(old) - mutated_body.count(old)
+            )
+            if replacement_count != 1:
+                raise AssertionError(f"mutation {name} did not produce exactly one replacement")
+            body_start, body_end = job.span("body")
+            text = text[:body_start] + mutated_body + text[body_end:]
+        elif name == "operator-missing-dispatch":
+            trigger_block = re.search(
+                r"(?ms)^on:\n(?P<body>.*?)(?=^[A-Za-z][A-Za-z0-9_-]*:|\Z)",
+                text,
+            )
+            if old != "  workflow_dispatch:\n" or trigger_block is None:
+                raise AssertionError(f"mutation {name} did not find the root workflow trigger")
+            body = trigger_block.group("body")
+            if body.count(old) != 1 or text.count(old) != 1:
+                raise AssertionError(
+                    f"mutation {name} expected one global root trigger, found "
+                    f"{text.count(old)} in file and {body.count(old)} in trigger block"
+                )
+            mutated_body = body.replace(old, new, 1)
+            if mutated_body.count(new) - body.count(new) != 1:
+                raise AssertionError(f"mutation {name} did not produce exactly one replacement")
+            body_start, body_end = trigger_block.span("body")
+            text = text[:body_start] + mutated_body + text[body_end:]
+        else:
+            if old not in text:
+                raise AssertionError(f"mutation {name} did not find its target")
+            text = text.replace(old, new, 1)
+        target.write_text(text)
         result = run_guard(copy_root)
         if result.returncode == 0:
             raise AssertionError(f"mutation {name} unexpectedly passed")
@@ -157,10 +202,64 @@ def main() -> None:
             "options: [staging, prod]",
         ),
         (
-            "drop-deploy-lifecycle-test",
+            "revive-legacy-deploy",
             ".github/workflows/synthetic-pager-worker-deploy.yml",
-            "run: pnpm run test",
-            "run: pnpm run skipped-test",
+            "          exit 1",
+            '          pnpm exec wrangler deploy --env staging',
+        ),
+        (
+            "legacy-auto-trigger",
+            ".github/workflows/synthetic-pager-worker-deploy.yml",
+            "  workflow_dispatch:",
+            "  push:\n    branches: [main]\n  workflow_dispatch:",
+        ),
+        (
+            "legacy-production-option",
+            ".github/workflows/synthetic-pager-worker-deploy.yml",
+            "options: [staging]",
+            "options: [staging, prod]",
+        ),
+        (
+            "legacy-credential-capability",
+            ".github/workflows/synthetic-pager-worker-deploy.yml",
+            "    steps:\n",
+            "    env:\n      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}\n    steps:\n",
+        ),
+        (
+            "operator-missing-staging-environment",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            "    environment: staging\n",
+            "    environment: production\n",
+        ),
+        (
+            "operator-missing-main-guard",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            " && github.ref == 'refs/heads/main'",
+            "",
+        ),
+        (
+            "operator-missing-repository-guard",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            " && github.repository_id == '1232040291'",
+            "",
+        ),
+        (
+            "operator-missing-sha-check",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            '          test "$B072_EXPECTED_SHA" = "$GITHUB_SHA"\n',
+            "",
+        ),
+        (
+            "operator-auto-route",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            "    if: github.event_name == 'workflow_dispatch' && github.repository == 'HuGR-dev/corelink-server'",
+            "    if: always() && github.repository == 'HuGR-dev/corelink-server'",
+        ),
+        (
+            "operator-missing-dispatch",
+            ".github/workflows/issue-1652-b072-evidence.yml",
+            "  workflow_dispatch:\n",
+            "  repository_dispatch:\n",
         ),
     ]
     for mutation in mutations:

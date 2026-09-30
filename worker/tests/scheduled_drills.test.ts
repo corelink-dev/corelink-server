@@ -226,7 +226,7 @@ describe("scheduled drill delivery", () => {
   });
 
   it("fails closed and telemeters an undeclared cron without retrying it", async () => {
-    const controller = controllerFor("* * * * *");
+    const controller = controllerFor("13 13 * * *");
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     await expect(workerHandler.scheduled!(controller, envWithDelivery(vi.fn<typeof globalThis.fetch>()), scheduledCtx()))

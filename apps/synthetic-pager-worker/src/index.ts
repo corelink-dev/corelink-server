@@ -1,5 +1,6 @@
 import {
   buildPagerDutyEvent,
+  B072_ONE_SHOT_CRON,
   PAGERDUTY_EVENTS_URL,
   PAGERDUTY_WEBHOOK_PATH,
   parsePagerDutyWebhook,
@@ -110,6 +111,27 @@ async function persistDelivery(env: ReceiverEnv, envelope: SyntheticPageEnvelope
   ]);
 }
 
+async function recordB072Ingress(
+  env: ReceiverEnv,
+  envelope: SyntheticPageEnvelope,
+  receiverRevision: string,
+): Promise<void> {
+  const page = envelope.synthetic_page;
+  const result = await env.CONFIG_DB!.prepare(
+    `INSERT INTO b072_one_shot_ingress
+       (singleton_id, drill_id, scheduled_at_ms, serving_sha, receiver_worker_revision, ingress_count, last_ingress_at_ms)
+     VALUES (1, ?, ?, ?, ?, 1, ?)
+     ON CONFLICT(singleton_id) DO UPDATE SET
+       ingress_count = b072_one_shot_ingress.ingress_count + 1,
+       last_ingress_at_ms = excluded.last_ingress_at_ms
+     WHERE b072_one_shot_ingress.drill_id = excluded.drill_id
+       AND b072_one_shot_ingress.scheduled_at_ms = excluded.scheduled_at_ms
+       AND b072_one_shot_ingress.serving_sha = excluded.serving_sha
+       AND b072_one_shot_ingress.receiver_worker_revision = excluded.receiver_worker_revision`,
+  ).bind(page.dedup_key, envelope.scheduled_at_ms, page.serving_sha, receiverRevision, Date.now()).run();
+  if (result.meta.changes !== 1) throw new Error("B-072 ingress correlation mismatch");
+}
+
 async function markDelivered(env: ReceiverEnv, drillId: string, correlationId: string, deliveredAtMs: number): Promise<void> {
   // PagerDuty's canonical dedup key makes a retry safe if this transaction is
   // lost after external acceptance. The durable receipt and row transition are
@@ -148,19 +170,31 @@ async function handleSyntheticPage(request: Request, env: ReceiverEnv): Promise<
   } catch {
     return json({ error: "invalid_json" }, 400);
   }
-  const envelope = parseSyntheticPageEnvelope(body);
+  const configuredProviderMode = env.SYNTHETIC_DRILL_PROVIDER_MODE ?? "pagerduty";
+  const envelope = parseSyntheticPageEnvelope(body, {
+    environment: env.ENVIRONMENT,
+    providerMode: configuredProviderMode,
+  });
   const deliveryId = request.headers.get("x-corelink-scheduled-drill-id");
   if (envelope === null || deliveryId !== envelope.synthetic_page.dedup_key) {
     return json({ error: "invalid_synthetic_page_contract" }, 400);
   }
-  const configuredProviderMode = env.SYNTHETIC_DRILL_PROVIDER_MODE ?? "pagerduty";
-  if (envelope.synthetic_page.provider_mode !== configuredProviderMode) {
+  if ((envelope.synthetic_page.provider_mode ?? "pagerduty") !== configuredProviderMode) {
     return json({ error: "provider_mode_mismatch" }, 400);
   }
   const receiverRevision = env.CF_VERSION_METADATA?.id;
   if (configuredProviderMode === "provider_deferred" &&
       (receiverRevision === undefined || receiverRevision.length < 1 || receiverRevision.length > 200)) {
     return json({ error: "provider_deferred_provenance_unavailable" }, 503);
+  }
+
+  if (envelope.cron === B072_ONE_SHOT_CRON) {
+    try {
+      if (receiverRevision === undefined) return json({ error: "one_shot_receiver_revision_unavailable" }, 503);
+      await recordB072Ingress(env, envelope, receiverRevision);
+    } catch {
+      return json({ error: "one_shot_ingress_unavailable" }, 503);
+    }
   }
 
   try {

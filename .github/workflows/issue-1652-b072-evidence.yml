@@ -1,22 +1,171 @@
-name: issue-1652 B-072 evidence verifier
+name: issue-1652 B-072 exact-head evidence and protected operator
 
 on:
   pull_request:
     paths:
-      - "scripts/verify_b072_external_evidence.py"
-      - "scripts/test_b072_external_evidence.py"
-      - "tests/fixtures/b072_evidence_valid.json"
+      - "worker/src/index_schedule.ts"
+      - "worker/src/b072_one_shot.ts"
+      - "worker/src/index_common.ts"
+      - "worker/tests/scheduled_drills.test.ts"
+      - "worker/tests/b072_one_shot.test.ts"
+      - "apps/synthetic-pager-worker/src/contract.ts"
+      - "apps/synthetic-pager-worker/src/index.ts"
+      - "apps/synthetic-pager-worker/tests/receiver.test.ts"
+      - "migrations/d1/0153_b072_one_shot_fence.sql"
+      - "scripts/issue_1652_b072_operator.py"
+      - "scripts/verify_b072_receiver.py"
+      - "scripts/test_issue_1652_b072_operator.py"
+      - "scripts/test_issue_1652_b072_workflow.py"
+      - "scripts/test_b072_receiver_mutations.py"
       - ".github/workflows/issue-1652-b072-evidence.yml"
+      - ".github/workflows/synthetic-pager-worker-deploy.yml"
+      - "docs/internal/b072-scheduled-drills-owner-packet.md"
+      - "changelog.d/1652-*.md"
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Protected staging operation; recovery never replays a trigger
+        required: true
+        type: choice
+        options: [preflight, execute, recover]
+      expected_sha:
+        description: Exact current main SHA reviewed for this operation
+        required: true
+        type: string
+      root_version:
+        description: Exact pre-existing staging root Worker version
+        required: true
+        type: string
+      receiver_version:
+        description: Exact pre-existing disabled staging receiver version
+        required: true
+        type: string
+      issue_1700_run_id:
+        description: Successful protected #1700 completion workflow run
+        required: false
+        type: string
+      issue_1700_sha:
+        description: Exact main SHA from the #1700 completion run
+        required: false
+        type: string
+      original_run_id:
+        description: Original B-072 execute run to recover; recovery never re-arms
+        required: false
+        type: string
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('issue-1652-b072-pr-{0}', github.event.pull_request.number) || 'issue-1652-b072-protected-operator' }}
+  cancel-in-progress: false
 
 jobs:
-  credentialless-evidence:
-    name: B-072 credentialless evidence contract
-    runs-on: ubuntu-latest
+  exact-head-evidence:
+    if: github.event_name == 'pull_request' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Verify redacted evidence schema and adversarial mutations
-        run: python3 scripts/test_b072_external_evidence.py
+      - name: Checkout exact PR head without write credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify exact head, signed commits and DCO
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git diff --check origin/main...HEAD
+          while read -r sha; do
+            test -n "$sha"
+            git show -s --format=%B "$sha" | grep -Eq '^Signed-off-by: .+ <[^>]+>$'
+            gh api "repos/HuGR-dev/corelink-server/commits/$sha" --jq '.commit.verification | select(.verified == true) | .reason' | grep -Eq '^(valid|signed)$'
+          done < <(git rev-list origin/main..HEAD)
+      - uses: ./.github/actions/setup-pnpm
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install focused Worker dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter @corelink/worker... --filter @corelink/synthetic-pager-worker...
+      - name: Focused scheduler, receiver, and route-free tests
+        run: |
+          set -euo pipefail
+          pnpm --dir apps/synthetic-pager-worker run typecheck
+          pnpm --dir apps/synthetic-pager-worker run test
+          pnpm --dir worker run typecheck
+          pnpm --dir worker exec vitest run tests/scheduled_drills.test.ts tests/b072_one_shot.test.ts
+      - name: Migration, operator, and policy mutation tests
+        run: |
+          set -euo pipefail
+          python3 scripts/test_issue_1652_b072_operator.py
+          python3 scripts/test_issue_1652_b072_workflow.py
+          python3 scripts/test_b072_migration.py
+          python3 scripts/test_b072_external_evidence.py
+      - name: Workflow syntax and focused path-scope check
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -no-color .github/workflows/issue-1652-b072-evidence.yml .github/workflows/synthetic-pager-worker-deploy.yml
+
+  protected-staging-operator:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    environment: staging
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact protected main SHA without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pnpm
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Install pinned receiver uploader only
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter @corelink/synthetic-pager-worker...
+      - name: Run protected, redacted B-072 operator
+        env:
+          B072_OPERATION: ${{ inputs.operation }}
+          B072_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          B072_EXPECTED_ROOT_VERSION: ${{ inputs.root_version }}
+          B072_EXPECTED_RECEIVER_VERSION: ${{ inputs.receiver_version }}
+          B072_ISSUE_1700_RUN_ID: ${{ inputs.issue_1700_run_id }}
+          B072_ISSUE_1700_SHA: ${{ inputs.issue_1700_sha }}
+          B072_ORIGINAL_RUN_ID: ${{ inputs.original_run_id }}
+          B072_STAGING_CF_ACCOUNT_ID: 6a1fc1c626fc2628823e60b9db01f5cd
+          B072_STAGING_D1_DATABASE_ID: d72a6b39-6a48-4338-bfda-1111dda98604
+          B072_STAGING_CF_WORKERS_TOKEN: ${{ secrets.B072_STAGING_CF_WORKERS_TOKEN }}
+          B072_STAGING_D1_WRITE_TOKEN: ${{ secrets.B072_STAGING_D1_WRITE_TOKEN }}
+          B072_STAGING_CF_ROUTE_READ_TOKEN: ${{ secrets.B072_STAGING_CF_ROUTE_READ_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$B072_EXPECTED_SHA" = "$GITHUB_SHA"
+          case "$B072_OPERATION" in
+            preflight) mode=preflight ;;
+            execute) mode=execute ;;
+            recover) mode=recover ;;
+            *) echo '::error::unsupported B-072 operation'; exit 1 ;;
+          esac
+          args=(--mode "$mode" --root-version "$B072_EXPECTED_ROOT_VERSION" --receiver-version "$B072_EXPECTED_RECEIVER_VERSION")
+          if [[ "$mode" == execute || "$mode" == preflight ]]; then
+            test -n "$B072_ISSUE_1700_RUN_ID"
+            args+=(--issue-1700-run-id "$B072_ISSUE_1700_RUN_ID")
+          fi
+          if [[ "$mode" == recover ]]; then
+            test -n "$B072_ORIGINAL_RUN_ID"
+            args+=(--original-run-id "$B072_ORIGINAL_RUN_ID")
+          fi
+          python3 scripts/issue_1652_b072_operator.py "${args[@]}"
+      - name: Retain redacted execution or recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: issue-1652-b072-execution-${{ github.run_id }}
+          path: ${{ runner.temp }}/issue-1652-b072-operator-receipt.json
+          if-no-files-found: warn
+          retention-days: 30
