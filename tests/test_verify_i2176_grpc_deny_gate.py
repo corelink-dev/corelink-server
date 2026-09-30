@@ -85,7 +85,52 @@ class P0WaveClassifierTests(unittest.TestCase):
             link = target / ".github/actionlint.yaml"
             link.parent.mkdir(parents=True, exist_ok=True)
             link.symlink_to("../.actionlint.yaml")
+            self._normalize_old_wallet_route_fixture(target)
         return trusted, candidate
+
+    def _normalize_old_wallet_route_fixture(self, root: Path) -> None:
+        """Build the explicit pre-route fixture even when tests run post-merge."""
+        def replace_fixture(path: Path, content: bytes) -> None:
+            mode = path.lstat().st_mode & 0o777
+            path.unlink()
+            path.write_bytes(content)
+            path.chmod(mode)
+
+        live_path = root / verify.WALLET_ROUTE_LIVE_PATH
+        live = live_path.read_bytes()
+        base_live_sha = verify.WAVE_GROUPS["i2565"][verify.WALLET_ROUTE_LIVE_PATH][1][1]
+        live_sha = hashlib.sha256(live).hexdigest()
+        if live_sha == verify.WALLET_ROUTE_TRANSFORMED_LIVE_SHA256:
+            module = verify.WALLET_ROUTE_LIVE_MODULE
+            end_marker = verify.WALLET_ROUTE_LIVE_END
+            start = live.index(module)
+            end = live.index(end_marker, start)
+            region_end = end + len(end_marker) - len(b"\n\nimpl Drop for HarnessCleanup")
+            region = live[start:region_end]
+            marker = b'"/stripe-prod-test'
+            self.assertEqual(region.count(marker), verify.WALLET_ROUTE_LIVE_LITERAL_COUNT)
+            restored = live[:start] + region.replace(marker, b'"/_wallet/proxy/stripe-prod-test') + live[region_end:]
+            self.assertEqual(hashlib.sha256(restored).hexdigest(), base_live_sha)
+            replace_fixture(live_path, restored)
+        else:
+            self.assertEqual(live_sha, base_live_sha, "unexpected wallet live source in route fixture")
+
+        verifier_path = root / verify.WALLET_ROUTE_VERIFIER_PATH
+        verifier = verifier_path.read_bytes()
+        base_verifier_sha = verify.WAVE_GROUPS["i2565"][verify.WALLET_ROUTE_VERIFIER_PATH][1][1]
+        verifier_sha = hashlib.sha256(verifier).hexdigest()
+        if verifier_sha == verify.WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256:
+            self.assertEqual(verifier.count(verify.WALLET_ROUTE_VERIFIER_KEY), 1)
+            start = verifier.index(verify.WALLET_ROUTE_VERIFIER_KEY) + len(verify.WALLET_ROUTE_VERIFIER_KEY)
+            end = start + 64
+            target_live_sha = verify.WALLET_ROUTE_TRANSFORMED_LIVE_SHA256.encode("ascii")
+            base_live_sha_bytes = base_live_sha.encode("ascii")
+            self.assertEqual(verifier[start:end], target_live_sha)
+            restored = verifier[:start] + base_live_sha_bytes + verifier[end:]
+            self.assertEqual(hashlib.sha256(restored).hexdigest(), base_verifier_sha)
+            replace_fixture(verifier_path, restored)
+        else:
+            self.assertEqual(verifier_sha, base_verifier_sha, "unexpected B068 source in route fixture")
 
     def _wallet_route_classifier_patches(self):
         states = {name: "new" for name in ("i1652", "i1648", "i1700", "i2565")}
@@ -111,13 +156,13 @@ class P0WaveClassifierTests(unittest.TestCase):
 
     def test_wallet_route_real_tree_transformed_base_self_and_second_maintenance(self) -> None:
         source_root = Path(__file__).resolve().parents[1]
-        required = set(verify.WAVE_BASE_CONTROLS) | set(verify.WALLET_ROUTE_PATHS)
-        required.update(path for group in verify.WAVE_GROUPS.values() for path in group)
-        required.add(Path("docs/internal/secrets-checklist.md"))
+        required = set(verify.WALLET_ROUTE_PATHS) | {Path("docs/internal/secrets-checklist.md")}
+        required.update(path for path, pin in verify.WAVE_BASE_CONTROLS.items() if pin is not None)
         if not all((source_root / relative).exists() for relative in required):
             self.skipTest("complete protected-base source tree is unavailable")
         if not verify._wave_controls_match(source_root):
             self.skipTest("source tree is not the frozen protected P0 baseline")
+        verify._wallet_route_base_states(source_root)
 
         def hardlink_tree(source: Path, destination: Path) -> None:
             ignored = shutil.ignore_patterns(".git", "target", "node_modules", ".venv", "__pycache__")
@@ -133,6 +178,7 @@ class P0WaveClassifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             trusted = Path(directory) / "trusted"
             hardlink_tree(source_root, trusted)
+            self._normalize_old_wallet_route_fixture(trusted)
             base_live, transformed_live = verify._wallet_route_expected_live(trusted)
             self.assertNotEqual(base_live, transformed_live)
             transformed_verifier = verify._wallet_route_expected_verifier(trusted, transformed_live)
@@ -166,8 +212,7 @@ class P0WaveClassifierTests(unittest.TestCase):
         for relative in verify.WALLET_ROUTE_ORDINARY_PATHS:
             target = candidate / relative
             original = target.read_bytes()
-            self.assertIn(b"/_wallet/proxy", original)
-            target.write_bytes(original.replace(b"/_wallet/proxy", b""))
+            target.write_bytes(original + b"\n// ordinary wallet-route source update\n")
         with self._wallet_route_classifier_patches()[0], self._wallet_route_classifier_patches()[1], self._wallet_route_classifier_patches()[2], self._wallet_route_classifier_patches()[3]:
             changed = verify.changed_paths(trusted, candidate)
             self.assertEqual(changed, set(verify.WALLET_ROUTE_PATHS))
@@ -229,6 +274,10 @@ class P0WaveClassifierTests(unittest.TestCase):
         self.assertIn('ref: ${{ github.event.pull_request.head.sha }}', protected)
         self.assertIn("trusted-base/scripts/verify_i2176_grpc_deny_gate.py", protected)
         self.assertIn("trusted-base/scripts/verify_i2574_grpc_diagnostic_policy.py", protected)
+        self.assertIn("python3 -B -S trusted-base/scripts/verify_i2176_grpc_deny_gate.py", protected)
+        self.assertIn("python3 -B -S trusted-base/scripts/verify_i2574_grpc_diagnostic_policy.py", protected)
+        self.assertIn("python3 -B -S -m unittest", protected)
+        self.assertIn("python3 -B -S -m unittest", supplemental)
 
     def test_wallet_route_rejects_other_delivery_wave_or_unconsumed_2565_base(self) -> None:
         trusted, candidate = self._wallet_route_fixture()
