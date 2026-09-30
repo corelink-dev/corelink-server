@@ -1,4 +1,4 @@
-import { OLD_PROBE_NAME, OLD_PROBE_RELEASE, type OldProbeRetirement } from "./staging_d1_probe_retirement.js";
+import { assertV4FailedProbeCatalogAbsent, OLD_PROBE_NAME, OLD_PROBE_RELEASE, type OldProbeRetirement } from "./staging_d1_probe_retirement.js";
 import window from "../../crates/corelink-container/src/routes/staging_d1_probe_window.json";
 export const STAGING_D1_PROBE_WINDOW = window;
 import type { Env } from "./index_common.js";
@@ -30,7 +30,7 @@ interface StagingD1RuntimeProbeStub {
 export async function runStagingD1BindingRuntimeProbe(
   env: Env,
   scheduledTime: number,
-): Promise<StagingD1RuntimeProbeReceipt & OldProbeRetirement> {
+): Promise<StagingD1RuntimeProbeReceipt & OldProbeRetirement & { readonly v4_probe_catalog_absent: true }> {
   const release = env.SENTRY_RELEASE ?? "";
   if (
     env.ENVIRONMENT !== "staging" ||
@@ -39,6 +39,7 @@ export async function runStagingD1BindingRuntimeProbe(
   ) {
     throw new Error("staging runtime probe target rejected");
   }
+  await assertV4FailedProbeCatalogAbsent(env.CONFIG_DB);
   const oldId = env.CORELINK_SERVER.idFromName(OLD_PROBE_NAME);
   const oldStub = env.CORELINK_SERVER.get(oldId) as unknown as StagingD1RuntimeProbeStub;
   const retired = await oldStub.retireStagingD1RuntimeProbe(scheduledTime);
@@ -69,5 +70,5 @@ export async function runStagingD1BindingRuntimeProbe(
   ) {
     throw new Error("staging runtime probe receipt rejected");
   }
-  return { ...receipt, old_probe_release: OLD_PROBE_RELEASE, old_probe_retired: true, old_probe_tables_absent: true };
+  return { ...receipt, v4_probe_catalog_absent: true, old_probe_release: OLD_PROBE_RELEASE, old_probe_retired: true, old_probe_tables_absent: true };
 }
