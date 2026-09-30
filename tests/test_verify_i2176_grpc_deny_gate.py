@@ -16,6 +16,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import verify_i2176_grpc_deny_gate as verify
 
 
+class P0WaveClassifierTests(unittest.TestCase):
+    def test_four_reviewed_groups_are_finite_and_path_disjoint(self) -> None:
+        expected = {"i1652": 14, "i1648": 4, "i1700": 17, "i2565": 8}
+        self.assertEqual(set(verify.WAVE_GROUPS), set(expected))
+        seen: set[Path] = set()
+        for name, pins in verify.WAVE_GROUPS.items():
+            self.assertEqual(len(pins), expected[name])
+            self.assertTrue(seen.isdisjoint(pins), name)
+            seen.update(pins)
+            for old_pin, new_pin in pins.values():
+                for pin in (old_pin, new_pin):
+                    if pin is not None:
+                        mode, digest = pin
+                        self.assertIn(mode, (0o644, 0o755))
+                        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertEqual(len(seen), 43)
+        self.assertEqual(len(verify.WAVE_BASE_CONTROLS), 54)
+
+    def test_p0_matrix_is_pinned_separately_from_checker_controls(self) -> None:
+        matrix = Path(__file__).resolve().parents[1] / "docs/internal/secrets-checklist.md"
+        self.assertEqual(
+            hashlib.sha256(matrix.read_bytes()).hexdigest(), verify.WAVE_MATRIX_SHA256
+        )
+        text = matrix.read_text(encoding="utf-8")
+        self.assertEqual(sum(line.startswith("| 315 |") for line in text.splitlines()), 1)
+        for name in (
+            "B072_STAGING_CF_WORKERS_TOKEN",
+            "B072_STAGING_D1_WRITE_TOKEN",
+            "B072_STAGING_CF_ROUTE_READ_TOKEN",
+        ):
+            self.assertEqual(text.count(f"`{name}`"), 1)
+
+
 class TrustedGrpcDenyGateTests(unittest.TestCase):
     def _i2575_fixture(self, delivered: bool = False):
         temporary = tempfile.TemporaryDirectory()
@@ -69,7 +102,7 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(f"reviewed #2575 {path}\n".encode())
             target.chmod(mode)
-        verify.validate(candidate, trusted)
+        verify._validate_legacy_fixture(candidate, trusted)
 
     def test_fixture_keeps_pinned_actionlint_preimage_after_repository_advances(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -99,14 +132,14 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
                 else:
                     (candidate / Path(".actionlint.yaml")).write_text("old actionlint\n")
                 with self.assertRaises(verify.ContractError):
-                    verify.validate(candidate, trusted)
+                    verify._validate_legacy_fixture(candidate, trusted)
 
     def test_i2575_delivered_tree_rejects_downgrade_or_alteration(self) -> None:
         trusted, candidate, _targets = self._i2575_fixture(delivered=True)
-        verify.validate(candidate, trusted)
+        verify._validate_legacy_fixture(candidate, trusted)
         (candidate / Path("scripts/i2575_grpc_probe_client.py")).write_text("downgrade\n")
         with self.assertRaisesRegex(verify.ContractError, "downgraded or altered"):
-            verify.validate(candidate, trusted)
+            verify._validate_legacy_fixture(candidate, trusted)
 
     def _staging_d1_proxy_fixture(self):
         temporary = tempfile.TemporaryDirectory()
@@ -164,7 +197,7 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
 
     def test_1700_package_lock_exception_requires_exact_frozen_delivery_tree(self) -> None:
         trusted, candidate, _paths, _originals, _targets = self._staging_d1_proxy_fixture()
-        verify.validate(candidate, trusted)
+        verify._validate_legacy_fixture(candidate, trusted)
 
     def test_1700_package_lock_exception_constants_bind_exact_37_path_tree(self) -> None:
         self.assertEqual(len(verify.STAGING_D1_PROXY_DELIVERY_PATHS), 37)
@@ -290,7 +323,7 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
                         1,
                     ))
                 with self.assertRaises(verify.ContractError):
-                    verify.validate(candidate, trusted)
+                    verify._validate_legacy_fixture(candidate, trusted)
 
     def test_future_i2568_workflow_is_optional_only_when_absent_on_both_sides(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -303,29 +336,29 @@ class TrustedGrpcDenyGateTests(unittest.TestCase):
 
             (trusted / relative).unlink()
             (candidate / relative).unlink()
-            verify.validate(candidate, trusted)
+            verify._validate_legacy_fixture(candidate, trusted)
 
             verify.write(candidate, relative, "future workflow\n")
             with self.assertRaisesRegex(verify.ContractError, "one-sided presence"):
-                verify.validate(candidate, trusted)
+                verify._validate_legacy_fixture(candidate, trusted)
             (candidate / relative).unlink()
 
             verify.write(trusted, relative, "future workflow\n")
             with self.assertRaisesRegex(verify.ContractError, "one-sided presence"):
-                verify.validate(candidate, trusted)
+                verify._validate_legacy_fixture(candidate, trusted)
             verify.write(candidate, relative, "future workflow\n")
-            verify.validate(candidate, trusted)
+            verify._validate_legacy_fixture(candidate, trusted)
 
             (candidate / relative).chmod(0o755)
             with self.assertRaisesRegex(verify.ContractError, "protected bytes or mode drift"):
-                verify.validate(candidate, trusted)
+                verify._validate_legacy_fixture(candidate, trusted)
             (candidate / relative).chmod(0o644)
             (candidate / relative).unlink()
             target = candidate / "future-target"
             target.write_text("future workflow\n", encoding="utf-8")
             (candidate / relative).symlink_to(target)
             with self.assertRaisesRegex(verify.ContractError, "symlink"):
-                verify.validate(candidate, trusted)
+                verify._validate_legacy_fixture(candidate, trusted)
 
     def test_2578_mount_is_exactly_the_reviewed_ten_path_transition(self) -> None:
         expected = {

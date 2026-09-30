@@ -184,8 +184,12 @@ def changed_paths(base: Path, candidate: Path) -> set[Path]:
         left, right = base / name, candidate / name
         left_kind, right_kind = node_kind(left), node_kind(right)
         if left_kind == "symlink" or right_kind == "symlink":
-            if name != CANONICAL_SYMLINK or not left.is_symlink() or not right.is_symlink() or os.readlink(left) != CANONICAL_SYMLINK_TARGET or os.readlink(right) != CANONICAL_SYMLINK_TARGET:
-                raise ContractError(f"noncanonical symlink: {name}")
+            if (
+                left_kind != "symlink" or right_kind != "symlink"
+                or left.lstat().st_mode != right.lstat().st_mode
+                or os.readlink(left) != os.readlink(right)
+            ):
+                raise ContractError(f"added, retargeted, or replaced symlink: {name}")
             continue
         if left_kind == right_kind == "directory":
             continue
@@ -757,10 +761,194 @@ def assert_exact_head(candidate: Path, expected_head: str) -> None:
         )
 
 
+# Frozen four-delivery admission wave. Every path has one d2f1 preimage and
+# one reviewed target (None means exact absence); modes and bytes are checked.
+WAVE_GROUPS: dict[str, dict[Path, tuple[tuple[int, str] | None, tuple[int, str] | None]]]= {
+    "i1652": {
+        Path('.github/workflows/issue-1652-b072-evidence.yml'): ((0o0644, "7902fc5211d88c461554981f635dbbd7948ea358420facb722cd1f06c215aa43"), (0o0644, "62ee0e419915029270c7504eae90e6f7ba508ce4f5e1118dae743e135941aba4")),
+        Path('.github/workflows/synthetic-pager-worker-deploy.yml'): ((0o0644, "3ab28f10f0bdda409be1790b63b18f8c45c2290ac1f5534c872981766af2dace"), (0o0644, "3c011375a5477d05fa4211ee9aace75ab253e8c869380e45b1d724e849962c75")),
+        Path('apps/synthetic-pager-worker/src/contract.ts'): ((0o0644, "fb4a25030f5ab409cd6af58e33bc7aac64f812a80b06365118d66f4af3668ee2"), (0o0644, "db25b1a27776180a63f4e52f232bd36d1d20dffc0861732cfef534c98c9439bb")),
+        Path('apps/synthetic-pager-worker/src/index.ts'): ((0o0644, "d1951170489f1dc4d7d794cf993371a912c819ba4b068b1b07f494c9c763f173"), (0o0644, "e4bab682267f9409d1546b38c660be6a601a077268c1b4cb0c80f768d98cca97")),
+        Path('apps/synthetic-pager-worker/tests/receiver.test.ts'): ((0o0644, "4158b83f17cd34f37357a002c54e73d5a199c86b49f95d110a82d6eeab29df56"), (0o0644, "28964c621797a4d87155c0c365badc6eacedc14abac8f30bf001727848f5d5f3")),
+        Path('changelog.d/1652-b072-one-shot.md'): (None, (0o0644, "22f60747b272725bcf9d71a32a7e8899970fda47538bffcd8a8b890ca4d4d2db")),
+        Path('docs/internal/b072-scheduled-drills-owner-packet.md'): ((0o0644, "27b8ada7c3c84706c82173b9092c1464952ade6419688700fcc9dd1de75ce2fd"), (0o0644, "54e33cb943bb961324c3babf2c35eed21acb93b839dbf1616dd54260b7faaa45")),
+        Path('migrations/d1/0153_b072_one_shot_fence.sql'): (None, (0o0644, "8ac96c331cb5b44a9f0376ae5c257fc23a783e1fb51ec2415842101da57a67a9")),
+        Path('scripts/issue_1652_b072_operator.py'): (None, (0o0644, "0fb4752246e6036e7af9fc8e62d2b9bae7764aacfc219be7148699ae0b35062c")),
+        Path('scripts/test_issue_1652_b072_operator.py'): (None, (0o0644, "74678eb4b42fef3567cac2963d9462da28904964abbcf22372535ce6c6ad0828")),
+        Path('scripts/test_issue_1652_b072_workflow.py'): (None, (0o0644, "40501fd987ad3994e32ab58e7fe7269ad8248a537e41d1080f820d8623bd63dc")),
+        Path('worker/src/b072_one_shot.ts'): (None, (0o0644, "b4611f9255b89d645f0edd67450e3d24205a0d060ef727588d499b4a6f29f1a8")),
+        Path('worker/src/index_schedule.ts'): ((0o0644, "cce9a2f88923fed6f7c6eddb82a6f9145767b9c77617721de2e634961dea3e3d"), (0o0644, "390a6458dbcc7bc825105dc5373b017e3044dd41085c4d775cafe6b02913cfdb")),
+        Path('worker/tests/b072_one_shot.test.ts'): (None, (0o0644, "f4bc82a1ae90b6bce02c1c4dc27ac50ef3599ca99dfa2bbb71b40703c5788040")),
+    },
+    "i1648": {
+        Path('.github/workflows/cf-deploy-prod.yml'): ((0o0644, "dd3606d88be58955fb6c3853e64f355fbc44fd01e9988af1cf3e356f4e20aa64"), (0o0644, "0bd0198cfb7153acace49e9f581d4488956955fa37316b97b60d3c0ff3e92fe3")),
+        Path('.github/workflows/issue-1667-b122-production-evidence.yml'): ((0o0644, "a6f95f55fed4badc7c73a44b7aa2ef53704e0e88269178179ad35a2ee0be71ae"), (0o0644, "a1dba7b9f4e65956b38aa0cb4056af13e31d824d94144aade9f106ee821e0a73")),
+        Path('scripts/issue_1648_image_only.py'): (None, (0o0644, "7f39d68f7ee65fba5512ac57ab738913e008be53cacff150bfaec9a9eb6c66ca")),
+        Path('tests/test_issue_1648_image_only.py'): (None, (0o0644, "9c7869d41e7170c1b503ac46637d3f26ff1070d587adb67f49b6321e97b471cd")),
+    },
+    "i1700": {
+        Path('.github/workflows/campaign-ci.yml'): ((0o0644, "888a1e53fef4f59a883d80f493b14fe56d3ad4149c99c8b2f3bf7e4637534dff"), (0o0644, "13c6801d8e84468cd4efa60fe3ed83de033f5fa08687a5e98c71d1e87caa4a3e")),
+        Path('.github/workflows/issue-1700-container-staging-deploy.yml'): ((0o0644, "04f80c37d653628799691af7a8cfc520d98adba07292f65c57f894293c07caae"), (0o0644, "93235218ce8720ce324608616301169b6a4e49bb607da11a350ad8b5f82f63d9")),
+        Path('changelog.d/1700-retire-fresh-proof.md'): (None, (0o0644, "a305c6a0b21c6fcb1dca770d665030028467e2bb946acd8ddccc9f135946e437")),
+        Path('crates/corelink-container/src/routes/staging_d1_binding_probe.rs'): ((0o0644, "67d8ff7749679f56a7147e49237223d39de2db65bd23523d6a5d5fdef48b6af3"), (0o0644, "a6c95b5c001ebd74a1f10542ab9e91484e4de9182208ea91b0ac36865461b626")),
+        Path('crates/corelink-container/src/routes/staging_d1_probe_window.json'): ((0o0644, "a030ec8f3a3b73252ef1d6bfc18f9bc31c3f421d94950f83a71171fb846e6ca5"), (0o0644, "cd34dd5bf32638ab9dba45397494ae38dc87a57594e79dcc5aa5d948a2705824")),
+        Path('docs/operator/issue-1700-runtime-recovery.md'): ((0o0644, "6cecbc1a697f997868b7ecfd5224b0c93878e2d8d02b976d5b699a43237eca3f"), (0o0644, "e9115364b59f95f345e0daeabdd7128426da26c8ef41ee3135f2e399c669abe4")),
+        Path('scripts/issue_1700_rollback_quiescence.py'): (None, (0o0644, "cae820f601ddb86f048b4eda81d89968eb70d92b5da1bee6ae645cb4101170ad")),
+        Path('scripts/issue_1700_runtime_probe.mjs'): ((0o0644, "9438eb081ac786fbdfb26f17a9a6d6d63601bb6893ebf83fff12fbcef0dfae35"), (0o0644, "1ed2681d5f200408eed7daea009ab9c0d341d1b240e430c238b8bf687ebbc8b1")),
+        Path('scripts/tests/issue_1700_probe_process.test.mjs'): ((0o0644, "9dd57cbb0494cc76b785d56d65820627f1656eb2ae467cde5feec6b66316094b"), (0o0644, "f39f216574443ba8b1cb2a7f2eccd53c3c71f80bcb706583c156b02cfec1dff0")),
+        Path('scripts/tests/issue_1700_runtime_probe.test.mjs'): ((0o0644, "0bd4acaed0860a56c98ae32c5c1d34ef18e2f9436670e8af4cdfb0c9256d5241"), (0o0644, "b93ee9785a7eb323de337f7d70a9f27fdc07f8de10e8c11d030ffccbe6ad7739")),
+        Path('tests/test_issue_1700_rollback_quiescence.py'): (None, (0o0644, "27b13b705c37aed64afa5001e07f428738afa1252d15094d2b2a6d7242b4145f")),
+        Path('worker/src/durable_object.ts'): ((0o0644, "ae3811c359ad59f4df9e6cb8de4f664cfb019ee141c2d44700e52f8f8cf8c9af"), (0o0644, "10a22f81b4e407c5200d217e43db83ec68620c48b8ba273eaaea41861283d22e")),
+        Path('worker/src/staging_d1_probe_retirement.ts'): (None, (0o0644, "79adca4ea6d18e9c6bd9025898f72956d9a187b064b497527533df690f0c9f55")),
+        Path('worker/src/staging_runtime_d1_probe.ts'): ((0o0644, "731c86a7dedaae283dd8ed0b186f1d408c85a2fd4609e6be9d29a338994f2278"), (0o0644, "cd9e32bcfee3ec79ae3d1a1ea88923f27be34413a49395f76287d598bb27acee")),
+        Path('worker/tests/durable_object.test.ts'): ((0o0644, "9fb7a118318b442dd327e89bff793d67a6c07ead964d04ba97c219c1e1bf8ca5"), (0o0644, "08c2bebe46b885fcdef58cbe08d0fdba76710c21da5d2780ac8d63c49cafc206")),
+        Path('worker/tests/staging_d1_probe_retirement.test.ts'): (None, (0o0644, "d2442e3fb955a6a08dd8d8d2643cfb78dfd40eabd16ec6d9d313fae16be653ab")),
+        Path('worker/tests/staging_runtime_d1_probe.test.ts'): ((0o0644, "aa53d792193df3cad82fc895332ce728f0d40c77807d66c7d4f07eec04772c8c"), (0o0644, "15b4023d2445f46a18dc264a4605f4f7eda65e07239d2bf41871acd93db7bb83")),
+    },
+    "i2565": {
+        Path('.github/workflows/issue-1650-real-integration-contract.yml'): ((0o0644, "7c474c4926c9342c025d32017ab7808a42659a991237bd8874a5a4df4b1a4be7"), (0o0644, "8787a94eaf42862be6baea6304de64a16c0bd9d13891429f18f68015d716037f")),
+        Path('.github/workflows/real-ignored-harnesses.yml'): ((0o0644, "e18baf7d4983b457c398c0d8c74a464390aa6367ad491120c70f0fd3a04a8573"), (0o0644, "7e07edb842d3e0077ceab32035fbc754074bc7b95532045c3a80324428331db9")),
+        Path('crates/corelink-stripe-real/src/client.rs'): ((0o0644, "21c3b70a4b6c7dfcbb548dc07dc9f6abc8bdbaf2045bae2b52622a82ebb45fea"), (0o0644, "40059a20c4cde7dcc2c5a4a6d52cd98e802ef24735bd22e060050e85f0cddccc")),
+        Path('crates/corelink-stripe-real/tests/live_integration.rs'): ((0o0644, "b7d8b83fb6f736c4675d7cb4d36727464b6d9ddcc97fe3d026a1e0fe182bb587"), (0o0644, "36129c26caf3b54ac5da4fb50adfc98dae0f11cb2994dc124f298a88672259d9")),
+        Path('docs/handoff/2026-09-22-i1650-real-integration-readiness.json'): ((0o0644, "d826103bdc29aad73a5345465105ab8aa63200ed0175301421f168827664536c"), (0o0644, "947e49ba07061eac1db56c389924d03928e64ba691fd5a825fca35535de07b1f")),
+        Path('scripts/real-ignored-harness-manifest.json'): ((0o0644, "00e3c392584fc56b0533d40df265fb37b8785a65b20031e327481062a785b55f"), (0o0644, "c71ea89468fe06595270142646ee25ef4f853839c0115ea54fd58c4441b1740c")),
+        Path('scripts/run-real-ignored-harnesses.sh'): ((0o0755, "9a3bb0d28733b0c9a6f655330a06ca57183a78787c93015f5f9cd1087bdd0287"), (0o0755, "71d05f1557d3603e2f565e4572f544fa1d284eb52f055789afa1f0aeeb387a47")),
+        Path('scripts/verify_real_ignored_harnesses.py'): ((0o0644, "d2ec122fea6fcb6f7b7504ebe00dfcad32bf692c6e959141433ce59d7dc1eb6b"), (0o0644, "377bcacb98e7e936bc812babc781a1fc50e68c4da8760c0bf25910f1e16e283a")),
+    },
+}
+WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
+    Path('.github/workflows/container-build-push-prod.yml'): (0o0644, "8ee0d29eff20ef5d473e4a712279a727fcdc6c881ba2bb46433f7659802f598f"),
+    Path('.github/workflows/issue-2183-reapi-composition.yml'): (0o0644, "bb382d6898ce95fb690c62bfc50334e94889dbf371fa7a0871dd7bac5e24b431"),
+    Path('.github/workflows/issue-2568-sla-credit-real.yml'): (0o0644, "1376e1b9eb4136ef1faba62abbe3e051bcf9c9df837351697e0b3048bac55390"),
+    Path('.github/workflows/issue-2730-dsr-alert-receiver.yml'): (0o0644, "00ed5dab40391114b3a3a5bc299f98568e78c2dfcd14a05ccf5bac4276a6a235"),
+    Path('.github/workflows/staging-quarantine-apply.yml'): (0o0644, "24d901a61e2b45af71fc5ec0632455956690725f8f05f9959c0baf213deb1594"),
+    Path('Cargo.lock'): (0o0644, "e161aa27d6994badb497a9c881b99d9ee0255a4c2796b7f345e8a81c1bb9e707"),
+    Path('Cargo.toml'): (0o0644, "6012612bdd15b83e906f9a870049e137a9f2b947af1dd1105ee9aa6a460bfb0a"),
+    Path('Dockerfile'): (0o0644, "884f577834cfb8ef3c357afee884ac02f27c9c6031a139db04a0523fc07d5472"),
+    Path('crates/corelink-container/build.rs'): (0o0644, "b7d1b11510f0bf00a21f2f83a97a43389b0d288167f6b9c5516da57ffda9ce4d"),
+    Path('crates/corelink-container/proto/staging_transport_probe.proto'): (0o0644, "b243732e58ba3ced040e9181befd4f3c2bd995e0b23eb750889c93629245970c"),
+    Path('crates/corelink-container/src/grpc_staging_probe.rs'): (0o0644, "bab9a3dd5fea718e4e384e2fabe9145fadf9233bd9b41522c267ea02019d8e3d"),
+    Path('crates/corelink-container/src/lib.rs'): (0o0644, "01ad3ff6280beabd6dd0dea5e701315e41f7a1aba85a9dd3c7706bde0d3d7ef0"),
+    Path('crates/corelink-container/src/main.rs'): (0o0644, "44c28a9a8387212b156ce05aa65918b0c34454453d7fcd85e79fd29f9a5518db"),
+    Path('crates/corelink-container/src/reapi_composition.rs'): (0o0644, "57b3e2c730cf2f326b7f8bdb99df04b9423179524dc830805c3dbb8e62a5f337"),
+    Path('crates/corelink-container/src/routes.rs'): (0o0644, "04a84d7be655fd25ee6d05d1b5c598c169be1aae381a255533ffeda0aad1ec2f"),
+    Path('crates/corelink-container/src/storage.rs'): (0o0644, "ee16e0155fae72ddfe01fedb4b7d29bff087467b2a23c42c830a42f3aeb9b78e"),
+    Path('crates/corelink-container/src/storage/d1_http.rs'): (0o0644, "258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5"),
+    Path('infra/staging/README.md'): (0o0644, "5f3daac1edba6320bcfc6663d57bece16a9c63b7977156c0fc3a3b562276a435"),
+    Path('infra/staging/topology.json'): (0o0644, "a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14"),
+    Path('scripts/staging_bootstrap_provider.py'): (0o0644, "8a77837893f2bd094f1fd834042361e69375e1453ec1d4dde9c20c605d00ccdb"),
+    Path('scripts/verify_i2183_reapi_composition.py'): (0o0644, "532408187817e4ff508e9b2f5776e1646f7f304235ab697cf2e28fbab49a1b6c"),
+    Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "ac63cef261ec32498902c76d36eaff0f286506777f27e141dc7645dd08a80661"),
+    Path('scripts/verify_staging_provider_preflight.py'): (0o0644, "ddc9d57aa31cbee273dabc923b23a3ef33fb11b40bbd3b746ad7dcaca0633b62"),
+    Path('scripts/verify_staging_topology_contract.py'): (0o0644, "48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9"),
+    Path('specs/03_architecture/issue-2176-grpc-transport-contract.md'): (0o0644, "351aa666c129c7dbc87db4f69f476f8bcdf522d0ba35223dca7eb507c8a926b3"),
+    Path('tests/test_issue_1700_route_inventory.py'): (0o0644, "a371d50bc84eafad075c9ad943cbe9ab5b90a53a4e1501d19a428d38873a5d4a"),
+    Path('tests/test_staging_bootstrap_provider.py'): (0o0644, "ec4633c038fd4ae1553464e00ba2ce6dfe79e10562f79243e0fb629d1d93e219"),
+    Path('tests/test_staging_custom_domain.py'): (0o0644, "cfc063496302c06c8bc879c380c7f24e13088fdf8f2a5412def3e6e60b115afc"),
+    Path('tests/test_staging_quarantine_apply_contract.py'): (0o0644, "b90d143271b96038ce2f51a23bc62b3be3fee546a231f003b9bcfbfb79a497bf"),
+    Path('worker/package.json'): (0o0644, "96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34"),
+    Path('worker/src/durable_object_probes.ts'): (0o0644, "3b1a67b3c6883d23dfd29bd0a8cf18de9e9c3848b4e79e1d3d04539944081f78"),
+    Path('worker/src/durable_object_start.ts'): (0o0644, "7f8c28ac7b93628f4c4767efd1bb68bb75d2df9ea85442e92d9a6097c500ce4c"),
+    Path('worker/src/grpc_staging_authorization.ts'): (0o0644, "6b8e2f6eb6cc42d0b0d7404950d068bab9da47c4bb1bb4c4fa0a0073c3f48400"),
+    Path('worker/src/grpc_staging_transport.ts'): (0o0644, "b3c0b471790ed7fd64138d99c0976b63c4fb620b0ce588f8c9852ea2de900f72"),
+    Path('worker/src/grpc_transport_gate.ts'): (0o0644, "68b14c5537100733ff467d8beb80f3cadce07f9b3b5f43339ab323e8ca1cfcfd"),
+    Path('worker/src/index.ts'): (0o0644, "18b960a74833284f953bd28818cd7260798d9570c17bce459502f7b7ca50f3cd"),
+    Path('worker/src/index_common.ts'): (0o0644, "dadbd05f00c855febed2266eb0ef308e2aaa80a909c4c8e463c400ed2d6bb4de"),
+    Path('worker/src/index_env.ts'): (0o0644, "ae733fad5467d839b0983f5b0df306fe8ad4c7bee68822e66e1d5b4f028886cf"),
+    Path('worker/src/index_env_contract.ts'): (0o0644, "ec259cf4d4f4c6bab582375b88a449c3d5a3d8d53c7680afdcb8e7728710eb9d"),
+    Path('worker/src/index_fetch.ts'): (0o0644, "d8619985ea28485792198c8f0e8607c108d82af66a76c0fbfc5253f2e2c3ab07"),
+    Path('worker/src/lib/devenv_cleanup_route.ts'): (0o0644, "e279cb99a585388fbf4483313a80c042df3c14bf1ca5ef52c31dc451e329907c"),
+    Path('worker/src/lib/internal_auth.ts'): (0o0644, "e773fa80db1ffd97ccdd20ae08e60e662482eea7e55bef6f19a3d61644b43acf"),
+    Path('worker/src/lib/runner_credential_routes.ts'): (0o0644, "6cd7af8c032dd8315c619f6830c3ef63df1a459152f197ca6a7faedf847b5731"),
+    Path('worker/src/pat_issue_rate_limit.ts'): (0o0644, "ff4ca0814c40f128fed4650b2041660670bcc985037b975cb6f29b177d3c1afb"),
+    Path('worker/src/staging_d1_binding_proxy.ts'): (0o0644, "1e5d940b240a4bef9daba0e360758793ab7b11a165f5b1bc8ccb7eae658a348d"),
+    Path('worker/src/staging_d1_binding_proxy_entrypoint.ts'): (0o0644, "af759d84e63a2016737c899cfba045f52c1fcf20061678a3612ddeec6c18bdab"),
+    Path('worker/tests/cloudflare_workers_node_stub.ts'): (0o0644, "0237103e747517298fea07261598d250e25edff6f412cd1df33695c1585cfcf7"),
+    Path('worker/tests/grpc_staging_transport.test.ts'): (0o0644, "ab3748063dda62d241c4c0cfdd482261514a2b8fd8a6f427d5ef4023c7fe4f96"),
+    Path('worker/tests/staging_d1_binding_proxy.test.ts'): (0o0644, "5710f974898de4c88a1ddca3f9815589d7c805faa4481f44d9005054d10796cc"),
+    Path('worker/tests/staging_d1_binding_start_gate.test.ts'): (0o0644, "2377e10e46528888f60f711820a931f8358d214ac53b8c822bfac9c2d9f2da66"),
+    Path('worker/tsconfig.json'): (0o0644, "98bfdb3e20a22fe1433a82c1cb04bd3522fa74445a61524a4f2a7263f01a93b3"),
+    Path('worker/tsconfig.test.json'): (0o0644, "7dded910aa967755433a54655f915ba7cf35e271afce2d9f47dffa32ad6f3f79"),
+    Path('worker/vitest.config.mts'): (0o0644, "e2c2f0e46d4a45d5e789f920f95b73ffd44e6a14a9450e11817426995feda506"),
+    Path('worker/vitest.miniflare.config.mts'): (0o0644, "da43009c6edc93f9ca3b626e29371b84d5125de0645c10ba7f3b6bbf3751a12a"),
+}
+WAVE_MATRIX_SHA256 = "323917e9f4cb3c67ace170b59cd548034a7af1d17759f81ab5ccd9e300f9b8aa"
+WAVE_CONTROLLED_PATHS = frozenset((
+    Path("scripts/verify_i2176_grpc_deny_gate.py"),
+    Path("tests/test_verify_i2176_grpc_deny_gate.py"),
+    Path(".github/workflows/issue-2176-grpc-deny-gate.yml"),
+    Path("docs/internal/secrets-checklist.md"),
+))
+
+def _wave_pin_matches(root: Path, relative: Path, pin: tuple[int, str] | None) -> bool:
+    if pin is None:
+        return is_absent(root, relative)
+    return matches_pinned_file(root, relative, pin)
+
+def _wave_state(root: Path) -> dict[str, str]:
+    states: dict[str, str] = {}
+    for group, pins in WAVE_GROUPS.items():
+        old = all(_wave_pin_matches(root, path, old_pin) for path, (old_pin, _new_pin) in pins.items())
+        new = all(_wave_pin_matches(root, path, new_pin) for path, (_old_pin, new_pin) in pins.items())
+        if old == new:
+            raise ContractError(f"unknown or partial trusted BASE delivery state: {group}")
+        states[group] = "old" if old else "new"
+    return states
+
+def _wave_controls_match(root: Path) -> bool:
+    if not all(_wave_pin_matches(root, path, pin) for path, pin in WAVE_BASE_CONTROLS.items()):
+        return False
+    return _wave_pin_matches(root, Path("docs/internal/secrets-checklist.md"), (0o644, WAVE_MATRIX_SHA256))
+
+def _wave_common_controls_equal(candidate: Path, trusted_base: Path) -> None:
+    if not _wave_controls_match(trusted_base) or not _wave_controls_match(candidate):
+        raise ContractError("actual d2f1 transport controls or P0 secrets matrix drift")
+    for relative in WAVE_CONTROLLED_PATHS:
+        require_regular_mode(trusted_base, relative)
+        require_regular_mode(candidate, relative)
+        require_exact(candidate, trusted_base, relative)
+    policy = load_trusted_delivery_policy()
+    frozen = {Path(path) for path in policy.POLICY | policy.POLICY_FIXTURES}
+    frozen.add(B141_TEST)
+    for relative in frozen:
+        require_regular_mode(trusted_base, relative)
+        require_regular_mode(candidate, relative)
+        require_exact(candidate, trusted_base, relative)
+
+def validate_wave(candidate: Path, trusted_base: Path, changes: set[Path]) -> bool:
+    # Accept only the actual d2f1 control surface plus four complete old/new groups.
+    base = _wave_state(trusted_base)
+    target = _wave_state(candidate)
+    if not _wave_controls_match(trusted_base):
+        raise ContractError("trusted BASE transport controls do not match actual d2f1 snapshot")
+    _wave_common_controls_equal(candidate, trusted_base)
+    changed_groups = [name for name in WAVE_GROUPS if base[name] != target[name]]
+    if not changed_groups:
+        if changes:
+            raise ContractError(f"wave candidate has unrelated changes: {sorted(map(str, changes))}")
+        return True
+    if len(changed_groups) != 1:
+        raise ContractError("wave candidate changes combined delivery groups")
+    group = changed_groups[0]
+    if base[group] != "old" or target[group] != "new":
+        raise ContractError(f"wave candidate downgrades delivery group: {group}")
+    if changes != set(WAVE_GROUPS[group]):
+        delta = sorted(map(str, changes ^ set(WAVE_GROUPS[group])))
+        raise ContractError(f"wave candidate has partial or extra {group} paths: {delta}")
+    return True
+
+
 def validate(candidate: Path, trusted_base: Path) -> None:
-    # Keep the exception visibly bounded.  A future perimeter path belongs in
-    # LOCKED_PERIMETER_PATHS unless its own protected contract proves it is
-    # CI-only and credentialless.
+    # Production admission is exclusively the frozen, trusted-BASE wave.
+    # Legacy fixture validation remains private to self-test/unit-test setup.
+    changes = changed_paths(trusted_base, candidate)
+    validate_wave(candidate, trusted_base, changes)
+
+
+def _validate_legacy_fixture(candidate: Path, trusted_base: Path) -> None:
+    # Historical synthetic fixtures do not contain the actual trusted policy
+    # module or P0 pins. This private constructor path is never used by the CLI.
+    # Keep the legacy exception visibly bounded as a regression-test oracle.
     if set(MIGRATABLE_CI_PATHS) & set(LOCKED_PERIMETER_PATHS):
         raise ContractError("migratable CI paths must not bypass the locked perimeter")
     changes = changed_paths(trusted_base, candidate)
@@ -943,7 +1131,7 @@ def expect_rejected(candidate: Path, trusted_base: Path, relative: Path, old: st
         raise ContractError(f"self-test fixture lost mutation anchor {old!r}")
     write(candidate, relative, original.replace(old, new, 1))
     try:
-        validate(candidate, trusted_base)
+        _validate_legacy_fixture(candidate, trusted_base)
     except ContractError:
         pass
     else:
@@ -958,12 +1146,12 @@ def self_test() -> None:
         candidate = fixture / "candidate"
         write_fixture_base(trusted_base)
         write_fixture_candidate(candidate, trusted_base)
-        validate(candidate, trusted_base)
+        _validate_legacy_fixture(candidate, trusted_base)
 
         # A CI-only migration does not edit the absent bootstrap gRPC surface.
         unchanged = fixture / "unchanged"
         shutil.copytree(trusted_base, unchanged, symlinks=True)
-        validate(unchanged, trusted_base)
+        _validate_legacy_fixture(unchanged, trusted_base)
 
         mutations = (
             (INDEX, "if (grpcTransportGate !== null) return grpcTransportGate;", ""),
@@ -983,7 +1171,7 @@ def self_test() -> None:
         # A candidate may edit its own verifier, but the workflow never imports
         # it; the protected-base verifier above remains authoritative.
         write(candidate, Path("scripts/verify_i2176_grpc_deny_gate.py"), "raise SystemExit(0)\n")
-        validate(candidate, trusted_base)
+        _validate_legacy_fixture(candidate, trusted_base)
 
 
 def main() -> int:
