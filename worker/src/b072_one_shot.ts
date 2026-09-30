@@ -8,10 +8,6 @@ export const B072_STAGING_D1_ID = "d72a6b39-6a48-4338-bfda-1111dda98604";
 export const B072_MAX_WINDOW_MS = 2 * 60 * 60 * 1_000;
 export const B072_MIN_PROPAGATION_MS = 20 * 60 * 1_000;
 
-interface B072Env extends Env {
-  readonly SYNTHETIC_DRILL_PROVIDER_MODE?: string;
-}
-
 interface Authorization {
   issue_id: number;
   serving_sha: string;
@@ -36,7 +32,7 @@ function reject(controller: ScheduledControllerLike, reason: string): never {
   throw new Error("B-072 one-shot rejected");
 }
 
-function isAuthorization(value: Authorization | null, env: B072Env, now: number, scheduledTime: number): value is Authorization {
+function isAuthorization(value: Authorization | null, env: Env, now: number, scheduledTime: number): value is Authorization {
   if (value === null) return false;
   const sha = env.SENTRY_RELEASE ?? "";
   return value.issue_id === 1652 &&
@@ -55,7 +51,7 @@ function isAuthorization(value: Authorization | null, env: B072Env, now: number,
 
 export async function runB072OneShot(
   controller: ScheduledControllerLike,
-  env: B072Env,
+  env: Env,
   now: () => number = Date.now,
 ): Promise<void> {
   if (controller.cron !== B072_ONE_SHOT_CRON) reject(controller, "unknown_cron");
@@ -141,11 +137,11 @@ export async function runB072OneShot(
   let receipt: unknown;
   try { receipt = await response.json(); } catch { receipt = null; }
   const row = typeof receipt === "object" && receipt !== null ? receipt as Record<string, unknown> : null;
-  if (!response.ok || row === null || row.terminal !== true || row.outcome !== "provider_deferred" ||
-      row.receiver_result !== "persisted_provider_deferred" || row.drill_id !== drillId ||
-      row.correlation_id !== correlationId || row.scheduled_at_ms !== controller.scheduledTime ||
-      row.worker_revision !== sha || row.serving_sha !== sha ||
-      row.receiver_worker_revision !== authorization.receiver_worker_revision) {
+  if (!response.ok || row === null || row['terminal'] !== true || row['outcome'] !== "provider_deferred" ||
+      row['receiver_result'] !== "persisted_provider_deferred" || row['drill_id'] !== drillId ||
+      row['correlation_id'] !== correlationId || row['scheduled_at_ms'] !== controller.scheduledTime ||
+      row['worker_revision'] !== sha || row['serving_sha'] !== sha ||
+      row['receiver_worker_revision'] !== authorization.receiver_worker_revision) {
     reject(controller, "terminal_receipt_invalid");
   }
   console.info(`[b072_one_shot] completed drill=${drillId} result=provider_deferred_terminal`);
