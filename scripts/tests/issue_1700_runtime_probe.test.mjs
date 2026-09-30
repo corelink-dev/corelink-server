@@ -335,7 +335,11 @@ test("readback rejects wrong app, wrong digest, skipped version, and deadline", 
 
 
 test("host ignores wrong nonce, release, expired and pre-invocation receipts and cleans up", async () => {
+  const missingV4CatalogReceipt = { ...receipt };
+  delete missingV4CatalogReceipt.v4_probe_catalog_absent;
   for (const emittedReceipt of [
+    missingV4CatalogReceipt,
+    { ...receipt, v4_probe_catalog_absent: false },
     { ...receipt, probe_nonce: "old-window" },
     { ...receipt, worker_release: "f".repeat(40) },
     { ...receipt, old_probe_retired: false },
