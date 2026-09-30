@@ -30,8 +30,40 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type "deploy-prod" to confirm production deploy'
+        description: 'Type deploy-prod for the existing fleet route, or <image_mode>-iad-b063 for IAD image-only'
         required: true
+        type: string
+      operation:
+        description: 'Existing Worker+Container route or B-063 image-only IAD operation'
+        required: false
+        type: choice
+        options: [full, image-only]
+        default: full
+      image_mode:
+        description: 'For image-only only: read-only plan, forward apply, or explicit rollback'
+        required: false
+        type: choice
+        options: [plan, apply, rollback]
+        default: plan
+      expected_sha:
+        description: 'Exact protected main commit for image-only operation'
+        required: false
+        type: string
+      expected_app_version:
+        description: 'Fresh exact IAD app version for image-only mutation'
+        required: false
+        type: string
+      expected_config_sha256:
+        description: 'Fresh full IAD app config SHA-256 for image-only mutation'
+        required: false
+        type: string
+      authority_ref:
+        description: 'Root issue-1648-comment-N operational ledger reference'
+        required: false
+        type: string
+      scope_receipt_sha256:
+        description: 'Optional redacted token-scope receipt SHA-256'
+        required: false
         type: string
       env:
         description: 'Which prod env to deploy. Leave BLANK to deploy ALL 5 (prod + prod-{sam,lhr,nrt,syd}) in one dispatch, or set one of: prod | prod-sam | prod-lhr | prod-nrt | prod-syd to deploy a single env.'
@@ -73,10 +105,16 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           CONFIRM: ${{ github.event.inputs.confirm }}
+          OPERATION: ${{ inputs.operation }}
+          IMAGE_MODE: ${{ inputs.image_mode }}
+          TARGET_ENV: ${{ inputs.env }}
+          SKIP_PIN_FRESHNESS: ${{ inputs.skip_pin_freshness }}
         run: |
-          if [ "${CONFIRM}" != "deploy-prod" ]; then
-            echo "ERROR: confirm input must be exactly 'deploy-prod'." >&2
-            exit 1
+          if [ "$OPERATION" = image-only ]; then
+            [[ "$TARGET_ENV" == prod && "$SKIP_PIN_FRESHNESS" != true ]]
+            [[ "$CONFIRM" == "${IMAGE_MODE}-iad-b063" ]]
+          else
+            [[ "$OPERATION" == full && "$CONFIRM" == deploy-prod ]]
           fi
 
       - name: Checkout
@@ -86,11 +124,13 @@ jobs:
           persist-credentials: false
 
       - name: Run secrets-checklist drift verifier
+        if: inputs.operation != 'image-only'
         run: |
           chmod +x ./scripts/secrets-checklist-verify.sh
           ./scripts/secrets-checklist-verify.sh
 
       - name: Verify Container env-forwarding contract
+        if: inputs.operation != 'image-only'
         # Keep protected deployment admission at parity with the PR drift gate:
         # every Container-read variable must reach it through the Worker DO.
         run: python3 scripts/check-env-contract.py
@@ -101,7 +141,12 @@ jobs:
           # Empty for the release-pipeline (workflow_run) trigger, which has no
           # inputs → deploys the whole fleet.
           ENV_IN: ${{ github.event.inputs.env }}
+          OPERATION: ${{ inputs.operation }}
         run: |
+          if [ "$OPERATION" = image-only ]; then
+            echo 'matrix={"env":["prod"]}' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ -z "${ENV_IN:-}" ]; then
             echo 'matrix={"env":["prod","prod-sam","prod-lhr","prod-nrt","prod-syd"]}' >> "$GITHUB_OUTPUT"
             echo "Deploy target: ALL 5 prod envs (no specific env given) — one dispatch converges the whole fleet."
@@ -131,17 +176,20 @@ jobs:
       DEPLOY_SOURCE_SHA: ${{ github.sha }}
     steps:
       - name: Checkout
+        if: inputs.operation != 'image-only'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Setup Node.js
+        if: inputs.operation != 'image-only'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
 
       - name: Install wrangler (pinned; version from scripts/_wrangler-pin.sh)
+        if: inputs.operation != 'image-only'
         run: |
           # Single source of truth for the pin — the same file the deploy
           # scripts read for their fallback, so the two cannot drift apart.
@@ -153,6 +201,7 @@ jobs:
           wrangler --version
 
       - name: List CF Worker secrets (prod env)
+        if: inputs.operation != 'image-only'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
@@ -161,6 +210,7 @@ jobs:
           cat /tmp/wrangler-secrets.json
 
       - name: Verify required prod secrets are populated
+        if: inputs.operation != 'image-only'
         run: |
           # Hard-required secrets for prod. If any of these are missing in
           # Cloudflare, fail before deploying — better to short-circuit than
@@ -232,6 +282,8 @@ jobs:
       - gate-secrets-checklist
       - gate-cf-secrets-populated
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     environment: production
     strategy:
       fail-fast: false
@@ -251,6 +303,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node.js
+        if: inputs.operation != 'image-only'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
@@ -261,11 +314,13 @@ jobs:
       # workspace (pnpm@10.32.1); `--filter worker...` installs the worker + its
       # deps only (not the heavy admin-ui/docs members).
       - name: Install worker deps (pnpm workspace)
+        if: inputs.operation != 'image-only'
         run: |
           npm install -g pnpm@10.32.1
           pnpm install --frozen-lockfile --filter worker...
 
       - name: Install wrangler (pinned; version from scripts/_wrangler-pin.sh)
+        if: inputs.operation != 'image-only'
         run: |
           # Single source of truth for the pin — the same file the deploy
           # scripts read for their fallback, so the two cannot drift apart.
@@ -277,10 +332,12 @@ jobs:
           wrangler --version
 
       - name: Verify jq present
+        if: inputs.operation != 'image-only'
         # jq is available on the GitHub-hosted Ubuntu runner image.
         run: jq --version
 
       - name: Deploy Worker + prove healthy new writer rollout (prod)
+        if: inputs.operation != 'image-only'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
@@ -305,8 +362,45 @@ jobs:
         run: |
           bash scripts/deploy-container-prod.sh --apply --env "${WRANGLER_ENV}"
 
+      - name: B-063 bounded IAD image-only plan, apply, or rollback
+        if: inputs.operation == 'image-only'
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          MODE: ${{ inputs.image_mode }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EXPECTED_APP_VERSION: ${{ inputs.expected_app_version }}
+          EXPECTED_CONFIG_SHA256: ${{ inputs.expected_config_sha256 }}
+          I1648_AUTHORITY_REF: ${{ inputs.authority_ref }}
+          I1648_SCOPE_RECEIPT_SHA256: ${{ inputs.scope_receipt_sha256 }}
+          CONFIRM: ${{ inputs.confirm }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == HuGR-dev/corelink-server ]]
+          [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_REF_PROTECTED" == true ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ && "$EXPECTED_SHA" == "$GITHUB_SHA" ]]
+          [[ "$CF_ACCOUNT_ID" == 6a1fc1c626fc2628823e60b9db01f5cd ]]
+          [[ "$WRANGLER_ENV" == prod && "$CONFIRM" == "${MODE}-iad-b063" ]]
+          python3 -I tests/test_issue_1648_image_only.py
+          mkdir -p artifacts
+          python3 -I scripts/issue_1648_image_only.py "$MODE" \
+            --expected-app-version "$EXPECTED_APP_VERSION" \
+            --expected-config-sha256 "$EXPECTED_CONFIG_SHA256" \
+            --confirm "$CONFIRM" \
+            --receipt artifacts/issue-1648-image-only.json
+
+      - name: Preserve B-063 redacted receipt and phase journal
+        if: always() && inputs.operation == 'image-only'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: issue-1648-image-only-${{ github.run_id }}
+          path: artifacts/issue-1648-image-only.json*
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Emit deploy audit event
-        if: success()
+        if: success() && inputs.operation != 'image-only'
         env:
           DEPLOY_WEBHOOK_SECRET: ${{ secrets.DEPLOY_WEBHOOK_SECRET }}
           CF_DEPLOY_VERIFIER_URL: ${{ secrets.CF_DEPLOY_VERIFIER_URL }}
@@ -350,6 +444,7 @@ jobs:
       always()
       && needs.gate-secrets-checklist.result == 'success'
       && needs.deploy.result == 'success'
+      && inputs.operation != 'image-only'
       && inputs.env == ''
       && !inputs.skip_pin_freshness
     runs-on: ubuntu-24.04
