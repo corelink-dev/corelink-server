@@ -1,0 +1,4 @@
+# Debian bookworm's CPython 3.11; hashes cover the supported Fargate amd64/arm64 wheels.
+blake3==1.0.8 \
+    --hash=sha256:c7780666dc6be809b49442d6d5ce06fdbe33024a87560b58471103ec17644682 \
+    --hash=sha256:7fcfe81b3ae3fb5d2e88be0d3259603ff95f0d5ed69f655c28fdaef31e49a470

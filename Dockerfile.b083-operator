@@ -1,0 +1,19 @@
+# Test-only operator sidecar for the bounded #2165 staging lifecycle.
+FROM debian:bookworm-slim@sha256:b29f74a267526ae6ea104eed6c46133b0ca70ce812525df8cd5817698f0a624a
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --no-create-home operator \
+    && install -d -o 10001 -g 10001 -m 0700 /run/issue-2165 /opt/operator-venv
+
+COPY requirements-issue-2165-operator.txt /tmp/requirements-issue-2165-operator.txt
+RUN python3 -m venv /opt/operator-venv \
+    && /opt/operator-venv/bin/pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/requirements-issue-2165-operator.txt \
+    && rm /tmp/requirements-issue-2165-operator.txt
+
+COPY scripts/issue_2165_sidecar_operator.py /usr/local/bin/issue-2165-operator
+RUN chmod 0555 /usr/local/bin/issue-2165-operator
+USER 10001
+ENTRYPOINT ["/opt/operator-venv/bin/python", "/usr/local/bin/issue-2165-operator"]
