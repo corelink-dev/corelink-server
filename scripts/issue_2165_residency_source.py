@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Produce one archive-compatible residency row from protected readbacks.
+"""Produce one archive-compatible row from the protected D1 metadata GET.
 
-The script is credentialless and makes no provider calls. It delegates target
-and raw-response validation to issue_2165_residency_receipt, then emits only a
-redacted archive row. A Cloudflare provider URL is required as the physical
-placement event reference; a local digest or synthetic identifier is rejected.
+The live request is performed in the protected workflow; caller-supplied URLs
+and physical-placement attestations are not accepted as evidence.
 """
 
 from __future__ import annotations
@@ -15,7 +13,6 @@ import os
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
 from typing import Any
 
 import issue_2165_residency_receipt as validator
@@ -32,24 +29,19 @@ def archive_row(manifest: Any, sources: Any, raw_evidence: Any, env: dict[str, s
     rows = result.get("rows") if isinstance(result, dict) else None
     if not isinstance(rows, list) or len(rows) != 1 or rows[0].get("step") != "residency" or rows[0].get("status") != "verified":
         raise SourceError("existing residency validator did not produce exactly one verified row")
-    source_bundle = sources.get("d1_physical_placement") if isinstance(sources, dict) else None
-    source = source_bundle.get("source") if isinstance(source_bundle, dict) else None
-    ref = source.get("provider_ref") if isinstance(source, dict) else None
+    source_bundle = sources.get("d1_control_plane") if isinstance(sources, dict) else None
     target = manifest.get("cloudflare", {}) if isinstance(manifest, dict) else {}
     account = target.get("account_id")
     d1 = target.get("d1", {})
     database = d1.get("database_id") if isinstance(d1, dict) else None
-    if not isinstance(ref, str):
-        raise SourceError("physical-placement provider reference is missing")
-    parsed = urlsplit(ref)
-    hostname = (parsed.hostname or "").casefold()
-    cloudflare_owned = hostname == "cloudflare.com" or hostname.endswith(".cloudflare.com")
-    if (parsed.scheme != "https" or not cloudflare_owned
-            or parsed.username or parsed.password or parsed.query or parsed.fragment or not parsed.path
-            or not isinstance(account, str) or not account
-            or not isinstance(database, str) or not database
-            or re.search(r"(?:sha-?256|digest|hash)[:=/.-]?[a-f0-9]{16,}", ref, re.IGNORECASE)):
-        raise SourceError("physical-placement event_ref must be a direct Cloudflare-owned HTTPS provider reference")
+    if not isinstance(source_bundle, dict) or source_bundle.get("method") != "authenticated-get":
+        raise SourceError("authenticated D1 metadata GET source is missing")
+    if (not isinstance(account, str) or not validator.ACCOUNT_ID_RE.fullmatch(account)
+            or not isinstance(database, str) or not validator.D1_DATABASE_UUID_RE.fullmatch(database)):
+        raise SourceError("protected D1 target is missing")
+    ref = f"https://api.cloudflare.com/client/v4/accounts/{account}/d1/database/{database}"
+    if source_bundle.get("endpoint") != ref:
+        raise SourceError("D1 metadata GET endpoint is not the exact protected account/database path")
     verified_sources = rows[0].get("source", {})
     digest = verified_sources.get("digest") if isinstance(verified_sources, dict) else None
     occurred = rows[0].get("occurred_at_utc")

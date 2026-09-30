@@ -28,8 +28,6 @@ def env_for(manifest: dict) -> dict[str, str]:
 def inputs():
     manifest, sources, raw = fixture()
     manifest["aws"]["account_id"] = "123456789012"
-    sources["d1_physical_placement"]["source"]["provider_ref"] = (
-        "https://support.cloudflare.com/attachments/placement-attestation-opaque-42")
     return manifest, sources, raw, env_for(manifest)
 
 
@@ -39,37 +37,53 @@ def test_outputs_only_one_archive_compatible_redacted_row() -> None:
     assert set(row) == {"step", "occurred_at_utc", "source"}
     assert row["step"] == "residency"
     assert row["source"]["kind"] == "d1"
-    assert row["source"]["event_ref"] == sources["d1_physical_placement"]["source"]["provider_ref"]
+    expected_ref = ("https://api.cloudflare.com/client/v4/accounts/"
+                    f"{manifest['cloudflare']['account_id']}/d1/database/{manifest['cloudflare']['d1']['database_id']}")
+    assert row["source"]["event_ref"] == expected_ref
     assert len(row["source"]["digest"]) == 64
     assert "11111111" not in json.dumps(row)
     assert "tenant_rows" not in json.dumps(row)
 
 
-def test_accepts_opaque_cloudflare_support_reference_when_attestation_contents_bind_target() -> None:
+def test_does_not_accept_opaque_cloudflare_support_reference_as_source() -> None:
     manifest, sources, raw, env = inputs()
-    row = producer.archive_row(manifest, sources, raw, env)
-    assert row["source"]["event_ref"] == "https://support.cloudflare.com/attachments/placement-attestation-opaque-42"
-
-
-@pytest.mark.parametrize("ref", ["sha256:" + "a" * 64, "https://example.com/attestation/42"])
-def test_rejects_hash_only_or_non_cloudflare_reference(ref: str) -> None:
-    manifest, sources, raw, env = inputs()
-    sources["d1_physical_placement"]["source"]["provider_ref"] = ref
-    with pytest.raises(producer.SourceError, match="direct Cloudflare-owned HTTPS"):
+    sources["d1_control_plane"]["endpoint"] = "https://support.cloudflare.com/attachments/placement-attestation-opaque-42"
+    with pytest.raises(producer.validator.ResidencyError, match="exact authenticated database GET"):
         producer.archive_row(manifest, sources, raw, env)
 
 
-def test_rejects_missing_physical_placement_authority() -> None:
+def test_rejects_caller_supplied_physical_placement_url() -> None:
     manifest, sources, raw, env = inputs()
-    del sources["d1_physical_placement"]
-    with pytest.raises(producer.validator.ResidencyError, match="missing authoritative Cloudflare D1 physical-placement"):
+    del sources["d1_control_plane"]
+    sources["d1_physical_placement"] = {"source": {"provider_ref": "https://api.cloudflare.com/fake"}}
+    with pytest.raises(producer.validator.ResidencyError, match="sources.d1_control_plane"):
         producer.archive_row(manifest, sources, raw, env)
 
 
-def test_rejects_cross_target_placement_attestation() -> None:
+def test_rejects_wrong_d1_account_or_database_endpoint() -> None:
     manifest, sources, raw, env = inputs()
-    sources["d1_physical_placement"]["account_id"] = "wrong-account"
-    with pytest.raises(producer.validator.ResidencyError, match="physical-placement attestation"):
+    sources["d1_control_plane"]["endpoint"] = "https://api.cloudflare.com/client/v4/accounts/wrong/d1/database/database-1"
+    with pytest.raises(producer.validator.ResidencyError, match="exact authenticated database GET"):
+        producer.archive_row(manifest, sources, raw, env)
+
+
+@pytest.mark.parametrize("database_id", [
+    "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee?fields=uuid",
+    "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee#fragment",
+    "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/extra",
+])
+def test_rejects_url_metacharacters_in_database_path_segment(database_id: str) -> None:
+    manifest, sources, raw, env = inputs()
+    manifest["cloudflare"]["d1"]["database_id"] = database_id
+    env["B083_D1_DATABASE_ID"] = database_id
+    with pytest.raises(producer.validator.ResidencyError, match="UUID path segment"):
+        producer.archive_row(manifest, sources, raw, env)
+
+
+def test_rejects_missing_d1_control_plane_readback() -> None:
+    manifest, sources, raw, env = inputs()
+    del sources["d1_control_plane"]
+    with pytest.raises(producer.validator.ResidencyError, match="sources.d1_control_plane"):
         producer.archive_row(manifest, sources, raw, env)
 
 
@@ -92,3 +106,11 @@ def test_rejects_protected_manifest_environment_mismatch() -> None:
     env["B083_CF_ACCOUNT_ID"] = "wrong"
     with pytest.raises(producer.validator.ResidencyError, match="protected AWS/CF target variables"):
         producer.archive_row(manifest, sources, raw, env)
+
+
+def test_protected_workflow_fetches_exact_d1_database_metadata_live() -> None:
+    workflow = (Path(__file__).parents[1] / ".github/workflows/issue-2165-kms-real.yml").read_text(encoding="utf-8")
+    assert 'd1_control_path = f"/accounts/{target[\'account_id\']}/d1/database/{target[\'database_id\']}"' in workflow
+    assert 'cf._api_json("GET", d1_control_path, os.environ["B083_CF_API_TOKEN"])' in workflow
+    assert '"d1_control_plane": d1_control_payload' in workflow
+    assert "physical_placement_attestation" not in workflow

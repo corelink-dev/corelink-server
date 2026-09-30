@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { D1Database } from "@cloudflare/workers-types";
-import { cleanOldProbeTables, OLD_PROBE_TABLES, OLD_TABLE_PREFIX, OLD_PROBE_RUN_BOUNDS } from "../src/staging_d1_probe_retirement.js";
+import { assertV4FailedProbeCatalogAbsent, cleanOldProbeTables, OLD_PROBE_TABLES, OLD_TABLE_PREFIX, OLD_PROBE_RUN_BOUNDS, V4_FAILED_PROBE_TABLE_PREFIX } from "../src/staging_d1_probe_retirement.js";
 
 const table = [...OLD_PROBE_TABLES.keys()][0]!;
 const schema = { type: "table", name: table, tbl_name: table,
@@ -18,6 +18,16 @@ function database(options: { objects?: object[]; foreign?: object[]; rows?: obje
 }
 
 describe("exact old staging probe SQL retirement", () => {
+  it("proves only the exact failed-v4 D1 namespace absent and never deletes it", async () => {
+    const { db, drops, prepare } = database({ objects: [] });
+    await assertV4FailedProbeCatalogAbsent(db);
+    expect(prepare.mock.calls[0]?.[0]).toContain("LIMIT 1");
+    expect(V4_FAILED_PROBE_TABLE_PREFIX).toBe("corelink_staging_d1_probe_9d8fdbfa04dd16d4_");
+    expect(drops).toEqual([]);
+    const present = database({ objects: [schema] });
+    await expect(assertV4FailedProbeCatalogAbsent(present.db)).rejects.toThrow("absence unproven");
+    expect(present.drops).toEqual([]);
+  });
   it("derives each scheduled minute from immutable host bounds", () => {
     const times = [...OLD_PROBE_TABLES.values()];
     expect(times[0]).toBe(Math.ceil(OLD_PROBE_RUN_BOUNDS.start / 60000) * 60000);
@@ -26,13 +36,13 @@ describe("exact old staging probe SQL retirement", () => {
   });
   it("drops only validated owned tables and proves absence", async () => {
     const { db, drops, prepare } = database();
-    await cleanOldProbeTables(db, () => 1790776860000);
+    await cleanOldProbeTables(db, () => 1790791260000);
     expect(drops).toEqual([`DROP TABLE "${table}"`]);
     expect(prepare.mock.calls.filter(([sql]) => sql.startsWith("SELECT type"))).toHaveLength(2);
   });
   it("empty inventory is idempotent without any DROP", async () => {
     const { db, drops } = database({ objects: [] });
-    await cleanOldProbeTables(db, () => 1790776860000);
+    await cleanOldProbeTables(db, () => 1790791260000);
     expect(drops).toEqual([]);
   });
   it.each([
@@ -44,20 +54,20 @@ describe("exact old staging probe SQL retirement", () => {
     Array.from({ length: 129 }, () => schema),
   ])("rejects whole inventory before any DROP", async (...objects) => {
     const { db, drops } = database({ objects });
-    await expect(cleanOldProbeTables(db, () => 1790776860000)).rejects.toThrow();
+    await expect(cleanOldProbeTables(db, () => 1790791260000)).rejects.toThrow();
     expect(drops).toEqual([]);
   });
   it.each([{ foreign: [{}] }, { rows: { total: 1, invalid: 1 } }, { rows: { total: 2, invalid: 0 } }])("rejects FK or unowned rows without output/destruction", async options => {
     const { db, drops } = database(options);
-    await expect(cleanOldProbeTables(db, () => 1790776860000)).rejects.toThrow();
+    await expect(cleanOldProbeTables(db, () => 1790791260000)).rejects.toThrow();
     expect(drops).toEqual([]);
   });
   it("hard expiry prevents DROP even after inventory validation", async () => {
     const { db, drops } = database();
-    await expect(cleanOldProbeTables(db, () => 1790798400000)).rejects.toThrow("window rejected");
+    await expect(cleanOldProbeTables(db, () => 1790812740000)).rejects.toThrow("window rejected");
     expect(drops).toEqual([]);
   });
   it.each([{ dropFails: true }, { retained: true }])("cleanup uncertainty cannot pass", async options => {
-    await expect(cleanOldProbeTables(database(options).db, () => 1790776860000)).rejects.toThrow();
+    await expect(cleanOldProbeTables(database(options).db, () => 1790791260000)).rejects.toThrow();
   });
 });

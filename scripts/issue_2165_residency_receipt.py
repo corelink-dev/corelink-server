@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Validate source-backed Issue #2165 residency evidence offline.
+"""Validate restricted Issue #2165 residency evidence.
 
-This program makes no provider calls. It accepts restricted provider readbacks,
-checks their target bindings against the protected manifest, then publishes one
-redacted residency row. Cloudflare D1's configured region is not treated as
-proof of physical placement; an independent authoritative placement attestation
-is required before a row can be emitted.
+The protected workflow performs the Cloudflare D1 metadata GET itself. This
+validator checks that captured response against the protected target and emits
+only a redacted D1 jurisdiction receipt; it makes no provider calls.
 """
 
 from __future__ import annotations
@@ -26,6 +24,8 @@ OUTPUT_SCHEMA = "corelink.issue-2165-residency-receipt.v1"
 ENVIRONMENT = "b083-kms-lifecycle"
 SLOTS = ("tenant_a", "tenant_b")
 HEX64 = re.compile(r"^[a-f0-9]{64}$")
+ACCOUNT_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+D1_DATABASE_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 class ResidencyError(ValueError):
@@ -79,6 +79,10 @@ def validate(manifest: Any, bundle: Any, raw_evidence: Any) -> dict[str, Any]:
     cf = _obj(m.get("cloudflare"), "manifest.cloudflare")
     d1 = _obj(cf.get("d1"), "manifest.cloudflare.d1")
     r2 = _obj(cf.get("r2"), "manifest.cloudflare.r2")
+    if not isinstance(cf.get("account_id"), str) or not ACCOUNT_ID_RE.fullmatch(cf["account_id"]):
+        raise ResidencyError("Cloudflare account id must be exactly 32 lowercase hexadecimal characters")
+    if not isinstance(d1.get("database_id"), str) or not D1_DATABASE_UUID_RE.fullmatch(d1["database_id"]):
+        raise ResidencyError("D1 database id must be a canonical UUID path segment")
     tenant_ids = m.get("disposable_tenants")
     if not isinstance(tenant_ids, list) or len(tenant_ids) != 2 or len(set(tenant_ids)) != 2:
         raise ResidencyError("manifest must bind exactly two distinct disposable tenants")
@@ -136,25 +140,42 @@ def validate(manifest: Any, bundle: Any, raw_evidence: Any) -> dict[str, Any]:
     if not expected_prefixes or observed_prefixes != expected_prefixes:
         raise ResidencyError("R2 inventory must read exactly the manifest tenant prefixes and regions")
 
-    placement = b.get("d1_physical_placement")
-    if not isinstance(placement, dict):
-        raise ResidencyError("missing authoritative Cloudflare D1 physical-placement attestation; configured region metadata is insufficient")
-    psrc = _source(placement.get("source"), "sources.d1_physical_placement.source")
-    if (placement.get("authority") != "cloudflare-d1-placement-attestation" or placement.get("account_id") != cf.get("account_id")
-            or placement.get("database_id") != d1.get("database_id") or placement.get("physical_region") != d1.get("region")
-            or placement.get("scope") != "primary-and-replicas"):
-        raise ResidencyError("D1 physical-placement attestation does not prove exact database primary and replicas in the bound region")
-    for key, source in (("ecs", app_src), ("d1_select", d1src), ("d1_physical_placement", psrc), ("r2_inventory", r2src)):
+    control = _obj(b.get("d1_control_plane"), "sources.d1_control_plane")
+    control_raw = _obj(raw.get("d1_control_plane"), "raw.d1_control_plane")
+    control_path = f"/client/v4/accounts/{cf.get('account_id')}/d1/database/{d1.get('database_id')}"
+    control_endpoint = f"https://api.cloudflare.com{control_path}"
+    if (control.get("method") != "authenticated-get" or control.get("account_id") != cf.get("account_id")
+            or control.get("database_id") != d1.get("database_id") or control.get("endpoint") != control_endpoint):
+        raise ResidencyError("D1 control-plane source must be the exact authenticated database GET for the protected target")
+    if control_raw.get("success") is not True or not isinstance(control_raw.get("result"), dict):
+        raise ResidencyError("D1 control-plane GET response is unsuccessful or malformed")
+    control_result = control_raw["result"]
+    if control_result.get("uuid") != d1.get("database_id"):
+        raise ResidencyError("D1 control-plane GET returned a different database UUID")
+    if control_result.get("jurisdiction") != "eu":
+        raise ResidencyError("D1 control-plane jurisdiction is not EU")
+    replication = control_result.get("read_replication")
+    if not isinstance(replication, dict) or replication.get("mode") not in {"auto", "disabled"}:
+        raise ResidencyError("D1 control-plane read_replication.mode is missing or malformed")
+    control_src = {
+        "provider_ref": control_endpoint,
+        "raw_sha256": _text(control.get("raw_sha256"), "sources.d1_control_plane.raw_sha256"),
+        "observed_at_utc": _utc(control.get("observed_at_utc"), "sources.d1_control_plane.observed_at_utc"),
+    }
+    if not HEX64.fullmatch(control_src["raw_sha256"]):
+        raise ResidencyError("D1 control-plane response digest must be lowercase SHA-256")
+    for key, source in (("ecs", app_src), ("d1_select", d1src), ("d1_control_plane", control_src), ("r2_inventory", r2src)):
         if key not in raw or hashlib.sha256(json.dumps(raw[key], sort_keys=True, separators=(",", ":")).encode()).hexdigest() != source["raw_sha256"]:
-            raise ResidencyError(f"raw evidence digest does not match authenticated {key} readback")
+            raise ResidencyError(f"raw evidence digest does not match {key} readback")
 
-    occurred = max(app_src["observed_at_utc"], d1src["observed_at_utc"], r2src["observed_at_utc"], psrc["observed_at_utc"])
-    sources = {"ecs": app_src, "d1_select": d1src, "d1_physical_placement": psrc, "r2_inventory": r2src}
+    occurred = max(app_src["observed_at_utc"], d1src["observed_at_utc"], r2src["observed_at_utc"], control_src["observed_at_utc"])
+    sources = {"ecs": app_src, "d1_select": d1src, "d1_control_plane": control_src, "r2_inventory": r2src}
     redacted = {"schema": OUTPUT_SCHEMA, "rows": [{"step": "residency", "occurred_at_utc": occurred,
                  "source": {"kind": "provider-readbacks", "refs": {k: v["provider_ref"] for k, v in sources.items()},
                             "digest": hashlib.sha256(json.dumps(sources, sort_keys=True, separators=(",", ":")).encode()).hexdigest()},
-                 "targets": {"aws_region": aws.get("region"), "cf_alias": "cf5128", "d1_region": d1.get("region"), "r2_region": "auto",
-                             "tenant_slots": list(SLOTS)}, "status": "verified"}]}
+                 "targets": {"aws_region": aws.get("region"), "cf_alias": "cf5128", "d1_jurisdiction": "eu",
+                             "d1_read_replication": replication["mode"], "residency_scope": "cloudflare-d1-only",
+                             "r2_region": "auto", "tenant_slots": list(SLOTS)}, "status": "verified"}]}
     return redacted
 
 
