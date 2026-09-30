@@ -2,7 +2,7 @@ fn r2_credentials(env: &StorageEnv) -> Credentials {
     Credentials::new(
         &env.r2_access_key_id,
         &env.r2_secret_access_key,
-        env.r2_session_token.as_deref(),
+        env.r2_session_token.clone(),
         None, // expiry — the signed R2 session token carries its own expiry
         "corelink-r2-s3-adapter",
     )
