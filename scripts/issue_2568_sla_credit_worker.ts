@@ -36,7 +36,7 @@ function assertExactTestInput(env: WorkerEnv): SlaMonthlyObservation {
   const now = Date.now();
   if (
     observation.tenant_id !== tenant || observation.service_period !== period ||
-    observation.tier !== "starter" || observation.monthly_fee_minor !== fee ||
+    observation.tier !== "enterprise" || observation.monthly_fee_minor !== fee ||
     observation.currency !== "USD" || observation.availability_percent !== availability ||
     observation.force_majeure !== false || !Number.isSafeInteger(observation.observed_at_ms) ||
     observation.observed_at_ms < Date.UTC(2026, 8, 1) || observation.observed_at_ms > now ||
