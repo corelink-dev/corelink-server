@@ -171,6 +171,7 @@ jobs:
               require(isinstance(entries, list), "rollouts_shape")
               completed = [item for item in entries if isinstance(item, dict)
                            and item.get("status") == "completed"
+                           and item.get("target_version") == app["version"]
                            and isinstance(item.get("target_configuration"), dict)
                            and item["target_configuration"].get("image") == NEW_REF]
               require(bool(completed), "completed_repaired_rollout_missing")

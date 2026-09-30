@@ -176,6 +176,7 @@ def test_workflow_keeps_all_required_query_ids_and_remote_only_execution() -> No
     assert 'api.request("GET", ROLLOUTS_PATH)' in source
     assert "active_repaired_image_mismatch" in source
     assert "completed_repaired_rollout_missing" in source
+    assert 'item.get("target_version") == app["version"]' in source
     assert "active_repaired_container_readback_failed" in source
     assert "cloudflare_account_target_mismatch" in source
     assert "database_target_mismatch" in source
@@ -287,10 +288,12 @@ def test_runtime_gate_checks_live_iad_digest_health_and_completed_rollout(tmp_pa
             "active_rollout_id": None,
             "health": {"instances": {"healthy": 16, "active": 0, "failed": 0}},
         }
-    def run(mode: str, image: str = expected_ref, rollout_image: str = expected_ref) -> bool:
+    def run(mode: str, image: str = expected_ref, rollout_image: str = expected_ref,
+            rollout_version: int = 182) -> bool:
         app_path, rollout_path, output_path = (tmp_path / "app.json", tmp_path / "rollouts.json", tmp_path / "summary.json")
         app_path.write_text(json.dumps(app(image)), encoding="utf-8")
-        rollout_path.write_text(json.dumps([{"status": "completed", "target_configuration": {"image": rollout_image}}]), encoding="utf-8")
+        rollout_path.write_text(json.dumps([{"status": "completed", "target_version": rollout_version,
+                                             "target_configuration": {"image": rollout_image}}]), encoding="utf-8")
         env = {**dict(__import__("os").environ), "PYTHONPATH": str(module_root),
                "APP_FIXTURE": str(app_path), "ROLLOUT_FIXTURE": str(rollout_path), "FIXTURE_MODE": mode}
         result = subprocess.run([sys.executable, "-", "a" * 24, str(output_path)], input=script,
@@ -300,6 +303,7 @@ def test_runtime_gate_checks_live_iad_digest_health_and_completed_rollout(tmp_pa
     assert run("ready")
     assert not run("ready", image=expected_ref.replace("ecd63379", "00000000"))
     assert not run("ready", rollout_image=expected_ref.replace("ecd63379", "00000000"))
+    assert not run("ready", rollout_version=181)
     assert not run("unavailable")
 
 
