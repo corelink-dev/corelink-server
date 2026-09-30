@@ -21,15 +21,19 @@ from scripts.issue_2568_sla_credit_real import (
     invoice_item_from_line,
     validate_account_binding,
     validate_restricted_key,
+    verify_source_checkout,
 )
 from scripts.verify_issue_2568_sla_credit_real import (
     VerificationError,
     LEAF_PATHS,
+    CORRECTION_PATHS,
     WP150_PATH,
     WP150_SHA256,
     SECRET_REGISTRY_PATH,
     SECRET_REGISTRY_SHA256,
     PROVIDER_CREDENTIAL_BINDINGS,
+    SOURCE_DIGESTS,
+    SOURCE_SHA,
     validate_receipt,
     validate_provider_receipt,
     validate_candidate_paths,
@@ -80,6 +84,15 @@ class FakeCloudflare:
 
 
 class Issue2568OperatorTests(unittest.TestCase):
+    def test_canonical_source_requires_exact_candidate_sha_and_file_digests(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        self.assertEqual(verify_source_checkout(root, SOURCE_SHA), SOURCE_DIGESTS)
+        with self.assertRaisesRegex(OperatorError, "exact protected-main candidate"):
+            verify_source_checkout(root, "0" * 40)
+        with patch("scripts.issue_2568_sla_credit_real.subprocess.check_output", return_value="0" * 40):
+            with self.assertRaisesRegex(OperatorError, "exact protected-main candidate"):
+                verify_source_checkout(root, SOURCE_SHA)
+
     def test_wrong_account_rejected_before_provider_request(self) -> None:
         with self.assertRaisesRegex(OperatorError, "does not match"):
             validate_account_binding("acct_wrong")
@@ -228,12 +241,17 @@ class Issue2568OperatorTests(unittest.TestCase):
 
     def test_candidate_gate_accepts_exact_eight_and_rejects_missing_or_foreign(self) -> None:
         validate_candidate_paths(list(LEAF_PATHS))
+        correction_branch = "refs/heads/codex/support03-enterprise-credit-correction"
+        validate_candidate_paths(list(CORRECTION_PATHS), correction_branch)
         with self.subTest(case="missing registry"):
-            with self.assertRaisesRegex(VerificationError, "exactly the eight"):
+            with self.assertRaisesRegex(VerificationError, "exact owned leaf paths"):
                 validate_candidate_paths(set(LEAF_PATHS) - {SECRET_REGISTRY_PATH})
         with self.subTest(case="foreign path"):
-            with self.assertRaisesRegex(VerificationError, "exactly the eight"):
+            with self.assertRaisesRegex(VerificationError, "exact owned leaf paths"):
                 validate_candidate_paths(set(LEAF_PATHS) | {".github/workflows/foreign.yml"})
+        with self.subTest(case="correction branch cannot use original paths"):
+            with self.assertRaisesRegex(VerificationError, "exact owned leaf paths"):
+                validate_candidate_paths(set(LEAF_PATHS), correction_branch)
 
     def test_wp150_manifest_gate_rejects_arbitrary_content_or_mode(self) -> None:
         valid = (Path(__file__).resolve().parents[1] / WP150_PATH).read_bytes()

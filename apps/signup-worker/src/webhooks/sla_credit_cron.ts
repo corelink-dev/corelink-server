@@ -24,7 +24,7 @@
 import { constantTimeEqual } from "./github_provision.js";
 
 export type CreditFailureKind = "transient" | "permanent";
-export type SlaTier = "free" | "starter" | "pro" | "enterprise";
+export type SlaTier = "free" | "solo" | "starter" | "pro" | "max" | "enterprise";
 
 export interface SlaMonthlyMeasurement {
   tenant_id: string;
@@ -56,8 +56,6 @@ export interface CreditDecision {
 }
 
 const CONTRACT_TIERS: Record<string, { target: number }> = {
-  starter: { target: 99.5 },
-  pro: { target: 99.9 },
   enterprise: { target: 99.95 },
 };
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -542,15 +540,34 @@ export async function runSlaCreditSweep(env: SlaCreditCronEnv, nowMs: number, pr
       result.skipped = true;
       return result;
     }
-    const due = await db.prepare(`SELECT * FROM sla_credit_ledger
-      WHERE (status IN ('pending', 'failed') AND next_attempt_at_ms <= ?)
-         OR (status = 'processing' AND lease_until_ms <= ?)
-      ORDER BY next_attempt_at_ms ASC, credit_id ASC LIMIT ?`).bind(nowMs, nowMs, MAX_SWEEP_ROWS).all<Record<string, unknown>>();
+    const due = await db.prepare(`SELECT l.*, m.tier AS measurement_tier FROM sla_credit_ledger AS l
+      LEFT JOIN sla_monthly_measurements AS m ON m.tenant_id = l.tenant_id AND m.service_period = l.service_period
+      WHERE (l.status IN ('pending', 'failed') AND l.next_attempt_at_ms <= ?)
+         OR (l.status = 'processing' AND l.lease_until_ms <= ?)
+      ORDER BY l.next_attempt_at_ms ASC, l.credit_id ASC LIMIT ?`).bind(nowMs, nowMs, MAX_SWEEP_ROWS).all<Record<string, unknown>>();
     for (const row of due.results ?? []) {
       const creditId = String(row.credit_id);
       const attempts = Number(row.attempts) || 0;
       const outbox = await db.prepare("SELECT payload_json, provider_ref FROM sla_credit_outbox WHERE credit_id = ? LIMIT 1").bind(creditId).all<{ payload_json?: unknown; provider_ref?: string | null }>();
       const outboxRow = outbox.results?.[0];
+      // Old gated code could have persisted Starter/Pro credits before the
+      // Enterprise-only launch decision. Do not turn those durable retries
+      // into a Stripe call when the gate is later enabled. Preserve any
+      // previously accepted provider reference for explicit review.
+      const launchTier = typeof row.measurement_tier === "string" ? row.measurement_tier.trim().toLowerCase() : "";
+      if (launchTier !== "enterprise") {
+        const priorProviderRef = typeof outboxRow?.provider_ref === "string" && outboxRow.provider_ref.trim().length > 0;
+        const blocked = [
+          db.prepare("UPDATE sla_credit_ledger SET status = 'blocked', failure_kind = 'permanent', failure_reason = ?, lease_until_ms = NULL, updated_at_ms = ? WHERE credit_id = ? AND status IN ('pending', 'failed', 'processing')")
+            .bind("tier_not_in_launch_sla", nowMs, creditId),
+        ];
+        if (outboxRow) blocked.push(db.prepare("UPDATE sla_credit_outbox SET status = ?, last_error = ?, updated_at_ms = ? WHERE credit_id = ?")
+          .bind(priorProviderRef ? "needs_review" : "blocked", "tier_not_in_launch_sla", nowMs, creditId));
+        blocked.push(await audit(db, creditId, "blocked", "tier_not_in_launch_sla", nowMs));
+        await atomic(db, blocked);
+        result.blocked += 1;
+        continue;
+      }
       const recoveredRequest = outboxRow ? requestFromOutbox(outboxRow.payload_json, row) : null;
       const recoveredProviderRef = recoveredRequest && typeof outboxRow?.provider_ref === "string" ? outboxRow.provider_ref.trim() : "";
       const mapping = await db.prepare("SELECT stripe_customer_id FROM tenant_billing WHERE tenant_id = ? LIMIT 1").bind(row.tenant_id).all<{ stripe_customer_id?: string | null }>();
