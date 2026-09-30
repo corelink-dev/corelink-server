@@ -90,19 +90,19 @@ jobs:
 
       - name: Validate candidate with the protected-base verifier
         run: >-
-          python3 -S trusted-base/scripts/verify_i2176_grpc_deny_gate.py
+          python3 -B -S trusted-base/scripts/verify_i2176_grpc_deny_gate.py
           --trusted-base trusted-base
           --candidate candidate
           --expected-head ${{ github.event.pull_request.head.sha }}
 
       - name: Validate candidate with the protected-base #2574 verifier
         run: >-
-          python3 -S trusted-base/scripts/verify_i2574_grpc_diagnostic_policy.py
+          python3 -B -S trusted-base/scripts/verify_i2574_grpc_diagnostic_policy.py
           --trusted-base trusted-base
           --candidate candidate
 
       - name: Run protected-base adversarial fixtures
         run: >-
-          python3 -S -m unittest -v
+          python3 -B -S -m unittest -v
           trusted-base/tests/test_verify_i2176_grpc_deny_gate.py
           trusted-base/tests/test_verify_i2574_grpc_diagnostic_policy.py

@@ -18,6 +18,57 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+OWNER_SPEC = importlib.util.spec_from_file_location(
+    "verify_owner_action_packets", ROOT / "scripts" / "verify_owner_action_packets.py"
+)
+assert OWNER_SPEC and OWNER_SPEC.loader
+OWNER = importlib.util.module_from_spec(OWNER_SPEC)
+sys.modules[OWNER_SPEC.name] = OWNER
+OWNER_SPEC.loader.exec_module(OWNER)
+
+
+def test_b065_closed_receipt_rejects_material_corruption(tmp_path: Path) -> None:
+    source = ROOT / OWNER.B065_CLOSURE_EVIDENCE_PATH
+    record = json.loads(source.read_text(encoding="utf-8"))
+    OWNER._check_b065_closure_evidence(source)
+    signup = "we_1ToligLh0hhAZjwoI8PERw8x"
+    def destination(data: dict[str, object], api: str, endpoint_id: str) -> dict[str, object]:
+        return next(
+            row for row in data["destination_inventory"]
+            if row["api_version"] == api and row["endpoint_id"] == endpoint_id
+        )
+
+    corruptions = {
+        "missing v2 object": lambda data: data["destination_inventory"].pop(),
+        "truncated event coverage": lambda data: data["destination_inventory"][0]["event_types"].pop(),
+        "changed event name": lambda data: destination(data, "v1", signup)["event_types"].__setitem__(0, "invoice.paid"),
+        "changed destination status": lambda data: destination(data, "v1", signup).update(status="disabled"),
+        "changed destination URL": lambda data: destination(data, "v1", signup).update(url="https://attacker.invalid/hook"),
+        "changed destination API version": lambda data: destination(data, "v1", "we_1Tfh8PLh0hhAZjwoCnqvruqC").update(destination_api_version=None),
+        "changed Workbench API version": lambda data: destination(data, "v2", signup).update(workbench_api_version="2099-01-01.clover"),
+        "changed event payload mode": lambda data: destination(data, "v2", signup).update(event_payload="thin"),
+        "changed delivery observation": lambda data: destination(data, "v1", signup).update(delivery_observation="deliveries exist"),
+        "invented duplicate resolution": lambda data: data.update(duplicate_events_resolved=True),
+        "invented delivery correlation": lambda data: data["correlation"].update(
+            possible=True, same_event_ids=["evt_fabricated"]
+        ),
+        "mutation authorization": lambda data: data["resolution"].update(
+            mutation_performed=True, owner_authorization="claimed"
+        ),
+        "source provenance drift": lambda data: data["source_original"].update(sha256="0" * 64),
+        "customer payload access": lambda data: data.update(secrets_or_customer_payloads_accessed=True),
+        "changed health run ID": lambda data: data["billing_health_runs"][0].update(run_id=1),
+        "changed health completion time": lambda data: data["billing_health_runs"][0].update(completed_at="2099-01-01T00:00:00Z"),
+        "changed health creation time": lambda data: data["billing_health_runs"][0].update(created_at="2099-01-01T00:00:00Z"),
+        "changed health SHA": lambda data: data["billing_health_runs"][0].update(sha="0" * 40),
+    }
+    for label, mutate in corruptions.items():
+        damaged = json.loads(json.dumps(record))
+        mutate(damaged)
+        path = tmp_path / f"{label.replace(' ', '-')}.json"
+        path.write_text(json.dumps(damaged), encoding="utf-8")
+        with pytest.raises(OWNER.PacketError):
+            OWNER._check_b065_closure_evidence(path)
 
 
 def v1_row(identifier: str, url: str, *, status: str = "enabled") -> dict[str, object]:

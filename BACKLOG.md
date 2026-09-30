@@ -9401,67 +9401,45 @@ verify-means: |
 last-verified: 2026-09-01
 ```
 
-### B-065 — dois esquemas de ID em webhooks Stripe; estado atual dos destinos não verificado
+### B-065 — inventário Stripe LIVE reconciliado; destinos legítimos preservados
 
-O último `billing-health-daily` observável (2026-09-01) falhou e reportou
-`BILLING HEALTH: 1 anomaly(ies) found`, detalhando
-`3 event type(s) ingested under BOTH id schemes in the last 30d` —
-`customer.subscription.deleted (1/1)`, `customer.subscription.updated (2/2)`,
-`invoice.payment_failed (2/2)`. Não há execução posterior que prove resolução.
+O inventário autorizado de 2026-09-30 14:54:58 UTC esgotou as APIs v1
+(três objetos, `has_more=false`) e v2 (quatro objetos, `next_page_url=null`).
+Signup-worker e `Corelink prd` seguem habilitados; thin e wallet estão
+desabilitados. Nenhuma configuração foi alterada. O recibo registra os IDs,
+URLs host/path, versões retornadas/renderizadas e nomes completos dos eventos.
 
-O detector (`scripts/check_billing_health.py`) explica o risco:
-`stripe_webhook_events_processed` deduplica por `event_id` como chave primária, o que
-só protege retentativas sob o *mesmo* esquema de identificador. O signup-worker grava
-`evt_…` da Stripe, enquanto o container grava hash derivado. Linhas com ambos os
-esquemas para um *tipo* de evento indicam sobreposição histórica que requer triagem;
-**não correlacionam a mesma entrega nem provam que dois destinos seguem ativos hoje**.
-Como a janela é de 30 dias, o alerta pode persistir após uma desativação.
+As quatro consultas de Event deliveries no Workbench não retornaram entregas;
+por isso `last_delivery_at=null` e a correlação da mesma entrega é indisponível.
+Isso não foi inferido de contagens por tipo ou de esquemas diferentes de ID.
+A falha histórica precede as três execuções consecutivas `BILLING HEALTH: OK`
+36158413576, 35803767730 e 35681550304. Nenhum novo health run foi solicitado.
 
-O [readback do dashboard em 2026-08-03](docs/handoff/2026-07-03-REPLY-from-clw-coordinator-webhook-reconcile-DONE-and-no-stray-endpoint-exists.md)
-registrou `exquisite-rhythm-thin` **ativo** (destino v2 no URL do container).
-Esse readback não decide seu estado atual. O inventário atual v1 **e** v2 não foi
-obtido: a chave live local expirou em 2026-07-05 e o Chrome abriu o login da
-Stripe em 2026-09-12. Os eventos de
-`subscription.deleted`/`updated` podem afetar direitos de acesso; não se deve
-desativar outro destino para silenciar um alerta histórico.
-
-Próximo passo: obter acesso autorizado de leitura e enumerar **ambas** as APIs, com
-paginação, registrando IDs, URL, status, tipos de evento e data da última entrega sem
-segredos/payloads; correlacionar entregas, se necessário. Preservar o signup-worker
-(`we_1Tolig…`) e o container `Corelink prd` (`we_1Tfh8…`) até confirmação exata.
-Se um destino redundante ainda estiver ativo, sua desativação exige decisão explícita
-do owner; se já estiver desativado, investigar a cauda da janela e executar o health
-check sem inventar nova mutação.
+Evidência atual: [recibo de fechamento B-065](evidence/owner-actions/B-065/stripe-endpoint-retirement-closure.json),
+SHA-256 `7ec895e61f7aa8cc05b4e4a8aa1b5a184ddbd313e0c98fd404abb71460ea1176`;
+o registro original imutável está preservado em
+[evidence/owner-actions/B-065/stripe-endpoint-retirement.json](evidence/owner-actions/B-065/stripe-endpoint-retirement.json),
+SHA-256 `7e953d4c97885ab2928c42ca4b4161bed76c7382195c4f6fbe2dbd53edadfd2c`.
+O fechamento não afirma correlação nem resolução de eventos duplicados: as consultas
+de entrega retornaram zero linhas. Os destinos legítimos permaneceram intactos e o
+thin foi observado desabilitado, sem nova mutação.
 
 ```backlog
 id: B-065
 repo: corelink-server
-owner: owner
-status: open
+owner: tl
+status: done
 action-packet: docs/handoff/2026-09-05-owner-action-packets-b008-b154.json
 verify: python3 -S scripts/verify_owner_action_packets.py --id B-065
 verify-means: |
-  MANUAL, e o `verify` NÃO decide a alegação. Declaro em vez de fingir.
-
-  A alegação é sobre a configuração de destinos de webhook na conta Stripe, que não
-  está no repositório e não é legível do CI sem a chave da conta. Pior: a lista v1 da
-  API Stripe é CEGA a destinos v2, então mesmo com credencial um `verify` ingênuo
-  reportaria zero e passaria verde — portão dominado, exatamente o que este item não
-  pode ter.
-
-  `billing-health-daily` detecta sobreposição de esquemas por tipo na janela de 30
-  dias; não identifica a mesma entrega nem o estado atual de qualquer destino.
-  O readback histórico de 2026-08-03 registra o v2 thin como ativo; o estado
-  atual é desconhecido sem enumeração atual, paginada, de v1 e v2. Uma falha
-  antiga do health check não autoriza desativar um destino saudável.
-
-  Fechar só com inventário atual dos destinos, correlação de entregas e três
-  execuções consecutivas bem-sucedidas de `billing-health-daily`. Se houver
-  destino redundante ainda ativo, registrar ID/status anterior, autorização do
-  owner e desativação verificada; se já estiver desativado, registrar esse fato
-  e a resolução da anomalia sem nova mutação. Preservar ambos os endpoints
-  legítimos: signup-worker (`we_1Tolig…`) e container `Corelink prd` (`we_1Tfh8…`).
-last-verified: 2026-09-12
+  MANUAL — o verificador de repositório não decide a configuração da conta Stripe.
+  A evidência runtime é o recibo autorizado e revisado de 2026-09-30, com ambas
+  as APIs paginadas, estados/eventos completos, ausência explícita de entregas e
+  limitação de correlação. Os dois destinos legítimos permanecem habilitados;
+  o thin já estava desabilitado e nenhuma mutação foi realizada.
+  As três execuções health posteriores à falha histórica estão bem-sucedidas;
+  não se afirma correlação entre linhas de esquemas diferentes.
+last-verified: 2026-09-30
 ```
 
 ### B-066 — RECUSADO: o `smoke-install` já está portado atrás do gate de Actions hosted

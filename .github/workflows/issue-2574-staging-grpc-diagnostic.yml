@@ -56,4 +56,4 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts --filter @corelink/worker...
       - run: pnpm --dir worker exec vitest run tests/grpc_staging_transport.test.ts tests/grpc_transport_gate.test.ts
-      - run: python3 -S -m unittest -v tests/test_verify_i2176_grpc_deny_gate.py tests/test_verify_i2574_grpc_diagnostic_policy.py tests/test_i2574_p0_transition_fixture.py
+      - run: python3 -B -S -m unittest -v tests/test_verify_i2176_grpc_deny_gate.py tests/test_verify_i2574_grpc_diagnostic_policy.py tests/test_i2574_p0_transition_fixture.py

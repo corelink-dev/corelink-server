@@ -1,6 +1,6 @@
 {
   "cron": "* * 30 9 *",
-  "starts_ms": 1790726400000,
-  "expires_ms": 1790769600000,
-  "nonce": "issue-1700-recovery-20260930-v3"
+  "starts_ms": 1790776800000,
+  "expires_ms": 1790798400000,
+  "nonce": "issue-1700-recovery-20260930-v4"
 }

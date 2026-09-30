@@ -13,7 +13,7 @@
 //!   Wallet broker is temporarily unavailable.
 //! - `wallet-broker` (the wave-31 stream-1 path, kept whole — see
 //!   `specs/_audits/sealed/2026-05-16-wallet-broker-stripe.md`): call routes
-//!   through `{HUGR_WALLET_BASE}/_wallet/proxy/{HUGR_STRIPE_REF}/<path>`
+//!   through `{HUGR_WALLET_BASE}/{HUGR_STRIPE_REF}/<path>`
 //!   with `Authorization: Bearer hugrw_<token>`; CoreLink never holds
 //!   the real upstream `sk_live_...`. Re-enable by flipping
 //!   `STRIPE_AUTH_MODE=wallet-broker` once the wallet is healthy.
@@ -95,7 +95,7 @@ pub enum StripeAuthMode {
         api_key: SecretString,
     },
     /// Through the HuGR Wallet broker at
-    /// `{wallet_base}/_wallet/proxy/{stripe_ref}/…` with
+    /// `{wallet_base}/{stripe_ref}/…` with
     /// `Authorization: Bearer hugrw_…`.
     WalletBroker {
         /// Base URL of the HuGR Wallet broker (e.g.
@@ -277,7 +277,7 @@ impl StripeClientConfig {
     ///
     /// - `Direct` → `{api_base}` (e.g. `https://api.stripe.com`).
     /// - `WalletBroker` →
-    ///   `{wallet_base}/_wallet/proxy/{stripe_ref}`.
+    ///   `{wallet_base}/{stripe_ref}`.
     ///
     /// Trailing slashes on the base inputs are normalised.
     #[must_use]
@@ -290,7 +290,7 @@ impl StripeClientConfig {
                 ..
             } => {
                 let base = wallet_base.trim_end_matches('/');
-                format!("{base}/_wallet/proxy/{stripe_ref}")
+                format!("{base}/{stripe_ref}")
             }
         }
     }
@@ -406,7 +406,7 @@ impl StripeRealClientBuilder {
 pub struct StripeRealClient {
     config: StripeClientConfig,
     /// Cached effective base URL — either `{api_base}` (Direct) or
-    /// `{wallet_base}/_wallet/proxy/{stripe_ref}` (WalletBroker).
+    /// `{wallet_base}/{stripe_ref}` (WalletBroker).
     /// Avoids recomputing per-request.
     base_url: String,
     retry_policy: RetryPolicy,
