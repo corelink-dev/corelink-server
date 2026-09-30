@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  issues: read
 
 concurrency:
   group: b125-audit-throughput-read-only
@@ -45,6 +46,7 @@ jobs:
           CONFIRM: ${{ inputs.confirm }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           BILLING_D1_DATABASE_ID: ${{ secrets.CORELINK_BILLING_D1_DATABASE_ID }}
           DEPLOYMENT_RECEIPT_REF: ${{ inputs.deployment_receipt_ref }}
         shell: bash
@@ -102,9 +104,9 @@ jobs:
           echo "::add-mask::${CF_API_TOKEN}"
 
           # Bind the read to the frozen #1648 production repair artifact and
-          # the exact deployment receipt reviewed before dispatch. This lane
-          # cannot query Container runtime state; the receipt is the authority
-          # for the active digest and must be read back by the operator first.
+          # independently read back its IAD Container application through the
+          # official Cloudflare API before any D1 query. The issue comment is
+          # evidence context, not a substitute for current provider state.
           repair_source_sha="46e2d1cbe7c00a303c0942e8f46751dce75e5c14"
           repair_image_digest="sha256:ecd63379d2040c6a891edaeb140fd388f26b5ffc181987c9c777060ced633e8a"
           expected_account_id="6a1fc1c626fc2628823e60b9db01f5cd"
@@ -113,6 +115,84 @@ jobs:
           expected_config_sha256="568d0e6994ce1156542e350520a9750924a0f3f416e67af07c7275682e24c7a6"
           [[ "$CF_ACCOUNT_ID" == "$expected_account_id" ]] || fail_closed "cloudflare_account_target_mismatch"
           [[ "$DEPLOYMENT_RECEIPT_REF" =~ ^https://github\.com/HuGR-dev/corelink-server/issues/1648#issuecomment-[0-9]+$ ]] || fail_closed "deployment_receipt_reference_invalid"
+          comment_id="${DEPLOYMENT_RECEIPT_REF##*issuecomment-}"
+          comment_path="$raw_dir/deployment-comment.json"
+          if ! GH_TOKEN="$GH_TOKEN" gh api "repos/HuGR-dev/corelink-server/issues/comments/$comment_id" >"$comment_path" 2>/dev/null; then
+            fail_closed "deployment_receipt_comment_unavailable"
+          fi
+          if ! python3 - "$comment_path" "$DEPLOYMENT_RECEIPT_REF" "$repair_source_sha" "$repair_image_digest" <<'PY'
+          import json, sys
+          path, expected_url, expected_source, expected_digest = sys.argv[1:]
+          try:
+              with open(path, encoding="utf-8") as stream:
+                  comment = json.load(stream)
+              body = comment.get("body") if isinstance(comment, dict) else None
+              valid = (
+                  isinstance(comment, dict)
+                  and comment.get("html_url") == expected_url
+                  and isinstance(comment.get("issue_url"), str)
+                  and comment["issue_url"].endswith("/issues/1648")
+                  and isinstance(body, str)
+                  and "ROLLOUT_COMPLETE" in body
+                  and expected_source in body
+                  and expected_digest in body
+              )
+          except (OSError, ValueError, TypeError):
+              valid = False
+          if not valid:
+              raise SystemExit("deployment receipt comment is not a matching #1648 rollout receipt")
+          PY
+          then
+            fail_closed "deployment_receipt_comment_mismatch"
+          fi
+
+          # Reuse the exact #1648 provider response parser. It requires the
+          # pinned IAD app identity, stable healthy 16/16 state, and no active
+          # rollout. Require the completed rollout target and active config to
+          # use the exact immutable digest before allowing any D1 SELECT.
+          runtime_summary="$raw_dir/runtime-summary.json"
+          if ! python3 - "$CF_API_TOKEN" "$runtime_summary" <<'PY'
+          import json, sys
+          from scripts.issue_1648_image_only import (
+              API, APP_PATH, NEW_REF, ROLLOUTS_PATH, GateError,
+              app_snapshot, no_active_rollout, require,
+          )
+          token, output = sys.argv[1:]
+          try:
+              api = API(token)
+              app_result = api.request("GET", APP_PATH)
+              app = app_snapshot(app_result)
+              require(app["image"] == NEW_REF, "active_repaired_image_mismatch")
+              rollouts_result = api.request("GET", ROLLOUTS_PATH)
+              no_active_rollout(rollouts_result, app)
+              entries = (rollouts_result if isinstance(rollouts_result, list)
+                         else rollouts_result.get("rollouts") if isinstance(rollouts_result, dict)
+                         else None)
+              require(isinstance(entries, list), "rollouts_shape")
+              completed = [item for item in entries if isinstance(item, dict)
+                           and item.get("status") == "completed"
+                           and isinstance(item.get("target_configuration"), dict)
+                           and item["target_configuration"].get("image") == NEW_REF]
+              require(bool(completed), "completed_repaired_rollout_missing")
+              summary = {
+                  "account_id": "6a1fc1c626fc2628823e60b9db01f5cd",
+                  "application_id": "a033572c-0803-4866-b3a3-61f4812843b1",
+                  "application_version": app["version"],
+                  "active_image": app["image"],
+                  "healthy_instances": app["healthy"],
+                  "active_instances": app["active"],
+                  "failed_instances": app["failed"],
+                  "completed_rollout_count": len(completed),
+              }
+              with open(output, "w", encoding="utf-8") as stream:
+                  json.dump(summary, stream, indent=2, sort_keys=True)
+                  stream.write("\n")
+          except (GateError, OSError, ValueError, TypeError):
+              raise SystemExit("active repaired Container state is unavailable or mismatched")
+          PY
+          then
+            fail_closed "active_repaired_container_readback_failed"
+          fi
 
           # The canonical production UUID is source-derived. If the optional
           # repo secret is present it must match; a mismatch can never select a
@@ -150,12 +230,14 @@ jobs:
           [[ "$config_blob_sha" == "$expected_config_blob_sha" ]] || fail_closed "production_config_blob_mismatch"
           [[ "$config_sha256" == "$expected_config_sha256" ]] || fail_closed "production_config_sha256_mismatch"
 
-          python3 - "$receipt" "$DEPLOYMENT_RECEIPT_REF" "$GITHUB_SHA" "$config_sha256" "$config_blob_sha" "$expected_account_id" "$D1_DATABASE_ID" "$repair_source_sha" "$repair_image_digest" <<'PY'
+          python3 - "$receipt" "$DEPLOYMENT_RECEIPT_REF" "$GITHUB_SHA" "$config_sha256" "$config_blob_sha" "$expected_account_id" "$D1_DATABASE_ID" "$repair_source_sha" "$repair_image_digest" "$runtime_summary" <<'PY'
           import json, sys
           (path, receipt_ref, capture_sha, config_sha256, config_blob_sha,
-           account_id, database_id, source_sha, image_digest) = sys.argv[1:]
+           account_id, database_id, source_sha, image_digest, runtime_summary_path) = sys.argv[1:]
           with open(path, encoding="utf-8") as stream:
               receipt = json.load(stream)
+          with open(runtime_summary_path, encoding="utf-8") as stream:
+              runtime_summary = json.load(stream)
           receipt["deployment_pin"] = {
               "receipt_ref": receipt_ref,
               "capture_main_sha": capture_sha,
@@ -166,9 +248,11 @@ jobs:
               "repair_source_sha": source_sha,
               "repair_image_digest": image_digest,
               "repair_image_tag": "46e2d1cbe-r1",
-              "runtime_digest_verified_by_workflow": False,
+              "runtime_digest_verified_by_workflow": True,
               "runtime_verification_receipt_ref": receipt_ref,
-              "scope": "all five production container image pins",
+              "runtime_verification_source": "Cloudflare Containers GET application and rollouts API",
+              "runtime_verification": runtime_summary,
+              "scope": "IAD production Container application only; other regional pins are config-verified, not runtime-verified",
           }
           with open(path, "w", encoding="utf-8") as stream:
               json.dump(receipt, stream, indent=2, sort_keys=True)

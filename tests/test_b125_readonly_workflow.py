@@ -168,6 +168,15 @@ def test_workflow_keeps_all_required_query_ids_and_remote_only_execution() -> No
     assert '[[ "$GITHUB_REF" == "refs/heads/main" ]]' in source
     assert "deployment_receipt_ref:" in source
     assert "deployment_receipt_reference_invalid" in source
+    assert "deployment_receipt_comment_unavailable" in source
+    assert "deployment_receipt_comment_mismatch" in source
+    assert 'gh api "repos/HuGR-dev/corelink-server/issues/comments/$comment_id"' in source
+    assert "issues: read" in source
+    assert 'api.request("GET", APP_PATH)' in source
+    assert 'api.request("GET", ROLLOUTS_PATH)' in source
+    assert "active_repaired_image_mismatch" in source
+    assert "completed_repaired_rollout_missing" in source
+    assert "active_repaired_container_readback_failed" in source
     assert "cloudflare_account_target_mismatch" in source
     assert "database_target_mismatch" in source
     assert "production_image_pin_mismatch" in source
@@ -178,7 +187,8 @@ def test_workflow_keeps_all_required_query_ids_and_remote_only_execution() -> No
     assert '"target_account_id": account_id' in source
     assert '"repair_source_sha": source_sha' in source
     assert '"repair_image_digest": image_digest' in source
-    assert '"runtime_digest_verified_by_workflow": False' in source
+    assert '"runtime_digest_verified_by_workflow": True' in source
+    assert '"scope": "IAD production Container application only; other regional pins are config-verified, not runtime-verified"' in source
     assert "issuecomment-5861728482" in source
 
 
@@ -194,6 +204,103 @@ def test_workflow_pins_the_frozen_b063_repair_across_all_five_prod_images() -> N
         repository = f"corelink-prod{region}-corelinkserver-prod"
         assert f"/{repository}:46e2d1cbe-r1" in source
         assert config.count(f'image = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/{repository}:46e2d1cbe-r1"') == 1
+
+
+def _inline_gate(source: str, command: str) -> str:
+    match = re.search(re.escape(command) + r" <<'PY'\n(.*?)\n          PY", source, re.DOTALL)
+    assert match, f"missing executable workflow gate: {command}"
+    return textwrap.dedent(match.group(1))
+
+
+def test_deployment_comment_gate_accepts_only_existing_matching_1648_receipt(tmp_path: Path) -> None:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    command = 'python3 - "$comment_path" "$DEPLOYMENT_RECEIPT_REF" "$repair_source_sha" "$repair_image_digest"'
+    script = _inline_gate(source, command)
+    source_sha = "46e2d1cbe7c00a303c0942e8f46751dce75e5c14"
+    digest = "sha256:ecd63379d2040c6a891edaeb140fd388f26b5ffc181987c9c777060ced633e8a"
+    url = "https://github.com/HuGR-dev/corelink-server/issues/1648#issuecomment-5869999999"
+    path = tmp_path / "comment.json"
+
+    def check(comment: dict[str, object], expected_url: str = url) -> bool:
+        path.write_text(json.dumps(comment), encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-", str(path), expected_url, source_sha, digest],
+            input=script, text=True, capture_output=True, check=False,
+        )
+        return result.returncode == 0
+
+    valid = {
+        "html_url": url,
+        "issue_url": "https://api.github.com/repos/HuGR-dev/corelink-server/issues/1648",
+        "body": f"ROLLOUT_COMPLETE\n{source_sha}\n{digest}",
+    }
+    assert check(valid)
+    assert not check({**valid, "issue_url": "https://api.github.com/repos/HuGR-dev/corelink-server/issues/1649"})
+    assert not check({**valid, "body": f"ROLLOUT_COMPLETE\n{source_sha}\nsha256:{'0' * 64}"})
+    assert not check({**valid, "html_url": "https://github.com/HuGR-dev/corelink-server/issues/1648#issuecomment-1234567"})
+    assert not check({"html_url": url, "issue_url": valid["issue_url"], "body": None})
+
+
+def test_runtime_gate_checks_live_iad_digest_health_and_completed_rollout(tmp_path: Path) -> None:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    command = 'python3 - "$CF_API_TOKEN" "$runtime_summary"'
+    script = _inline_gate(source, command)
+    module_root = tmp_path / "fake_modules"
+    fake_scripts = module_root / "scripts"
+    fake_scripts.mkdir(parents=True)
+    (fake_scripts / "__init__.py").write_text("", encoding="utf-8")
+    (fake_scripts / "issue_1648_image_only.py").write_text(textwrap.dedent('''\
+        import json, os
+        class GateError(Exception): pass
+        APP_PATH = "/containers/applications/a033572c-0803-4866-b3a3-61f4812843b1"
+        ROLLOUTS_PATH = APP_PATH + "/rollouts"
+        NEW_REF = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-corelinkserver-prod@sha256:ecd63379d2040c6a891edaeb140fd388f26b5ffc181987c9c777060ced633e8a"
+        def require(condition, reason):
+            if not condition: raise GateError(reason)
+        class API:
+            def __init__(self, token):
+                if len(token) < 20: raise GateError("credential_not_bound")
+            def request(self, method, path):
+                assert method == "GET"
+                if os.environ.get("FIXTURE_MODE") == "unavailable": raise GateError("provider_result_unknown")
+                if path == APP_PATH:
+                    return json.load(open(os.environ["APP_FIXTURE"], encoding="utf-8"))
+                return json.load(open(os.environ["ROLLOUT_FIXTURE"], encoding="utf-8"))
+        def app_snapshot(result):
+            require(result.get("id") == "a033572c-0803-4866-b3a3-61f4812843b1", "app_id_drift")
+            require(result.get("name") == "corelink-prod-corelinkserver-prod", "app_name_drift")
+            health = result["health"]["instances"]
+            require(health["healthy"] == 16 and health["active"] == 0 and health["failed"] == 0, "health_not_ready")
+            require(result["active_rollout_id"] in (None, ""), "app_rollout_active")
+            return {"image": result["configuration"]["image"], "version": result["version"], "healthy": 16, "active": 0, "failed": 0}
+        def no_active_rollout(result, app):
+            require(not any(item.get("status") in ("pending", "progressing") for item in result), "rollout_active")
+    '''), encoding="utf-8")
+
+    expected_ref = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-corelinkserver-prod@sha256:ecd63379d2040c6a891edaeb140fd388f26b5ffc181987c9c777060ced633e8a"
+    def app(image: str) -> dict[str, object]:
+        return {
+            "id": "a033572c-0803-4866-b3a3-61f4812843b1",
+            "name": "corelink-prod-corelinkserver-prod",
+            "version": 182,
+            "configuration": {"image": image},
+            "active_rollout_id": None,
+            "health": {"instances": {"healthy": 16, "active": 0, "failed": 0}},
+        }
+    def run(mode: str, image: str = expected_ref, rollout_image: str = expected_ref) -> bool:
+        app_path, rollout_path, output_path = (tmp_path / "app.json", tmp_path / "rollouts.json", tmp_path / "summary.json")
+        app_path.write_text(json.dumps(app(image)), encoding="utf-8")
+        rollout_path.write_text(json.dumps([{"status": "completed", "target_configuration": {"image": rollout_image}}]), encoding="utf-8")
+        env = {**dict(__import__("os").environ), "PYTHONPATH": str(module_root),
+               "APP_FIXTURE": str(app_path), "ROLLOUT_FIXTURE": str(rollout_path), "FIXTURE_MODE": mode}
+        result = subprocess.run([sys.executable, "-", "a" * 24, str(output_path)], input=script,
+                                text=True, capture_output=True, env=env, check=False)
+        return result.returncode == 0 and output_path.exists()
+
+    assert run("ready")
+    assert not run("ready", image=expected_ref.replace("ecd63379", "00000000"))
+    assert not run("ready", rollout_image=expected_ref.replace("ecd63379", "00000000"))
+    assert not run("unavailable")
 
 
 def test_all_production_control_queries_are_single_read_only_selects() -> None:
