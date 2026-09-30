@@ -6,21 +6,21 @@ import { readFile } from "node:fs/promises";
 import { runRuntimeProbe, failureDiagnostic, decodeTailFrame, waitForContainerState, captureDeployImageDigest, captureContainerPreimage, verifyContainerPreimage, verifyContainerImageDigest, verifyContainerState, verifyContainerRollback, CONTAINER_APP_ID, CONTAINER_APP_NAME, PROBE_CRON, PROBE_EXPIRY, PROBE_WINDOW } from "../issue_1700_runtime_probe.mjs";
 
 const release = "0123456789abcdef0123456789abcdef01234567";
-const now = Date.parse("2026-09-29T22:01:00Z");
+const now = Date.parse("2026-09-30T00:01:00Z");
 const imageDigest = `sha256:${"a".repeat(64)}`;
 const receipt = {
   contract: "corelink-staging-d1-binding-runtime-v1",
   outcome: "pass",
   probe_nonce: PROBE_WINDOW.nonce,
   worker_release: release,
-  scheduled_time_ms: Date.parse("2026-09-29T22:01:00Z"),
+  scheduled_time_ms: Date.parse("2026-09-30T00:01:00Z"),
   parameterized_select: true,
   failed_batch_observed: true,
   rollback_absence_verified: true,
   probe_table_dropped: true,
   d1_binding_intercepted: true,
   authorization_absent: true,
-  cf_api_token_absent: true,
+  cf_api_token_absent: true, old_probe_release: "0f785fb9b096afe01247f1057d46377b9f604f13", old_probe_retired: true, old_probe_tables_absent: true,
 };
 
 // Cloudflare workers-sdk TailEventMessage: scheduled event and console log envelope.
@@ -275,6 +275,9 @@ test("host ignores wrong nonce, release, expired and pre-invocation receipts and
   for (const emittedReceipt of [
     { ...receipt, probe_nonce: "old-window" },
     { ...receipt, worker_release: "f".repeat(40) },
+    { ...receipt, old_probe_retired: false },
+    { ...receipt, old_probe_tables_absent: false },
+    { ...receipt, old_probe_release: "a".repeat(40) },
     { ...receipt, scheduled_time_ms: PROBE_EXPIRY },
     { ...receipt, scheduled_time_ms: now - 60000 },
   ]) {
