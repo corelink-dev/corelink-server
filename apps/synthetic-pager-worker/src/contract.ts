@@ -5,6 +5,7 @@ export const SYNTHETIC_SERVICE = "synthetic-drill" as const;
 export const SYNTHETIC_SEVERITY = "sev2_synthetic" as const;
 export const SYNTHETIC_EVENT_SEVERITY = "info" as const;
 export const SYNTHETIC_CORRELATION_PREFIX = "PAT-CORRELATION-ID-001:" as const;
+export const B072_ONE_SHOT_CRON = "* * * * *" as const;
 
 export type SyntheticRegion = "americas" | "emea" | "apac" | "boundary_handoff";
 export type SyntheticDeliveryMode = "immediate" | "deferred";
@@ -31,7 +32,7 @@ export interface SyntheticPagePayload {
 
 export interface SyntheticPageEnvelope {
   readonly drill: "synthetic_page";
-  readonly cron: "0 14 * * 1";
+  readonly cron: "0 14 * * 1" | typeof B072_ONE_SHOT_CRON;
   readonly scheduled_at_ms: number;
   readonly synthetic_page: SyntheticPagePayload;
 }
@@ -97,6 +98,8 @@ const PAYLOAD_KEYS = [
   "dedup_key",
   "correlation_id",
 ] as const;
+const WEEKLY_REQUIRED_KEYS = PAYLOAD_KEYS.filter((key) =>
+  key !== "provider_mode" && key !== "worker_revision" && key !== "serving_sha");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -111,13 +114,22 @@ function isInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-export function parseSyntheticPageEnvelope(value: unknown): SyntheticPageEnvelope | null {
+export function parseSyntheticPageEnvelope(
+  value: unknown,
+  context: { readonly environment?: string; readonly providerMode?: string } = {},
+): SyntheticPageEnvelope | null {
   if (!isRecord(value) || !hasExactlyKeys(value, ENVELOPE_KEYS)) return null;
-  if (value.drill !== "synthetic_page" || value.cron !== "0 14 * * 1" || !isInteger(value.scheduled_at_ms)) {
+  const oneShot = value.cron === B072_ONE_SHOT_CRON;
+  if (value.drill !== "synthetic_page" || (!oneShot && value.cron !== "0 14 * * 1") || !isInteger(value.scheduled_at_ms)) {
     return null;
   }
+  if (oneShot && (context.environment !== "staging" || context.providerMode !== "provider_deferred")) return null;
   const page = value.synthetic_page;
-  if (!isRecord(page) || !hasExactlyKeys(page, PAYLOAD_KEYS)) return null;
+  if (!isRecord(page)) return null;
+  const allowedWeeklyKeys = new Set<string>([...WEEKLY_REQUIRED_KEYS, "provider_mode", "worker_revision", "serving_sha"]);
+  if (oneShot ? !hasExactlyKeys(page, PAYLOAD_KEYS) :
+      (!Object.keys(page).every((key) => allowedWeeklyKeys.has(key)) ||
+       WEEKLY_REQUIRED_KEYS.some((key) => !(key in page)))) return null;
   if (
     page.service !== SYNTHETIC_SERVICE ||
     page.event_action !== "trigger" ||
@@ -137,18 +149,18 @@ export function parseSyntheticPageEnvelope(value: unknown): SyntheticPageEnvelop
   ) {
     return null;
   }
+  if (oneShot && (page.provider_mode !== "provider_deferred" ||
+      context.providerMode !== "provider_deferred" || value.scheduled_at_ms % 60_000 !== 0 ||
+      !/^[0-9a-f]{40}$/.test(String(page.worker_revision)) || page.serving_sha !== page.worker_revision)) return null;
   const providerMode = page.provider_mode ?? "pagerduty";
   if (providerMode === "provider_deferred" &&
       (typeof page.worker_revision !== "string" || page.worker_revision.length < 1 || page.worker_revision.length > 200 ||
        typeof page.serving_sha !== "string" || !/^[0-9a-f]{40}$/i.test(page.serving_sha))) return null;
   const scheduled = new Date(value.scheduled_at_ms);
-  if (
-    scheduled.getUTCDay() !== 1 ||
-    scheduled.getUTCHours() !== 14 ||
-    scheduled.getUTCMinutes() !== 0 ||
-    scheduled.getUTCSeconds() !== 0 ||
-    scheduled.getUTCMilliseconds() !== 0
-  ) {
+  if (!oneShot && (
+      scheduled.getUTCDay() !== 1 || scheduled.getUTCHours() !== 14 || scheduled.getUTCMinutes() !== 0 ||
+      scheduled.getUTCSeconds() !== 0 || scheduled.getUTCMilliseconds() !== 0
+  )) {
     return null;
   }
   const scheduledWeek = Math.floor((value.scheduled_at_ms - Date.UTC(1970, 0, 5)) / (7 * 24 * 60 * 60 * 1_000));
@@ -160,7 +172,7 @@ export function parseSyntheticPageEnvelope(value: unknown): SyntheticPageEnvelop
     : Date.UTC(
         scheduled.getUTCFullYear(),
         scheduled.getUTCMonth(),
-        scheduled.getUTCDate() + 6,
+        scheduled.getUTCDate() + (oneShot ? 7 - scheduled.getUTCDay() : 6),
         23,
         59,
         0,
@@ -180,7 +192,7 @@ export function parseSyntheticPageEnvelope(value: unknown): SyntheticPageEnvelop
   }
   return {
     drill: "synthetic_page",
-    cron: "0 14 * * 1",
+    cron: oneShot ? B072_ONE_SHOT_CRON : "0 14 * * 1",
     scheduled_at_ms: value.scheduled_at_ms,
     synthetic_page: {
       service: SYNTHETIC_SERVICE,

@@ -48,7 +48,7 @@ const deferredEnvelope = {
 function fakeDb(options: { row?: unknown; persistedOutcome?: string; rows?: unknown[]; failBatch?: boolean; failBatchAt?: number; providerReceipt?: unknown; providerAudit?: boolean } = {}) {
   const calls: string[] = [];
   let batchNumber = 0;
-  const run = vi.fn().mockResolvedValue({ success: true });
+  const run = vi.fn().mockResolvedValue({ success: true, meta: { changes: 1 } });
   const batch = vi.fn().mockImplementation(async () => {
     batchNumber += 1;
     calls.push("batch");
@@ -129,6 +129,15 @@ async function signature(body: string, secret: string): Promise<string> {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("synthetic receiver contract", () => {
+  it("keeps weekly PagerDuty envelopes compatible when optional provenance is absent", () => {
+    const weekly = structuredClone(immediateEnvelope) as Record<string, unknown>;
+    const page = weekly.synthetic_page as Record<string, unknown>;
+    delete page.provider_mode;
+    delete page.worker_revision;
+    delete page.serving_sha;
+    expect(parseSyntheticPageEnvelope(weekly)?.synthetic_page.provider_mode).toBe("pagerduty");
+  });
+
   it("uses one canonical drill id for PagerDuty dedup and correlation", () => {
     const page = parseSyntheticPageEnvelope(immediateEnvelope)!.synthetic_page;
     expect(page.dedup_key).toBe(drillId);
@@ -251,6 +260,82 @@ describe("synthetic receiver contract", () => {
     expect(pagerDutyFetch).not.toHaveBeenCalled();
     expect(receiver.database.batch).toHaveBeenCalledTimes(2);
     expect(receiver.database.prepare.mock.calls.some(([sql]) => String(sql).includes("synthetic_page_provider_audit_events"))).toBe(true);
+  });
+
+  it("accepts a minute-aligned one-shot only in staging provider-deferred mode and counts ingress", async () => {
+    const scheduledAt = Date.UTC(2026, 7, 27, 14, 23);
+    const oneShotDrillId = `SP-${scheduledAt}`;
+    const oneShotCorrelation = `PAT-CORRELATION-ID-001:${oneShotDrillId}`;
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const receiverVersion = "cf-receiver-one-shot-v9";
+    const oneShotEnvelope = {
+      drill: "synthetic_page",
+      cron: "* * * * *",
+      scheduled_at_ms: scheduledAt,
+      synthetic_page: {
+        service: "synthetic-drill",
+        event_action: "trigger",
+        severity: "info",
+        synthetic_severity: "sev2_synthetic",
+        region: "boundary_handoff",
+        rotation_week: 3,
+        emit_at_ms: Date.UTC(2026, 7, 30, 23, 59),
+        delivery_mode: "deferred",
+        provider_mode: "provider_deferred",
+        worker_revision: sha,
+        serving_sha: sha,
+        dedup_key: oneShotDrillId,
+        correlation_id: oneShotCorrelation,
+      },
+    } as const;
+    const receipt = {
+      drill_id: oneShotDrillId,
+      scheduled_at_ms: scheduledAt,
+      correlation_id: oneShotCorrelation,
+      provider_mode: "provider_deferred",
+      outcome: "provider_deferred",
+      scheduler_worker_revision: sha,
+      serving_sha: sha,
+      receiver_worker_revision: receiverVersion,
+      receiver_result: "persisted_provider_deferred",
+    };
+    const receiver = env({
+      SYNTHETIC_DRILL_PROVIDER_MODE: "provider_deferred",
+      CF_VERSION_METADATA: { id: receiverVersion },
+      PAGERDUTY_EVENTS_URL: undefined,
+      PAGERDUTY_SERVICE: undefined,
+      PAGERDUTY_SYNTHETIC_ROUTING_KEY: undefined,
+      PAGERDUTY_WEBHOOK_SECRET: undefined,
+    }, { providerReceipt: receipt, providerAudit: true });
+    const outbound = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", outbound);
+
+    const response = await invoke(request(oneShotEnvelope), receiver.value);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ terminal: true, drill_id: oneShotDrillId, serving_sha: sha });
+    expect(receiver.database.run).toHaveBeenCalledOnce();
+    expect(String(receiver.database.prepare.mock.calls[0]?.[0])).toContain("ingress_count = b072_one_shot_ingress.ingress_count + 1");
+    expect(outbound).not.toHaveBeenCalled();
+  });
+
+  it("rejects the one-shot envelope outside staging provider-deferred mode", () => {
+    const scheduledAt = Date.UTC(2026, 7, 27, 14, 23);
+    const envelope = {
+      ...immediateEnvelope,
+      cron: "* * * * *",
+      scheduled_at_ms: scheduledAt,
+      synthetic_page: {
+        ...immediateEnvelope.synthetic_page,
+        provider_mode: "provider_deferred",
+        worker_revision: "0123456789abcdef0123456789abcdef01234567",
+        serving_sha: "0123456789abcdef0123456789abcdef01234567",
+        dedup_key: `SP-${scheduledAt}`,
+        correlation_id: `PAT-CORRELATION-ID-001:SP-${scheduledAt}`,
+      },
+    };
+    expect(parseSyntheticPageEnvelope(envelope, { environment: "dev", providerMode: "provider_deferred" })).toBeNull();
+    expect(parseSyntheticPageEnvelope(envelope, { environment: "staging", providerMode: "pagerduty" })).toBeNull();
+    expect(parseSyntheticPageEnvelope(envelope, { environment: "prod", providerMode: "provider_deferred" })).toBeNull();
   });
 
   it("rejects missing correlation/provenance and unexpected provider fields", () => {

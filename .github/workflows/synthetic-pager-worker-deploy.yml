@@ -1,13 +1,14 @@
-name: synthetic pager receiver — staging deploy
+name: synthetic pager receiver — deprecated fail-closed
 
-# The receiver is an owner-gated staging dependency of the scheduled-drill
-# lane. It must never deploy or activate from a normal push: production is
-# explicitly triggerless in apps/synthetic-pager-worker/wrangler.toml.
+# Receiver staging activation is now owned exclusively by the protected
+# issue-1652 B-072 operator. This legacy entrypoint remains visible so an old
+# runbook does not silently disappear, but it has no Cloudflare credential,
+# deployment command, or path to activate a receiver version.
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Receiver environment (production is intentionally unavailable)"
+        description: "Retired entrypoint; use protected issue-1652 B-072 operator"
         required: true
         default: staging
         type: choice
@@ -15,60 +16,14 @@ on:
 
 permissions:
   contents: read
-  deployments: write
-
-concurrency:
-  group: synthetic-pager-worker-deploy-${{ inputs.environment }}
-  cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: deploy synthetic pager receiver (${{ inputs.environment }})
+  retired:
+    name: fail closed — use protected B-072 operator
     runs-on: ubuntu-24.04
-    environment: synthetic-drill-staging
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: apps/synthetic-pager-worker
+    timeout-minutes: 2
     steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-
-      - name: Set up pnpm
-        uses: ./.github/actions/setup-pnpm
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
-      - name: Install dependencies
-        working-directory: .
-        run: pnpm install --frozen-lockfile --filter @corelink/synthetic-pager-worker... --ignore-scripts
-
-      - name: Verify receiver remains inert before deploy
-        working-directory: .
+      - name: Refuse legacy receiver deployment
         run: |
-          python3 scripts/verify_b072_receiver.py
-          python3 scripts/test_b072_terminal_race.py
-
-      - name: Typecheck receiver
-        run: pnpm run typecheck
-
-      - name: Test receiver lifecycle
-        run: pnpm run test
-
-      - name: Deploy staging receiver
-        env:
-          DEPLOY_ENV: ${{ inputs.environment }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          if [[ "$DEPLOY_ENV" != "staging" ]]; then
-            echo "::error::receiver deployment is restricted to staging" >&2
-            exit 1
-          fi
-          pnpm exec wrangler deploy --env "$DEPLOY_ENV"
+          echo "::error::legacy receiver deployment is retired; use issue-1652 B-072 protected staging operator"
+          exit 1
