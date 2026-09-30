@@ -247,17 +247,27 @@ def run(args: argparse.Namespace, api: API) -> dict[str, Any]:
     save(receipt(args.mode, "PREPARED_BEFORE_PATCH", before, worker_version=worker,
                  target_image=target, authority_ref=authority, scope_receipt_sha256=scope_sha), args.receipt)
     api.request("PATCH", APP_PATH, {"configuration": target_config})
-    save(receipt(args.mode, "PATCH_RETURNED_SUCCESS_READBACK_PENDING", before,
+    save(receipt(args.mode, "PATCH_RETURNED_SUCCESS_ROLLOUT_PENDING", before,
                  worker_version=worker, target_image=target), args.receipt)
-    after_patch = app_snapshot(api.request("GET", APP_PATH))
-    require(after_patch["image"] == target, "patch_image_not_observed")
+    # For scheduler-backed Containers, PATCH records/modifies application
+    # configuration but does not apply an image change to instances. The
+    # explicit rollout applies target_configuration; expecting GET(APP) to
+    # expose the new image before this POST is invalid and can strand a
+    # successful PATCH before rollout creation.
+    after_patch = app_snapshot(api.request("GET", APP_PATH), require_ready=False)
+    require(after_patch["version"] == before["version"], "app_version_changed_after_patch")
+    require(after_patch["image"] in {before["image"], target}, "unexpected_image_after_patch")
     require({k: v for k, v in after_patch["configuration"].items() if k != "image"} ==
             {k: v for k, v in before["configuration"].items() if k != "image"},
             "patch_non_image_drift")
+    require(after_patch["active_rollout_id"] in {None, ""}, "rollout_active_after_patch")
+    no_active_rollout(api.request("GET", ROLLOUTS_PATH), after_patch)
     require(active_worker(api.request("GET", DEPLOYMENTS_PATH)) == worker,
             "worker_changed_after_patch")
     save(receipt(args.mode, "PATCH_READBACK_PASS_ROLLOUT_PENDING", after_patch,
                  worker_version=worker, target_image=target), args.receipt)
+    save(receipt(args.mode, "ROLLOUT_POST_PENDING", after_patch, worker_version=worker,
+                 target_image=target), args.receipt)
     rollout = api.request("POST", ROLLOUTS_PATH, {
         "description": f"B-063 IAD {args.mode}: immutable image only",
         "strategy": "rolling", "target_configuration": target_config,
@@ -270,22 +280,38 @@ def run(args: argparse.Namespace, api: API) -> dict[str, Any]:
                  target_image=target, rollout_id=rollout_id), args.receipt)
     deadline = time.monotonic() + args.timeout_seconds
     consecutive = 0
+    rollout_target_version: int | None = None
     while time.monotonic() < deadline:
         current_result = api.request("GET", APP_PATH)
         current = app_snapshot(current_result, require_ready=False)
         require(active_worker(api.request("GET", DEPLOYMENTS_PATH)) == worker,
                 "worker_changed_during_rollout")
+        require({k: v for k, v in current["configuration"].items() if k != "image"} ==
+                {k: v for k, v in before["configuration"].items() if k != "image"},
+                "rollout_non_image_config_drift")
         current_rollout = api.request("GET", f"{ROLLOUTS_PATH}/{rollout_id}")
         require(isinstance(current_rollout, dict), "rollout_read_shape")
         require(current_rollout.get("status") not in {"reverted", "replaced"}, "rollout_reverted")
+        observed_target_version = current_rollout.get("target_version")
+        require(type(observed_target_version) is int and observed_target_version > before["version"],
+                "rollout_target_version_invalid")
+        if rollout_target_version is None:
+            rollout_target_version = observed_target_version
+        require(observed_target_version == rollout_target_version,
+                "rollout_target_version_changed")
+        rollout_target_configuration = current_rollout.get("target_configuration")
+        require(isinstance(rollout_target_configuration, dict) and
+                rollout_target_configuration.get("image") == target,
+                "rollout_target_image_drift")
         if current_rollout.get("status") == "completed" and current["ready"] and \
-                current["image"] == target and \
+                current["version"] == rollout_target_version and current["image"] == target and \
                 {k: v for k, v in current["configuration"].items() if k != "image"} == \
                 {k: v for k, v in before["configuration"].items() if k != "image"}:
             consecutive += 1
             if consecutive >= 3:
                 return receipt(args.mode, "ROLLOUT_COMPLETE", current,
                                worker_version=worker, rollout_id=rollout_id,
+                               target_version=rollout_target_version,
                                old_digest=OLD_DIGEST, new_digest=NEW_DIGEST)
         else:
             consecutive = 0
