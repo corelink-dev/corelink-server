@@ -144,7 +144,7 @@ preflight_stripe() {
   # pointing at a live-mode wallet credential.
   require_env \
     HUGR_WALLET_BASE HUGR_WALLET_TOKEN HUGR_STRIPE_REF \
-    STRIPE_AUTH_MODE STRIPE_PRICE_ID_STARTER GITHUB_RUN_ID
+    STRIPE_AUTH_MODE STRIPE_PRICE_ID_STARTER STRIPE_TEST_ACCOUNT_ID GITHUB_RUN_ID
   [[ "$GITHUB_RUN_ID" =~ ^[0-9]{1,20}$ ]] || \
     die "GITHUB_RUN_ID must be a bounded numeric run selector"
   [[ "$GITHUB_RUN_ID" =~ [1-9] ]] || \
@@ -157,6 +157,8 @@ preflight_stripe() {
     die "STRIPE_AUTH_MODE must be wallet-broker for the real Stripe profile"
   [[ "$STRIPE_PRICE_ID_STARTER" == price_* ]] || \
     die "STRIPE_PRICE_ID_STARTER must be a Stripe price identifier"
+  [[ "$STRIPE_TEST_ACCOUNT_ID" =~ ^acct_[A-Za-z0-9]+$ ]] || \
+    die "STRIPE_TEST_ACCOUNT_ID must be a Stripe account identifier"
 }
 
 preflight_neon() {

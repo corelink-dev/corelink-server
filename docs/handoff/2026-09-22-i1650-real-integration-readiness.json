@@ -200,6 +200,12 @@
           "kind": "variable",
           "scope": "real-integration environment",
           "status": "missing"
+        },
+        {
+          "name": "STRIPE_TEST_ACCOUNT_ID",
+          "kind": "variable",
+          "scope": "real-integration environment; expected TEST account identity",
+          "status": "missing"
         }
       ],
       "cleanup": [
