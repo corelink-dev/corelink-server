@@ -26,6 +26,7 @@ TIMEOUT_SECONDS = 20
 CONFIRMATION = "run-i1649-stripe-test-mode"
 IDENTITY_CONFIRMATION = "run-i2565-stripe-identity-only"
 STARTER_PRICE_CONFIRMATION = "run-i2565-stripe-starter-price-readonly"
+STARTER_MONTHLY_UNIT_AMOUNT = 3500
 REQUIRED_WORKFLOW_MARKERS = (
     "github.repository == 'HuGR-dev/corelink-server'",
     "runs-on: ubuntu-latest",
@@ -294,7 +295,7 @@ def run_starter_price_probe(key: str, run_id: str, expected_account_id: str, out
         and price.get("active") is True
         and price.get("livemode") is False
         and price.get("currency") == "usd"
-        and price.get("unit_amount") == 4900
+        and price.get("unit_amount") == STARTER_MONTHLY_UNIT_AMOUNT
         and isinstance(price.get("recurring"), dict)
         and price["recurring"].get("interval") == "month"
         and price["recurring"].get("interval_count") == 1
@@ -302,7 +303,7 @@ def run_starter_price_probe(key: str, run_id: str, expected_account_id: str, out
         and price["id"].startswith("price_")
     ]
     if len(matching_prices) != 1:
-        raise ProbeError("Stripe test catalog did not contain one active Starter USD 49 monthly price")
+        raise ProbeError("Stripe test catalog did not contain one active Starter USD 35 monthly price")
     price = matching_prices[0]
     receipt = {
         "schema": "corelink.stripe-starter-test-price.v1",
@@ -313,7 +314,7 @@ def run_starter_price_probe(key: str, run_id: str, expected_account_id: str, out
         "account_matches_expected": True,
         "starter_price": {
             "id_sha256": hashlib.sha256(price["id"].encode("ascii")).hexdigest(),
-            "id_present": False, "unit_amount": 4900, "currency": "usd",
+            "id_present": False, "unit_amount": STARTER_MONTHLY_UNIT_AMOUNT, "currency": "usd",
             "interval": "month", "interval_count": 1,
         },
         "requests": ["GET /v1/account", "GET /v1/products?active=true&limit=100", "GET /v1/prices?product=<exact Starter product>&active=true&limit=100"],
