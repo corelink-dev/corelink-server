@@ -93,6 +93,7 @@ jobs:
           HUGR_STRIPE_REF: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.HUGR_STRIPE_REF || '' }}
           STRIPE_AUTH_MODE: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && 'wallet-broker' || '' }}
           STRIPE_PRICE_ID_STARTER: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.STRIPE_PRICE_ID_STARTER || '' }}
+          STRIPE_TEST_ACCOUNT_ID: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.STRIPE_TEST_ACCOUNT_ID || '' }}
           # Neon is separately selected and receives only its staging DSN.
           NEON_TEST_DSN: ${{ (inputs.profile == 'neon' || inputs.profile == 'all') && secrets.NEON_TEST_DSN || '' }}
           # Pass the untrusted input as data, never by interpolating it into

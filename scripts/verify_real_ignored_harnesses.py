@@ -86,7 +86,7 @@ SOURCE_SHA256 = {
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "0dc7b3f8fe217e420b3e483f97b79f3a443591f3df8b8a751fcfdbaf6b609255",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "1589c0bf78b5ecee786f39e71e66feb3bcd387ba1465d4ad5f22133cdcf14b4e",
-    "crates/corelink-stripe-real/tests/live_integration.rs": "b7d8b83fb6f736c4675d7cb4d36727464b6d9ddcc97fe3d026a1e0fe182bb587",
+    "crates/corelink-stripe-real/tests/live_integration.rs": "36129c26caf3b54ac5da4fb50adfc98dae0f11cb2994dc124f298a88672259d9",
     "crates/corelink-audit-chain/tests/neon_shadow_real.rs": "dfd22738e96d82695b40addf64b3dbaf611fbd8026346f0b4e33b28f10fe79eb",
 }
 
@@ -313,6 +313,10 @@ def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
         (client, 'env::var("GITHUB_RUN_ID")'),
         (client, '"GITHUB_EVENT_NAME"'),
         (client, '"GITHUB_WORKFLOW"'),
+        (client, "expected_account_id"),
+        (client, 'account.get("object")'),
+        (client, 'Some("account")'),
+        (client, 'account.get("id")'),
         (harness, "impl Drop for HarnessCleanup"),
         (harness, "fn current_test_selector()"),
         (harness, "fn repo_receipt_dir()"),
@@ -322,6 +326,11 @@ def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
         (harness, "panic_still_attempts_guarded_cleanup_and_receipt_redacts_ids"),
         (harness, "failed_checkout_creation_cleans_customer_before_returning_error"),
         (harness, "missing_checkout_url_expires_session_then_deletes_customer_without_ids_in_error"),
+        (harness, 'env::var("STRIPE_TEST_ACCOUNT_ID")'),
+        (harness, "test_account_identity_without_livemode_accepts_valid_test_catalog"),
+        (harness, "bad_account_identity_stops_before_price_or_any_mutation"),
+        (harness, "price_requires_exact_test_mode_and_expected_price_id"),
+        (harness, "product_requires_exact_test_mode_and_expected_product_id"),
         (runner, "GITHUB_RUN_ID must be a bounded numeric run selector"),
         (runner, 'readonly RECEIPT_DIR="${GITHUB_WORKSPACE:-.}/artifacts/real-ignored-harnesses"'),
         (runner, 'if cargo test --locked "$@" "$expected" -- --ignored --nocapture'),
@@ -334,6 +343,11 @@ def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
     )
     if missing := [fragment for source, fragment in required if fragment not in source]:
         fail(f"Stripe cleanup contract is missing reviewed gate(s): {missing}")
+    catalog = client.split("pub fn verify_test_mode_starter_catalog", 1)[1].split(
+        "/// Borrow the [`StripeClientConfig`]", 1
+    )[0]
+    if 'account.get("livemode")' in catalog:
+        fail("Stripe Account preflight must use the expected account identity, not livemode")
     hosted_required = (
         "pull_request:",
         "ref: ${{ github.event.pull_request.head.sha }}",
@@ -374,7 +388,7 @@ def verify_exact_manifest() -> None:
     expected_env = {
         "d1": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID"),
         "r2": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID", "R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_TEST_BUCKET"),
-        "stripe": ("HUGR_WALLET_BASE", "HUGR_WALLET_TOKEN", "HUGR_STRIPE_REF", "STRIPE_AUTH_MODE", "STRIPE_PRICE_ID_STARTER"),
+        "stripe": ("HUGR_WALLET_BASE", "HUGR_WALLET_TOKEN", "HUGR_STRIPE_REF", "STRIPE_AUTH_MODE", "STRIPE_PRICE_ID_STARTER", "STRIPE_TEST_ACCOUNT_ID"),
         "neon": ("NEON_TEST_DSN",),
     }
     if set(profiles) != set(expected_names):
@@ -726,6 +740,7 @@ def assert_contract(workflow: str, runner: str) -> None:
         "HUGR_STRIPE_REF",
         "STRIPE_AUTH_MODE",
         "STRIPE_PRICE_ID_STARTER",
+        "STRIPE_TEST_ACCOUNT_ID",
         "NEON_TEST_DSN",
     ):
         if name not in sh:
@@ -738,6 +753,10 @@ def assert_contract(workflow: str, runner: str) -> None:
         fail("Stripe profile does not force wallet-broker auth")
     if '[[ "$STRIPE_PRICE_ID_STARTER" == price_* ]]' not in runner:
         fail("Stripe profile does not validate Starter price id")
+    if '[[ "$STRIPE_TEST_ACCOUNT_ID" =~ ^acct_[A-Za-z0-9]+$ ]]' not in runner:
+        fail("Stripe profile does not validate expected Stripe TEST account id")
+    if "STRIPE_TEST_ACCOUNT_ID: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.STRIPE_TEST_ACCOUNT_ID || '' }}" not in workflow:
+        fail("expected Stripe TEST account ID is not isolated to the stripe/all profiles")
 
     # A generic caller must not be able to select an arbitrary cargo target.
     if re.search(r"(?m)^\s*cargo\s+test\s+.*--ignored", wf):
@@ -1065,6 +1084,7 @@ def mutation_checks(workflow: str, runner: str, contract_workflow: str) -> None:
     # value would silently exercise another auth/price configuration.
     expect_rejected("missing wallet-broker mode", workflow, runner.replace('[[ "$STRIPE_AUTH_MODE" == wallet-broker ]]', '[[ "$STRIPE_AUTH_MODE" == any-mode ]]', 1))
     expect_rejected("missing Starter price", workflow, runner.replace('[[ "$STRIPE_PRICE_ID_STARTER" == price_* ]]', '[[ "$STRIPE_PRICE_ID_STARTER" == any_* ]]', 1))
+    expect_rejected("missing expected Stripe account", workflow, runner.replace('[[ "$STRIPE_TEST_ACCOUNT_ID" =~ ^acct_[A-Za-z0-9]+$ ]]', '[[ "$STRIPE_TEST_ACCOUNT_ID" =~ ^other_[A-Za-z0-9]+$ ]]', 1))
     # A preflight that contains a cargo call can mutate the external system
     # before a later profile is checked.
     expect_rejected("cargo in D1 preflight", workflow, runner.replace("  require_env CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN D1_DATABASE_ID\n}\n\npreflight_r2", "  require_env CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN D1_DATABASE_ID\n  run_cargo d1 d1_target --package corelink-server --lib\n}\n\npreflight_r2", 1))
@@ -1130,11 +1150,13 @@ def preflight_runtime_checks() -> None:
         "HUGR_STRIPE_REF": "stripe-prod-test",
         "STRIPE_AUTH_MODE": "wallet-broker",
         "STRIPE_PRICE_ID_STARTER": "price_test",
+        "STRIPE_TEST_ACCOUNT_ID": "acct_testfixture",
+        "GITHUB_RUN_ID": "424242",
         "NEON_TEST_DSN": "postgresql://user:pass@db.example.test/shadow?sslmode=require",
     }
     with tempfile.TemporaryDirectory(prefix="b068-preflight-") as temp:
         root = Path(temp)
-        for missing in ("HUGR_WALLET_TOKEN", "STRIPE_PRICE_ID_STARTER", "NEON_TEST_DSN"):
+        for missing in ("HUGR_WALLET_TOKEN", "STRIPE_PRICE_ID_STARTER", "STRIPE_TEST_ACCOUNT_ID", "NEON_TEST_DSN"):
             marker = root / f"cargo-{missing}"
             fake_cargo = root / "cargo"
             fake_cargo.write_text(
@@ -1148,8 +1170,9 @@ def preflight_runtime_checks() -> None:
             env.update(baseline)
             env.pop(missing, None)
             env["PATH"] = os.pathsep.join((str(root), env.get("PATH", "")))
+            profile = "all" if missing == "NEON_TEST_DSN" else "stripe"
             result = subprocess.run(
-                ["bash", str(RUNNER_PATH), "all"],
+                ["bash", str(RUNNER_PATH), profile],
                 env=env,
                 cwd=ROOT,
                 stdout=subprocess.PIPE,
@@ -1161,6 +1184,34 @@ def preflight_runtime_checks() -> None:
                 fail(f"missing {missing} unexpectedly allowed all profile")
             if marker.exists():
                 fail(f"missing {missing} invoked cargo before failing preflight")
+
+    for invalid_account_id in ("acct_", "acct_bad!", "sk_test_not_an_account"):
+        with tempfile.TemporaryDirectory(prefix="b068-stripe-account-id-") as temp:
+            root = Path(temp)
+            marker = root / "cargo-invoked"
+            fake_cargo = root / "cargo"
+            fake_cargo.write_text(
+                "#!/bin/sh\n"
+                f"printf invoked > {marker}\n"
+                "exit 99\n",
+                encoding="utf-8",
+            )
+            fake_cargo.chmod(0o700)
+            env = os.environ.copy()
+            env.update(baseline)
+            env["STRIPE_TEST_ACCOUNT_ID"] = invalid_account_id
+            env["PATH"] = os.pathsep.join((str(root), env.get("PATH", "")))
+            result = subprocess.run(
+                ["bash", str(RUNNER_PATH), "stripe"],
+                env=env,
+                cwd=ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0 or marker.exists():
+                fail("malformed Stripe TEST account id did not fail before cargo")
 
     for missing in ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID"):
         with tempfile.TemporaryDirectory(prefix="b068-d1-missing-") as temp:

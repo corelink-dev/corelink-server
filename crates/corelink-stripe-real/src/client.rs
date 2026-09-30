@@ -46,6 +46,8 @@ use corelink_tier_selection::stripe::{
 use corelink_tier_selection::tenant::StripeCustomerId;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
+#[cfg(feature = "live-integration")]
+use sha2::{Digest, Sha256};
 
 use crate::clock::{default_clock, Clock};
 use crate::error::StripeError;
@@ -456,6 +458,97 @@ impl StripeRealClient {
         &self.base_url
     }
 
+    /// Verify that the configured Wallet broker ref resolves to the expected
+    /// Stripe account and that the configured Starter price and product are
+    /// explicitly in TEST mode. Stripe Account objects do not expose
+    /// `livemode`; account identity is checked against the owner-supplied
+    /// expected test account ID, while Price and Product must each report
+    /// `livemode=false`. Uses only read-only GETs through this client's normal
+    /// transport.
+    #[cfg(feature = "live-integration")]
+    pub fn verify_test_mode_starter_catalog(
+        &self,
+        expected_account_id: &str,
+        price_id: &str,
+    ) -> Result<(), StripeError> {
+        if !expected_account_id.starts_with("acct_")
+            || expected_account_id.len() <= "acct_".len()
+            || !expected_account_id["acct_".len()..]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return Err(StripeError::InvalidRequest(
+                "expected Stripe TEST account id is invalid".into(),
+            ));
+        }
+        if !price_id.starts_with("price_")
+            || price_id.len() <= "price_".len()
+            || !price_id["price_".len()..]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return Err(StripeError::InvalidRequest(
+                "configured Starter price id is invalid".into(),
+            ));
+        }
+        let account: serde_json::Value = self.get("/v1/account")?;
+        if account.get("object").and_then(serde_json::Value::as_str) != Some("account")
+            || account.get("id").and_then(serde_json::Value::as_str) != Some(expected_account_id)
+        {
+            return Err(StripeError::InvalidRequest(
+                "configured Stripe account does not match expected TEST account".into(),
+            ));
+        }
+        let price: serde_json::Value = self.get(&format!("/v1/prices/{price_id}"))?;
+        let product_id = price.get("product").and_then(serde_json::Value::as_str);
+        if price.get("id").and_then(serde_json::Value::as_str) != Some(price_id)
+            || price.get("livemode").and_then(serde_json::Value::as_bool) != Some(false)
+            || price.get("active").and_then(serde_json::Value::as_bool) != Some(true)
+            || price.get("currency").and_then(serde_json::Value::as_str) != Some("usd")
+            || price
+                .pointer("/unit_amount")
+                .and_then(serde_json::Value::as_i64)
+                != Some(3500)
+            || price
+                .pointer("/recurring/interval")
+                .and_then(serde_json::Value::as_str)
+                != Some("month")
+            || price
+                .pointer("/recurring/interval_count")
+                .and_then(serde_json::Value::as_i64)
+                != Some(1)
+            || product_id.is_none()
+        {
+            return Err(StripeError::InvalidRequest(
+                "configured Starter price is not proven to be the active $35 monthly TEST price"
+                    .into(),
+            ));
+        }
+        let product_id = product_id.expect("checked above");
+        if !product_id.starts_with("prod_")
+            || product_id.len() <= "prod_".len()
+            || !product_id["prod_".len()..]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return Err(StripeError::InvalidRequest(
+                "configured Starter price product id is invalid".into(),
+            ));
+        }
+        let product: serde_json::Value = self.get(&format!("/v1/products/{product_id}"))?;
+        if product.get("id").and_then(serde_json::Value::as_str) != Some(product_id)
+            || product.get("livemode").and_then(serde_json::Value::as_bool) != Some(false)
+            || product.get("active").and_then(serde_json::Value::as_bool) != Some(true)
+            || product.get("name").and_then(serde_json::Value::as_str) != Some("CoreLink Starter")
+        {
+            return Err(StripeError::InvalidRequest(
+                "configured Starter product is not proven to be active CoreLink TEST product"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Borrow the [`StripeClientConfig`] used to construct this client.
     #[must_use]
     pub fn config(&self) -> &StripeClientConfig {
@@ -764,6 +857,7 @@ impl StripeRealClient {
         if before.get("id").and_then(|v| v.as_str()) != Some(id)
             || before.get("customer").and_then(|v| v.as_str()) != Some(expected_customer_id)
             || metadata_run != Some(run_id)
+            || before.get("livemode").and_then(serde_json::Value::as_bool) != Some(false)
             || before.get("status").and_then(|v| v.as_str()) != Some("open")
             || before.get("payment_status").and_then(|v| v.as_str()) != Some("unpaid")
             || before.get("payment_intent") != Some(&serde_json::Value::Null)
@@ -796,10 +890,15 @@ impl StripeRealClient {
     #[cfg(feature = "live-integration")]
     pub fn cleanup_harness_customer(&self, id: &str, run_id: &str) -> Result<(), StripeError> {
         let customer: serde_json::Value = self.get(&format!("/v1/customers/{id}"))?;
-        if customer
-            .pointer("/metadata/test_run_id")
-            .and_then(|v| v.as_str())
-            != Some(run_id)
+        if customer.get("id").and_then(serde_json::Value::as_str) != Some(id)
+            || customer
+                .pointer("/metadata/test_run_id")
+                .and_then(|v| v.as_str())
+                != Some(run_id)
+            || customer
+                .get("livemode")
+                .and_then(serde_json::Value::as_bool)
+                != Some(false)
         {
             return Err(StripeError::InvalidRequest(
                 "harness customer is not exact-run-owned".into(),
@@ -1000,6 +1099,14 @@ fn live_harness_run_id() -> Option<String> {
     Some(value)
 }
 
+#[cfg(feature = "live-integration")]
+fn harness_recovery_receipt(run_id: &str, kind: &str, id: &str, status: &str) -> String {
+    let digest = hex::encode(Sha256::digest(id.as_bytes()));
+    format!(
+        "{{\"run_id\":\"{run_id}\",\"kind\":\"{kind}\",\"id_sha256\":\"{digest}\",\"status\":\"{status}\"}}"
+    )
+}
+
 /// Stable Stripe idempotency identity for one tenant/entitlement axis.
 /// Cache and runner subscriptions are independent products and must never
 /// reuse one another's Stripe idempotency namespace.
@@ -1055,6 +1162,36 @@ impl StripeClient for StripeRealClient {
         let created_customer = self
             .create_customer("", req.tenant_id.as_str(), &customer_idem)
             .map_err(|e| TierError::Stripe(e.to_string()))?;
+        #[cfg(feature = "live-integration")]
+        if let Some(run_id) = live_harness_run_id() {
+            if created_customer.livemode == Some(true) {
+                let receipt = harness_recovery_receipt(
+                    &run_id,
+                    "customer",
+                    &created_customer.id,
+                    "live_mode_retained_no_recovery",
+                );
+                return Err(TierError::Stripe(format!(
+                    "created customer is explicitly LIVE; retained without recovery request; receipt {receipt}"
+                )));
+            }
+            if created_customer.livemode.is_none() {
+                // Only an absent mode may be reconciled by re-reading this
+                // exact object. Cleanup refuses DELETE unless that read proves
+                // TEST mode and exact run ownership.
+                let recovered = self.cleanup_harness_customer(&created_customer.id, &run_id);
+                let status = if recovered.is_ok() {
+                    "deleted_readback_pass"
+                } else {
+                    "retained_recovery_required"
+                };
+                let receipt =
+                    harness_recovery_receipt(&run_id, "customer", &created_customer.id, status);
+                return Err(TierError::Stripe(format!(
+                    "created customer mode is unknown; recovery receipt {receipt}"
+                )));
+            }
+        }
 
         let raw = match self.create_checkout_session_raw(
             req,
@@ -1105,6 +1242,58 @@ impl StripeClient for StripeRealClient {
                 return Err(TierError::Stripe(format!("{error}{suffix}")));
             }
         };
+        #[cfg(feature = "live-integration")]
+        if let Some(run_id) = live_harness_run_id() {
+            if raw.livemode == Some(true) {
+                let session_receipt = harness_recovery_receipt(
+                    &run_id,
+                    "checkout",
+                    &raw.id,
+                    "live_mode_retained_no_recovery",
+                );
+                let customer_receipt = harness_recovery_receipt(
+                    &run_id,
+                    "customer",
+                    &created_customer.id,
+                    "retained_dependency_session_live",
+                );
+                return Err(TierError::Stripe(format!(
+                    "created checkout is explicitly LIVE; session and customer retained without recovery request; receipts [{session_receipt},{customer_receipt}]"
+                )));
+            }
+            if raw.livemode.is_none() {
+                let session_recovered = self.cleanup_harness_checkout(
+                    &raw.id,
+                    raw.customer.as_deref().unwrap_or(&created_customer.id),
+                    &run_id,
+                );
+                let session_status = if session_recovered.is_ok() {
+                    "expired_readback_pass"
+                } else {
+                    "retained_recovery_required"
+                };
+                let session_receipt =
+                    harness_recovery_receipt(&run_id, "checkout", &raw.id, session_status);
+                let customer_status = if session_recovered.is_ok()
+                    && self
+                        .cleanup_harness_customer(&created_customer.id, &run_id)
+                        .is_ok()
+                {
+                    "deleted_readback_pass"
+                } else {
+                    "retained_recovery_required"
+                };
+                let customer_receipt = harness_recovery_receipt(
+                    &run_id,
+                    "customer",
+                    &created_customer.id,
+                    customer_status,
+                );
+                return Err(TierError::Stripe(format!(
+                    "created checkout mode is unknown; recovery receipts [{session_receipt},{customer_receipt}]"
+                )));
+            }
+        }
 
         // Stripe echoes the attached customer; fall back to the one we created
         // (belt-and-suspenders — the field is present because we passed it).
@@ -1317,6 +1506,10 @@ pub struct CustomerObject {
     pub id: String,
     /// Customer email (echoed).
     pub email: Option<String>,
+    /// Stripe account mode. Missing means unknown and is never accepted by
+    /// the live TEST harness.
+    #[serde(default)]
+    pub livemode: Option<bool>,
 }
 
 /// Stripe `subscription` object (subset).
@@ -1400,6 +1593,10 @@ pub struct CheckoutSessionObject {
     /// Customer id (None until session completes for some flows; for
     /// `mode=subscription` Stripe sets it pre-completion).
     pub customer: Option<String>,
+    /// Stripe account mode. Missing means unknown and is never accepted by
+    /// the live TEST harness.
+    #[serde(default)]
+    pub livemode: Option<bool>,
 }
 
 #[cfg(test)]
