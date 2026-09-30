@@ -841,7 +841,7 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('infra/staging/topology.json'): (0o0644, "a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14"),
     Path('scripts/staging_bootstrap_provider.py'): (0o0644, "8a77837893f2bd094f1fd834042361e69375e1453ec1d4dde9c20c605d00ccdb"),
     Path('scripts/verify_i2183_reapi_composition.py'): (0o0644, "532408187817e4ff508e9b2f5776e1646f7f304235ab697cf2e28fbab49a1b6c"),
-    Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "ac63cef261ec32498902c76d36eaff0f286506777f27e141dc7645dd08a80661"),
+    Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "58c85ba647de0023e647d17bbc5345f80011e4b7a310e8eaec71c21ae900487d"),
     Path('scripts/verify_staging_provider_preflight.py'): (0o0644, "ddc9d57aa31cbee273dabc923b23a3ef33fb11b40bbd3b746ad7dcaca0633b62"),
     Path('scripts/verify_staging_topology_contract.py'): (0o0644, "48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9"),
     Path('specs/03_architecture/issue-2176-grpc-transport-contract.md'): (0o0644, "351aa666c129c7dbc87db4f69f476f8bcdf522d0ba35223dca7eb507c8a926b3"),
@@ -890,12 +890,8 @@ def _wave_pin_matches(root: Path, relative: Path, pin: tuple[int, str] | None) -
 
 def _wave_state(root: Path) -> dict[str, str]:
     states: dict[str, str] = {}
-    for group, pins in WAVE_GROUPS.items():
-        old = all(_wave_pin_matches(root, path, old_pin) for path, (old_pin, _new_pin) in pins.items())
-        new = all(_wave_pin_matches(root, path, new_pin) for path, (_old_pin, new_pin) in pins.items())
-        if old == new:
-            raise ContractError(f"unknown or partial trusted BASE delivery state: {group}")
-        states[group] = "old" if old else "new"
+    for group in WAVE_GROUPS:
+        states[group] = _wave_group_state(root, group)
     return states
 
 def _wave_controls_match(root: Path) -> bool:
@@ -918,12 +914,174 @@ def _wave_common_controls_equal(candidate: Path, trusted_base: Path) -> None:
         require_regular_mode(candidate, relative)
         require_exact(candidate, trusted_base, relative)
 
+WALLET_ROUTE_ORDINARY_PATHS = frozenset((
+    Path("crates/corelink-stripe-real/src/client.rs"),
+    Path("crates/corelink-stripe-real/src/client/tests_part_01.rs"),
+    Path("crates/corelink-stripe-real/tests/wallet_broker_proxy.rs"),
+))
+WALLET_ROUTE_LIVE_PATH = Path("crates/corelink-stripe-real/tests/live_integration.rs")
+WALLET_ROUTE_VERIFIER_PATH = Path("scripts/verify_real_ignored_harnesses.py")
+WALLET_ROUTE_PATHS = WALLET_ROUTE_ORDINARY_PATHS | {
+    WALLET_ROUTE_LIVE_PATH, WALLET_ROUTE_VERIFIER_PATH
+}
+WALLET_ROUTE_LITERAL = b"/_wallet/proxy"
+WALLET_ROUTE_LIVE_MODULE = b"mod cleanup_fault_injection {"
+WALLET_ROUTE_LIVE_END = b"\n}\n\nimpl Drop for HarnessCleanup"
+WALLET_ROUTE_LIVE_LITERAL_COUNT = 11
+WALLET_ROUTE_TRANSFORMED_LIVE_SHA256 = "4667e8354afb20adea5eb18afe33fcadf77bee696e3e91b1f00eefcf7e200b11"
+WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256 = "294ea6c178b6713f75e3b85f4db9e4ee28c79576c20a47aeb071069f175333fa"
+WALLET_ROUTE_VERIFIER_KEY = (
+    b'"crates/corelink-stripe-real/tests/live_integration.rs": "'
+)
+
+
+def _wallet_route_expected_live(base: Path) -> tuple[bytes, bytes]:
+    source = (base / WALLET_ROUTE_LIVE_PATH).read_bytes()
+    source_sha = hashlib.sha256(source).hexdigest()
+    if source_sha == WALLET_ROUTE_TRANSFORMED_LIVE_SHA256:
+        return source, source
+    live_pin = WAVE_GROUPS["i2565"][WALLET_ROUTE_LIVE_PATH][1]
+    if live_pin is None or source_sha != live_pin[1]:
+        raise ContractError("trusted wallet live harness is neither the frozen BASE nor exact route transform")
+    if source.count(WALLET_ROUTE_LIVE_MODULE) != 1:
+        raise ContractError("trusted wallet live harness module is ambiguous")
+    start = source.index(WALLET_ROUTE_LIVE_MODULE)
+    end = source.find(WALLET_ROUTE_LIVE_END, start)
+    if end < 0:
+        raise ContractError("trusted wallet live harness module boundary is missing")
+    region_end = end + len(WALLET_ROUTE_LIVE_END) - len(b"\n\nimpl Drop for HarnessCleanup")
+    region = source[start:region_end]
+    if (
+        source.count(WALLET_ROUTE_LITERAL) != WALLET_ROUTE_LIVE_LITERAL_COUNT
+        or region.count(WALLET_ROUTE_LITERAL) != WALLET_ROUTE_LIVE_LITERAL_COUNT
+    ):
+        raise ContractError("trusted wallet live harness route literal count drift")
+    transformed = source[:start] + region.replace(WALLET_ROUTE_LITERAL, b"") + source[region_end:]
+    if hashlib.sha256(transformed).hexdigest() != WALLET_ROUTE_TRANSFORMED_LIVE_SHA256:
+        raise ContractError("trusted wallet live transform no longer matches its frozen digest")
+    return source, transformed
+
+
+def _wallet_route_expected_verifier(base: Path, accepted_live: bytes) -> bytes:
+    source = (base / WALLET_ROUTE_VERIFIER_PATH).read_bytes()
+    if source.count(WALLET_ROUTE_VERIFIER_KEY) != 1:
+        raise ContractError("trusted B068 live source pin is ambiguous")
+    start = source.index(WALLET_ROUTE_VERIFIER_KEY) + len(WALLET_ROUTE_VERIFIER_KEY)
+    end = start + 64
+    if source[end:end + 2] != b'",':
+        raise ContractError("trusted B068 live source pin is malformed")
+    baseline = hashlib.sha256((base / WALLET_ROUTE_LIVE_PATH).read_bytes()).hexdigest().encode("ascii")
+    if source[start:end] != baseline:
+        raise ContractError("trusted B068 live source pin does not match trusted BASE")
+    accepted = hashlib.sha256(accepted_live).hexdigest().encode("ascii")
+    expected = source[:start] + accepted + source[end:]
+    expected_sha = hashlib.sha256(expected).hexdigest()
+    allowed = (
+        WAVE_GROUPS["i2565"][WALLET_ROUTE_VERIFIER_PATH][1][1],
+        WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256,
+    )
+    if expected_sha not in allowed:
+        raise ContractError("trusted B068 verifier is not the frozen BASE or exact route transform")
+    return expected
+
+
+def _wallet_route_base_states(trusted_base: Path) -> dict[str, str]:
+    """Recognize consumed #2565 on either side of the exact privileged transform."""
+    states = {name: _wave_group_state(trusted_base, name) for name in WAVE_GROUPS if name != "i2565"}
+    route_live, transformed_live = _wallet_route_expected_live(trusted_base)
+    actual_live = (trusted_base / WALLET_ROUTE_LIVE_PATH).read_bytes()
+    expected_live_pin = WAVE_GROUPS["i2565"][WALLET_ROUTE_LIVE_PATH][1]
+    if actual_live not in (route_live, transformed_live):
+        raise ContractError("trusted wallet live harness is outside the frozen route states")
+    if expected_live_pin is not None and hashlib.sha256(actual_live).hexdigest() not in (
+        expected_live_pin[1], WALLET_ROUTE_TRANSFORMED_LIVE_SHA256
+    ):
+        raise ContractError("trusted wallet live harness does not prove consumed #2565")
+    verifier = _wallet_route_expected_verifier(trusted_base, actual_live)
+    actual_verifier = (trusted_base / WALLET_ROUTE_VERIFIER_PATH).read_bytes()
+    if actual_verifier != verifier:
+        raise ContractError("trusted B068 verifier is not paired with its wallet live harness")
+    for relative, (_old, new) in WAVE_GROUPS["i2565"].items():
+        if relative in WALLET_ROUTE_PATHS or relative == Path("crates/corelink-stripe-real/src/client.rs"):
+            continue
+        if not _wave_pin_matches(trusted_base, relative, new):
+            raise ContractError(f"trusted #2565 endpoint drift: {relative}")
+    for relative in WALLET_ROUTE_PATHS:
+        require_regular_mode(trusted_base, relative)
+    states["i2565"] = "new"
+    return states
+
+
+def validate_wallet_route_candidate(
+    trusted_base: Path, candidate: Path, changes: set[Path] | None = None
+) -> bool:
+    """Validate the one protected wallet-route transition from consumed #2565."""
+    states = _wallet_route_base_states(trusted_base)
+    if states.get("i2565") != "new":
+        raise ContractError("wallet route requires the consumed #2565 trusted BASE")
+    if changes is None:
+        changes = changed_paths(trusted_base, candidate)
+    if changes - WALLET_ROUTE_PATHS:
+        raise ContractError(f"wallet route includes foreign paths: {sorted(map(str, changes - WALLET_ROUTE_PATHS))}")
+    _wave_common_controls_equal(candidate, trusted_base)
+    for name, state in states.items():
+        if name == "i2565":
+            continue
+        if _wave_group_state(candidate, name) != state:
+            raise ContractError(f"wallet route changes another delivery wave: {name}")
+    for relative, (_old, new) in WAVE_GROUPS["i2565"].items():
+        if relative not in WALLET_ROUTE_PATHS and not _wave_pin_matches(trusted_base, relative, new):
+            raise ContractError(f"trusted #2565 endpoint drift: {relative}")
+        if relative not in WALLET_ROUTE_PATHS and not _wave_pin_matches(candidate, relative, new):
+            raise ContractError(f"wallet route changes a #2565 control: {relative}")
+    for relative in WALLET_ROUTE_PATHS:
+        require_regular_mode(trusted_base, relative)
+        require_regular_mode(candidate, relative)
+    base_live, target_live = _wallet_route_expected_live(trusted_base)
+    actual_live = (candidate / WALLET_ROUTE_LIVE_PATH).read_bytes()
+    if actual_live not in (base_live, target_live):
+        raise ContractError("wallet live harness must be BASE or exact 11-literal route transform")
+    if actual_live != base_live and not WALLET_ROUTE_ORDINARY_PATHS <= changes:
+        raise ContractError("wallet live route transform requires all three ordinary Stripe source paths")
+    expected_verifier = _wallet_route_expected_verifier(trusted_base, actual_live)
+    actual_verifier = (candidate / WALLET_ROUTE_VERIFIER_PATH).read_bytes()
+    if actual_verifier != expected_verifier:
+        raise ContractError("B068 verifier may change only the BASE-derived live source digest")
+    return True
+
+
+def _wave_group_state(root: Path, group: str) -> str:
+    pins = WAVE_GROUPS[group]
+    old = all(_wave_pin_matches(root, path, old_pin) for path, (old_pin, _new_pin) in pins.items())
+    new = all(_wave_pin_matches(root, path, new_pin) for path, (_old_pin, new_pin) in pins.items())
+    if old == new:
+        raise ContractError(f"unknown or partial trusted BASE delivery state: {group}")
+    return "old" if old else "new"
+
 def validate_wave(candidate: Path, trusted_base: Path, changes: set[Path]) -> bool:
     # Accept only the actual d2f1 control surface plus four complete old/new groups.
-    base = _wave_state(trusted_base)
-    target = _wave_state(candidate)
     if not _wave_controls_match(trusted_base):
         raise ContractError("trusted BASE transport controls do not match actual d2f1 snapshot")
+    route_base = None
+    has_route_sentinels = (trusted_base / WALLET_ROUTE_LIVE_PATH).is_file() and (
+        trusted_base / WALLET_ROUTE_VERIFIER_PATH
+    ).is_file()
+    try:
+        if has_route_sentinels:
+            route_base = _wallet_route_base_states(trusted_base)
+    except ContractError:
+        # An exact pre-#2565 BASE continues through the original finite wave
+        # classifier. Partial or drifted post-#2565 states fail closed below.
+        try:
+            if _wave_group_state(trusted_base, "i2565") != "old":
+                raise
+        except ContractError:
+            raise
+        route_base = None
+    if route_base is not None and validate_wallet_route_candidate(trusted_base, candidate, changes):
+        return True
+    base = _wave_state(trusted_base)
+    target = _wave_state(candidate)
     _wave_common_controls_equal(candidate, trusted_base)
     changed_groups = [name for name in WAVE_GROUPS if base[name] != target[name]]
     if not changed_groups:

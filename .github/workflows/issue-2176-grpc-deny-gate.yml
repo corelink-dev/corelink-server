@@ -4,6 +4,12 @@ name: issue 2176 trusted gRPC transport policy
 # pull_request_target. Candidate files are data only: this workflow never runs
 # a candidate workflow, script, package hook, build, or test command.
 on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Exact commit SHA to verify from the protected main baseline
+        required: true
+        type: string
   pull_request_target:
     branches: [main]
     paths:
@@ -51,25 +57,30 @@ on:
       - "docs/internal/secrets-checklist.md"
       - ".github/workflows/issue-2176-grpc-deny-gate.yml"
       - ".github/workflows/issue-2574-staging-grpc-diagnostic.yml"
+      - "crates/corelink-stripe-real/src/client.rs"
+      - "crates/corelink-stripe-real/src/client/tests_part_01.rs"
+      - "crates/corelink-stripe-real/tests/live_integration.rs"
+      - "crates/corelink-stripe-real/tests/wallet_broker_proxy.rs"
+      - "scripts/verify_real_ignored_harnesses.py"
 
 permissions:
   contents: read
 
 concurrency:
-  group: issue-2176-trusted-grpc-deny-${{ github.event.pull_request.number }}
+  group: issue-2176-trusted-grpc-deny-${{ github.event.pull_request.number || inputs.candidate_sha }}
   cancel-in-progress: true
 
 jobs:
   deny-contract:
     name: trusted exact-head gRPC deny contract
-    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' }}
+    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && (github.event_name == 'pull_request_target' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected && inputs.candidate_sha != '')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Checkout protected-base verifier
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: trusted-base
           fetch-depth: 1
           persist-credentials: false
@@ -77,8 +88,8 @@ jobs:
       - name: Checkout exact candidate head as inert data
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || inputs.candidate_sha }}
           path: candidate
           fetch-depth: 1
           persist-credentials: false
@@ -88,7 +99,13 @@ jobs:
           python3 -S trusted-base/scripts/verify_i2176_grpc_deny_gate.py
           --trusted-base trusted-base
           --candidate candidate
-          --expected-head ${{ github.event.pull_request.head.sha }}
+          --expected-head ${{ github.event.pull_request.head.sha || inputs.candidate_sha }}
+
+      - name: Validate candidate with the protected-base #2574 verifier
+        run: >-
+          python3 -S trusted-base/scripts/verify_i2574_grpc_diagnostic_policy.py
+          --trusted-base trusted-base
+          --candidate candidate
 
       - name: Run protected-base adversarial fixtures
         run: >-
