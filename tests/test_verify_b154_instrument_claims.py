@@ -60,6 +60,37 @@ def test_all_localized_legal_copies_omit_positive_capability_claims() -> None:
         assert not MODULE.scan_claims(source, MODULE.SLA)
 
 
+def test_byok_docs_page_states_unavailable_service_and_pending_review() -> None:
+    page = (ROOT / MODULE.BYOK_DOCS).read_text(encoding="utf-8")
+    matrix = (ROOT / MODULE.BYOK_MATRIX).read_text(encoding="utf-8")
+    MODULE.verify_byok_docs_page(page)
+    MODULE.verify_byok_matrix_scope(matrix)
+
+
+@pytest.mark.parametrize(
+    "positive_claim",
+    [
+        "CoreLink Enterprise tenants can supply their own root key.",
+        "BYOK is available on the Enterprise tier.",
+        "| AWS KMS | FIPS 140-3 | Available |",
+        "Key revocation works within one DEK cache TTL (≤ 60s).",
+        "BYOK kill-switch p99 ≤ 5 min is guaranteed.",
+    ],
+)
+def test_byok_draft_banner_cannot_hide_positive_service_claim(positive_claim: str) -> None:
+    page = (ROOT / MODULE.BYOK_DOCS).read_text(encoding="utf-8")
+    with pytest.raises(MODULE.VerificationError):
+        MODULE.verify_byok_docs_page(page + "\n" + positive_claim + "\n")
+
+
+def test_provider_module_certificate_cannot_imply_corelink_availability() -> None:
+    matrix = (ROOT / MODULE.BYOK_MATRIX).read_text(encoding="utf-8")
+    with pytest.raises(MODULE.VerificationError):
+        MODULE.verify_byok_matrix_scope(
+            matrix.replace("Provider-module scope, not CoreLink feature availability.", "AWS KMS is available for all CoreLink customers.")
+        )
+
+
 def _capability_sources() -> tuple[dict, dict, str]:
     return (
         json.loads((ROOT / MODULE.B083_RECEIPT).read_text(encoding="utf-8")),

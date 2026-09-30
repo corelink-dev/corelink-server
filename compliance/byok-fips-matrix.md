@@ -24,8 +24,14 @@ references:
 
 # BYOK FIPS Compliance Matrix
 
+> **Provider-module scope, not CoreLink feature availability.** The certificate
+> references below concern third-party KMS modules. They do not establish an
+> available CoreLink BYOK service, customer-controlled key lifecycle, or a
+> kill-switch timing SLO. CoreLink's shipped-runtime lifecycle and p99 remain
+> unverified under #1653/#2165; no tier currently offers BYOK.
+
 This document records the FIPS certification status for each KMS provider
-supported in CoreLink's BYOK enterprise tier.
+considered in CoreLink's proposed BYOK design.
 
 > **Quarterly review required.** Any change to a provider's NIST CMVP module
 > status must trigger an alert and immediate update to this document.
@@ -92,11 +98,11 @@ supported in CoreLink's BYOK enterprise tier.
 > | `HSM` | Marvell LiquidSecurity HSM | **FIPS 140-2 Level 3** (NIST CMVP #3318) |
 > | `EXTERNAL` / `EXTERNAL_VPC` | Customer-supplied HSM | Per the external HSM's own certification |
 >
-> **CoreLink production BYOK customers MUST use `HSM` tier**. Software tier is
-> permitted only for staging / preview. The orchestrator enforces tier policy at
-> CMK onboarding; `GcpKmsRealProvider::check_access` does not currently parse
-> the protection level back (deferred to a follow-up WI), so policy enforcement
-> sits one layer up.
+> **Future design requirement:** if CoreLink offers GCP BYOK, production use
+> would require the `HSM` tier; software tier would remain staging-only.
+> CoreLink has no production BYOK customers. The proposed onboarding policy is
+> not proof of an operational customer lifecycle; `GcpKmsRealProvider::check_access`
+> does not currently parse the protection level back.
 >
 > FIPS 140-3 certification of the GCP Cloud KMS module is tracked quarterly by
 > the Crypto SME. This row will be updated when GCP publishes a 140-3 CMVP
@@ -165,6 +171,11 @@ tags: ["byok", "fips-140-2", "fips-140-3", "nist-cmvp", "compliance", "s14"]
 
 # BYOK FIPS Compliance Matrix — CoreLink S-14
 
+> **Historical design snapshot.** The rows and procedures below record a
+> proposed integration design, not currently offered CoreLink BYOK controls,
+> customer notifications, runtime guarantees, or Legal approval. The current
+> prelaunch limitation above governs availability.
+
 > **NIST SP 800-57 Pt 1 Rev 5** (key management) + **NIST SP 800-130** (cryptographic
 > key management framework) + **NIST SP 800-90A** (DRBG for DEK generation) apply
 > to all four providers.
@@ -172,14 +183,14 @@ tags: ["byok", "fips-140-2", "fips-140-3", "nist-cmvp", "compliance", "s14"]
 > **Quarterly review**: Crypto SME reviews NIST CMVP certificate status per provider
 > and updates this document. Calendar reminder in ops runbook. Next review: 2026-08-14.
 >
-> **Customer notification**: FIPS level per provider is disclosed to customers at
-> BYOK signup. Customers requiring FIPS 140-3 must use AWS KMS or Vault Enterprise.
+> **Future customer disclosure:** any future BYOK signup would require reviewed
+> provider-specific FIPS terms. No current BYOK signup or customer notice is claimed.
 
 ## Provider Matrix
 
 | Provider | FIPS Level | NIST CMVP Module ID | Tier Requirement | Notes |
 |---|---|---|---|---|
-| **AWS KMS** | FIPS 140-3 Level 1 | #4177 (AWS HSM; 2024) | Any KMS region | Verified FIPS 140-3 as of 2024-02. Default for enterprise. |
+| **AWS KMS** | FIPS 140-3 Level 1 | #4177 (AWS HSM; 2024) | Any KMS region | Historical module reference; proposed Enterprise default, not a CoreLink service offering. |
 | **GCP Cloud KMS** | FIPS 140-2 Level 1 (software) / **Level 3 (HSM tier)** | #3978 (software) / **#3318 (HSM — Marvell LiquidSecurity)** | **HSM tier mandatory for production**; software permitted only for staging | GCP committed to FIPS 140-3 for the software module; quarterly review tracks. HSM tier is the CoreLink production target (R2-7). |
 | **Azure Key Vault** | FIPS 140-2 Level 2 | #3516 (Azure HSM; Premium) | **Premium HSM tier mandatory** | Standard tier = Level 1; CoreLink BYOK requires Premium HSM at provisioning. |
 | **HashiCorp Vault Enterprise** | FIPS 140-3 Level 1 | Pending CMVP (2026-Q2) | Vault Enterprise FIPS build | Customer-hosted. OSS Vault is NOT FIPS-certified. mTLS auth mandatory. |
@@ -195,11 +206,11 @@ FIPS 140-3 Level 1 > FIPS 140-2 Level 2 > FIPS 140-2 Level 1 > None
 - **FIPS 140-2 Level 1**: GCP Cloud KMS software tier (#3978; staging-only).
 - **FIPS 140-2 Level 3**: GCP Cloud KMS **HSM tier** (#3318 Marvell LiquidSecurity HSM; CoreLink production target).
 
-## Compliance Assertions
+## Proposed controls requiring runtime evidence
 
 ### 1. Envelope Encryption
 
-All DEK material:
+The proposed design calls for DEK material to be:
 - Generated via OS CSPRNG (`getrandom::getrandom`; NIST SP 800-90A approved DRBG).
 - **Never BLAKE3-derived or deterministic** (Lote 10.14 codex P1 fix: deterministic DEK =
   compromise propagation across blobs sharing the same content hash).
@@ -231,8 +242,9 @@ All DEK material:
 
 - BYOK CMK overlap: **7 days** (INV-KEY-OVERLAP; CTRL-KEY-010/011/012).
 - CMK rotation: re-wrap flow (unwrap DEK with old CMK + wrap with new CMK; atomic).
-- CMK revoke → DEK cache evict all entries for key → hard-fail reads within 5 min
-  (INV-BYOK-CRYPTO-SOVEREIGNTY; kill switch WI-S14-006).
+- CMK revoke → DEK cache eviction and failed reads are a proposed target
+  (INV-BYOK-CRYPTO-SOVEREIGNTY; kill switch WI-S14-006). No production-binary
+  timing or customer guarantee is established by this matrix.
 
 ## Quarterly Review Cadence
 

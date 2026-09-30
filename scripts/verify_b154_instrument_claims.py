@@ -33,10 +33,14 @@ SLA = ROOT / "legal/sla/v1.0.0.md"
 B083_RECEIPT = Path("evidence/owner-actions/B-083/byok-real-kms-lifecycle.json")
 B046_PROBE = Path("evidence/owner-actions/B-046/object-lock-probe.json")
 RESOLUTION = Path("evidence/owner-actions/B-154/prelaunch-claim-resolution.json")
+BYOK_DOCS = Path("apps/docs/docs/explanation/security/byok.mdx")
+BYOK_MATRIX = Path("compliance/byok-fips-matrix.md")
 B086_RESOLUTION = Path("evidence/owner-actions/B-086/d1-residency-resolution.json")
 WRANGLER = Path("wrangler.toml")
 DOCKERFILE = Path("Dockerfile")
 PUBLIC_COPY_PATHS = (
+    BYOK_DOCS,
+    BYOK_MATRIX,
     Path("legal/dpa-residency-amendment.md"),
     Path("legal/dpa/v1.0.0.en-US.md"),
     Path("legal/dpa/v1.0.0.es-419.md"),
@@ -242,6 +246,42 @@ def verify_capability_state(byok: dict, object_lock: dict, dockerfile: str) -> N
 
 
 
+def verify_byok_docs_page(source: str) -> None:
+    """A draft banner must never mask current BYOK availability or timing claims."""
+    active = " ".join(text for _line, text in _active_lines(source))
+    required = (
+        "BYOK is not available or offered in CoreLink's prelaunch service.",
+        "Runtime lifecycle unverified; not offered",
+        "No BYOK kill-switch timing SLO or p99 measurement is offered.",
+        "No tier currently offers BYOK.",
+        "Legal, Finance, and Security review remains pending.",
+    )
+    if any(phrase not in active for phrase in required):
+        raise VerificationError("BYOK docs page lacks an explicit prelaunch limitation")
+    prohibited = (
+        r"\bCoreLink Enterprise tenants can supply\b",
+        r"\bBYOK is available\b",
+        r"\|\s*AWS KMS\s*\|[^\n]*\|\s*Available\s*\|",
+        r"(?:within one DEK cache TTL|[≤<]\s*60\s*s)",
+        r"\bkill[- ]switch\s+p99\s*[≤<]\s*5\s*min\b",
+    )
+    if any(re.search(pattern, active, re.IGNORECASE) for pattern in prohibited):
+        raise VerificationError("BYOK docs page makes an unproved availability or timing claim")
+
+
+def verify_byok_matrix_scope(source: str) -> None:
+    active = " ".join(text for _line, text in _active_lines(source))
+    required = (
+        "Provider-module scope, not CoreLink feature availability.",
+        "no tier currently offers BYOK.",
+        "#1653/#2165",
+    )
+    if any(phrase not in active for phrase in required):
+        raise VerificationError("BYOK module matrix lacks the service-availability boundary")
+    if "supported in CoreLink's BYOK enterprise tier" in active:
+        raise VerificationError("BYOK module matrix presents proposed providers as offered")
+
+
 def verify_public_claim_copies(root: Path) -> None:
     for relative in PUBLIC_COPY_PATHS:
         try:
@@ -252,6 +292,10 @@ def verify_public_claim_copies(root: Path) -> None:
         if active_claims:
             labels = ", ".join(f"{label}@{line}" for label, line, _text in active_claims)
             raise VerificationError(f"unproved positive claim in {relative}: {labels}")
+        if relative == BYOK_DOCS:
+            verify_byok_docs_page(source)
+        elif relative == BYOK_MATRIX:
+            verify_byok_matrix_scope(source)
 
 
 def verify_prelaunch_document_status(root: Path, overrides: dict[Path, str] | None = None) -> None:
@@ -325,8 +369,25 @@ def verify_prelaunch_resolution(root: Path) -> None:
     byok = claims.get("byok_kill_switch", {})
     if object_lock.get("capability_status") != "UNPROVEN" or object_lock.get("provider_classification") != "INDETERMINATE":
         raise VerificationError("B-154 Object Lock receipt no longer has the unproven boundary")
+    synthetic = object_lock.get("synthetic_aws_provider_proof")
+    if not isinstance(synthetic, dict) or synthetic != {
+        "status": "PROVEN_FOR_ONE_NONPRODUCTION_SYNTHETIC_VERSION_ONLY",
+        "receipt": "https://github.com/HuGR-dev/corelink-server/issues/1877#issuecomment-5917836175",
+        "probe_run": 36741245684,
+        "digest_reconciliation_run": 36742484737,
+        "retention": "ONE_DAY_COMPLIANCE_WITH_LEGAL_HOLD_ON",
+        "production_runtime": "NOT_ENABLED_OR_PROVEN",
+        "seven_year_guarantee": "NOT_ESTABLISHED",
+    }:
+        raise VerificationError("B-154 synthetic AWS proof scope drifted")
     if byok.get("capability_status") != "UNPROVEN" or byok.get("revoke_restore") != "NOT_EXECUTED" or byok.get("p99_measurement") != "NOT_MEASURED":
         raise VerificationError("B-154 BYOK lifecycle/p99 boundary changed; re-review claims")
+    if byok.get("public_copy") != {
+        "path": BYOK_DOCS.as_posix(),
+        "state": "PRELAUNCH_LIMITATION_NOT_OFFERED",
+        "provider_module_scope": "NOT_CORELINK_SERVICE_CAPABILITY",
+    }:
+        raise VerificationError("B-154 BYOK docs source or limitation drifted")
     if record.get("provider_chains_closed") is not False or record.get("status") != "OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW":
         raise VerificationError("B-154 provider or counsel chain must remain open")
     d1 = claims.get("d1_residency")
