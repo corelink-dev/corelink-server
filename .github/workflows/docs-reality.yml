@@ -59,6 +59,10 @@ on:
       - 'scripts/verify_audit_residency.py'
       - 'tests/test_i1669_receipt_classifier.py'
       - 'tests/test_verify_audit_residency.py'
+      - 'BACKLOG.md'
+      - 'reports/owner-actions/b170-prelaunch-reconciliation.md'
+      - 'scripts/verify_b170_owner_actions.py'
+      - 'tests/test_verify_b170_owner_actions.py'
       - '.github/workflows/docs-reality.yml'
   push:
     branches: [main]
@@ -187,3 +191,70 @@ jobs:
           path: target/docs-reality/
           retention-days: 30
           if-no-files-found: warn
+
+  b170-owner-contract:
+    name: B-170 prelaunch contract and negative suite
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Admit only the closed B-170 path set
+        id: admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, subprocess
+          base, head = os.environ['BASE_SHA'], os.environ['HEAD_SHA']
+          if not re.fullmatch(r'[0-9a-f]{40}', base) or not re.fullmatch(r'[0-9a-f]{40}', head):
+              raise SystemExit('invalid base/head SHA')
+          raw = subprocess.run(['git','diff','--name-only','--no-renames','-z',base+'...'+head],check=True,capture_output=True).stdout
+          changed = {p.decode('utf-8') for p in raw.split(b'\0') if p}
+          base_text = subprocess.run(['git','show',base+':BACKLOG.md'],check=True,capture_output=True).stdout
+          head_text = open('BACKLOG.md','rb').read()
+          def b170_section_changed(before, after):
+              marker = b'### B-170 \xe2\x80\x94 '
+              def section(data):
+                  start = data.find(marker)
+                  if start < 0: raise SystemExit('B-170 heading missing')
+                  end = data.find(b'### B-171 ', start)
+                  if end < 0: raise SystemExit('B-171 boundary missing')
+                  return data[start:end]
+              return section(before) != section(after)
+          row_changed = b170_section_changed(base_text, head_text)
+          b170 = {'reports/owner-actions/b170-prelaunch-reconciliation.md','scripts/verify_b170_owner_actions.py','tests/test_verify_b170_owner_actions.py'}
+          allowed = {'BACKLOG.md','.github/workflows/docs-reality.yml','.github/workflows/issue-ci-pack.yml','docs/internal/ci-issue-packs.json',*b170}
+          mandatory = {'BACKLOG.md',*b170}
+          if not changed.intersection(b170) and not row_changed:
+              with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('skip=true\n')
+              raise SystemExit(0)
+          extra = changed - allowed
+          missing = mandatory - changed
+          if extra or missing:
+              raise SystemExit(f'B-170 path admission failed; unexpected={sorted(extra)!r}, missing={sorted(missing)!r}')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f: f.write('skip=false\n')
+          PY
+      - name: Set up Python
+        if: steps.admission.outputs.skip != 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Run B-170 semantic negatives and canonical guard
+        if: steps.admission.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest==9.0.2
+          python -m pytest tests/test_verify_b170_owner_actions.py -q
+          python scripts/verify_b170_owner_actions.py
