@@ -172,6 +172,10 @@ def test_workflow_keeps_all_required_query_ids_and_remote_only_execution() -> No
     assert "deployment_receipt_comment_mismatch" in source
     assert 'gh api "repos/HuGR-dev/corelink-server/issues/comments/$comment_id"' in source
     assert "issues: read" in source
+    assert 'if ! python3 - "$runtime_summary" <<\'PY\'' in source
+    assert 'token = os.environ.get("CF_API_TOKEN", "")' in source
+    assert 'python3 - "$CF_API_TOKEN" "$runtime_summary"' not in source
+    assert 'require(app["healthy"] == 16 and app["active"] == 0' in source
     assert 'api.request("GET", APP_PATH)' in source
     assert 'api.request("GET", ROLLOUTS_PATH)' in source
     assert "active_repaired_image_mismatch" in source
@@ -244,7 +248,7 @@ def test_deployment_comment_gate_accepts_only_existing_matching_1648_receipt(tmp
 
 def test_runtime_gate_checks_live_iad_digest_health_and_completed_rollout(tmp_path: Path) -> None:
     source = WORKFLOW.read_text(encoding="utf-8")
-    command = 'python3 - "$CF_API_TOKEN" "$runtime_summary"'
+    command = 'python3 - "$runtime_summary"'
     script = _inline_gate(source, command)
     module_root = tmp_path / "fake_modules"
     fake_scripts = module_root / "scripts"
@@ -271,32 +275,33 @@ def test_runtime_gate_checks_live_iad_digest_health_and_completed_rollout(tmp_pa
             require(result.get("id") == "a033572c-0803-4866-b3a3-61f4812843b1", "app_id_drift")
             require(result.get("name") == "corelink-prod-corelinkserver-prod", "app_name_drift")
             health = result["health"]["instances"]
-            require(health["healthy"] == 16 and health["active"] == 0 and health["failed"] == 0, "health_not_ready")
+            require(health["healthy"] + health["active"] == 16 and health["failed"] == 0, "health_not_ready")
             require(result["active_rollout_id"] in (None, ""), "app_rollout_active")
-            return {"image": result["configuration"]["image"], "version": result["version"], "healthy": 16, "active": 0, "failed": 0}
+            return {"image": result["configuration"]["image"], "version": result["version"], "healthy": health["healthy"], "active": health["active"], "failed": health["failed"]}
         def no_active_rollout(result, app):
             require(not any(item.get("status") in ("pending", "progressing") for item in result), "rollout_active")
     '''), encoding="utf-8")
 
     expected_ref = "registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-prod-corelinkserver-prod@sha256:ecd63379d2040c6a891edaeb140fd388f26b5ffc181987c9c777060ced633e8a"
-    def app(image: str) -> dict[str, object]:
+    def app(image: str, healthy: int = 16, active: int = 0) -> dict[str, object]:
         return {
             "id": "a033572c-0803-4866-b3a3-61f4812843b1",
             "name": "corelink-prod-corelinkserver-prod",
             "version": 182,
             "configuration": {"image": image},
             "active_rollout_id": None,
-            "health": {"instances": {"healthy": 16, "active": 0, "failed": 0}},
+            "health": {"instances": {"healthy": healthy, "active": active, "failed": 0}},
         }
     def run(mode: str, image: str = expected_ref, rollout_image: str = expected_ref,
-            rollout_version: int = 182) -> bool:
+            rollout_version: int = 182, healthy: int = 16, active: int = 0) -> bool:
         app_path, rollout_path, output_path = (tmp_path / "app.json", tmp_path / "rollouts.json", tmp_path / "summary.json")
-        app_path.write_text(json.dumps(app(image)), encoding="utf-8")
+        app_path.write_text(json.dumps(app(image, healthy, active)), encoding="utf-8")
         rollout_path.write_text(json.dumps([{"status": "completed", "target_version": rollout_version,
                                              "target_configuration": {"image": rollout_image}}]), encoding="utf-8")
         env = {**dict(__import__("os").environ), "PYTHONPATH": str(module_root),
-               "APP_FIXTURE": str(app_path), "ROLLOUT_FIXTURE": str(rollout_path), "FIXTURE_MODE": mode}
-        result = subprocess.run([sys.executable, "-", "a" * 24, str(output_path)], input=script,
+               "APP_FIXTURE": str(app_path), "ROLLOUT_FIXTURE": str(rollout_path),
+               "FIXTURE_MODE": mode, "CF_API_TOKEN": "a" * 24}
+        result = subprocess.run([sys.executable, "-", str(output_path)], input=script,
                                 text=True, capture_output=True, env=env, check=False)
         return result.returncode == 0 and output_path.exists()
 
@@ -304,6 +309,7 @@ def test_runtime_gate_checks_live_iad_digest_health_and_completed_rollout(tmp_pa
     assert not run("ready", image=expected_ref.replace("ecd63379", "00000000"))
     assert not run("ready", rollout_image=expected_ref.replace("ecd63379", "00000000"))
     assert not run("ready", rollout_version=181)
+    assert not run("ready", healthy=15, active=1)
     assert not run("unavailable")
 
 

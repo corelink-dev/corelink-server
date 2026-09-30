@@ -151,17 +151,20 @@ jobs:
           # rollout. Require the completed rollout target and active config to
           # use the exact immutable digest before allowing any D1 SELECT.
           runtime_summary="$raw_dir/runtime-summary.json"
-          if ! python3 - "$CF_API_TOKEN" "$runtime_summary" <<'PY'
-          import json, sys
+          if ! python3 - "$runtime_summary" <<'PY'
+          import json, os, sys
           from scripts.issue_1648_image_only import (
               API, APP_PATH, NEW_REF, ROLLOUTS_PATH, GateError,
               app_snapshot, no_active_rollout, require,
           )
-          token, output = sys.argv[1:]
+          output = sys.argv[1]
+          token = os.environ.get("CF_API_TOKEN", "")
           try:
               api = API(token)
               app_result = api.request("GET", APP_PATH)
               app = app_snapshot(app_result)
+              require(app["healthy"] == 16 and app["active"] == 0,
+                      "healthy_instance_count_not_16")
               require(app["image"] == NEW_REF, "active_repaired_image_mismatch")
               rollouts_result = api.request("GET", ROLLOUTS_PATH)
               no_active_rollout(rollouts_result, app)
