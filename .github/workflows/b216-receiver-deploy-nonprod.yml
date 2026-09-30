@@ -13,6 +13,21 @@ on:
         required: false
         default: false
         type: boolean
+      deploy_once:
+        description: Deploy the exact fixed receiver on workers.dev after provision
+        required: false
+        default: false
+        type: boolean
+      exercise_once:
+        description: Send one synthetic receiver-only alert, verify D1, then disable workers.dev
+        required: false
+        default: false
+        type: boolean
+      disable_workers_dev:
+        description: Disable workers.dev for exact fixed receiver and verify readback
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -26,20 +41,27 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
-      - name: Reject conflicting readback and bootstrap modes
+      - name: Require exactly one explicit operation mode
         shell: bash
         env:
           READBACK_ONLY: ${{ inputs.readback_only }}
           BOOTSTRAP_ONCE: ${{ inputs.bootstrap_once }}
+          DEPLOY_ONCE: ${{ inputs.deploy_once }}
+          EXERCISE_ONCE: ${{ inputs.exercise_once }}
+          DISABLE_WORKERS_DEV: ${{ inputs.disable_workers_dev }}
         run: |
           set -euo pipefail
-          if [[ "$READBACK_ONLY" == true && "$BOOTSTRAP_ONCE" == true ]]; then
-            echo "B-216 route stopped: dispatch_mode_conflict"
+          modes=0
+          for mode in "$READBACK_ONLY" "$BOOTSTRAP_ONCE" "$DEPLOY_ONCE" "$EXERCISE_ONCE" "$DISABLE_WORKERS_DEV"; do
+            if [[ "$mode" == true ]]; then modes=$((modes + 1)); fi
+          done
+          if [[ "$modes" != 1 ]]; then
+            echo "B-216 route stopped: exactly_one_dispatch_mode_required"
             exit 1
           fi
 
   receiver:
-    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main' && !inputs.bootstrap_once }}
+    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main' && (inputs.readback_only || inputs.deploy_once || inputs.exercise_once || inputs.disable_workers_dev) }}
     needs: validate_dispatch_mode
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -82,7 +104,7 @@ jobs:
           test "$(sha256sum "$migration" | cut -d ' ' -f 1)" = "$EXPECTED_MIGRATION_SHA256"
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v4.0.0
-        if: ${{ !inputs.readback_only }}
+        if: ${{ inputs.deploy_once }}
         with:
           version: 10.32.1
 
@@ -91,7 +113,7 @@ jobs:
           node-version: 22
 
       - name: Install frozen receiver dependencies without lifecycle scripts
-        if: ${{ !inputs.readback_only }}
+        if: ${{ inputs.deploy_once }}
         run: pnpm --dir apps/dsr-alert-receiver install --frozen-lockfile --ignore-workspace --ignore-scripts
 
       - name: Read fixed Worker inventory without mutation
@@ -101,8 +123,8 @@ jobs:
           B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}
         run: node apps/dsr-alert-receiver/scripts/run-readback-route.mjs
 
-      - name: Provision exact receiver target and verify redacted readback
-        if: ${{ !inputs.readback_only }}
+      - name: Deploy exact receiver target and verify redacted readback
+        if: ${{ inputs.deploy_once }}
         shell: bash
         env:
           B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}
@@ -110,7 +132,7 @@ jobs:
         run: node apps/dsr-alert-receiver/scripts/run-deploy-route.mjs
 
       - name: Preserve redacted route receipt
-        if: ${{ always() && !inputs.readback_only }}
+        if: ${{ always() && inputs.deploy_once }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: b216-receiver-route-${{ github.run_id }}
@@ -124,6 +146,39 @@ jobs:
         with:
           name: b216-receiver-readback-${{ github.run_id }}
           path: ${{ runner.temp }}/b216-receiver-readback-receipt.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Exercise one synthetic receiver-only alert and disable workers.dev
+        if: ${{ inputs.exercise_once }}
+        shell: bash
+        env:
+          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}
+          B216_DSR_ALERT_RECEIVER_TOKEN: ${{ secrets.B216_DSR_ALERT_RECEIVER_TOKEN }}
+        run: node apps/dsr-alert-receiver/scripts/run-synthetic-exercise.mjs
+
+      - name: Disable workers.dev for exact fixed receiver
+        if: ${{ inputs.disable_workers_dev }}
+        shell: bash
+        env:
+          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}
+        run: node apps/dsr-alert-receiver/scripts/run-disable-workers-dev.mjs
+
+      - name: Preserve synthetic exercise receipt
+        if: ${{ always() && inputs.exercise_once }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: b216-receiver-synthetic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/b216-receiver-synthetic-receipt.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Preserve workers.dev disable receipt
+        if: ${{ always() && inputs.disable_workers_dev }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: b216-receiver-disable-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/b216-receiver-disable-receipt.json
           if-no-files-found: ignore
           retention-days: 30
 

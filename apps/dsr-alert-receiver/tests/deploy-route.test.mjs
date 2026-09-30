@@ -24,8 +24,8 @@ import {
   validateBootstrapDeployedInventory,
   validateBootstrapWorkerPreimage,
   validateBootstrapWorkerScriptInventory,
-  validateBootstrapWorkerScriptInventory,
   preparePrivateBootstrapConfig,
+  prepareWorkersDevBootstrapConfig,
   validateD1InventoryPage,
   validateMigrationLedger,
   validatePostflight,
@@ -59,7 +59,7 @@ function bootstrapHarness({ migration, sha, failDeploy = false, preexistingWorke
   const finalId = "223e4567-e89b-42d3-a456-426614174000";
   const sourceTag = `b216-source-${sha}`;
   const finalTag = `b216-${sha}`;
-  const state = { script: false, versions: [], versionDetails: new Map(), deployments: [], commands: [], requests: [] };
+  const state = { script: false, versions: [], versionDetails: new Map(), deployments: [], workersDev: false, commands: [], requests: [] };
   const receiptSql = migration.replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE");
   const workerRows = () => [
     ...preexistingWorkerNames.map((id) => ({ id, routes: [] })),
@@ -95,7 +95,7 @@ function bootstrapHarness({ migration, sha, failDeploy = false, preexistingWorke
     }
     if (path === `${workerPath}/deployments`) return state.script ? json({ deployments: state.deployments }) : new Response("{}", { status: 404 });
     if (path === `${workerPath}/secrets`) return json(state.script && state.versionDetails.has(finalId) ? [{ name: TARGET.workerSecret }] : []);
-    if (path === `${workerPath}/subdomain`) return new Response("{}", { status: 404 });
+    if (path === `${workerPath}/subdomain`) return state.script ? json({ enabled: state.workersDev, previews_enabled: false }) : new Response("{}", { status: 404 });
     if (path === `${workerPath}/versions`) return json({ items: state.versions });
     if (path === `${workerPath}/deployments`) return json({ deployments: state.deployments });
     throw new Error(`unexpected mocked route ${path}`);
@@ -130,6 +130,7 @@ function bootstrapHarness({ migration, sha, failDeploy = false, preexistingWorke
     if (args[0] === "versions" && args[1] === "deploy") {
       if (failDeploy) throw new RouteError("provider_command_failed", { provider_failure_class: "process_exit", process_exit_code: 1 });
       state.deployments = [{ id: "323e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: finalId, percentage: 100 }] }];
+      state.workersDev = true;
       return "";
     }
     throw new Error("unexpected mocked command");
@@ -264,6 +265,11 @@ describe("B-216 protected receiver route admission", () => {
     expect(privateConfig).toContain(`database_id = "${TARGET.databaseId}"`);
     expect(privateConfig).toContain("workers_dev = false");
     expect(privateConfig).not.toMatch(/^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im);
+    const workersDevConfig = prepareWorkersDevBootstrapConfig(config, migration, TARGET.databaseId, "/runner/work/corelink-server/apps/dsr-alert-receiver");
+    expect(workersDevConfig).toContain(`database_id = "${TARGET.databaseId}"`);
+    expect(workersDevConfig).toContain("workers_dev = true");
+    expect(workersDevConfig).not.toMatch(/^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im);
+    errorCode(() => prepareWorkersDevBootstrapConfig(config + "\nroutes = [{ pattern = \"*.example.com/*\", zone_name = \"example.com\" }]\n", migration, TARGET.databaseId, "/runner/work/corelink-server/apps/dsr-alert-receiver"), "wrangler_config_drift");
 
     const absent = {
       status: "complete",
@@ -346,7 +352,7 @@ describe("B-216 protected receiver route admission", () => {
     expect(harness.state.commands[0].options.input).toBeUndefined();
 
     const deployed = await runBootstrapFinalize({ context: finalizeContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, bootstrapReceipt: handoff, worktree: "/runner/work/corelink-server" });
-    expect(deployed.status).toBe("private_worker_deployed_and_verified");
+    expect(deployed.status).toBe("workers_dev_receiver_deployed_and_verified");
     expect(deployed.run_id).toBe("987654321");
     expect(deployed.run_attempt).toBe("1");
     expect(deployed.database_migration_ledger).toEqual([TARGET.migration]);
@@ -453,9 +459,11 @@ describe("B-216 protected receiver route admission", () => {
         active: { id: "223e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: versionId, percentage: 100 }] },
       },
       routes: { status: "unknown" },
-      subdomain: { status: "known", enabled: false, previews_enabled: false },
+      subdomain: { status: "known", enabled: true, previews_enabled: false },
     };
     expect(validateBootstrapDeployedInventory(inventory, versionId)).toBe(true);
+    errorCode(() => validateBootstrapDeployedInventory({ ...inventory, subdomain: { status: "known", enabled: false, previews_enabled: false } }, versionId), "worker_subdomain_readback_mismatch");
+    errorCode(() => validateBootstrapDeployedInventory({ ...inventory, subdomain: { status: "known", enabled: true, previews_enabled: true } }, versionId), "worker_subdomain_readback_mismatch");
     errorCode(() => validateBootstrapDeployedInventory({ ...inventory, deployments: { ...inventory.deployments, active: null } }, versionId), "worker_revision_readback_mismatch");
     errorCode(() => validateBootstrapDeployedInventory({ ...inventory, deployments: { ...inventory.deployments, active: { deployments: inventory.deployments.active } } }, versionId), "worker_revision_readback_mismatch");
   });
@@ -777,7 +785,10 @@ describe("B-216 protected receiver route admission", () => {
     expect(workflow).not.toMatch(/^  (push|pull_request|schedule):/m);
     const inputReferences = [...workflow.matchAll(/\$\{\{\s*!?inputs\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g)].map((match) => match[1]);
     expect(inputReferences.length).toBeGreaterThan(0);
-    expect(new Set(inputReferences)).toEqual(new Set(["readback_only", "bootstrap_once"]));
+    expect(new Set(inputReferences)).toEqual(new Set(["readback_only", "bootstrap_once", "deploy_once", "exercise_once", "disable_workers_dev"]));
+    expect(workflow).toContain("exactly_one_dispatch_mode_required");
+    expect(workflow).toContain("run-synthetic-exercise.mjs");
+    expect(workflow).toContain("run-disable-workers-dev.mjs");
     const uploadJob = workflow.split("  bootstrap_upload:")[1]?.split("  bootstrap_finalize:")[0] ?? "";
     const finalizeJob = workflow.split("  bootstrap_finalize:")[1] ?? "";
     expect(uploadJob).toContain("name: b216-receiver-bootstrap");
