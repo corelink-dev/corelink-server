@@ -38,8 +38,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(workflow).toContain("default: false");
     expect(workflow).toContain("type: boolean");
     expect(workflow).toContain("if: ${{ inputs.readback_only }}");
-    expect(workflow).toContain("if: ${{ !inputs.readback_only }}");
-    const readback = workflow.split("- name: Read fixed Worker inventory without mutation")[1].split("- name: Provision exact receiver target")[0];
+    expect(workflow).toContain("if: ${{ inputs.deploy_once }}");
+    const readback = workflow.split("- name: Read fixed Worker inventory without mutation")[1].split("- name: Deploy exact receiver target")[0];
     expect(readback).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}");
     expect(readback).not.toContain("B216_DSR_ALERT_RECEIVER_TOKEN");
     expect(readback).not.toContain("run-deploy-route.mjs");
