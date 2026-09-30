@@ -18,6 +18,7 @@ export const RECEIPT_PREFIX = "[staging_d1_runtime_probe] receipt=";
 
 const apiBase = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}`;
 const allowedReceiptKeys = new Set([
+  "old_probe_release", "old_probe_retired", "old_probe_tables_absent",
   "contract", "probe_nonce", "outcome", "worker_release", "scheduled_time_ms", "parameterized_select",
   "failed_batch_observed", "rollback_absence_verified", "probe_table_dropped",
   "d1_binding_intercepted", "authorization_absent", "cf_api_token_absent",
@@ -90,9 +91,9 @@ export function verifyContainerState(text, expectedDigest, { expectedVersion, mi
 export async function waitForContainerState({
   read, preimage, expectedDigest, now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  timeoutMs = 180_000, intervalMs = 5_000,
+  timeoutMs = 600_000, intervalMs = 5_000,
 }) {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 180_000 ||
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000 ||
       !Number.isSafeInteger(intervalMs) || intervalMs < 1 || intervalMs > timeoutMs ||
       !/^sha256:[0-9a-f]{64}$/.test(expectedDigest ?? "") ||
       preimage?.application_id !== CONTAINER_APP_ID ||
@@ -129,6 +130,8 @@ function exactReceipt(receipt, release, startedAt, deadline) {
     Object.keys(receipt).every((key) => allowedReceiptKeys.has(key)) &&
     receipt.contract === "corelink-staging-d1-binding-runtime-v1" &&
     receipt.probe_nonce === PROBE_WINDOW.nonce &&
+    receipt.old_probe_release === "0f785fb9b096afe01247f1057d46377b9f604f13" &&
+    receipt.old_probe_retired === true && receipt.old_probe_tables_absent === true &&
     receipt.outcome === "pass" && receipt.worker_release === release &&
     Number.isSafeInteger(receipt.scheduled_time_ms) &&
     receipt.scheduled_time_ms >= startedAt &&

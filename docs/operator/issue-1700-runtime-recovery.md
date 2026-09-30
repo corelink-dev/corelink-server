@@ -1,48 +1,51 @@
 # Issue 1700 runtime recovery
 
-The previous deployment cannot complete its probe: its compiled window expired.
-A new protected `deploy` on reviewed main is required. `verify_existing` stays read-only.
+Run 36649066490 lost its host result after the probe subprocess timed out. Historical
+query run 36653980457 returned 16 events but no attributable native receipt. Execution
+and cleanup remain unknown; do not replay that candidate's nonce or use
+`complete_existing` to retry it. `verify_existing` remains read-only.
 
-The shared `crates/corelink-container/src/routes/staging_d1_probe_window.json` is compiled into
-both runtimes and read by the host. The authorized UTC window is **2026-09-29 22:00 through
-2026-09-30 12:00**, exclusive at the end. Nonce `issue-1700-recovery-20260929` plus the exact
-new `SENTRY_RELEASE` selects a fresh dedicated Durable Object. Old nonce, old release,
-pre-window and expired receipts fail. The host additionally requires a receipt from its
-current invocation, within its 16-minute deadline. No clock override is supported.
+One protected `deploy` on reviewed main builds both runtimes with nonce
+`issue-1700-recovery-20260930-v3`. The shared
+`crates/corelink-container/src/routes/staging_d1_probe_window.json` allows only
+**2026-09-30 00:00 through 12:00 UTC**, exclusive at the end. The nonce plus the
+new merged `SENTRY_RELEASE` selects a fresh dedicated DO. Host receipt freshness
+remains bounded to the current invocation and its 16-minute deadline.
 
-Deployment refuses to start unless 60 minutes remain before expiry. The job budget is
-60 minutes to accommodate a cold Container build, three-minute bounded image convergence,
-16-minute proof, and cleanup/rollback. Only the exact captured preimage may be retried during
-readback; any unexpected app, digest or version is drift and stops progress.
+Before entering the fresh DO, the Worker retires only the named old probe DO for
+release `0f785fb9b096afe01247f1057d46377b9f604f13` and nonce
+`issue-1700-recovery-20260929`. Retirement verifies DO identity, staging/account/D1
+and the fresh window, preserves the old claim/receipt, persists a retirement fence,
+and refuses active work. Old fetch, alarm and probe entry cannot restart it. A
+present Container binding must prove stopped and its alarm must be absent before
+any D1 cleanup; tenant credential-cleanup obligations are not traversed.
 
-The probe writes only its dedicated `corelink_staging_d1_probe_<release>_<time>` table in the
-fixed staging database. It checks a parameterized read, forces and verifies a batch rollback,
-and drops its table before issuing a successful receipt. Ordinary HTTP forwarding rejects
-the internal endpoint. There is no customer-table operation.
+SQL cleanup inventories the entire old release's exact synthetic-table prefix.
+Allowed names derive from minute boundaries within the original host interval
+**00:12:03–00:34:18 UTC**. Every object, table schema, foreign key and row ownership
+check must pass before the first DROP. Unexpected timestamps, schema, triggers,
+indexes or rows stop cleanup. Only verified synthetic tables may be dropped;
+absence is read back. No row payload is logged. Fresh proof requires both old-DO
+retirement and old-table absence, plus the seven existing native D1 checks.
 
-The host removes only its exact temporary cron, verifies the schedule is empty, and deletes
-its tail on success or failure. Schedule drift is left untouched and reported as failure.
-Both runtimes reject calls at the hard expiry even if a job is interrupted before cleanup.
-The dedicated Container is destroyed and its alarm deleted after the attempt. Provider
-rollback requires unchanged Worker marker/version, exact Container state, and a fresh empty
-canonical-route inventory; unrelated drift stops rollback for operator inspection.
+The protected job refuses provider access unless 75 minutes remain before expiry.
+Its 75-minute budget bounds deployment to 30 minutes, exact-preimage Container
+convergence to 10 minutes, the host step to 18 minutes, and runtime rollback to
+12 minutes. Convergence retries reads only; unexpected app/digest/version drift
+fails closed. Partial runtime progress and sanitized diagnostics are artifacts.
 
-Protected dispatch and issue closure belong to the lead after the focused pack and independent
-review pass. This code correction does not itself prove D1 provider execution or close #1700.
+The host removes only its own cron and tail. Rollback requires exact candidate
+ownership, Container state and route-free readback. Before its first mutation and
+again immediately before restoring the pre-retirement Worker version, fresh
+schedule and tail inventories must both be empty. Unknown/nonempty inventories
+block that restore and preserve a sanitized residual receipt, including whether
+Container restoration was already attempted. Never restore old code over an
+unproven active probe schedule.
 
-
-The protected `complete_existing` operation finishes only rollout run 36646546021
-(release 0f785fb9b096afe01247f1057d46377b9f604f13), active Worker 8753a6ba/516d7e11
-and Container app version 6/image e44e139e. It verifies the immutable original
-Worker and Container preimages, full version marker, compatibility settings,
-empty canonical routes, empty schedules and empty tails before installing the
-single temporary cron. It then requires all these resources unchanged and
-empty schedules/tails after successful native runtime proof.
-
-Completion performs no deployment or blind rollback. If the runtime receipt is
-missing, native D1 execution/cleanup is unproven: rolling back could remove the
-compatible cleanup runtime without proving the data state. Preserve the isolated
-candidate and emit an explicit residual-state receipt for the lead's decision.
-Postflight ownership drift likewise forbids automatic rollback. This is a failed
-completion, never an issue-closing receipt. The host still attempts exact-owned
-schedule/tail cleanup in all probe failure paths.
+The fresh native probe uses only its dedicated synthetic table, verifies the
+parameterized read and failed-batch rollback, then drops that table and destroys
+its dedicated Container before issuing a receipt. Hard expiry remains enforced
+in both runtimes. Successful closure also requires empty schedules/tails, zero
+canonical staging routes, exact immutable candidate attribution and unchanged
+postflight resources. A code merge or historical receipt alone is not provider
+proof. Root owns publication, protected dispatch, rollback decisions and closure.

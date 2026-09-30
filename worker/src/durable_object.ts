@@ -1,3 +1,4 @@
+import { cleanOldProbeTables, OLD_PROBE_NAME, OLD_PROBE_RELEASE, OLD_PROBE_RETIRED_KEY, type OldProbeRetirement } from "./staging_d1_probe_retirement.js";
 import { STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
 /**
  * CoreLinkServer Durable Object — container lifecycle manager + gRPC proxy.
@@ -223,6 +224,9 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     coldStartCount: 0,
     tenantId: null,
   };
+  private probeRetired = false;
+  private probeActiveCalls = 0;
+  private retirementActive = false;
   private healthFailures = 0;
   private doIdHash = "";
 
@@ -234,6 +238,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
 
     // Restore persisted lifecycle state on DO wakeup
     void this.state.blockConcurrencyWhile(async () => {
+      this.probeRetired = (await this.storage.get(OLD_PROBE_RETIRED_KEY)) !== undefined;
       const stored = await this.storage.get<LifecycleState>("lifecycle");
       if (stored !== undefined) {
         this.lifecycleState = stored;
@@ -246,7 +251,52 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
    * One-shot RPC reachable only through the Worker's scheduled handler. The
    * corresponding HTTP path is explicitly rejected in `fetch` below.
    */
+  private isOldProbeObject(): boolean {
+    return typeof this.env.CORELINK_SERVER?.idFromName === "function" &&
+      this.state.id.equals(this.env.CORELINK_SERVER.idFromName(OLD_PROBE_NAME));
+  }
+
+  private async withProbeActivity<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.probeRetired) throw new Error("old probe is retired");
+    this.probeActiveCalls++;
+    try { return await operation(); } finally { this.probeActiveCalls--; }
+  }
+
+  async retireStagingD1RuntimeProbe(scheduledTime: number): Promise<OldProbeRetirement> {
+    if (this.env.ENVIRONMENT !== "staging" ||
+        this.env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
+        this.env.D1_DATABASE_ID !== "d72a6b39-6a48-4338-bfda-1111dda98604" ||
+        !/^[0-9a-f]{40}$/.test(this.env.SENTRY_RELEASE ?? "") || this.env.SENTRY_RELEASE === OLD_PROBE_RELEASE ||
+        !validStagingD1ProbeTime(scheduledTime, this.now()) ||
+        !this.state.id.equals(this.env.CORELINK_SERVER.idFromName(OLD_PROBE_NAME))) {
+      throw new Error("old probe retirement guard rejected");
+    }
+    // No await before these fences. Already-running fetch/alarm/probe work must
+    // finish before retirement; arriving work observes probeRetired immediately.
+    if (this.probeActiveCalls !== 0 || this.retirementActive) throw new Error("old probe retirement busy");
+    this.retirementActive = true;
+    this.probeRetired = true;
+    try {
+      // Preserve the original claim and receipt, including unknown/failed state.
+      await this.storage.put(OLD_PROBE_RETIRED_KEY, { old_release: OLD_PROBE_RELEASE });
+      const container = this.state.container;
+      if (container === undefined) throw new Error("old probe Container binding unavailable");
+      if (container.running) await container.destroy();
+      if (container.running !== false) throw new Error("old probe Container stop unproven");
+      await this.storage.deleteAlarm();
+      if (await this.storage.getAlarm() !== null) throw new Error("old probe alarm cleanup unproven");
+      await this.transitionStatus("stopped", "staging-d1-probe-retirement");
+      await cleanOldProbeTables(this.env.CONFIG_DB, this.now);
+      return { old_probe_release: OLD_PROBE_RELEASE, old_probe_retired: true, old_probe_tables_absent: true };
+    } finally { this.retirementActive = false; }
+  }
+
   async runStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt> {
+    if (this.isOldProbeObject()) throw new Error("old probe cannot be replayed");
+    return this.withProbeActivity(() => this.runStagingD1RuntimeProbeActive(scheduledTime));
+  }
+
+  private async runStagingD1RuntimeProbeActive(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt> {
     const release = this.env.SENTRY_RELEASE ?? "";
     if (
       this.env.ENVIRONMENT !== "staging" ||
@@ -399,6 +449,11 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   // ──────────────────────────────────────────────────────────────────────────
 
   override async fetch(request: Request): Promise<Response> {
+    if (this.probeRetired || this.isOldProbeObject()) return new Response("gone", { status: 410 });
+    return this.withProbeActivity(() => this.fetchActive(request));
+  }
+
+  private async fetchActive(request: Request): Promise<Response> {
     const requestId = request.headers.get("x-request-id") ?? crypto.randomUUID();
     const url = new URL(request.url);
 
@@ -581,6 +636,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     requestId: string,
     suppressLifecycleTelemetry = false,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (this.probeRetired) return { ok: false, reason: "old_probe_retired" };
     const container = this.state.container;
 
     if (
@@ -999,6 +1055,11 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   // Alarm — periodic health check
   // ──────────────────────────────────────────────────────────────────────────
   override async alarm(): Promise<void> {
+    if (this.probeRetired || this.isOldProbeObject()) { await this.storage.deleteAlarm(); return; }
+    return this.withProbeActivity(() => this.alarmActive());
+  }
+
+  private async alarmActive(): Promise<void> {
     // The alarm is the SOLE owner of both the health chain and the reaper, so
     // losing a link is losing the reaper — the immortal container re-entered
     // through a third door. Any throw below (a storage.put fault, the

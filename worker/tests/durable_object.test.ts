@@ -868,3 +868,95 @@ describe("DO PagerDuty telemetry emit", () => {
 // Adversarial attacks — 5 required by WP-1.1 DOD §7
 // ──────────────────────────────────────────────────────────────────────────────
 // B-126 M3 split population: durable_object_part2.test.ts
+
+describe("exact old probe retirement fence", () => {
+  const oldName = "_staging_d1_binding_probe_v2:issue-1700-recovery-20260929:0f785fb9b096afe01247f1057d46377b9f604f13";
+  const retiredKey = "staging-d1-binding-probe-retired-v1";
+  const time = STAGING_D1_PROBE_WINDOW.starts_ms + 60000;
+  function fixture(id = oldName) {
+    const state = makeMockState(id);
+    Object.assign(state, { container: { running: false, destroy: vi.fn().mockResolvedValue(undefined) } });
+    const sql = vi.fn(() => ({ bind() { return this; }, all: async () => ({ success: true, results: [] }) }));
+    const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: "a".repeat(40),
+      CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd", D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
+      CONFIG_DB: { prepare: sql }, CORELINK_SERVER: { idFromName: (name: string) => ({ toString: () => name }) } } as unknown as Env;
+    const do_ = new CoreLinkServer(state, env, () => time);
+    return { do_, state, env, sql };
+  }
+  it("preserves claim/receipt, fences fetch/probe/alarm and is idempotent", async () => {
+    const { do_, state, sql } = fixture();
+    await state.storage.put("staging-d1-binding-probe-state-v1", "unknown");
+    await state.storage.put("staging-d1-binding-probe-receipt-v1", { preserved: true });
+    const result = await do_.retireStagingD1RuntimeProbe(time);
+    expect(result.old_probe_retired).toBe(true);
+    expect(result.old_probe_tables_absent).toBe(true);
+    expect(await state.storage.get("staging-d1-binding-probe-state-v1")).toBe("unknown");
+    expect(await state.storage.get("staging-d1-binding-probe-receipt-v1")).toEqual({ preserved: true });
+    expect(await state.storage.get(retiredKey)).toBeDefined();
+    expect((await do_.fetch(new Request("https://test/"))).status).toBe(410);
+    await expect(do_.runStagingD1RuntimeProbe(time)).rejects.toThrow();
+    const calls = sql.mock.calls.length;
+    await do_.alarm();
+    expect(sql.mock.calls.length).toBe(calls); // no generic tenant cleanup
+    await expect(do_.retireStagingD1RuntimeProbe(time)).resolves.toEqual(result);
+  });
+  it.each(["wrong-id", "production", "account", "database", "expired"])("rejects %s before marker/SQL", async kind => {
+    const { do_, state, env, sql } = fixture(kind === "wrong-id" ? "tenant" : oldName);
+    if (kind === "production") env.ENVIRONMENT = "production";
+    if (kind === "account") env.CLOUDFLARE_ACCOUNT_ID = "wrong";
+    if (kind === "database") env.D1_DATABASE_ID = "wrong";
+    await expect(do_.retireStagingD1RuntimeProbe(kind === "expired" ? STAGING_D1_PROBE_WINDOW.expires_ms : time)).rejects.toThrow();
+    expect(await state.storage.get(retiredKey)).toBeUndefined();
+    expect(sql).not.toHaveBeenCalled();
+  });
+  it("refuses active work and concurrent retirement without cleaning", async () => {
+    const { do_, state, sql } = fixture();
+    await Promise.resolve(); await Promise.resolve();
+    let finish!: () => void;
+    const active = (do_ as unknown as { withProbeActivity: (f: () => Promise<void>) => Promise<void> })
+      .withProbeActivity(() => new Promise<void>(resolve => { finish = resolve; }));
+    await expect(do_.retireStagingD1RuntimeProbe(time)).rejects.toThrow("busy");
+    expect(sql).not.toHaveBeenCalled();
+    expect(await state.storage.get(retiredKey)).toBeUndefined();
+    finish(); await active;
+    const retirement = do_.retireStagingD1RuntimeProbe(time);
+    await expect(do_.retireStagingD1RuntimeProbe(time)).rejects.toThrow("busy");
+    await retirement;
+  });
+  it("rehydrates retirement and fences requests while Container stop is pending", async () => {
+    const { do_, state, env, sql } = fixture();
+    await Promise.resolve(); await Promise.resolve();
+    let stopped!: () => void;
+    const container = { running: true, destroy: vi.fn(() => new Promise<void>(resolve => {
+      stopped = () => { container.running = false; resolve(); };
+    })) };
+    Object.assign(state, { container });
+    const pending = do_.retireStagingD1RuntimeProbe(time);
+    while (!container.destroy.mock.calls.length) await Promise.resolve();
+    expect((await do_.fetch(new Request("https://test/"))).status).toBe(410);
+    await expect(do_.runStagingD1RuntimeProbe(time)).rejects.toThrow();
+    await do_.alarm();
+    expect(sql).not.toHaveBeenCalled();
+    stopped(); await pending;
+    const restored = new CoreLinkServer(state, env, () => time);
+    await Promise.resolve(); await Promise.resolve();
+    expect((await restored.fetch(new Request("https://test/"))).status).toBe(410);
+    await expect(restored.runStagingD1RuntimeProbe(time)).rejects.toThrow();
+    const calls = sql.mock.calls.length;
+    await restored.alarm();
+    expect(sql.mock.calls.length).toBe(calls);
+  });
+  it("missing old Container binding is unknown, never stopped proof", async () => {
+    const { do_, state, sql } = fixture();
+    Object.assign(state, { container: undefined });
+    await expect(do_.retireStagingD1RuntimeProbe(time)).rejects.toThrow("binding unavailable");
+    expect(sql).not.toHaveBeenCalled();
+  });
+  it("never queries D1 if exact old Container cannot prove stopped", async () => {
+    const { do_, state, sql } = fixture();
+    Object.assign(state, { container: { running: true, destroy: vi.fn().mockResolvedValue(undefined) } });
+    await expect(do_.retireStagingD1RuntimeProbe(time)).rejects.toThrow("stop unproven");
+    expect(sql).not.toHaveBeenCalled();
+    expect((await do_.fetch(new Request("https://test/"))).status).toBe(410);
+  });
+});
