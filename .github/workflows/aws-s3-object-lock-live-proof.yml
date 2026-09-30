@@ -280,6 +280,7 @@ jobs:
                 'ContextKeyName=s3:object-lock-legal-hold,ContextKeyValues=OFF,ContextKeyType=string' \
               > "$output"
             local expected_actions='["s3:BypassGovernanceRetention","s3:DeleteObjectVersion","s3:PutObjectLegalHold"]'
+            # shellcheck disable=SC2016 # jq interprets these variables; Bash must preserve the literal program.
             local denied_results_filter='
               (.IsTruncated != true) and
               (.EvaluationResults as $results |
