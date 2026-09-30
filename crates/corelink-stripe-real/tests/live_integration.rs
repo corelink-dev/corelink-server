@@ -824,7 +824,7 @@ mod cleanup_fault_injection {
             .expect_err("customer without explicit TEST mode must stop before Checkout");
         assert!(error
             .to_string()
-            .contains("customer mode is not proven TEST"));
+            .contains("created customer mode is unknown"));
         assert!(error.to_string().contains("retained_recovery_required"));
         assert!(error.to_string().contains("id_sha256"));
         assert!(!error.to_string().contains(customer_id));
