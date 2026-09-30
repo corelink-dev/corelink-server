@@ -1,8 +1,7 @@
-"""Focused tests for the B-170 external-owner evidence boundary."""
+"""Negative controls for the prelaunch B-170 evidence boundary."""
 
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 
@@ -14,118 +13,166 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import verify_b170_owner_actions as verifier  # noqa: E402
 
 
-def _packet_fixture(root: Path) -> None:
-    destination = root / verifier.PACKET
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / verifier.PACKET, destination)
-    template = root / verifier.RESIDENCY_TEMPLATE
-    template.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / verifier.RESIDENCY_TEMPLATE, template)
+def _packet() -> str:
+    return (ROOT / verifier.PACKET).read_text(encoding="utf-8")
 
 
-def _evidence_fixture(root: Path, *, content: str = "owner evidence\n") -> None:
-    for relative in verifier.EVIDENCE:
-        destination = root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(content, encoding="utf-8")
+def test_frozen_no_customer_no_circulation_contract_is_accepted() -> None:
+    fields = verifier.validate_packet(_packet())
+    assert fields["customers"] == "none"
+    assert fields["questionnaire_circulation"] == "none"
+    assert fields["pagerduty"] == "excluded; deferred"
 
 
-def test_repository_state_is_truthfully_open() -> None:
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("Lifecycle", "launched", "lifecycle contradicts"),
+        ("Customers", "one", "customers contradicts"),
+        ("Questionnaire circulation", "sent", "questionnaire_circulation contradicts"),
+        ("Customer notice", "sent", "customer_notice contradicts"),
+        ("PagerDuty", "active", "pagerduty contradicts"),
+        ("D1 topology", "tenant-pinned", "d1_topology contradicts"),
+        ("D1 claim", "tenant-pinned D1", "d1_claim contradicts"),
+        ("Object Lock claim", "available seven-year Object Lock", "object_lock_claim contradicts"),
+        ("BYOK claim", "available five-minute BYOK", "byok_claim contradicts"),
+    ],
+)
+def test_contradictory_or_unsupported_claim_is_rejected(
+    field: str, value: str, message: str
+) -> None:
+    packet = _packet().replace(
+        next(line for line in _packet().splitlines() if line.startswith(f"- **{field}:") ),
+        f"- **{field}:** {value}",
+    )
+    with pytest.raises(verifier.PacketError, match=message):
+        verifier.validate_packet(packet)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("D1 receipt", "pending", "not the accepted terminal #1654 receipt"),
+        ("B154 source reference", "https://github.com/HuGR-dev/corelink-server/pull/9999", "B-154 input does not match frozen b154_source_reference"),
+        ("D1 source revision", "ca6a", "stale or does not match merged #1654 source"),
+        ("B154 source date", "unknown", "merged B-154 source date must be an ISO date"),
+    ],
+)
+def test_missing_or_placeholder_source_reference_is_rejected(
+    field: str, value: str, message: str
+) -> None:
+    packet = _packet().replace(
+        next(line for line in _packet().splitlines() if line.startswith(f"- **{field}:") ),
+        f"- **{field}:** {value}",
+    )
+    with pytest.raises(verifier.PacketError, match=message):
+        verifier.validate_packet(packet)
+
+
+def test_duplicate_fields_are_rejected() -> None:
+    with pytest.raises(verifier.PacketError, match="duplicate packet field"):
+        verifier.validate_packet(_packet() + "\n- **Customers:** none\n")
+
+
+def test_missing_fact_is_rejected() -> None:
+    with pytest.raises(verifier.PacketError, match="missing packet field: pagerduty"):
+        verifier.validate_packet("\n".join(line for line in _packet().splitlines() if "**PagerDuty:" not in line))
+
+
+def test_current_contract_keeps_unproven_capabilities_limited() -> None:
+    fields = verifier.validate_packet(_packet())
+    assert fields["object_lock_claim"] == "limited"
+    assert fields["object_lock_boundary"] == (
+        "seven-year unavailable/not promised; one-day synthetic proof only"
+    )
+    assert fields["byok_claim"] == "limited"
+    assert fields["byok_boundary"] == "unavailable; no kill-switch SLO"
+
+
+def _current_contract_packet() -> str:
+    return _packet()
+
+
+def test_canonical_packet_binds_merged_2597_source_and_pending_followups() -> None:
+    fields = verifier.validate_packet(_current_contract_packet())
     result = verifier.verify(ROOT)
-    assert result["status"] == "open"
-    assert result["missing"] == [path.as_posix() for path in verifier.EVIDENCE]
+    assert fields["b154_state"] == "merged source; provider follow-ups pending"
+    assert fields["b154_source_reference"] == "https://github.com/HuGR-dev/corelink-server/pull/2807"
+    assert fields["object_lock_boundary"].startswith("seven-year unavailable")
+    assert fields["byok_boundary"] == "unavailable; no kill-switch SLO"
+    assert result["status"] == "source_admitted_provider_followups_pending"
+    assert result["source_inputs_admitted"] is True
+    assert result["closure_ready"] is False
 
 
-def test_backlog_does_not_call_residency_template_executed() -> None:
-    backlog = (ROOT / "BACKLOG.md").read_text(encoding="utf-8")
-    section = backlog.split("### B-170 —", 1)[1].split("### B-171 —", 1)[0]
-    assert "status: open" in section
-    assert "pending residency-amendment template" in section
-    assert "executed DPA/SLA/residency-amendment claims" not in section
-
-
-def test_all_present_artifacts_force_manual_owner_validation(tmp_path: Path) -> None:
-    _packet_fixture(tmp_path)
-    _evidence_fixture(tmp_path)
-    result = verifier.verify(tmp_path)
-    assert result["status"] == "DRIFTED"
-    assert result["missing"] == []
-
-
-def test_empty_artifact_is_an_instrument_error(tmp_path: Path) -> None:
-    _packet_fixture(tmp_path)
-    _evidence_fixture(tmp_path)
-    (tmp_path / verifier.EVIDENCE[1]).write_text(" \n", encoding="utf-8")
-    with pytest.raises(verifier.PacketError, match="empty"):
-        verifier.verify(tmp_path)
-
-
-def test_symlink_evidence_cannot_satisfy_presence(tmp_path: Path) -> None:
-    _packet_fixture(tmp_path)
-    target = tmp_path / "outside-evidence.txt"
-    target.write_text("owner evidence\n", encoding="utf-8")
-    destination = tmp_path / verifier.EVIDENCE[0]
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.symlink_to(target)
-    with pytest.raises(verifier.PacketError, match="symlink path component"):
-        verifier.verify(tmp_path)
-
-
-def test_symlink_evidence_parent_cannot_escape_root(tmp_path: Path) -> None:
-    _packet_fixture(tmp_path)
-    outside = tmp_path / "outside-reports"
-    for relative in verifier.EVIDENCE:
-        destination = outside / relative.relative_to("reports")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text("owner evidence\n", encoding="utf-8")
-    (tmp_path / "reports").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(verifier.PacketError, match="symlink path component"):
-        verifier.verify(tmp_path)
-
-
-def test_packet_marker_loss_fails_closed(tmp_path: Path) -> None:
-    _packet_fixture(tmp_path)
-    packet = tmp_path / verifier.PACKET
-    packet.write_text(
-        packet.read_text(encoding="utf-8").replace("no notification is claimed here", "notification status unknown", 1),
-        encoding="utf-8",
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("D1 receipt", "https://github.com/HuGR-dev/corelink-server/issues/1654#issuecomment-1", "not the accepted terminal #1654 receipt"),
+        ("D1 source revision", "a" * 40, "stale or does not match merged #1654 source"),
+        ("Object Lock boundary", "available for seven years", "Object Lock boundary overstates"),
+        ("BYOK boundary", "p99 under five minutes", "BYOK boundary overstates"),
+        ("B154 source reference", "https://github.com/HuGR-dev/corelink-server/pull/9999", "B-154 input does not match frozen b154_source_reference"),
+        ("B154 source revision", "a" * 40, "B-154 input does not match frozen b154_source_revision"),
+        ("B154 source date", "2026-09-29", "B-154 input does not match frozen b154_source_date"),
+        ("B154 provider followups", "#1646/#1653 available", "provider follow-ups do not match frozen source outcomes"),
+    ],
+)
+def test_merged_source_rejects_stale_or_fabricated_inputs(
+    field: str, value: str, message: str
+) -> None:
+    packet = _current_contract_packet().replace(
+        next(line for line in _current_contract_packet().splitlines() if line.startswith(f"- **{field}:")),
+        f"- **{field}:** {value}",
     )
-    with pytest.raises(verifier.PacketError, match="canonical action markers"):
-        verifier.verify(tmp_path)
+    with pytest.raises(verifier.PacketError, match=message):
+        verifier.validate_packet(packet)
 
 
-def test_residency_template_cannot_be_called_executed(tmp_path: Path) -> None:
-    _packet_fixture(tmp_path)
-    template = tmp_path / verifier.RESIDENCY_TEMPLATE
-    template.write_text(
-        template.read_text(encoding="utf-8").replace(
-            'doc_status: "PENDING_LEGAL_REVIEW"', 'doc_status: "EXECUTED"', 1
-        ),
-        encoding="utf-8",
+def test_b154_admission_state_cannot_be_omitted() -> None:
+    packet = "\n".join(
+        line for line in _packet().splitlines() if "**B154 state:**" not in line
     )
-    with pytest.raises(verifier.PacketError, match="instrument status changed"):
-        verifier.verify(tmp_path)
+    with pytest.raises(verifier.PacketError, match="missing packet field: b154_state"):
+        verifier.validate_packet(packet)
 
 
-def test_packet_symlink_cannot_satisfy_the_contract(tmp_path: Path) -> None:
-    target = tmp_path / "packet-copy.md"
-    target.write_text((ROOT / verifier.PACKET).read_text(encoding="utf-8"), encoding="utf-8")
+def test_canonical_packet_symlink_is_rejected(tmp_path: Path) -> None:
     destination = tmp_path / verifier.PACKET
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents=True)
+    target = tmp_path / "packet-copy.md"
+    target.write_text(_packet(), encoding="utf-8")
     destination.symlink_to(target)
-    with pytest.raises(verifier.PacketError, match="symlink path component"):
+    with pytest.raises(verifier.PacketError, match="path contains a symlink"):
         verifier.verify(tmp_path)
 
 
-def test_packet_parent_symlink_cannot_escape_root(tmp_path: Path) -> None:
-    outside = tmp_path / "outside-internal"
+def test_canonical_packet_parent_symlink_is_rejected(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
     outside.mkdir()
-    packet_copy = outside / "b087-questionnaire-owner-actions.md"
-    packet_copy.write_text(
-        (ROOT / verifier.PACKET).read_text(encoding="utf-8"), encoding="utf-8"
-    )
-    internal = tmp_path / "docs" / "internal"
-    internal.parent.mkdir(parents=True, exist_ok=True)
-    internal.symlink_to(outside, target_is_directory=True)
-    with pytest.raises(verifier.PacketError, match="symlink path component"):
+    packet = outside / "b170-prelaunch-reconciliation.md"
+    packet.write_text(_packet(), encoding="utf-8")
+    (tmp_path / "reports").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(verifier.PacketError, match="path contains a symlink"):
         verifier.verify(tmp_path)
+
+
+def test_merged_source_admits_truthful_open_provider_followups_without_fake_receipts() -> None:
+    fields = verifier.validate_packet(_packet())
+    assert fields["b154_source_reference"] == "https://github.com/HuGR-dev/corelink-server/pull/2807"
+    assert fields["b154_source_revision"] == "f2ab5d43b1f7a5dc691f30e0cae419155b4643c5"
+    assert fields["b154_source_date"] == "2026-09-30"
+    assert fields["b154_provider_followups"] == (
+        "#1646 Object Lock availability pending; "
+        "#1653/#2165 BYOK lifecycle and p99 pending"
+    )
+    assert "b154_receipt" not in fields
+
+
+def test_merged_source_rejects_provider_followup_overclaim() -> None:
+    packet = _current_contract_packet().replace(
+        "#1646 Object Lock availability pending; #1653/#2165 BYOK lifecycle and p99 pending",
+        "#1646 and #1653 provider outcomes terminal and available",
+    )
+    with pytest.raises(verifier.PacketError, match="provider follow-ups do not match frozen source outcomes"):
+        verifier.validate_packet(packet)
