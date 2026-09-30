@@ -9,12 +9,15 @@ on:
       - .github/workflows/backlog-verify.yml
       - changelog.d/b046-r2-object-lock-reprobe.md
       - crates/corelink-container/src/routes/dsr/adapter_r2_cas_legalhold.rs
+      - docs/handoff/2026-09-05-owner-action-packets-b008-b154.json
       - docs/knowledge/ops/r2-object-lock-probe.md
       - evidence/owner-actions/B-046/object-lock-probe.json
       - migrations/d1/0102_cas_retention.sql
       - scripts/verify_b046_object_lock_probe.py
+      - scripts/verify_owner_action_packets.py
       - scripts/build_b046_object_lock_receipt.py
       - specs/03_architecture/adrs/ADR-0100-r2-object-lock-capability-gate.md
+      - tests/test_owner_action_packets.py
       - tests/test_verify_b046_object_lock_probe.py
 
 permissions:
@@ -33,3 +36,7 @@ jobs:
         run: python3 scripts/verify_b046_object_lock_probe.py
       - name: Run B-046 object-lock receipt unit tests
         run: python3 -m unittest -q tests/test_verify_b046_object_lock_probe.py
+      - name: Verify B-046 owner packet
+        run: python3 -S scripts/verify_owner_action_packets.py --id B-046
+      - name: Run B-046 accepted owner-packet binding test
+        run: python3 -m unittest -q tests.test_owner_action_packets.OwnerActionPacketTests.test_b046_accepted_aws_target_is_source_bound

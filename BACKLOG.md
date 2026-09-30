@@ -3333,19 +3333,30 @@ segundo backend**.
 id: B-046
 repo: corelink-server
 owner: tl
-status: parked
+status: done
 action-packet: docs/handoff/2026-09-05-owner-action-packets-b008-b154.json
 verify: python3 scripts/verify_owner_action_packets.py --id B-046
 verify-means: |
-  parked — until a Compliance/Object-Lock retention mode ships. BLOCKED: R2 does not
-  implement S3 Object Lock (probed 2026-08-25 — NotImplemented on both bucket and
-  object), so this needs either Cloudflare adding Object Lock OR a different
-  Object-Lock-capable storage backend for compliance-retained objects — a platform
-  dependency, not a code change. Re-probe R2 before assuming it is still blocked.
+  done for approved nonproduction AWS S3 Object-Lock external target proof:
+  #2237 is merged and #1877 is CLOSED. Protected main run 36741245684 attempt 1 at
+  9d8fdbfa04dd16d4099056de6e16ea8343ebba46, read-only reconcile run
+  36742484737 attempt 1, current root technical approval and independent cold
+  acceptance bind the exact synthetic target, one-day COMPLIANCE retention,
+  legal hold ON, pre-expiry exact-version delete denial, and digest-validated
+  CloudTrail data events. See evidence/owner-actions/B-046/accepted-aws-target.json.
+  R2 does not implement S3 Object Lock: the historical direct R2 receipt stays
+  INDETERMINATE (InvalidArgument before bucket creation; PutObject SKIPPED),
+  while first-party R2 capability remains NotImplemented. The AWS proof is only
+  for the approved synthetic target. No production route, account-wide nonprod
+  classification, customer contract, Compliance database mode or R2 WORM is
+  claimed. Production route and Compliance mode remain disabled and separately
+  gated; this does not claim Compliance mode in production.
   The repository contract guard is `python3 scripts/verify_b046_object_lock_probe.py`;
-  it must preserve `BLOCKED`/`INDETERMINATE`, tenant/legal-hold safety, and the
-  absence of a Compliance database mode. It does not claim Compliance mode.
-last-verified: 2026-09-05
+  it preserves R2 BLOCKED/INDETERMINATE classification, Governance-only
+  migration, and legal-hold safety, and checks the AWS acceptance receipt.
+  Cleanup is owned by gmhelmold after 2026-10-01T16:03:42Z and a separately
+  authorized hold release; no cleanup is currently authorized or complete.
+last-verified: 2026-09-30
 ```
 
 ### B-015 — the sealed audit archive was never built, only its verifier
