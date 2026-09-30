@@ -1,0 +1,288 @@
+name: Issue 2165 bounded nonproduction ECR image build
+
+# Manual build only. No deployment or ECR deletion is performed here. A
+# protected lease in the B083 target manifest authorizes one run. The current
+# manifest contract has no cumulative campaign ledger; image_build.spent_usd,
+# remaining_usd, spend_receipt_ref, and budget_checked_at are an explicit new
+# required extension. Until it is owner-bound, this lane fails closed.
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full commit SHA selected from protected main.
+        required: true
+        type: string
+      target_alias:
+        description: Must match the configured nonproduction B-083 target alias.
+        required: true
+        type: string
+      confirmation:
+        description: Enter issue-2165-image-<target alias>-build.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-2165-ecr-image-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    environment: b083-kms-lifecycle
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      TARGET_ALIAS: ${{ inputs.target_alias }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      B083_TARGET_ALIAS: ${{ vars.B083_TARGET_ALIAS }}
+      AWS_ACCOUNT_ID: ${{ vars.B083_AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.B083_AWS_REGION }}
+      MANIFEST_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
+      PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+      IMAGE_BUILD_ROLE_ARN: ${{ vars.B083_AWS_IMAGE_BUILD_ROLE_ARN }}
+      APP_REPOSITORY: ${{ vars.B083_AWS_ECR_APP_REPOSITORY }}
+      OPERATOR_REPOSITORY: ${{ vars.B083_AWS_ECR_OPERATOR_REPOSITORY }}
+      CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
+      RUNTIME_ROLE_ARN: ${{ vars.B083_AWS_RUNTIME_ROLE_ARN }}
+      CUSTODIAN_ROLE_ARN: ${{ vars.B083_AWS_CUSTODIAN_ROLE_ARN }}
+      APP_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_APP_EXECUTION_ROLE_ARN }}
+      OPERATOR_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_ROLE_ARN }}
+      OPERATOR_EXECUTION_ROLE_ARN: ${{ vars.B083_AWS_OPERATOR_EXECUTION_ROLE_ARN }}
+    steps:
+      - name: Checkout the exact protected-main commit without persisted credentials
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Validate dispatch, immutable source, and fixed nonproduction target
+        id: source
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_REF_PROTECTED" = true
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          [[ "$B083_TARGET_ALIAS" =~ ^[a-z][a-z0-9-]{1,31}$ ]]
+          test "$B083_TARGET_ALIAS" != prod6a
+          test "$TARGET_ALIAS" = "$B083_TARGET_ALIAS"
+          test "$CONFIRMATION" = "issue-2165-image-${B083_TARGET_ALIAS}-build"
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]]
+          [[ "$PREFLIGHT_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
+          [[ "$IMAGE_BUILD_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
+          test "$IMAGE_BUILD_ROLE_ARN" != "$PREFLIGHT_ROLE_ARN"
+          test "$IMAGE_BUILD_ROLE_ARN" != "$CONTROLLER_ROLE_ARN"
+          test "$IMAGE_BUILD_ROLE_ARN" != "$RUNTIME_ROLE_ARN"
+          test "$IMAGE_BUILD_ROLE_ARN" != "$CUSTODIAN_ROLE_ARN"
+          test "$IMAGE_BUILD_ROLE_ARN" != "$APP_EXECUTION_ROLE_ARN"
+          test "$IMAGE_BUILD_ROLE_ARN" != "$OPERATOR_ROLE_ARN"
+          test "$IMAGE_BUILD_ROLE_ARN" != "$OPERATOR_EXECUTION_ROLE_ARN"
+          [[ "$APP_REPOSITORY" =~ ^(i2165-b083-[0-9]{8}-[a-f0-9]{8})-app$ ]]
+          repository_namespace="${BASH_REMATCH[1]}"
+          [[ "$OPERATOR_REPOSITORY" =~ ^(i2165-b083-[0-9]{8}-[a-f0-9]{8})-operator$ ]]
+          test "${BASH_REMATCH[1]}" = "$repository_namespace"
+          test "$APP_REPOSITORY" != "$OPERATOR_REPOSITORY"
+          test -n "$MANIFEST_ARN"
+          test -f Dockerfile -a -f Dockerfile.b083-operator -a -f requirements-issue-2165-operator.txt
+          grep -F -- '--features byok-aws-real' Dockerfile >/dev/null
+          {
+            echo "app_dockerfile_sha256=$(sha256sum Dockerfile | cut -d' ' -f1)"
+            echo "operator_dockerfile_sha256=$(sha256sum Dockerfile.b083-operator | cut -d' ' -f1)"
+            echo "operator_lock_sha256=$(sha256sum requirements-issue-2165-operator.txt | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Assume read-only manifest preflight role through OIDC
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-image-manifest-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+
+      - name: Fetch and validate current protected budget, approval, and expiry lease
+        env:
+          MANIFEST_PATH: ${{ runner.temp }}/b083-image-manifest.json
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$MANIFEST_PATH"' EXIT
+          actual_account="$(aws sts get-caller-identity --query Account --output text)"
+          test "$actual_account" = "$AWS_ACCOUNT_ID"
+          aws secretsmanager get-secret-value --secret-id "$MANIFEST_ARN" --query SecretString --output text > "$MANIFEST_PATH"
+          chmod 600 "$MANIFEST_PATH"
+          python3 - "$MANIFEST_PATH" "$B083_TARGET_ALIAS" "$AWS_ACCOUNT_ID" "$AWS_REGION" <<'PY'
+          import datetime as dt, decimal, json, os, pathlib, sys
+          path, alias, account, region = sys.argv[1:]
+          def money(value):
+              if isinstance(value, bool):
+                  raise ValueError("boolean is not a monetary amount")
+              return decimal.Decimal(str(value))
+          try:
+              manifest = json.loads(pathlib.Path(path).read_text())
+              expiry = dt.datetime.fromisoformat(manifest["expires_at"].replace("Z", "+00:00"))
+              now = dt.datetime.now(dt.timezone.utc)
+              assert expiry.tzinfo is not None and expiry.utcoffset() == dt.timedelta(0)
+              assert now < expiry <= now + dt.timedelta(hours=24)
+              approval = manifest["approval"]
+              assert approval["approved"] is True and approval["target"] == alias and approval["rollback"]
+              assert manifest["aws"]["account_id"] == account
+              assert manifest["aws"]["region"] == region
+              lease = manifest["image_build"]
+              assert lease["authorized"] is True and lease["operation"] == "build-both-images"
+              assert lease["source_sha"] == os.environ["SOURCE_SHA"]
+              assert lease["cost_owner"] and lease["cleanup_owner"]
+              spent = money(lease["spent_usd"])
+              remaining = money(lease["remaining_usd"])
+              estimate = money(manifest["estimated_cost_usd"])
+              assert decimal.Decimal(0) <= spent <= decimal.Decimal(20)
+              assert remaining == decimal.Decimal(20) - spent and decimal.Decimal(0) < remaining
+              assert decimal.Decimal(0) < estimate <= remaining
+              assert lease["spend_receipt_ref"]
+              checked = dt.datetime.fromisoformat(lease["budget_checked_at"].replace("Z", "+00:00"))
+              assert checked.tzinfo is not None and checked.utcoffset() == dt.timedelta(0)
+              assert dt.timedelta(0) <= now - checked <= dt.timedelta(hours=2)
+          except Exception:
+              raise SystemExit("protected image-build lease invalid, stale, missing, or outside the $20 cumulative budget")
+          PY
+
+      - name: Assume the dedicated nonproduction ECR image-build role through OIDC
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_IMAGE_BUILD_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-ecr-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+
+      - name: Bind role identity to both immutable nonproduction repositories
+        run: |
+          set -euo pipefail
+          actual_account="$(aws sts get-caller-identity --query Account --output text)"
+          test "$actual_account" = "$AWS_ACCOUNT_ID"
+          for repository in "$APP_REPOSITORY" "$OPERATOR_REPOSITORY"; do
+            aws ecr describe-repositories --registry-id "$AWS_ACCOUNT_ID" --repository-names "$repository" > "$RUNNER_TEMP/ecr-repository.json"
+            jq -e --arg name "$repository" --arg account "$AWS_ACCOUNT_ID" \
+              '.repositories | length == 1 and .[0].repositoryName == $name and .[0].registryId == $account and .[0].imageTagMutability == "IMMUTABLE" and .[0].imageScanningConfiguration.scanOnPush == true' \
+              "$RUNNER_TEMP/ecr-repository.json" >/dev/null
+            aws ecr list-images --registry-id "$AWS_ACCOUNT_ID" --repository-name "$repository" \
+              --filter tagStatus=TAGGED --query "imageIds[?imageTag=='$SOURCE_SHA']" --output json > "$RUNNER_TEMP/ecr-existing.json"
+            jq -e 'length == 0' "$RUNNER_TEMP/ecr-existing.json" >/dev/null
+          done
+          registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          printf '%s' "$registry" > "$RUNNER_TEMP/registry-host"
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$registry" >/dev/null
+
+      - name: Build and push the exact-main application image with provenance and SBOM
+        id: app
+        run: |
+          set -euo pipefail
+          test -f Dockerfile
+          registry="$(cat "$RUNNER_TEMP/registry-host")"
+          image="$registry/$APP_REPOSITORY:$SOURCE_SHA"
+          docker buildx build --file Dockerfile --platform linux/amd64 --push \
+            --provenance=mode=max --sbom=true --metadata-file "$RUNNER_TEMP/app-metadata.json" \
+            --tag "$image" .
+          digest="$(jq -er '.["containerimage.digest"] | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/app-metadata.json")"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push the B-083 operator image with provenance and SBOM
+        id: operator
+        run: |
+          set -euo pipefail
+          test -f Dockerfile.b083-operator
+          registry="$(cat "$RUNNER_TEMP/registry-host")"
+          image="$registry/$OPERATOR_REPOSITORY:$SOURCE_SHA"
+          docker buildx build --file Dockerfile.b083-operator --platform linux/amd64 --push \
+            --provenance=mode=max --sbom=true --metadata-file "$RUNNER_TEMP/operator-metadata.json" \
+            --tag "$image" .
+          digest="$(jq -er '.["containerimage.digest"] | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/operator-metadata.json")"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Read back image digests and OCI attestation manifests
+        id: readback
+        if: always() && steps.app.outcome == 'success' && steps.operator.outcome == 'success'
+        env:
+          APP_DIGEST: ${{ steps.app.outputs.digest }}
+          OPERATOR_DIGEST: ${{ steps.operator.outputs.digest }}
+        run: |
+          set -euo pipefail
+          registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          for pair in "$APP_REPOSITORY:$APP_DIGEST" "$OPERATOR_REPOSITORY:$OPERATOR_DIGEST"; do
+            repository="${pair%%:*}"
+            expected_digest="${pair#*:}"
+            actual_digest="$(aws ecr describe-images --registry-id "$AWS_ACCOUNT_ID" --repository-name "$repository" --image-ids imageTag="$SOURCE_SHA" --query 'imageDetails[0].imageDigest' --output text)"
+            test "$actual_digest" = "$expected_digest"
+            docker buildx imagetools inspect --raw "$registry/$repository@$expected_digest" > "$RUNNER_TEMP/image-index.json"
+            jq -e '.schemaVersion == 2 and .mediaType == "application/vnd.oci.image.index.v1+json" and ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length == 1) and ([.manifests[] | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")] | length >= 2)' \
+              "$RUNNER_TEMP/image-index.json" >/dev/null
+            jq -r '.manifests[] | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest") | .digest' \
+              "$RUNNER_TEMP/image-index.json" > "$RUNNER_TEMP/attestation-digests.txt"
+            saw_provenance=false
+            saw_sbom=false
+            while IFS= read -r attestation_digest; do
+              [[ "$attestation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+              aws ecr batch-get-image --registry-id "$AWS_ACCOUNT_ID" --repository-name "$repository" \
+                --image-ids imageDigest="$attestation_digest" > "$RUNNER_TEMP/attestation-response.json"
+              jq -e --arg digest "$attestation_digest" '.images | length == 1 and .[0].imageId.imageDigest == $digest' "$RUNNER_TEMP/attestation-response.json" >/dev/null
+              jq -er '.images[0].imageManifest' "$RUNNER_TEMP/attestation-response.json" > "$RUNNER_TEMP/attestation.json"
+              if jq -e 'any(.layers[]?; .annotations["in-toto.io/predicate-type"] == "https://slsa.dev/provenance/v1")' "$RUNNER_TEMP/attestation.json" >/dev/null; then saw_provenance=true; fi
+              if jq -e 'any(.layers[]?; .annotations["in-toto.io/predicate-type"] == "https://spdx.dev/Document")' "$RUNNER_TEMP/attestation.json" >/dev/null; then saw_sbom=true; fi
+            done < "$RUNNER_TEMP/attestation-digests.txt"
+            test "$saw_provenance" = true
+            test "$saw_sbom" = true
+          done
+
+      - name: Write redacted custody receipt, including partial pushes
+        id: custody
+        if: always() && (steps.app.outcome != 'skipped' || steps.operator.outcome != 'skipped')
+        env:
+          APP_STATUS: ${{ steps.app.outcome }}
+          APP_DIGEST: ${{ steps.app.outputs.digest }}
+          OPERATOR_STATUS: ${{ steps.operator.outcome }}
+          OPERATOR_DIGEST: ${{ steps.operator.outputs.digest }}
+          READBACK_STATUS: ${{ steps.readback.outcome }}
+          APP_DOCKERFILE_SHA256: ${{ steps.source.outputs.app_dockerfile_sha256 }}
+          OPERATOR_DOCKERFILE_SHA256: ${{ steps.source.outputs.operator_dockerfile_sha256 }}
+          OPERATOR_LOCK_SHA256: ${{ steps.source.outputs.operator_lock_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/i2165-ecr-receipt"
+          registry="$(cat "$RUNNER_TEMP/registry-host")"
+          jq -n --arg source_sha "$SOURCE_SHA" --arg account "$AWS_ACCOUNT_ID" \
+            --arg region "$AWS_REGION" --arg app_repository "$APP_REPOSITORY" \
+            --arg app_digest "$APP_DIGEST" --arg app_status "$APP_STATUS" \
+            --arg operator_repository "$OPERATOR_REPOSITORY" --arg operator_digest "$OPERATOR_DIGEST" \
+            --arg operator_status "$OPERATOR_STATUS" --arg readback_status "$READBACK_STATUS" \
+            --arg app_dockerfile_sha256 "$APP_DOCKERFILE_SHA256" \
+            --arg operator_dockerfile_sha256 "$OPERATOR_DOCKERFILE_SHA256" \
+            --arg operator_lock_sha256 "$OPERATOR_LOCK_SHA256" --arg registry "$registry" \
+            --arg run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{schema:"corelink.issue-2165.ecr-image-build.v1",source_sha:$source_sha,aws_account_id:$account,aws_region:$region,images:[{repository:$app_repository,tag:$source_sha,digest:$app_digest,image_ref:(if $app_digest == "" then "" else ($registry + "/" + $app_repository + "@" + $app_digest) end),dockerfile_sha256:$app_dockerfile_sha256,push_status:$app_status},{repository:$operator_repository,tag:$source_sha,digest:$operator_digest,image_ref:(if $operator_digest == "" then "" else ($registry + "/" + $operator_repository + "@" + $operator_digest) end),dockerfile_sha256:$operator_dockerfile_sha256,requirements_lock_sha256:$operator_lock_sha256,push_status:$operator_status}],run:$run,readback_status:$readback_status}' \
+            > "$RUNNER_TEMP/i2165-ecr-receipt/receipt.json"
+
+      - name: Upload redacted custody receipt
+        if: always() && steps.custody.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: issue-2165-ecr-build-${{ github.run_id }}
+          path: ${{ runner.temp }}/i2165-ecr-receipt/receipt.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Log out of the nonproduction ECR registry
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/registry-host" ]; then
+            docker logout "$(cat "$RUNNER_TEMP/registry-host")" >/dev/null 2>&1 || true
+          fi
