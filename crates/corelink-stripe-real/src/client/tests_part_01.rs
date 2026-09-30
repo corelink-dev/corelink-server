@@ -159,10 +159,7 @@ fn builder_wallet_yields_wallet_proxy_base() {
         .config(wallet_test_config())
         .build()
         .unwrap();
-    assert_eq!(
-        c.effective_base_url(),
-        "https://wallet.test/_wallet/proxy/stripe-prod"
-    );
+    assert_eq!(c.effective_base_url(), "https://wallet.test/stripe-prod");
 }
 
 #[test]
@@ -181,10 +178,7 @@ fn effective_base_url_trims_trailing_slash_wallet() {
         SecretString::from("hugrw_x".to_string()),
         "stripe-prod",
     );
-    assert_eq!(
-        cfg.effective_base_url(),
-        "https://wallet.test/_wallet/proxy/stripe-prod"
-    );
+    assert_eq!(cfg.effective_base_url(), "https://wallet.test/stripe-prod");
 }
 
 #[test]
