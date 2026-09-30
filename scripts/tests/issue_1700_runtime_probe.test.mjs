@@ -3,17 +3,17 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { runRuntimeProbe, failureDiagnostic, decodeTailFrame, waitForContainerState, captureDeployImageDigest, captureContainerPreimage, verifyContainerPreimage, verifyContainerImageDigest, verifyContainerState, verifyContainerRollback, CONTAINER_APP_ID, CONTAINER_APP_NAME, PROBE_CRON, PROBE_EXPIRY, PROBE_WINDOW } from "../issue_1700_runtime_probe.mjs";
+import { runRuntimeProbe, failureDiagnostic, decodeTailFrame, waitForContainerState, captureDeployImageDigest, captureContainerPreimage, verifyContainerPreimage, verifyContainerImageDigest, verifyContainerState, verifyContainerRollback, CONTAINER_APP_ID, CONTAINER_APP_NAME, PROBE_CRON, PROBE_EXPIRY, PROBE_WINDOW, approvedProbeWindow } from "../issue_1700_runtime_probe.mjs";
 
 const release = "0123456789abcdef0123456789abcdef01234567";
-const now = Date.parse("2026-09-30T14:01:00Z");
+const now = Date.parse("2026-09-30T18:01:00Z");
 const imageDigest = `sha256:${"a".repeat(64)}`;
 const receipt = {
   contract: "corelink-staging-d1-binding-runtime-v1",
   outcome: "pass",
   probe_nonce: PROBE_WINDOW.nonce,
   worker_release: release,
-  scheduled_time_ms: Date.parse("2026-09-30T14:01:00Z"),
+  scheduled_time_ms: Date.parse("2026-09-30T18:01:00Z"),
   parameterized_select: true,
   failed_batch_observed: true,
   rollback_absence_verified: true,
@@ -21,7 +21,14 @@ const receipt = {
   d1_binding_intercepted: true,
   authorization_absent: true,
   cf_api_token_absent: true, old_probe_release: "0f785fb9b096afe01247f1057d46377b9f604f13", old_probe_retired: true, old_probe_tables_absent: true,
+  v4_probe_catalog_absent: true,
 };
+
+test("compiled runtime window is the exact approved same-day v5 tuple", () => {
+  assert.equal(approvedProbeWindow(), true);
+  assert.equal(approvedProbeWindow({ ...PROBE_WINDOW, expires_ms: PROBE_WINDOW.expires_ms + 60_000 }), false);
+  assert.equal(approvedProbeWindow({ ...PROBE_WINDOW, nonce: "issue-1700-recovery-20260930-v4" }), false);
+});
 
 // Cloudflare workers-sdk TailEventMessage: scheduled event and console log envelope.
 function scheduledFrame(value = receipt) {
@@ -32,7 +39,7 @@ function scheduledFrame(value = receipt) {
   };
 }
 
-function harness({ schedules: initial = [], sendReceipt = true, driftAfterReceipt = false, emittedReceipt = receipt, frameKind = "text", openMode = "open" } = {}) {
+function harness({ schedules: initial = [], installReadback, sendReceipt = true, driftAfterReceipt = false, emittedReceipt = receipt, frameKind = "text", openMode = "open" } = {}) {
   let schedules = initial;
   let socket;
   let tailDeleted = false;
@@ -44,6 +51,9 @@ function harness({ schedules: initial = [], sendReceipt = true, driftAfterReceip
     const method = init.method ?? "GET";
     if (path.endsWith("/schedules") && method === "GET") {
       scheduleReads += 1;
+      if (scheduleReads === 2 && installReadback !== undefined) {
+        return response({ success: true, result: { schedules: installReadback } });
+      }
       if (driftAfterReceipt && scheduleReads === 3) schedules = [{ cron: "0 0 * * *" }];
       return response({ success: true, result: { schedules } });
     }
@@ -119,6 +129,59 @@ test("rejects preexisting schedules before creating a tail or mutating", async (
   }), /preexisting Worker schedules/);
   assert.deepEqual(h.puts, []);
   assert.equal(h.tailDeleted, false);
+});
+
+test("failed install readback records bounded shape without weakening guards or cleanup", async () => {
+  const cases = [
+    { rows: [], matches: 0 },
+    { rows: [{ cron: PROBE_CRON }, { cron: "0 0 * * *" }], matches: 1 },
+    { rows: [{ cron: PROBE_CRON, next_run: "private-value-never-output" }], matches: 1 },
+    { rows: [{ cron: "* * 30 SEP *" }], matches: 0 },
+  ];
+  for (const { rows, matches } of cases) {
+    const h = harness({ installReadback: rows });
+    await assert.rejects(runRuntimeProbe({ token: "token", release, expectedSha: release,
+      imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now,
+    }), error => {
+      const diagnostic = failureDiagnostic(error);
+      assert.equal(diagnostic.stage, "schedule_install");
+      assert.equal(diagnostic.code, "schedule_readback");
+      assert.equal(diagnostic.schedule_readback.count, rows.length);
+      assert.equal(diagnostic.schedule_readback.expected_cron_matches, matches);
+      assert.deepEqual(diagnostic.schedule_readback.entries.map(entry => entry.keys), rows.map(row => Object.keys(row).sort()));
+      assert.deepEqual(diagnostic.schedule_readback.entries.map(entry => entry.cron), rows.map(row => row.cron));
+      assert.ok(!JSON.stringify(diagnostic).includes("private-value"));
+      return true;
+    });
+    assert.deepEqual(h.schedules, []);
+    assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+    assert.equal(h.tailDeleted, true);
+  }
+});
+
+test("schedule diagnostics redact payload-like cron and keys, cap output, and reject injected evidence", async () => {
+  const rows = Array.from({ length: 20 }, () => ({ cron: "Bearer secret-token", "secret-token-value": "customer-payload" }));
+  rows[1].cron = "12345678901234567890 1 1 1 1";
+  const h = harness({ installReadback: rows });
+  await assert.rejects(runRuntimeProbe({ token: "token", release, expectedSha: release,
+    imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now,
+  }), error => {
+    const summary = failureDiagnostic(error).schedule_readback;
+    assert.equal(summary.count, 20);
+    assert.equal(summary.entries.length, 8);
+    assert.equal(summary.truncated, true);
+    assert.equal(summary.entries[0].cron, "[redacted]");
+    assert.equal(summary.entries[1].cron, "[redacted]");
+    assert.deepEqual(summary.entries[0].keys, ["cron", "[redacted]"]);
+    assert.ok(!JSON.stringify(summary).includes("secret-token"));
+    assert.ok(!JSON.stringify(summary).includes("customer-payload"));
+    return true;
+  });
+  assert.equal(failureDiagnostic(Object.assign(new Error("installed schedule readback rejected"), {
+    schedule_readback: { token: "secret" },
+  })).schedule_readback, undefined);
+  assert.deepEqual(h.schedules, []);
+  assert.equal(h.tailDeleted, true);
 });
 
 test("does not overwrite schedule drift during cleanup and still deletes the tail", async () => {
@@ -272,7 +335,11 @@ test("readback rejects wrong app, wrong digest, skipped version, and deadline", 
 
 
 test("host ignores wrong nonce, release, expired and pre-invocation receipts and cleans up", async () => {
+  const missingV4CatalogReceipt = { ...receipt };
+  delete missingV4CatalogReceipt.v4_probe_catalog_absent;
   for (const emittedReceipt of [
+    missingV4CatalogReceipt,
+    { ...receipt, v4_probe_catalog_absent: false },
     { ...receipt, probe_nonce: "old-window" },
     { ...receipt, worker_release: "f".repeat(40) },
     { ...receipt, old_probe_retired: false },

@@ -8,19 +8,38 @@ and cleanup remain unknown; do not replay that candidate's nonce or use
 Run 36670281036 remained waiting for a distinct reviewer until its compiled v3
 window expired at 12:00 UTC. It never deployed. Root preserves/cancels that run;
 approving or replaying it cannot renew the immutable Worker/Container window.
-This v4 renewal requires both runtimes to be rebuilt, with no runtime expiry
-override and no change to the original retirement target or cleanup ownership.
-Start only with a distinct reviewer available and before 18:45 UTC to retain
-the 75-minute reserve.
+The v5 renewal requires both runtimes to be rebuilt, with no runtime expiry
+override. It starts at **2026-09-30 18:00 UTC** and expires exclusively at
+**23:59 UTC** on the same date, using nonce
+`issue-1700-recovery-20260930-v5` and cron `* * 30 9 *`. No entry may be
+started after 22:44 UTC, preserving the 75-minute reserve.
 
 One protected `deploy` on reviewed main builds both runtimes with nonce
-`issue-1700-recovery-20260930-v4`. The shared
+`issue-1700-recovery-20260930-v5`. The shared
 `crates/corelink-container/src/routes/staging_d1_probe_window.json` allows only
-**2026-09-30 14:00 through 20:00 UTC**, exclusive at the end. The nonce plus the
+**2026-09-30 18:00 through 23:59 UTC**, exclusive at the end. The nonce plus the
 new merged `SENTRY_RELEASE` selects a fresh dedicated DO. Host receipt freshness
 remains bounded to the current invocation and its 16-minute deadline.
 
-Before entering the fresh DO, the Worker retires only the named old probe DO for
+The v4 attempt used Worker release `9d8fdbfa04dd16d4099056de6e16ea8343ebba46`;
+its schedule readback failed, and the captured schedule/tail inventories were
+empty. That is not runtime proof and its nonce is not replayable. The original
+v3 candidate was release `0f785fb9b096afe01247f1057d46377b9f604f13` with nonce
+`issue-1700-recovery-20260929`.
+
+Before the fresh probe, source checks only the exact v4 release-derived D1
+table prefix and requires an empty catalog; it never deletes v4 tables. This
+does not establish whether a v4 DO exists or is stopped. The v4 DO state remains
+unknown unless an authorized provider read-only inventory proves the exact
+object absent. The v3 retirement below is a separate exact target.
+
+Before the fresh probe, source checks only the exact v4 release-derived D1
+table prefix and requires an empty catalog; it never deletes v4 tables. This
+does not establish whether a v4 DO exists or is stopped. The v4 DO state remains
+unknown unless an authorized provider read-only inventory proves the exact
+object absent. The v3 retirement below is a separate exact target.
+
+Before entering the fresh DO, the Worker retires only the named original probe DO for
 release `0f785fb9b096afe01247f1057d46377b9f604f13` and nonce
 `issue-1700-recovery-20260929`. Retirement verifies DO identity, staging/account/D1
 and the fresh window, preserves the old claim/receipt, persists a retirement fence,
