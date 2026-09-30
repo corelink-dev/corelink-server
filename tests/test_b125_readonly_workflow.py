@@ -182,6 +182,12 @@ def test_workflow_keeps_all_required_query_ids_and_remote_only_execution() -> No
     assert "completed_repaired_rollout_missing" in source
     assert 'item.get("target_version") == app["version"]' in source
     assert "active_repaired_container_readback_failed" in source
+    assert 'datetime(2026, 10, 1, 2, 5, tzinfo=timezone.utc)' in source
+    assert 'first_post_repair_bucket = datetime(2026, 9, 30, 20, 0, tzinfo=timezone.utc)' in source
+    assert "post_repair_six_hour_window_not_settled" in source
+    assert source.index("post_repair_six_hour_window_not_settled") < source.index(
+        "for query_id in population partition hourly latency heads burst integrity replay head_tail; do"
+    )
     assert "cloudflare_account_target_mismatch" in source
     assert "database_target_mismatch" in source
     assert "production_image_pin_mismatch" in source
@@ -482,18 +488,22 @@ def test_workflow_keeps_unredacted_provider_output_out_of_artifacts_and_logs() -
     assert 'echo "$raw"' not in source
 
 
-def _final_receipt_script() -> str:
+def _final_receipt_script(now: datetime | None = None) -> str:
     source = WORKFLOW.read_text(encoding="utf-8")
     after_queries = source.split(
         "for query_id in population partition hourly latency heads burst integrity replay head_tail; do", 1
     )[1]
     match = re.search(r'python3 - "\$receipt" <<\'PY\'\n(.*?)\n          PY', after_queries, re.DOTALL)
     assert match, "final workflow receipt gate must remain executable Python"
-    return textwrap.dedent(match.group(1)) + "\n"
+    script = textwrap.dedent(match.group(1))
+    clock = now or datetime(2026, 10, 1, 2, 5, tzinfo=timezone.utc)
+    fixed_clock = f"datetime({clock.year}, {clock.month}, {clock.day}, {clock.hour}, {clock.minute}, tzinfo=timezone.utc)"
+    return script.replace("datetime.now(timezone.utc)", fixed_clock) + "\n"
 
 
-def _complete_receipt(arrivals: int = 3141, seals: int = 3141, boundary: int = 0) -> dict:
-    anchor = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+def _complete_receipt(arrivals: int = 3141, seals: int = 3141, boundary: int = 0,
+                      anchor: datetime | None = None) -> dict:
+    anchor = anchor or datetime(2026, 10, 1, 2, 0, tzinfo=timezone.utc)
     hourly = [
         {
             "window_start_utc": (anchor - timedelta(hours=6-index)).strftime("%Y-%m-%dT%H:00:00Z"),
@@ -521,11 +531,11 @@ def _complete_receipt(arrivals: int = 3141, seals: int = 3141, boundary: int = 0
     return {"queries": [{"id": key, "rows": value if isinstance(value, list) else [value]} for key, value in rows.items()]}
 
 
-def _evaluate_receipt(tmp_path: Path, payload: dict) -> tuple[int, dict]:
+def _evaluate_receipt(tmp_path: Path, payload: dict, now: datetime | None = None) -> tuple[int, dict]:
     path = tmp_path / "b125-receipt.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     result = subprocess.run(
-        [sys.executable, "-S", "-", str(path)], input=_final_receipt_script(), text=True,
+        [sys.executable, "-S", "-", str(path)], input=_final_receipt_script(now), text=True,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
     return result.returncode, json.loads(path.read_text(encoding="utf-8"))
@@ -538,6 +548,17 @@ def test_real_receipt_gate_reconstructs_six_hours_and_applies_owner_threshold(tm
     assert receipt["owner_threshold"]["status"] == "PASS"
     assert receipt["owner_threshold"]["qualified_bucket_count"] == 6
     assert all(row["opening_unsealed"] == row["closing_unsealed"] == 0 for row in receipt["measurements"]["hourly"])
+
+
+def test_real_receipt_gate_rejects_six_complete_hours_with_pre_repair_rows(tmp_path: Path) -> None:
+    code, receipt = _evaluate_receipt(
+        tmp_path,
+        _complete_receipt(anchor=datetime(2026, 10, 1, 1, 0, tzinfo=timezone.utc)),
+        now=datetime(2026, 10, 1, 1, 5, tzinfo=timezone.utc),
+    )
+    assert code != 0
+    assert receipt["valid"] is False
+    assert "hourly_window_includes_pre_repair_data" in receipt["failure_reasons"]
 
 
 def test_real_receipt_gate_rejects_invalid_or_inconclusive_boundaries(tmp_path: Path) -> None:

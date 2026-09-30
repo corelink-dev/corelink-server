@@ -97,6 +97,17 @@ jobs:
             exit 1
           }
 
+          # The repaired image became active at 19:36:16Z on 2026-09-30.
+          # Six complete UTC buckets first contain only post-repair rows at
+          # 02:00Z on 2026-10-01. Allow five minutes for the last bucket to
+          # settle, and reject before any provider query until then.
+          python3 - <<'PY' || fail_closed "post_repair_six_hour_window_not_settled"
+          from datetime import datetime, timezone
+          not_before = datetime(2026, 10, 1, 2, 5, tzinfo=timezone.utc)
+          if datetime.now(timezone.utc) < not_before:
+              raise SystemExit(1)
+          PY
+
           [[ "$CONFIRM" == "run-b125-read-only" ]] || fail_closed "confirmation_mismatch"
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || fail_closed "protected_main_ref_required"
           [[ -n "${CF_ACCOUNT_ID:-}" ]] || fail_closed "CF_ACCOUNT_ID_missing"
@@ -256,6 +267,8 @@ jobs:
               "runtime_verification_receipt_ref": receipt_ref,
               "runtime_verification_source": "Cloudflare Containers GET application and rollouts API",
               "runtime_verification": runtime_summary,
+              "post_repair_first_complete_bucket_utc": "2026-09-30T20:00:00Z",
+              "post_repair_capture_not_before_utc": "2026-10-01T02:05:00Z",
               "scope": "IAD production Container application only; other regional pins are config-verified, not runtime-verified",
           }
           with open(path, "w", encoding="utf-8") as stream:
@@ -412,6 +425,9 @@ jobs:
               current_anchor = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
               if not complete_hour_buckets or bucket_ends[-1] != current_anchor:
                   failures.append("hourly_window_labels_not_six_complete_consecutive_utc_buckets")
+              first_post_repair_bucket = datetime(2026, 9, 30, 20, 0, tzinfo=timezone.utc)
+              if bucket_starts[0] < first_post_repair_bucket:
+                  failures.append("hourly_window_includes_pre_repair_data")
           except (KeyError, TypeError, ValueError):
               failures.append("hourly_window_labels_invalid")
           if int(population.get("total_rows") or 0) <= 0:
