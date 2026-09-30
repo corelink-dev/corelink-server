@@ -13,8 +13,8 @@ const context = {
   checkoutSha: execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8" }).trim(),
   apiToken: process.env.B216_CF_RECEIVER_WRITE_TOKEN,
   receiverToken: process.env.B216_DSR_ALERT_RECEIVER_TOKEN,
-  runId: process.env.B216_RUN_ID,
-  runAttempt: process.env.B216_RUN_ATTEMPT,
+  runId: process.env.GITHUB_RUN_ID,
+  runAttempt: process.env.GITHUB_RUN_ATTEMPT,
 };
 const receiptPath = join(process.env.RUNNER_TEMP || "/tmp", "b216-receiver-synthetic-receipt.json");
 const receipt = await runSyntheticReceiverExercise({

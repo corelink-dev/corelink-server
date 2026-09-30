@@ -155,8 +155,6 @@ jobs:
         env:
           B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}
           B216_DSR_ALERT_RECEIVER_TOKEN: ${{ secrets.B216_DSR_ALERT_RECEIVER_TOKEN }}
-          B216_RUN_ID: ${{ github.run_id }}
-          B216_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: node apps/dsr-alert-receiver/scripts/run-synthetic-exercise.mjs
 
       - name: Disable workers.dev for exact fixed receiver
