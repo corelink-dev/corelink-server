@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { runRuntimeProbe, failureDiagnostic, decodeTailFrame, waitForContainerState, captureDeployImageDigest, captureContainerPreimage, verifyContainerPreimage, verifyContainerImageDigest, verifyContainerState, verifyContainerRollback, CONTAINER_APP_ID, CONTAINER_APP_NAME, PROBE_CRON, PROBE_EXPIRY, PROBE_WINDOW, approvedProbeWindow } from "../issue_1700_runtime_probe.mjs";
+import { ACCOUNT_ID, normalizeContainerDetail, readContainerDetail, runRuntimeProbe, failureDiagnostic, decodeTailFrame, waitForContainerState, captureDeployImageDigest, captureContainerPreimage, verifyContainerPreimage, verifyContainerImageDigest, verifyContainerState, verifyContainerRollback, CONTAINER_APP_ID, CONTAINER_APP_NAME, PROBE_CRON, PROBE_EXPIRY, PROBE_WINDOW, approvedProbeWindow } from "../issue_1700_runtime_probe.mjs";
 
 const release = "0123456789abcdef0123456789abcdef01234567";
 const now = Date.parse("2026-09-30T18:01:00Z");
@@ -302,7 +302,7 @@ test("captures the actual Wrangler registry push result without an image label",
 });
 
 function containerRow(version, digest = imageDigest) {
-  return { id: CONTAINER_APP_ID, name: CONTAINER_APP_NAME, version,
+  return { id: CONTAINER_APP_ID, name: CONTAINER_APP_NAME, version, exact_application_health_verified: true,
     image: `registry.cloudflare.com/6a1fc1c626fc2628823e60b9db01f5cd/${CONTAINER_APP_NAME}@${digest}` };
 }
 
@@ -457,4 +457,57 @@ test("native WebSocket negotiates trace-v1, initializes, and consumes a binary C
   assert.deepEqual(proof.receipt, receipt);
   assert.deepEqual(schedules, []);
   assert.equal(tailDeleted, true);
+});
+
+
+test("exact application read uses provider detail envelope and rejects stale-list and unhealthy shapes", async () => {
+  const envelope = { success: true, errors: [], messages: [], result: {
+    account_id: ACCOUNT_ID, id: CONTAINER_APP_ID, name: CONTAINER_APP_NAME, version: 9, instances: 5,
+    configuration: { image: `registry.cloudflare.com/${ACCOUNT_ID}/${CONTAINER_APP_NAME}@${imageDigest}` },
+    health: { errors: [], instances: { active: 0, assigned: 0, healthy: 5, stopped: 0, failed: 0, scheduling: 0, starting: 0 } },
+  } };
+  const rows = normalizeContainerDetail(envelope);
+  const starting = structuredClone(envelope);
+  starting.result.health.instances.healthy = 4;
+  starting.result.health.instances.starting = 1;
+  const pendingRows = normalizeContainerDetail(starting, { requireHealthy: false });
+  assert.equal(pendingRows[0].exact_application_health_verified, false);
+  let clock = 0, reads = 0;
+  const preimage = captureContainerPreimage(JSON.stringify([containerRow(8, `sha256:${"b".repeat(64)}`)]));
+  const converged = await waitForContainerState({ preimage, expectedDigest: imageDigest,
+    now: () => clock, sleep: async ms => { clock += ms; },
+    read: async () => JSON.stringify(++reads === 1 ? pendingRows : rows),
+  });
+  assert.equal(reads, 2);
+  assert.equal(converged.state.application_version, 9);
+  await assert.rejects(waitForContainerState({ preimage, expectedDigest: imageDigest, timeoutMs: 10, intervalMs: 5,
+    now: () => clock, sleep: async ms => { clock += ms; }, read: async () => JSON.stringify(pendingRows),
+  }), /deadline/);
+  assert.equal(rows[0].version, 9);
+  assert.equal(rows[0].exact_application_health_verified, true);
+  const text = await readContainerDetail({ token: "fixture", api: async (url, options) => {
+    assert.equal(url, `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/containers/applications/${CONTAINER_APP_ID}`);
+    assert.equal(options.headers.Authorization, "Bearer fixture");
+    assert.ok(options.signal);
+    return { ok: true, json: async () => envelope };
+  } });
+  assert.deepEqual(JSON.parse(text), rows);
+  for (const mutate of [
+    e => { e.success = false; }, e => { delete e.result; }, e => { e.result.account_id = "wrong"; },
+    e => { e.result.id = "wrong"; }, e => { e.result.name = "wrong"; },
+    e => { delete e.result.configuration; }, e => { e.result.configuration.image = "mutable:latest"; },
+    e => { e.result.version = "9"; }, e => { e.result.version = 0; }, e => { e.result.instances = 4; },
+    e => { delete e.result.health; }, e => { e.result.health.errors = ["unhealthy"]; },
+    e => { e.result.health.instances.healthy = 4; }, e => { e.result.health.instances.failed = 1; },
+    e => { delete e.result.health.instances.starting; },
+  ]) {
+    const bad = structuredClone(envelope); mutate(bad);
+    assert.throws(() => normalizeContainerDetail(bad));
+  }
+  assert.throws(() => normalizeContainerDetail(rows));
+  assert.throws(() => verifyContainerState(text, imageDigest, { expectedVersion: 8 }));
+  assert.throws(() => verifyContainerState(text, `sha256:${"b".repeat(64)}`, { expectedVersion: 9 }));
+  await assert.rejects(readContainerDetail({ token: "fixture", api: async () => ({ ok: false }) }));
+  const workflow = await readFile(new URL("../../.github/workflows/issue-1700-container-staging-deploy.yml", import.meta.url), "utf8");
+  assert.doesNotMatch(workflow, /wrangler containers list/);
 });

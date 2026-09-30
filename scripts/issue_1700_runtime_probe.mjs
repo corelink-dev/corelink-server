@@ -4,8 +4,6 @@
 
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync, writeSync } from "node:fs";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 
 export const ACCOUNT_ID = "6a1fc1c626fc2628823e60b9db01f5cd";
 export const WORKER_NAME = "corelink-staging";
@@ -43,6 +41,37 @@ export function captureDeployImageDigest(text) {
     throw new Error("deploy version/image result is malformed");
   }
   return { versionId: version[1], imageDigest: digest[1] };
+}
+
+// Cloudflare's account-wide list can retain a previous rollout indefinitely.
+// Only the exact application detail endpoint is authoritative for this proof.
+export function normalizeContainerDetail(envelope, { requireHealthy = true } = {}) {
+  const app = envelope?.result;
+  const health = app?.health?.instances;
+  if (envelope?.success !== true || !Array.isArray(envelope.errors) || envelope.errors.length !== 0 ||
+      app?.account_id !== ACCOUNT_ID || app?.id !== CONTAINER_APP_ID || app?.name !== CONTAINER_APP_NAME ||
+      app?.instances !== 5 || !Array.isArray(app?.health?.errors) || app.health.errors.length !== 0 ||
+      !["healthy", "active", "assigned", "stopped", "failed", "scheduling", "starting"].every(k => Number.isSafeInteger(health?.[k]) && health[k] >= 0 && health[k] <= 5) || health.failed !== 0) {
+    throw new Error("exact Container application health rejected");
+  }
+  const healthy = health.healthy === 5 && ["active", "assigned", "stopped", "failed", "scheduling", "starting"].every(k => health[k] === 0);
+  if (requireHealthy && !healthy) throw new Error("exact Container application not ready");
+  const rows = [{ id: app.id, name: app.name, version: app.version, image: app.configuration?.image,
+    exact_application_health_verified: healthy }];
+  captureContainerPreimage(JSON.stringify(rows));
+  return rows;
+}
+
+export async function readContainerDetail({ token = process.env.CLOUDFLARE_API_TOKEN,
+  api = fetch, timeoutMs = 30_000, requireHealthy = true } = {}) {
+  if (!token || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
+    throw new Error("exact Container read contract rejected");
+  }
+  const response = await api(`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/containers/applications/${CONTAINER_APP_ID}`, {
+    headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error("exact Container read failed");
+  return JSON.stringify(normalizeContainerDetail(await response.json(), { requireHealthy }));
 }
 
 export function captureContainerPreimage(text) {
@@ -112,9 +141,9 @@ export async function waitForContainerState({
     const text = await read(Math.max(1, deadline - now()));
     const state = captureContainerPreimage(text);
     if (now() >= deadline) throw new Error("Container readback deadline exceeded");
-    if (state.image_digest === expectedDigest &&
-        state.application_version === preimage.application_version + 1) return { text, state };
-    if (state.application_version !== preimage.application_version || state.image !== preimage.image) {
+    const candidate = state.image_digest === expectedDigest && state.application_version === preimage.application_version + 1;
+    if (candidate && JSON.parse(text)[0]?.exact_application_health_verified === true) return { text, state };
+    if (!candidate && (state.application_version !== preimage.application_version || state.image !== preimage.image)) {
       throw new Error("Container readback drift rejected");
     }
     await sleep(Math.min(intervalMs, deadline - now()));
@@ -422,6 +451,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       await appendFile(process.env.GITHUB_OUTPUT, `deployed_version_id=${captured.versionId}\nimage_digest=${captured.imageDigest}\n`);
       process.exit(0);
     }
+    if (process.argv[2] === "read-container-state") {
+      writeSync(1, `${await readContainerDetail()}\n`);
+      process.exit(0);
+    }
     if (process.argv[2] === "capture-container-preimage") {
       const text = await readFile(process.argv[3], "utf8");
       const preimage = captureContainerPreimage(text);
@@ -435,11 +468,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
     if (process.argv[2] === "wait-container-state") {
       const preimage = JSON.parse(await readFile(process.argv[3], "utf8"));
-      const execute = promisify(execFile);
       const result = await waitForContainerState({
         preimage, expectedDigest: process.env.EXPECTED_CONTAINER_IMAGE_DIGEST,
-        read: async (timeout) => (await execute("pnpm", ["exec", "wrangler", "containers", "list", "--json"],
-          { timeout, maxBuffer: 1024 * 1024 })).stdout,
+        read: async (timeout) => readContainerDetail({ timeoutMs: Math.min(timeout, 30_000), requireHealthy: false }),
       });
       await writeFile(process.argv[4], result.text, { mode: 0o600 });
       process.exit(0);

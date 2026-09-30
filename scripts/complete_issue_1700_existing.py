@@ -16,16 +16,16 @@ except ImportError:
     from verify_issue_1700_route_inventory import verify_route_free
 
 PIN = {
-    'rollout_sha': '0f785fb9b096afe01247f1057d46377b9f604f13',
-    'rollout_run_id': '36646546021',
-    'deployment_id': '8753a6ba-8ee1-46d8-8d11-74aea7778a16',
-    'version_id': '516d7e11-c366-4ebf-b84b-eec9a4861446',
-    'preimage_deployment_id': 'fd1468fe-ce65-4f05-9527-9fc32c71ee0b',
-    'preimage_version_id': 'd787acbc-666b-4e2f-87b3-0e93a3f6393b',
-    'image_digest': 'sha256:e44e139e6bb03c019445ee0d5106ce005210c8d9f945c81bfab9d13ab847eda3',
+    'rollout_sha': 'cc32b3d819181bf9175e795868f66212aa5456c1',
+    'rollout_run_id': '36767025427',
+    'deployment_id': '58055990-1dac-41ca-a677-a884db4bad77',
+    'version_id': '6fe4c25f-2767-4382-bb0e-6f03e6a1c992',
+    'preimage_deployment_id': 'ef58cf9e-b7ac-49d0-a44c-c9d8df832cf4',
+    'preimage_version_id': '516d7e11-c366-4ebf-b84b-eec9a4861446',
+    'image_digest': 'sha256:a70f3852d9ac87da8965eea9e4f64e4841ac990ab63c62569a220cf6f2ebf23a',
 }
 APP = 'a033fb81-6388-47d9-9049-0b6942778055'
-PREIMAGE_DIGEST = 'sha256:803930be734d502979064c08f6442c26724d6091ccc972ed48d0e69f693f1c32'
+PREIMAGE_DIGEST = 'sha256:e44e139e6bb03c019445ee0d5106ce005210c8d9f945c81bfab9d13ab847eda3'
 ACCOUNT = '6a1fc1c626fc2628823e60b9db01f5cd'
 API = f'https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/workers/scripts/corelink-staging'
 
@@ -53,11 +53,11 @@ def validate_state(state, run, log, current_sha):
         json.loads(Path('infra/staging/topology.json').read_text()), state['routes'],
         run, log, current_sha=current_sha, **PIN)
     matches = [a for a in state['containers'] if a.get('id') == APP or a.get('name') == 'corelink-staging-corelinkserver']
-    if len(matches) != 1 or matches[0].get('id') != APP or matches[0].get('name') != 'corelink-staging-corelinkserver' or matches[0].get('version') != 6 or matches[0].get('image') != f"registry.cloudflare.com/{ACCOUNT}/corelink-staging-corelinkserver@{PIN['image_digest']}":
+    if len(matches) != 1 or matches[0].get('id') != APP or matches[0].get('name') != 'corelink-staging-corelinkserver' or matches[0].get('exact_application_health_verified') is not True or matches[0].get('version') != 9 or matches[0].get('image') != f"registry.cloudflare.com/{ACCOUNT}/corelink-staging-corelinkserver@{PIN['image_digest']}":
         raise RuntimeError('exact candidate Container changed')
     if state['schedules'] != [] or state['tails'] != []:
         raise RuntimeError('schedule or tail inventory is not empty')
-    return {**receipt, 'container_application_id': APP, 'container_application_version': 6,
+    return {**receipt, 'container_application_id': APP, 'container_application_version': 9,
             'schedules_empty': True, 'tails_empty': True}
 
 
@@ -75,11 +75,13 @@ def validate_runtime(receipt, started_ms, now_ms):
         or native.get('contract') != 'corelink-staging-d1-binding-runtime-v1'
         or native.get('outcome') != 'pass' or native.get('probe_nonce') != window['nonce']
         or native.get('worker_release') != PIN['rollout_sha']
+        or native.get('old_probe_release') != '0f785fb9b096afe01247f1057d46377b9f604f13'
         or type(native.get('scheduled_time_ms')) is not int
         or not started_ms <= native['scheduled_time_ms'] <= now_ms < window['expires_ms']
         or not all(native.get(k) is True for k in ('parameterized_select', 'failed_batch_observed',
             'rollback_absence_verified', 'probe_table_dropped', 'd1_binding_intercepted',
-            'authorization_absent', 'cf_api_token_absent'))):
+            'authorization_absent', 'cf_api_token_absent', 'old_probe_retired',
+            'old_probe_tables_absent', 'v4_probe_catalog_absent'))):
         raise RuntimeError('runtime receipt rejected')
     return receipt
 
@@ -131,7 +133,7 @@ def run_runtime_process(env, started_ms, *, runner=subprocess.run):
 def complete(collect, probe, validate):
     """A missing runtime/cleanup receipt never becomes a success or an auto-rollback."""
     result = {'contract': 'issue-1700-existing-runtime-completion-v1', 'outcome': 'failed',
-              'pin': PIN, 'preimage_container_version': 5, 'preimage_image_digest': PREIMAGE_DIGEST,
+              'pin': PIN, 'preimage_container_version': 8, 'preimage_image_digest': PREIMAGE_DIGEST,
               'deploy_attempted': False, 'probe_attempted': False, 'rollback_attempted': False}
     stage = 'preflight'
     try:
@@ -156,6 +158,14 @@ def complete(collect, probe, validate):
     return result
 
 
+def require_completion_budget(now_ms):
+    window = json.loads(Path('crates/corelink-container/src/routes/staging_d1_probe_window.json').read_text())
+    if (window != {'cron': '* * 30 9 *', 'starts_ms': 1790791200000,
+                   'expires_ms': 1790812740000, 'nonce': 'issue-1700-recovery-20260930-v5'}
+        or not window['starts_ms'] <= now_ms or now_ms + 75 * 60_000 >= window['expires_ms']):
+        raise RuntimeError('full completion and cleanup budget unavailable')
+
+
 def main():
     output = Path(os.environ['RUNNER_TEMP']) / 'issue-1700-completion-receipt.json'
     sha = os.environ.get('EXPECTED_SHA', '')
@@ -166,6 +176,7 @@ def main():
             raise RuntimeError('completion pin rejected')
     if not os.environ.get('ROUTE_READ_TOKEN') or os.environ['ROUTE_READ_TOKEN'] == os.environ.get('CLOUDFLARE_API_TOKEN'):
         raise RuntimeError('separate route credential required')
+    require_completion_budget(int(time.time() * 1000))
     run = json.loads(command(['gh', 'api', f"repos/HuGR-dev/corelink-server/actions/runs/{PIN['rollout_run_id']}"]))
     log = command(['gh', 'run', 'view', PIN['rollout_run_id'], '--repo', 'HuGR-dev/corelink-server', '--log'])
     original = Path(os.environ['RUNNER_TEMP']) / 'original-rollout'
@@ -175,7 +186,7 @@ def main():
     if worker_preimage.get('deployment_id') != PIN['preimage_deployment_id'] or worker_preimage.get('version_id') != PIN['preimage_version_id']:
         raise RuntimeError('immutable Worker preimage rejected')
     preimage = json.loads((original / 'staging-container-preimage.json').read_text())
-    if preimage.get('application_id') != APP or preimage.get('application_version') != 5 or preimage.get('image_digest') != PREIMAGE_DIGEST:
+    if preimage.get('application_id') != APP or preimage.get('application_version') != 8 or preimage.get('image_digest') != PREIMAGE_DIGEST:
         raise RuntimeError('immutable Container preimage rejected')
     config = Path(os.environ['RUNNER_TEMP']) / 'completion-root.toml'
     config.write_text(f'name = "corelink-staging"\naccount_id = "{ACCOUNT}"\ncompatibility_date = "2026-04-01"\nworkers_dev = false\n')
@@ -185,7 +196,7 @@ def main():
         return {
             'deployments': json.loads(command(wrangler + ['deployments', 'list', '--config', str(config), '--name', 'corelink-staging', '--json'])),
             'version': json.loads(command(wrangler + ['versions', 'view', PIN['version_id'], '--config', str(config), '--name', 'corelink-staging', '--json'])),
-            'containers': json.loads(command(wrangler + ['containers', 'list', '--json'])),
+            'containers': json.loads(command(['node', 'scripts/issue_1700_runtime_probe.mjs', 'read-container-state'])),
             'settings': worker_read('/settings'),
             'routes': verify_route_free(os.environ['ROUTE_READ_TOKEN']),
             'schedules': worker_read('/schedules')['result']['schedules'],
@@ -193,6 +204,7 @@ def main():
         }
 
     def probe():
+        require_completion_budget(int(time.time() * 1000))
         env = {**os.environ, 'SENTRY_RELEASE': PIN['rollout_sha'], 'EXPECTED_SHA': PIN['rollout_sha'], 'IMAGE_DIGEST': PIN['image_digest']}
         started_ms = int(time.time() * 1000)
         return run_runtime_process(env, started_ms)

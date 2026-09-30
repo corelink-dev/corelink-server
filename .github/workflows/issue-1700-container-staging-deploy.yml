@@ -142,7 +142,7 @@ jobs:
             --deployments "$RUNNER_TEMP/staging-deployments-before.json" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
-          pnpm exec wrangler containers list --json \
+          node scripts/issue_1700_runtime_probe.mjs read-container-state \
             > "$RUNNER_TEMP/staging-containers-before.json"
           node scripts/issue_1700_runtime_probe.mjs capture-container-preimage \
             "$RUNNER_TEMP/staging-containers-before.json" \
@@ -249,7 +249,7 @@ jobs:
             --expected-version-id "$CANDIDATE_VERSION_ID" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
-          pnpm exec wrangler containers list --json \
+          node scripts/issue_1700_runtime_probe.mjs read-container-state \
             > "$RUNNER_TEMP/staging-containers-after-deploy.json"
           EXPECTED_CONTAINER_IMAGE_DIGEST="$IMAGE_DIGEST" \
           EXPECTED_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
@@ -300,7 +300,7 @@ jobs:
             --expected-version-id "$CANDIDATE_VERSION_ID" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
-          pnpm exec wrangler containers list --json \
+          node scripts/issue_1700_runtime_probe.mjs read-container-state \
             > "$RUNNER_TEMP/staging-containers-verified.json"
           EXPECTED_CONTAINER_IMAGE_DIGEST="$IMAGE_DIGEST" \
           EXPECTED_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
@@ -359,7 +359,7 @@ jobs:
             --rollback-marker "$ROLLBACK_MARKER" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
-          pnpm exec wrangler containers list --json \
+          node scripts/issue_1700_runtime_probe.mjs read-container-state \
             > "$RUNNER_TEMP/staging-containers-after-runtime-probe.json"
           EXPECTED_CONTAINER_IMAGE_DIGEST="$CANDIDATE_CONTAINER_IMAGE_DIGEST" \
           EXPECTED_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
@@ -410,7 +410,7 @@ jobs:
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
             > "$RUNNER_TEMP/staging-after-rollback-version.json"
-          pnpm exec wrangler containers list --json \
+          node scripts/issue_1700_runtime_probe.mjs read-container-state \
             > "$RUNNER_TEMP/staging-containers-after-rollback.json"
           PREIMAGE_CONTAINER_IMAGE="$PREIMAGE_CONTAINER_IMAGE" \
             node scripts/issue_1700_runtime_probe.mjs verify-container-rollback \
@@ -478,7 +478,7 @@ jobs:
             --expected-version-id "$CANDIDATE_VERSION_ID" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
-          pnpm exec wrangler containers list --json \
+          node scripts/issue_1700_runtime_probe.mjs read-container-state \
             > "$RUNNER_TEMP/staging-containers-after-runtime-probe.json"
           EXPECTED_CONTAINER_IMAGE_DIGEST="$IMAGE_DIGEST" \
           EXPECTED_CONTAINER_APP_VERSION="${{ steps.candidate_container.outputs.candidate_container_version }}" \
@@ -559,7 +559,7 @@ jobs:
             --rollback-marker "$ROLLBACK_MARKER" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
-          pnpm exec wrangler containers list --json \
+          node scripts/issue_1700_runtime_probe.mjs read-container-state \
             > "$RUNNER_TEMP/staging-runtime-containers-before-rollback.json"
           EXPECTED_CONTAINER_IMAGE_DIGEST="$CANDIDATE_CONTAINER_IMAGE_DIGEST" \
           EXPECTED_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
@@ -611,7 +611,7 @@ jobs:
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
             > "$RUNNER_TEMP/staging-runtime-version-after-rollback.json"
-          pnpm exec wrangler containers list --json \
+          node scripts/issue_1700_runtime_probe.mjs read-container-state \
             > "$RUNNER_TEMP/staging-runtime-containers-after-rollback.json"
           PREIMAGE_CONTAINER_IMAGE="$PREIMAGE_CONTAINER_IMAGE" \
             node scripts/issue_1700_runtime_probe.mjs verify-container-rollback \
