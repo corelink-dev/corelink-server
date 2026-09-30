@@ -357,7 +357,7 @@ jobs:
           set -euo pipefail
           {
             pnpm --dir apps/signup-worker exec vitest run tests/dsr_consumer.test.ts
-            pnpm --dir apps/signup-worker typecheck
+            pnpm --dir apps/signup-worker exec tsc --noEmit --project tsconfig.dsr.json
             pnpm --dir apps/dsr-alert-receiver typecheck
             pnpm --dir apps/dsr-alert-receiver test
             python3 -B -m unittest -v tests/test_b216_dsr_schema_fence.py
