@@ -3,7 +3,7 @@
 // Never prints Cloudflare credentials, the tail URL, or unmatched Worker logs.
 
 import { appendFile, readFile, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -455,9 +455,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       expectedSha: process.env.EXPECTED_SHA,
       imageDigest: process.env.IMAGE_DIGEST,
     });
-    process.stdout.write(`${JSON.stringify(result)}\n`);
+    // Native WebSocket.close() may leave a CLOSING handle indefinitely.
+    // runRuntimeProbe has awaited cleanup; flush proof before terminating CLI.
+    writeSync(1, `${JSON.stringify(result)}\n`);
+    process.exit(0);
   } catch (error) {
-    process.stderr.write(`issue-1700 runtime probe failed ${JSON.stringify(failureDiagnostic(error))}\n`);
-    process.exitCode = 1;
+    writeSync(2, `issue-1700 runtime probe failed ${JSON.stringify(failureDiagnostic(error))}\n`);
+    process.exit(1);
   }
 }
