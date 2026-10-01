@@ -14,9 +14,14 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::{
+    future::Future,
+    pin::Pin,
+    time::{Duration, Instant},
+};
 
 use crate::storage::{
-    d1_http::{D1BatchStatement, D1HttpClient},
+    d1_http::{D1BatchStatement, D1HttpClient, D1Row},
     StorageEnv,
 };
 
@@ -83,15 +88,28 @@ pub fn router() -> Router {
 }
 
 async fn run_probe(headers: HeaderMap, Json(input): Json<ProbeRequest>) -> impl IntoResponse {
+    let now = now_ms();
+    let lifetime = ProbeLifetime::from_env(now);
     if !enabled()
         || headers.contains_key("authorization")
         || headers.contains_key("cookie")
-        || !valid_request(&input, now_ms())
+        || !valid_request(&input, now)
+        || lifetime.is_none()
     {
         return (StatusCode::NOT_FOUND, Json(json!({"outcome":"rejected"})));
     }
 
-    match execute_probe(&input).await {
+    let Some(lifetime) = lifetime else {
+        return (StatusCode::NOT_FOUND, Json(json!({"outcome":"rejected"})));
+    };
+    let result = execute_probe(&input, lifetime).await;
+    if lifetime.remaining().is_err() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"outcome":"failed"})),
+        );
+    }
+    match result {
         Ok(receipt) => (
             StatusCode::OK,
             Json(serde_json::to_value(receipt).unwrap_or(Value::Null)),
@@ -117,7 +135,128 @@ fn valid_request(input: &ProbeRequest, now: u64) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-async fn execute_probe(input: &ProbeRequest) -> Result<ProbeReceipt, ()> {
+const MAX_SAFE_UNIX_MS: u64 = 9_007_199_254_740_991;
+
+/// A validated, request-local deadline. Wall clock inputs are checked once at
+/// admission; the monotonic deadline prevents a wall-clock adjustment from
+/// extending this request's execution budget.
+#[derive(Clone, Copy)]
+struct ProbeLifetime {
+    execution_at_ms: u64,
+    execution_deadline: Instant,
+}
+
+impl ProbeLifetime {
+    fn from_env(now: u64) -> Option<Self> {
+        let window = probe_window();
+        let execute = parse_lifetime(
+            &std::env::var("CORELINK_STAGING_PROBE_STARTED_MS").ok()?,
+            &std::env::var("CORELINK_STAGING_PROBE_EXECUTION_DEADLINE_MS").ok()?,
+            &std::env::var("CORELINK_STAGING_PROBE_KILL_AT_MS").ok()?,
+            now,
+            &window,
+        )?;
+        let remaining = execute.checked_sub(now)?;
+        Some(Self {
+            execution_at_ms: execute,
+            execution_deadline: Instant::now().checked_add(Duration::from_millis(remaining))?,
+        })
+    }
+
+    fn remaining(self) -> Result<Duration, ()> {
+        if now_ms() >= self.execution_at_ms {
+            return Err(());
+        }
+        self.execution_deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(())
+    }
+
+    async fn query<C: ProbeD1>(
+        self,
+        client: &C,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<Vec<D1Row>, ()> {
+        let budget = self.remaining()?;
+        // A timeout bounds this await. Dropping the local future does not mean
+        // an already submitted Cloudflare D1 request was cancelled remotely.
+        let result = tokio::time::timeout(budget, client.query(sql, params))
+            .await
+            .map_err(|_| ())?;
+        self.remaining()?;
+        result.map_err(|_| ())
+    }
+
+    async fn batch<C: ProbeD1>(
+        self,
+        client: &C,
+        statements: Vec<D1BatchStatement>,
+    ) -> Result<Result<Vec<Vec<D1Row>>, ()>, ()> {
+        let budget = self.remaining()?;
+        let result = tokio::time::timeout(budget, client.batch(statements))
+            .await
+            .map_err(|_| ())?;
+        self.remaining()?;
+        Ok(result)
+    }
+}
+
+fn strict_timestamp(value: &str) -> Option<u64> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let timestamp = value.parse::<u64>().ok()?;
+    (timestamp <= MAX_SAFE_UNIX_MS).then_some(timestamp)
+}
+
+fn parse_lifetime(
+    start: &str,
+    execute: &str,
+    kill: &str,
+    now: u64,
+    window: &ProbeWindow,
+) -> Option<u64> {
+    let start = strict_timestamp(start)?;
+    let execute = strict_timestamp(execute)?;
+    let kill = strict_timestamp(kill)?;
+    let expected_execute = start.checked_add(600_000)?.min(window.expires_ms);
+    let expected_kill = start.checked_add(1_200_000)?.min(window.expires_ms);
+    (start >= window.starts_ms
+        && start <= window.last_entry_ms
+        && start < window.expires_ms
+        && execute == expected_execute
+        && kill == expected_kill
+        && execute <= kill
+        && now >= start
+        && now < execute)
+        .then_some(execute)
+}
+
+type QueryFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<D1Row>, ()>> + Send + 'a>>;
+type BatchFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<Vec<D1Row>>, ()>> + Send + 'a>>;
+
+/// Narrow seam for exercising late D1 awaits without changing the shared D1
+/// client or its behavior for any other route.
+trait ProbeD1 {
+    fn query<'a>(&'a self, sql: &'a str, params: &'a [Value]) -> QueryFuture<'a>;
+    fn batch<'a>(&'a self, statements: Vec<D1BatchStatement>) -> BatchFuture<'a>;
+}
+
+impl ProbeD1 for D1HttpClient {
+    fn query<'a>(&'a self, sql: &'a str, params: &'a [Value]) -> QueryFuture<'a> {
+        Box::pin(async move { D1HttpClient::query(self, sql, params).await.map_err(|_| ()) })
+    }
+
+    fn batch<'a>(&'a self, statements: Vec<D1BatchStatement>) -> BatchFuture<'a> {
+        Box::pin(async move { D1HttpClient::batch(self, statements).await.map_err(|_| ()) })
+    }
+}
+
+async fn execute_probe(input: &ProbeRequest, lifetime: ProbeLifetime) -> Result<ProbeReceipt, ()> {
     if std::env::var("CF_API_TOKEN")
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
@@ -133,51 +272,28 @@ async fn execute_probe(input: &ProbeRequest) -> Result<ProbeReceipt, ()> {
     );
     let probe_id = format!("{}:{}", input.worker_release, input.scheduled_time_ms);
     let mut table_created = false;
-    let outcome = async {
-        let select = client.query("SELECT ?1 AS value", &[json!(input.scheduled_time_ms)]).await.map_err(|_| ())?;
-        if select.len() != 1 || select[0].get("value") != Some(&json!(input.scheduled_time_ms)) {
-            return Err(());
-        }
-
-        client.query(&format!("CREATE TABLE IF NOT EXISTS {table} (probe_id TEXT PRIMARY KEY, value TEXT NOT NULL)"), &[])
-            .await.map_err(|_| ())?;
-        table_created = true;
-        let baseline = client.query(&format!("SELECT COUNT(*) AS count FROM {table}"), &[]).await.map_err(|_| ())?;
-        if baseline.len() != 1 || baseline[0].get("count").and_then(Value::as_i64) != Some(0) {
-            return Err(());
-        }
-
-        let insert = format!("INSERT INTO {table} (probe_id, value) VALUES (?1, ?2)");
-        let batch_result = client.batch(vec![
-            D1BatchStatement::new(insert.clone(), vec![json!(probe_id), json!("probe")]),
-            // Duplicate the primary key to force an actual D1 statement failure.
-            D1BatchStatement::new(insert, vec![json!(probe_id), json!("intentional-failure")]),
-        ]).await;
-        // The staging Worker binding proxy returns a bounded generic failure
-        // envelope for a rolled-back D1Database.batch error. The transport
-        // deliberately does not expose provider exception text or infer which
-        // statement failed; the following read proves the first insert rolled
-        // back atomically.
-        if batch_result.is_ok() {
-            return Err(());
-        }
-
-        let after = client.query(&format!("SELECT COUNT(*) AS count FROM {table} WHERE probe_id = ?1"), &[json!(probe_id)])
-            .await.map_err(|_| ())?;
-        if after.len() != 1 || after[0].get("count").and_then(Value::as_i64) != Some(0) {
-            return Err(());
-        }
-        Ok(())
-    }.await;
-
-    let cleanup = if table_created {
-        client
-            .query(&format!("DROP TABLE IF EXISTS {table}"), &[])
-            .await
-            .map(|_| ())
-            .map_err(|_| ())
+    let outcome = execute_probe_operations(
+        &client,
+        lifetime,
+        input,
+        &table,
+        &probe_id,
+        &mut table_created,
+    )
+    .await;
+    let outcome = if lifetime.remaining().is_ok() {
+        outcome
     } else {
-        Ok(())
+        Err(())
+    };
+
+    // Cleanup is a normal deadline-governed D1 request. If an earlier await
+    // exhausts the budget, this is skipped and no subsequent SQL is submitted.
+    let cleanup = cleanup_probe_table(&client, lifetime, &table, table_created).await;
+    let cleanup = if lifetime.remaining().is_ok() {
+        cleanup
+    } else {
+        Err(())
     };
     outcome?;
     cleanup?;
@@ -198,6 +314,87 @@ async fn execute_probe(input: &ProbeRequest) -> Result<ProbeReceipt, ()> {
     })
 }
 
+async fn cleanup_probe_table<C: ProbeD1>(
+    client: &C,
+    lifetime: ProbeLifetime,
+    table: &str,
+    table_created: bool,
+) -> Result<(), ()> {
+    if !table_created {
+        return Ok(());
+    }
+    lifetime
+        .query(client, &format!("DROP TABLE IF EXISTS {table}"), &[])
+        .await?;
+    lifetime.remaining()?;
+    Ok(())
+}
+
+async fn execute_probe_operations<C: ProbeD1>(
+    client: &C,
+    lifetime: ProbeLifetime,
+    input: &ProbeRequest,
+    table: &str,
+    probe_id: &str,
+    table_created: &mut bool,
+) -> Result<(), ()> {
+    let select = lifetime
+        .query(
+            client,
+            "SELECT ?1 AS value",
+            &[json!(input.scheduled_time_ms)],
+        )
+        .await?;
+    if select.len() != 1 || select[0].get("value") != Some(&json!(input.scheduled_time_ms)) {
+        return Err(());
+    }
+
+    lifetime.query(client, &format!("CREATE TABLE IF NOT EXISTS {table} (probe_id TEXT PRIMARY KEY, value TEXT NOT NULL)"), &[]).await?;
+    *table_created = true;
+    let baseline = lifetime
+        .query(
+            client,
+            &format!("SELECT COUNT(*) AS count FROM {table}"),
+            &[],
+        )
+        .await?;
+    if baseline.len() != 1 || baseline[0].get("count").and_then(Value::as_i64) != Some(0) {
+        return Err(());
+    }
+
+    let insert = format!("INSERT INTO {table} (probe_id, value) VALUES (?1, ?2)");
+    let batch_result = lifetime
+        .batch(
+            client,
+            vec![
+                D1BatchStatement::new(insert.clone(), vec![json!(probe_id), json!("probe")]),
+                // Duplicate the primary key to force an actual D1 statement failure.
+                D1BatchStatement::new(insert, vec![json!(probe_id), json!("intentional-failure")]),
+            ],
+        )
+        .await;
+    // The staging Worker binding proxy returns a bounded generic failure
+    // envelope for a rolled-back D1Database.batch error. The transport
+    // deliberately does not expose provider exception text or infer which
+    // statement failed; the following read proves the first insert rolled
+    // back atomically.
+    if batch_result?.is_ok() {
+        return Err(());
+    }
+
+    let after = lifetime
+        .query(
+            client,
+            &format!("SELECT COUNT(*) AS count FROM {table} WHERE probe_id = ?1"),
+            &[json!(probe_id)],
+        )
+        .await?;
+    if after.len() != 1 || after[0].get("count").and_then(Value::as_i64) != Some(0) {
+        return Err(());
+    }
+    Ok(())
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -208,6 +405,13 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
 
     const RELEASE: &str = "0123456789abcdef0123456789abcdef01234567";
     const TIME: u64 = 1790856120000;
@@ -261,5 +465,170 @@ mod tests {
             format!("corelink_staging_d1_probe_{}_{}", &RELEASE[..16], TIME),
             "corelink_staging_d1_probe_0123456789abcdef_1790856120000"
         );
+    }
+
+    struct LateBatchD1 {
+        queries: AtomicUsize,
+        batches: AtomicUsize,
+    }
+
+    impl ProbeD1 for LateBatchD1 {
+        fn query<'a>(&'a self, sql: &'a str, _params: &'a [Value]) -> QueryFuture<'a> {
+            Box::pin(async move {
+                self.queries.fetch_add(1, Ordering::SeqCst);
+                if sql.starts_with("SELECT ?1") {
+                    let mut row = D1Row::new();
+                    row.insert("value".into(), json!(TIME));
+                    Ok(vec![row])
+                } else if sql.starts_with("SELECT COUNT(*)") {
+                    let mut row = D1Row::new();
+                    row.insert("count".into(), json!(0));
+                    Ok(vec![row])
+                } else {
+                    Ok(Vec::new())
+                }
+            })
+        }
+
+        fn batch<'a>(&'a self, _statements: Vec<D1BatchStatement>) -> BatchFuture<'a> {
+            Box::pin(async move {
+                self.batches.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Err(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn late_batch_blocks_followup_query_and_final_drop() {
+        let client = Arc::new(LateBatchD1 {
+            queries: AtomicUsize::new(0),
+            batches: AtomicUsize::new(0),
+        });
+        let lifetime = ProbeLifetime {
+            execution_at_ms: now_ms().saturating_add(2_000),
+            execution_deadline: Instant::now() + Duration::from_secs(2),
+        };
+        let mut table_created = false;
+        let outcome = execute_probe_operations(
+            client.as_ref(),
+            lifetime,
+            &input(),
+            "probe_table",
+            "probe_id",
+            &mut table_created,
+        )
+        .await;
+        assert!(outcome.is_err());
+        assert!(table_created);
+        assert_eq!(client.batches.load(Ordering::SeqCst), 1);
+        assert_eq!(client.queries.load(Ordering::SeqCst), 3);
+
+        let cleanup =
+            cleanup_probe_table(client.as_ref(), lifetime, "probe_table", table_created).await;
+        assert!(cleanup.is_err());
+        // SELECT, CREATE, baseline SELECT ran; the post-batch read and DROP
+        // were both rejected before reaching the client.
+        assert_eq!(client.queries.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn lifetime_timestamp_parser_rejects_noncanonical_or_unsafe_values() {
+        assert_eq!(strict_timestamp("1790856000000"), Some(1_790_856_000_000));
+        for bad in [
+            "",
+            " 1790856000000",
+            "+1790856000000",
+            "0179",
+            "1.0",
+            "9007199254740992",
+        ] {
+            assert_eq!(strict_timestamp(bad), None, "accepted {bad:?}");
+        }
+    }
+
+    #[test]
+    fn deadline_contract_rejects_wrong_arithmetic_and_boundary_times() {
+        let window = probe_window();
+        let start = window.starts_ms;
+        let execute = start + 600_000;
+        let kill = start + 1_200_000;
+        assert_eq!(
+            parse_lifetime(
+                &start.to_string(),
+                &execute.to_string(),
+                &kill.to_string(),
+                start,
+                &window
+            ),
+            Some(execute)
+        );
+        assert_eq!(
+            parse_lifetime(
+                &start.to_string(),
+                &execute.to_string(),
+                &kill.to_string(),
+                execute - 1,
+                &window
+            ),
+            Some(execute)
+        );
+        let last_execute = (window.last_entry_ms + 600_000).min(window.expires_ms);
+        let last_kill = (window.last_entry_ms + 1_200_000).min(window.expires_ms);
+        assert_eq!(
+            parse_lifetime(
+                &window.last_entry_ms.to_string(),
+                &last_execute.to_string(),
+                &last_kill.to_string(),
+                window.last_entry_ms,
+                &window,
+            ),
+            Some(last_execute)
+        );
+
+        for (bad_start, bad_execute, bad_kill, now) in [
+            (start - 1, execute, kill, start),
+            (
+                window.last_entry_ms + 1,
+                window.last_entry_ms + 600_001,
+                window.last_entry_ms + 1_200_001,
+                window.last_entry_ms + 1,
+            ),
+            (start, execute - 1, kill, start),
+            (start, execute, kill - 1, start),
+            (start, execute, kill, start - 1),
+            (start, execute, kill, execute),
+            (
+                window.last_entry_ms,
+                window.expires_ms,
+                window.expires_ms,
+                window.last_entry_ms,
+            ),
+        ] {
+            assert!(parse_lifetime(
+                &bad_start.to_string(),
+                &bad_execute.to_string(),
+                &bad_kill.to_string(),
+                now,
+                &window
+            )
+            .is_none());
+        }
+        assert!(parse_lifetime(
+            "01790856000000",
+            &execute.to_string(),
+            &kill.to_string(),
+            start,
+            &window
+        )
+        .is_none());
+        assert!(parse_lifetime(
+            &start.to_string(),
+            "9007199254740992",
+            &kill.to_string(),
+            start,
+            &window
+        )
+        .is_none());
     }
 }

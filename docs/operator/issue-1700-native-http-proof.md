@@ -108,3 +108,31 @@ Native proof is only one part of #1700. Canonical Custom Domain publication,
 scoped `GET /v1/users/me` readiness and its negative controls, synthetic tenant
 custody, rotation and teardown still require their own actual receipts before
 the issue can close.
+
+
+The private HTTP operation stores its immutable start, execution deadline and
+outer kill deadline before any old-object cleanup or fresh native admission.
+Execution ends at start +600 seconds; the outer lifetime ends at start +1200
+seconds, capped by the compiled expiry. Startup must read back the dedicated
+alarm and lifetime record. Health, status reads and DO eviction cannot renew it.
+
+The native process receives three computed, nonsecret timestamps only through
+private startup. The loopback D1 interceptor receives the same typed context
+through service-binding props. HTTP headers and Worker vars carry no deadline
+authority. Both native and proxy reject new D1 dispatch after the execution
+deadline, including a cleanup DROP after a delayed query or batch. Already
+submitted D1 can still settle remotely; expiry is not cancellation.
+
+A dedicated stop-only alarm can request one SIGKILL after the outer deadline.
+Its durable attempt marker does not prove that the Container stopped, and it
+cannot start work, clean D1, replay native execution or make rollback safe. An
+independent PID1 GNU timeout supervisor in the same runtime image also applies
+the original outer deadline if the broker or DO disappears. The ordinary
+Container entrypoint is unchanged. A failed or uncertain stop remains UNKNOWN.
+
+The hosted image oracle checks actual GNU timeout process-tree termination and
+private-launcher/PID1 wiring. These software controls do not establish an
+unconditional Cloudflare billing ceiling: VM scheduling and provider deallocation
+latency are outside their proof. Old/preexisting instances remain separate from
+the fresh instance bound. A new provider charter is required; no source test or
+merge renews the compiled window, authorizes a new nonce or accepts live staging.

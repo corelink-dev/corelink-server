@@ -18,6 +18,7 @@ import { STAGING_D1_PROBE_WINDOW } from "../src/staging_runtime_d1_probe.js";
 import { V8_PROBE_NAME, V8_PROBE_RELEASE, V8_PROBE_NONCE, V8_PROBE_RETIRED_KEY, V8_CLEANUP_RECEIPT_KEY } from "../src/staging_d1_probe_v8_cleanup.js";
 import { V9_PROBE_NAME, V9_PROBE_RELEASE, V9_PROBE_NONCE, V9_PROBE_RETIRED_KEY } from "../src/staging_d1_probe_v9_cleanup.js";
 import { OLD_PROBE_NAME, OLD_PROBE_RELEASE, V5_PROBE_NAME, V5_PROBE_RELEASE } from "../src/staging_d1_probe_retirement.js";
+import { createHttpLifetime, httpDeadlineContext, STAGING_D1_HTTP_LIFETIME_KEY } from "../src/staging_d1_http_lifetime.js";
 import { isStagingD1HttpStatus } from "../src/staging_d1_http_contract.js";
 import cleanupWindow from "../src/staging_d1_probe_cleanup_window.json";
 import type { Env } from "../src/index.js";
@@ -29,7 +30,7 @@ import type { Env } from "../src/index.js";
 /** Create a mock DurableObjectState. Container is always undefined (no CF runtime). */
 function makeMockState(idStr = "test-do-id"): DurableObjectState {
   const storage = new Map<string, unknown>();
-  const alarmTime: number | null = null;
+  let alarmTime: number | null = null;
 
   return {
     id: {
@@ -43,8 +44,8 @@ function makeMockState(idStr = "test-do-id"): DurableObjectState {
       delete: async (key: string) => storage.delete(key),
       list: async () => new Map(storage),
       getAlarm: async () => alarmTime,
-      setAlarm: async (_time: number) => {},
-      deleteAlarm: async () => {},
+      setAlarm: async (time: number) => { alarmTime = time; },
+      deleteAlarm: async () => { alarmTime = null; },
       transaction: async (fn: (txn: DurableObjectTransaction) => Promise<unknown>) => fn({
         get: async (key: string) => storage.get(key),
         put: async (key: string, value: unknown) => { storage.set(key, value); },
@@ -120,7 +121,7 @@ describe("durable authenticated HTTP native coordinator", () => {
       } },
     } as unknown as Env;
     const port = vi.fn(async (_request: Request) => { order.push("native"); return Response.json(native); });
-    const container = { running: false, getTcpPort: () => ({ fetch: port }),
+    const container = { running: false, getTcpPort: () => ({ fetch: port }), signal: vi.fn(),
       destroy: vi.fn(async () => { order.push("stop"); container.running = false; }) };
     Object.assign(state, { container });
     const do_ = new CoreLinkServer(state, env, Date.now); await initialized;
@@ -200,7 +201,7 @@ describe("durable authenticated HTTP native coordinator", () => {
     const h = await fixture();
     if (failure === "extra") h.port.mockResolvedValue(Response.json({ ...native, private: "sentinel" }));
     if (failure === "stopped") h.container.destroy.mockResolvedValue(undefined);
-    if (failure === "alarm") vi.spyOn(h.state.storage, "getAlarm").mockResolvedValue(at);
+    if (failure === "alarm") vi.spyOn(h.state.storage, "getAlarm").mockResolvedValueOnce(at + 1_200_000).mockResolvedValue(at);
     const result = await h.do_.executeStagingD1HttpProof(at);
     expect(result.status).toBe("unknown"); expect(result.rollback_safe).toBe(false);
     expect(result.native_receipt).toBeNull();
@@ -267,6 +268,87 @@ describe("durable authenticated HTTP native coordinator", () => {
     const status = await restored.readStagingD1HttpProof();
     expect(status.status).toBe("unknown"); expect(status.rollback_safe).toBe(false);
     await expect(restored.executeStagingD1HttpProof(at + 600_000)).rejects.toThrow();
+  });
+
+  it.each(["set", "readback", "record"])("no cleanup or admission before lifetime arming: %s", async failure => {
+    const h = await fixture();
+    if (failure === "set") vi.spyOn(h.state.storage, "setAlarm").mockRejectedValue(new Error("sentinel"));
+    if (failure === "readback") vi.spyOn(h.state.storage, "getAlarm").mockResolvedValue(null);
+    if (failure === "record") {
+      const get = h.state.storage.get.bind(h.state.storage);
+      vi.spyOn(h.state.storage, "get").mockImplementation(((key: string) => key === STAGING_D1_HTTP_LIFETIME_KEY
+        ? Promise.resolve(undefined) : get(key)) as typeof h.state.storage.get);
+    }
+    await expect(h.do_.executeStagingD1HttpProof(at)).rejects.toThrow("claim rejected");
+    expect(h.v8).not.toHaveBeenCalled(); expect(h.start).not.toHaveBeenCalled(); expect(h.sql).not.toHaveBeenCalled();
+    expect((await h.do_.readStagingD1HttpProof()).rollback_safe).toBe(false);
+    await expect(h.do_.executeStagingD1HttpProof(at)).rejects.toThrow();
+  });
+
+  it("arms the immutable lifetime before v8 and status reads cannot renew it", async () => {
+    const h = await fixture(); h.v8.mockImplementation(() => new Promise(() => {}));
+    const execution = h.do_.executeStagingD1HttpProof(at); await flush();
+    expect(await h.state.storage.get(STAGING_D1_HTTP_LIFETIME_KEY)).toEqual(createHttpLifetime(release, at));
+    expect(await h.state.storage.getAlarm()).toBe(at + 1_200_000);
+    vi.setSystemTime(at + 100_000); await h.do_.readStagingD1HttpProof(); await h.do_.alarm();
+    expect(await h.state.storage.getAlarm()).toBe(at + 1_200_000);
+    await vi.advanceTimersByTimeAsync(1_200_000); expect((await execution).status).toBe("unknown");
+  });
+
+  it.each([false, true])("expiry stop remains independent of unresolved native fetch; stopped=%s", async stopped => {
+    const h = await fixture(); h.port.mockImplementation(() => new Promise(() => {}));
+    h.container.signal.mockImplementation(() => { if (stopped) h.container.running = false; });
+    const execution = h.do_.executeStagingD1HttpProof(at); await flush();
+    await vi.advanceTimersByTimeAsync(1_199_999); await h.do_.alarm();
+    expect(h.container.signal).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1); expect((await execution).status).toBe("unknown");
+    const sqlCalls = h.sql.mock.calls.length;
+    await h.do_.alarm(); await h.do_.alarm();
+    expect(h.container.signal).toHaveBeenCalledExactlyOnceWith(9);
+    expect(h.container.destroy).not.toHaveBeenCalled(); expect(h.sql).toHaveBeenCalledTimes(sqlCalls);
+    expect(await h.state.storage.get(STAGING_D1_HTTP_LIFETIME_KEY)).toMatchObject({ state: stopped ? "stopped" : "unproven" });
+    expect((await h.do_.readStagingD1HttpProof()).rollback_safe).toBe(false);
+    await expect(h.do_.executeStagingD1HttpProof(at)).rejects.toThrow();
+  });
+
+  it("expiry never submits another stop while normal destroy is unresolved", async () => {
+    const h = await fixture(); h.container.destroy.mockImplementation(() => new Promise(() => {}));
+    const execution = h.do_.executeStagingD1HttpProof(at); const failure = expect(execution).rejects.toThrow(); await flush();
+    expect(h.container.destroy).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1_200_000); await failure; await h.do_.alarm();
+    expect(h.container.destroy).toHaveBeenCalledOnce(); expect(h.container.signal).not.toHaveBeenCalled();
+    expect((await h.do_.readStagingD1HttpProof()).rollback_safe).toBe(false);
+  });
+
+  it("eviction keeps original expiry; lost signal and malformed records cannot imply stop", async () => {
+    const h = await fixture();
+    await h.state.storage.put(STAGING_D1_HTTP_OPERATION_KEY, { status: "unknown" });
+    await h.state.storage.put(STAGING_D1_HTTP_LIFETIME_KEY, { ...createHttpLifetime(release, at),
+      state: "stop_attempted", stop_attempted_at_ms: at + 1_200_000 });
+    h.container.running = true; vi.setSystemTime(at + 1_200_001);
+    let ready!: Promise<unknown>;
+    h.state.blockConcurrencyWhile = <T>(fn: () => Promise<T>) => { const result = fn(); ready = result; return result; };
+    const restored = new CoreLinkServer(h.state, h.env, Date.now); await ready; await restored.alarm();
+    expect(h.container.signal).not.toHaveBeenCalled();
+    expect((await restored.readStagingD1HttpProof()).rollback_safe).toBe(false);
+    await h.state.storage.put(STAGING_D1_HTTP_LIFETIME_KEY, { ...createHttpLifetime(release, at), worker_release: "b".repeat(40) });
+    await restored.alarm(); expect(h.container.signal).not.toHaveBeenCalled(); expect(h.v8).not.toHaveBeenCalled();
+  });
+
+  it("actual private startup installs the immutable loopback context and never renews its alarm", async () => {
+    const h = await fixture(); h.start.mockRestore();
+    const binding = { fetch: vi.fn() }, exports = vi.fn(() => binding);
+    Object.assign(h.state, { exports: { StagingD1BindingProxy: exports } });
+    const start = vi.fn((_options: unknown) => { h.container.running = true; });
+    Object.assign(h.container, { start, interceptOutboundHttp: vi.fn(async () => {}), setInactivityTimeout: vi.fn() });
+    const setAlarm = vi.spyOn(h.state.storage, "setAlarm");
+    await h.do_.executeStagingD1HttpProof(at);
+    expect(exports).toHaveBeenCalledExactlyOnceWith({ props: httpDeadlineContext(createHttpLifetime(release, at)) });
+    expect(start).toHaveBeenCalledOnce();
+    const options = start.mock.calls[0]?.[0] as unknown as { entrypoint: string[]; env: Record<string, string> };
+    expect(options.entrypoint).toEqual(["/usr/local/bin/corelink-staging-probe-supervisor"]);
+    expect(options.env["CORELINK_STAGING_PROBE_EXECUTION_DEADLINE_MS"]).toBe(String(at + 600_000));
+    expect(setAlarm.mock.calls.every(([value]) => value === at + 1_200_000)).toBe(true);
   });
 
   it("restores the v9 retired fence before fetch, alarm, or native admission", async () => {

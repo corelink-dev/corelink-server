@@ -3,6 +3,7 @@
 import type { Container } from "@cloudflare/workers-types";
 import type { Env } from "./index.js";
 import { emitLifecycleEvent, hashForLog } from "./durable_object_probes.js";
+import { isStagingD1HttpDeadline, type StagingD1HttpDeadline } from "./staging_d1_http_lifetime.js";
 import { patRotationEnv } from "./lib/pat_rotation_env.js";
 
 type ContainerStatus = "stopped" | "starting" | "running" | "degraded";
@@ -32,6 +33,8 @@ export interface StartContainerContext {
   setAlarm(when: number): Promise<void>;
   /** Internal one-shot staging probe only; ordinary lifecycle events remain enabled. */
   readonly suppressLifecycleTelemetry?: boolean;
+  /** Derived only from the claimed private HTTP operation, never Worker vars. */
+  readonly httpDeadline?: StagingD1HttpDeadline;
 }
 
 const CONTAINER_PORT = 50051;
@@ -42,6 +45,10 @@ export async function startContainer(
   requestId: string,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
     const container = ctx.container;
+    if (ctx.httpDeadline !== undefined && (!ctx.suppressLifecycleTelemetry || ctx.env.ENVIRONMENT !== "staging" ||
+        !isStagingD1HttpDeadline(ctx.httpDeadline, ctx.env.SENTRY_RELEASE ?? ""))) {
+      return { ok: false, reason: "http_deadline_rejected" };
+    }
     if (container === undefined) {
       return { ok: false, reason: "no_container_binding" };
     }
@@ -107,9 +114,14 @@ export async function startContainer(
         // D1 (HTTP API) over the public internet — DECISION-GATE-1 Option A.
         // CF Workers has no VPC-style internal route to R2 for native containers.
         enableInternet: true,
-        entrypoint: ["/usr/local/bin/corelink-server"],
+        entrypoint: [ctx.httpDeadline ? "/usr/local/bin/corelink-staging-probe-supervisor" : "/usr/local/bin/corelink-server"],
         env: {
           RUST_LOG: "info",
+          ...(ctx.httpDeadline === undefined ? {} : {
+            CORELINK_STAGING_PROBE_STARTED_MS: String(ctx.httpDeadline.operation_started_ms),
+            CORELINK_STAGING_PROBE_EXECUTION_DEADLINE_MS: String(ctx.httpDeadline.execute_deadline_ms),
+            CORELINK_STAGING_PROBE_KILL_AT_MS: String(ctx.httpDeadline.kill_at_ms),
+          }),
           PORT: String(CONTAINER_PORT),
           // WP-S1 StorageEnv contract: all six must be present + non-empty for
           // the container to use real R2/D1 storage. Any missing/empty → the

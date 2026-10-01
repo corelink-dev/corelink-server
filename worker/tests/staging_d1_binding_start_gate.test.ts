@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Container } from "@cloudflare/workers-types";
 import type { Env } from "../src/index.js";
+import { createHttpLifetime, httpDeadlineContext } from "../src/staging_d1_http_lifetime.js";
+import window from "../../crates/corelink-container/src/routes/staging_d1_probe_window.json";
 import { startContainer, type StartContainerLifecycleState } from "../src/durable_object_start.js";
 
 describe("staging D1 outbound interception boot gate", () => {
@@ -60,6 +62,7 @@ describe("staging D1 outbound interception boot gate", () => {
         context: {
           container,
           env: { ENVIRONMENT: "staging", PAGERDUTY_ROUTING_KEY: "present-only-in-fixture",
+            SENTRY_RELEASE: "a".repeat(40),
             CORELINK_ADMIN_AUTH_KEY: "ephemeral-http-admin-sentinel-not-for-native",
             ...(withDpaSalt ? { DPA_ACCEPT_IP_HASH_SALT: "a1".repeat(32) } : {}),
           } as Env,
@@ -97,6 +100,28 @@ describe("staging D1 outbound interception boot gate", () => {
       expect(fetch).toHaveBeenCalledTimes(2);
       const events = fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).event_type);
       expect(events).toEqual(["corelink.do.cold_start.v1", "corelink.do.container_started.v1"]);
+
+      expect(vi.mocked(ordinary.context.container!.start).mock.calls[0]?.[0]?.entrypoint).toEqual(["/usr/local/bin/corelink-server"]);
+      for (const name of ["CORELINK_STAGING_PROBE_STARTED_MS", "CORELINK_STAGING_PROBE_EXECUTION_DEADLINE_MS", "CORELINK_STAGING_PROBE_KILL_AT_MS"]) {
+        expect(vi.mocked(ordinary.context.container!.start).mock.calls[0]?.[0]?.env).not.toHaveProperty(name);
+      }
+      const http = makeContext(true);
+      const context = httpDeadlineContext(createHttpLifetime("a".repeat(40), window.starts_ms));
+      await expect(startContainer({ ...http.context, httpDeadline: context }, "private-http")).resolves.toEqual({ ok: true });
+      expect(vi.mocked(http.context.container!.start).mock.calls[0]?.[0]?.entrypoint).toEqual(["/usr/local/bin/corelink-staging-probe-supervisor"]);
+      expect(vi.mocked(http.context.container!.start).mock.calls[0]?.[0]?.env).toMatchObject({
+        CORELINK_STAGING_PROBE_STARTED_MS: String(context.operation_started_ms),
+        CORELINK_STAGING_PROBE_EXECUTION_DEADLINE_MS: String(context.execute_deadline_ms),
+        CORELINK_STAGING_PROBE_KILL_AT_MS: String(context.kill_at_ms),
+      });
+      const wrong = makeContext(true);
+      await expect(startContainer({ ...wrong.context, httpDeadline: { ...context, worker_release: "b".repeat(40) } }, "wrong-http"))
+        .resolves.toEqual({ ok: false, reason: "http_deadline_rejected" });
+      expect(wrong.context.container!.start).not.toHaveBeenCalled();
+      const ordinaryWithContext = makeContext();
+      await expect(startContainer({ ...ordinaryWithContext.context, httpDeadline: context }, "ordinary-with-context"))
+        .resolves.toEqual({ ok: false, reason: "http_deadline_rejected" });
+      expect(ordinaryWithContext.context.container!.start).not.toHaveBeenCalled();
 
       const ordinaryWithoutSalt = makeContext(undefined, false);
       await expect(startContainer(ordinaryWithoutSalt.context, "ordinary-without-dpa-salt")).resolves.toEqual({ ok: true });

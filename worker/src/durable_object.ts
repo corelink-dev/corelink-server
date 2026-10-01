@@ -4,6 +4,7 @@ import { cleanV8ProbeTables, isV8CleanupReceipt, withinV8CleanupDeadline, V8_PRO
 import { cleanV9ProbeTables, isV9CleanupReceipt, withinV9CleanupDeadline, V9_PROBE_NAME, V9_PROBE_RELEASE, V9_PROBE_NONCE, V9_PROBE_RETIRED_KEY, V9_CLEANUP_RECEIPT_KEY, type V9CleanupReceipt } from "./staging_d1_probe_v9_cleanup.js";
 import { STAGING_D1_HTTP_CONTRACT, STAGING_D1_HTTP_EXECUTE_MS, STAGING_D1_HTTP_CLEANUP_MS, isStagingD1HttpStatus, type StagingD1HttpStatus } from "./staging_d1_http_contract.js";
 import { StagingD1HttpLifecycle } from "./staging_d1_http_lifecycle.js";
+import { STAGING_D1_HTTP_LIFETIME_KEY, createHttpLifetime, httpDeadlineContext, isStagingD1HttpLifetime, isStagingD1HttpDeadline, type StagingD1HttpLifetime, type StagingD1HttpDeadline } from "./staging_d1_http_lifetime.js";
 import { runStagingD1HttpSequence } from "./staging_runtime_d1_probe.js";
 import cleanupWindow from "./staging_d1_probe_cleanup_window.json";
 /**
@@ -246,6 +247,9 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   };
   private httpClaim: StagingD1HttpStatus | undefined;
   private httpExecuting = false;
+  private httpLifetime: StagingD1HttpLifetime | undefined;
+  private httpLife: StagingD1HttpLifecycle | undefined;
+  private httpDestroyPending = false;
   private probeRetired = false;
   private probeActiveCalls = 0;
   private retirementActive = false;
@@ -269,6 +273,8 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
         this.httpClaim = httpClaim.status === "complete" ? httpClaim : this.httpStatus("unknown");
         if (httpClaim.status !== "complete") await this.storage.put(STAGING_D1_HTTP_OPERATION_KEY, this.httpClaim);
       }
+      const lifetime = await this.storage.get<unknown>(STAGING_D1_HTTP_LIFETIME_KEY);
+      if (isStagingD1HttpLifetime(lifetime, this.env.SENTRY_RELEASE ?? "")) this.httpLifetime = lifetime;
       const stored = await this.storage.get<LifecycleState>("lifecycle");
       if (stored !== undefined) {
         this.lifecycleState = stored;
@@ -348,16 +354,21 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
       throw new Error("HTTP proof execution rejected");
     }
     const life = new StagingD1HttpLifecycle(this.now, STAGING_D1_PROBE_EXPIRES_AT_MS);
+    const lifetime = createHttpLifetime(this.env.SENTRY_RELEASE!, life.startedAt);
+    this.httpLife = life;
     this.httpExecuting = true;
     this.httpClaim = this.httpStatus("running");
     try {
       const claimed = await life.run(() => this.storage.transaction(async txn => {
-        if (await txn.get(STAGING_D1_HTTP_OPERATION_KEY) !== undefined ||
+        if (await txn.get(STAGING_D1_HTTP_LIFETIME_KEY) !== undefined ||
+            await txn.get(STAGING_D1_HTTP_OPERATION_KEY) !== undefined ||
             await txn.get(STAGING_D1_PROBE_ADMISSION_KEY) !== undefined ||
             await txn.get(STAGING_D1_PROBE_STATE_KEY) !== undefined ||
             await txn.get(STAGING_D1_PROBE_RECEIPT_KEY) !== undefined) return false;
         life.check();
         await txn.put(STAGING_D1_HTTP_OPERATION_KEY, this.httpStatus("running"));
+        life.check();
+        await txn.put(STAGING_D1_HTTP_LIFETIME_KEY, lifetime);
         life.check();
         return true;
       }));
@@ -365,11 +376,18 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
         this.httpClaim = await this.storage.get<StagingD1HttpStatus>(STAGING_D1_HTTP_OPERATION_KEY) ?? this.httpStatus("unknown");
         throw new Error("HTTP proof already claimed");
       }
+      this.httpLifetime = lifetime;
+      // No cleanup, admission or Container start before durable arming readback.
+      await life.run(() => this.storage.setAlarm(lifetime.kill_at_ms));
+      if (await life.run(() => this.storage.getAlarm()) !== lifetime.kill_at_ms) throw new Error("HTTP lifetime alarm unavailable");
+      const armed = await life.run(() => this.storage.get<unknown>(STAGING_D1_HTTP_LIFETIME_KEY));
+      if (!isStagingD1HttpLifetime(armed, this.env.SENTRY_RELEASE!) || armed.state !== "armed" ||
+          armed.operation_started_ms !== life.startedAt) throw new Error("HTTP lifetime unavailable");
     } catch {
       this.httpExecuting = false;
       // Even a timed-out claim write can finish later. The next persisted
       // write fences it UNKNOWN; there is never a provider call in this arm.
-      if (!life.settled) {
+      if (this.httpClaim !== undefined) {
         this.httpClaim = this.httpStatus("unknown");
         await life.record(() => this.storage.put(STAGING_D1_HTTP_OPERATION_KEY, this.httpClaim!));
       }
@@ -430,21 +448,74 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   private async stopHttpProbeContainer(life: StagingD1HttpLifecycle): Promise<void> {
     const container = this.state.container;
     if (container === undefined) throw new Error("HTTP proof Container unavailable");
-    if (container.running) await life.cleanup(() => container.destroy());
+    if (container.running) await life.cleanup(() => this.destroyHttpContainer());
     if (container.running !== false) throw new Error("HTTP proof Container stop unproven");
     await life.cleanup(() => this.storage.deleteAlarm());
     if (await life.cleanup(() => this.storage.getAlarm()) !== null) throw new Error("HTTP proof alarm unproven");
     await life.cleanup(() => this.transitionStatus("stopped", "staging-d1-http-proof"));
   }
 
+  private async destroyHttpContainer(): Promise<void> {
+    if (this.httpDestroyPending || this.state.container === undefined) throw new Error("HTTP Container stop pending");
+    this.httpDestroyPending = true;
+    try { await this.state.container.destroy(); } finally { this.httpDestroyPending = false; }
+  }
+
+  /** Absolute cost-stop only. It cannot admit, submit SQL, clean old objects or prove rollback safe. */
+  private async expireHttpProbeContainer(): Promise<void> {
+    this.assertHttpProbeTarget();
+    const stored = await this.storage.get<unknown>(STAGING_D1_HTTP_LIFETIME_KEY);
+    if (!isStagingD1HttpLifetime(stored, this.env.SENTRY_RELEASE!)) {
+      this.httpLife?.halt();
+      this.httpClaim = this.httpStatus("unknown");
+      await this.storage.put(STAGING_D1_HTTP_OPERATION_KEY, this.httpClaim);
+      return;
+    }
+    this.httpLifetime = stored;
+    if (this.now() < stored.kill_at_ms) {
+      await this.storage.setAlarm(stored.kill_at_ms);
+      return;
+    }
+    this.httpLife?.halt();
+    const container = this.state.container;
+    // A completed proof already stopped the Container and deleted its alarm.
+    if (this.httpClaim?.status === "complete" && !this.httpExecuting && container?.running === false) return;
+    this.httpClaim = this.httpStatus("unknown");
+    await this.storage.put(STAGING_D1_HTTP_OPERATION_KEY, this.httpClaim);
+    if (stored.state !== "armed") return; // At-least-once alarm delivery cannot repeat the stop request.
+    const attempted: StagingD1HttpLifetime = { ...stored, state: "stop_attempted", stop_attempted_at_ms: this.now() };
+    const owned = await this.storage.transaction(async txn => {
+      const current = await txn.get<unknown>(STAGING_D1_HTTP_LIFETIME_KEY);
+      if (!isStagingD1HttpLifetime(current, this.env.SENTRY_RELEASE!) || current.state !== "armed" ||
+          current.operation_started_ms !== stored.operation_started_ms) return false;
+      await txn.put(STAGING_D1_HTTP_LIFETIME_KEY, attempted);
+      return true;
+    });
+    if (!owned) return;
+    this.httpLifetime = attempted;
+    // Persist-before-signal deliberately leaves an interrupted attempt unproven.
+    // The independent PID1 deadline still applies if this isolate disappears.
+    if (container?.running && !this.httpDestroyPending) {
+      try { container.signal(9); } catch { /* A failed stop request is not stop proof. */ }
+    }
+    const stopped = container?.running === false;
+    this.httpLifetime = { ...attempted, state: stopped ? "stopped" : "unproven", stopped_at_ms: stopped ? this.now() : null };
+    await this.storage.put(STAGING_D1_HTTP_LIFETIME_KEY, this.httpLifetime);
+  }
+
   /** Reuse native startup wiring with a deadline check at every async seam. */
   private async startHttpProbeContainer(life: StagingD1HttpLifecycle): Promise<{ ok: true } | { ok: false; reason: string }> {
     const container = this.state.container;
     if (container === undefined) throw new Error("HTTP proof Container unavailable");
+    const lifetime = this.httpLifetime;
+    if (!isStagingD1HttpLifetime(lifetime, this.env.SENTRY_RELEASE!) || lifetime.state !== "armed" ||
+        lifetime.operation_started_ms !== life.startedAt || container.running) throw new Error("HTTP lifetime start rejected");
+    const deadline = httpDeadlineContext(lifetime);
     const guarded = new Proxy(container, { get(target, key) {
       const value = Reflect.get(target, key, target) as unknown;
       if (key === "start") return (...args: Parameters<Container["start"]>) => {
         life.check();
+        if (target.running) throw new Error("HTTP lifetime prior Container rejected");
         try { target.start(...args); } catch { throw new Error("HTTP proof Container start failed"); }
         life.check();
       };
@@ -473,12 +544,13 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
       armInactivityTimeout: c => life.run(() => c.setInactivityTimeout(IDLE_TIMEOUT_MS)),
       waitForContainerHealth: health,
       destroyContainer: async () => {
-        await life.run(() => container.destroy());
+        await life.run(() => this.destroyHttpContainer());
         await life.run(() => this.transitionStatus("stopped", "staging-d1-http-proof"));
       },
-      installStagingD1BindingProxy: () => life.run(() => this.installStagingD1BindingProxy()),
-      setAlarm: when => life.run(() => this.storage.setAlarm(when)),
+      installStagingD1BindingProxy: () => life.run(() => this.installStagingD1BindingProxy(deadline)),
+      setAlarm: () => life.run(() => this.storage.setAlarm(lifetime.kill_at_ms)),
       suppressLifecycleTelemetry: true,
+      httpDeadline: deadline,
     }, "staging-d1-http-proof"));
   }
 
@@ -1161,13 +1233,14 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     );
   }
 
-  private async installStagingD1BindingProxy(): Promise<void> {
+  private async installStagingD1BindingProxy(deadline?: StagingD1HttpDeadline): Promise<void> {
+    if (deadline !== undefined && !isStagingD1HttpDeadline(deadline, this.env.SENTRY_RELEASE ?? "")) throw new Error("HTTP deadline binding rejected");
     const localExports = (this.ctx as unknown as {
       exports: {
-        StagingD1BindingProxy: (options: { props: Record<string, never> }) => Fetcher;
+        StagingD1BindingProxy: (options: { props: StagingD1HttpDeadline | Record<string, never> }) => Fetcher;
       };
     }).exports;
-    const worker = localExports.StagingD1BindingProxy({ props: {} });
+    const worker = localExports.StagingD1BindingProxy({ props: deadline ?? {} });
     await installD1BindingProxy(this.state.container, worker);
   }
 
@@ -1494,7 +1567,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   // Alarm — periodic health check
   // ──────────────────────────────────────────────────────────────────────────
   override async alarm(): Promise<void> {
-    if (this.httpClaim !== undefined) return; // HTTP coordinator owns stop/alarm cleanup.
+    if (this.httpClaim !== undefined) return this.expireHttpProbeContainer();
     // Retirement owns alarm deletion after Container stop settles. An alarm
     // arriving during an uncancellable stop must not submit parallel cleanup.
     if (this.probeRetired || this.isOldProbeObject()) return;
