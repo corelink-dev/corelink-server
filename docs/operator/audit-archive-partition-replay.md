@@ -25,7 +25,8 @@ python3 scripts/verify_b063_archive_replay.py --input /path/to/redacted.json
 For the independent R2 object-chain verifier, the existing
 `audit-chain-daily-verify` workflow has a closed `build_only` dispatch mode.
 Use it only from protected `main`, with `expected_sha` equal to the exact
-dispatched commit SHA. It runs on standard GitHub-hosted macOS arm64, has only
+dispatched commit SHA. It runs on the standard GitHub-hosted macOS Intel runner
+(`macos-15-intel`), has only
 `contents:read`, and skips the normal Ubuntu smoke job and seven-day R2/PagerDuty
 job (the build-only job runs its own empty-input smoke check). The artifact contains
 the native verifier and `provenance.json`; it contains no archive object or
