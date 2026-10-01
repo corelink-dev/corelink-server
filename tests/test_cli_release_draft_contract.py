@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import base64
 import subprocess
@@ -16,7 +17,15 @@ from scripts import cli_release_manifest as production
 from scripts import verify_cli_release_draft as draft_verifier
 
 
-TAG = "cli-v0.1.3"
+def cli_package_version() -> str:
+    text = Path("tools/cli/Cargo.toml").read_text(encoding="utf-8")
+    match = re.search(r'(?m)^version = "([0-9]+\.[0-9]+\.[0-9]+)"$', text)
+    if not match:
+        raise AssertionError("corelink-cli package version must be explicit")
+    return match.group(1)
+
+
+TAG = f"cli-v{cli_package_version()}"
 SOURCE = "a" * 40
 
 
@@ -79,6 +88,14 @@ class DraftManifestContractTests(unittest.TestCase):
         self.assertIn("first.read_bytes()==second.read_bytes()", contract_workflow)
         self.assertNotIn("cargo zigbuild", contract_workflow)
         self.assertNotIn("command -v zip", production_workflow)
+
+    def test_candidate_tag_tracks_package_and_workspace_lock_version(self) -> None:
+        version = cli_package_version()
+        lock = Path("Cargo.lock").read_text(encoding="utf-8")
+        package = re.search(r'(?ms)^name = "corelink-cli"\nversion = "([^"]+)"', lock)
+        self.assertIsNotNone(package)
+        self.assertEqual(package.group(1), version)
+        self.assertEqual(TAG, f"cli-v{version}")
 
     def test_draft_manifest_is_typed_and_production_loader_rejects_it(self) -> None:
         value = json.loads(self.manifest.read_text(encoding="utf-8"))

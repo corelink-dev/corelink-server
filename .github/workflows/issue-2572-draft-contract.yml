@@ -78,8 +78,21 @@ jobs:
           set -euo pipefail
           git show --format='%B' --no-patch "${CANDIDATE_SHA}" | grep -Fq 'Signed-off-by: '
           git diff --name-only "${BASE_SHA}...${CANDIDATE_SHA}" > "${RUNNER_TEMP}/changed-paths.txt"
-          if grep -E '^\.github/workflows/(sign-linux|sign-windows)\.yml$|^scripts/(cli_release_manifest|verify_cli_release_inventory)\.py$|^tools/cli/Cargo.toml$|^apps/get-corelink-worker/(src/install\.ts|wrangler\.toml)$' "${RUNNER_TEMP}/changed-paths.txt"; then
-            echo 'issue 2572 candidate crossed its frozen ownership boundary' >&2
+          cat > "${RUNNER_TEMP}/allowed-paths.txt" <<'EOF'
+          .github/workflows/issue-2572-draft-contract.yml
+          .github/workflows/release-cli.yml
+          .github/workflows/release-slsa3.yml
+          .github/workflows/sign-linux.yml
+          Cargo.lock
+          tests/test_cli_release_draft_contract.py
+          tools/cli/Cargo.toml
+          tools/cli/tests/release_workflow_contract/assertions.rs
+          tools/cli/tests/release_workflow_contract/cases.rs
+          EOF
+          LC_ALL=C sort -o "${RUNNER_TEMP}/changed-paths.txt" "${RUNNER_TEMP}/changed-paths.txt"
+          LC_ALL=C sort -o "${RUNNER_TEMP}/allowed-paths.txt" "${RUNNER_TEMP}/allowed-paths.txt"
+          if ! diff -u "${RUNNER_TEMP}/allowed-paths.txt" "${RUNNER_TEMP}/changed-paths.txt"; then
+            echo 'issue 2572 candidate must match the exact frozen nine-path source scope' >&2
             exit 1
           fi
 

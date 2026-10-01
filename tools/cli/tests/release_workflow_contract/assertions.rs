@@ -28,6 +28,137 @@ pub(super) fn load_script(name: &str) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|_| format!("{name} script must be readable"))
 }
 
+pub(super) fn load_repo_file(name: &str) -> Result<String, String> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(name);
+    std::fs::read_to_string(path).map_err(|_| format!("{name} must be readable"))
+}
+
+fn job_section<'a>(workflow: &'a str, name: &str) -> &'a str {
+    let marker = format!("\n  {name}:\n");
+    let start = workflow
+        .find(&marker)
+        .unwrap_or_else(|| panic!("workflow job must exist: {name}"))
+        + marker.len();
+    let tail = &workflow[start..];
+    let end = tail
+        .lines()
+        .enumerate()
+        .find_map(|(line, text)| {
+            (text.starts_with("  ") && !text.starts_with("    ") && text.ends_with(':')).then(
+                || {
+                    tail.lines()
+                        .take(line)
+                        .map(|item| item.len() + 1)
+                        .sum::<usize>()
+                },
+            )
+        })
+        .unwrap_or(tail.len());
+    &tail[..end]
+}
+
+fn assert_gh_install_precedes_use(name: &str, section: &str) {
+    let install = section
+        .find("- name: Install checksum-pinned GitHub CLI 2.79.0")
+        .unwrap_or_else(|| panic!("{name} must install the checksum-pinned GitHub CLI"));
+    let installer = section[install..]
+        .find("python3 scripts/install_pinned_gh.py --output \"${GH_BIN}\"")
+        .unwrap_or_else(|| panic!("{name} must use the shared pinned GitHub CLI installer"))
+        + install;
+    let path = section[install..]
+        .find("${RUNNER_TEMP}/corelink-pinned-gh\" >> \"${GITHUB_PATH}\"")
+        .unwrap_or_else(|| panic!("{name} must place the installed CLI first on PATH"))
+        + install;
+    let guard = section
+        .find("- name: Verify pinned GitHub CLI")
+        .unwrap_or_else(|| panic!("{name} must retain the exact version guard"));
+    let command = section[guard..]
+        .find("gh --version")
+        .unwrap_or_else(|| panic!("{name} must execute the CLI version guard"))
+        + guard;
+    let use_index = ["gh api ", "gh release "]
+        .iter()
+        .filter_map(|marker| section.find(marker))
+        .min()
+        .unwrap_or_else(|| panic!("{name} must contain a GitHub CLI consumer"));
+    assert!(
+        install < installer
+            && installer < path
+            && path < guard
+            && guard < command
+            && command < use_index,
+        "{name} must provision checksum-pinned gh before checking and consuming it"
+    );
+}
+
+pub(super) fn assert_pinned_gh_contract(
+    caller: &str,
+    linux_signer: &str,
+    slsa: &str,
+    installer: &str,
+    checksums: &str,
+) {
+    for required in [
+        "VERSION = \"2.79.0\"",
+        "CHECKSUMS = Path(__file__).with_name(f\"gh_{VERSION}_checksums.json\")",
+        "verify_digest(archive, expected)",
+        "verify_binary(output)",
+    ] {
+        assert!(
+            installer.contains(required),
+            "pinned gh installer missing {required}"
+        );
+    }
+    assert!(
+        checksums.contains("\"version\": \"2.79.0\""),
+        "gh checksum manifest must pin 2.79.0"
+    );
+    assert!(
+        checksums.contains("gh_2.79.0_linux_amd64.tar.gz")
+            && checksums
+                .contains("e7af0c72a607c0528fda1989f7c8e3be85e67d321889002af0e2938ad9c8fb68"),
+        "official Linux gh release archive must use its pinned SHA-256"
+    );
+    for job in [
+        "release",
+        "final-manifest",
+        "publish-release",
+        "verify-draft-release",
+    ] {
+        assert_gh_install_precedes_use(job, job_section(caller, job));
+    }
+    assert_gh_install_precedes_use("Linux signer", job_section(linux_signer, "sign"));
+    assert_gh_install_precedes_use("SLSA consumer", job_section(slsa, "attest-final-inventory"));
+}
+
+pub(super) fn assert_windows_build_steps_use_bash(workflow: &str) {
+    for name in [
+        "Validate matrix target values before shell use",
+        "Set SOURCE_DATE_EPOCH",
+        "Set RUSTFLAGS path-remap",
+        "Build (cargo zigbuild) — Linux + Windows",
+    ] {
+        let marker = format!("- name: {name}\n");
+        let start = workflow
+            .find(&marker)
+            .unwrap_or_else(|| panic!("release build step missing: {name}"));
+        let tail = &workflow[start..];
+        let end = tail.find("\n      - name:").unwrap_or(tail.len());
+        let step = &tail[..end];
+        let shell = step.find("        shell: bash\n");
+        let run = step.find("        run:");
+        assert!(
+            step.matches("        shell:").count() == 1
+                && shell.is_some()
+                && run.is_some()
+                && shell < run,
+            "Bash syntax step must select exactly one Bash shell: {name}"
+        );
+    }
+}
+
 fn assert_initial_release_target_inventory(workflow: &str) {
     let matrix = workflow
         .split_once("      matrix:\n        target:\n")

@@ -116,6 +116,7 @@ jobs:
       # default, silently moving every concurrent job off the ADR-0015 reproducibility
       # pin. Full reasoning: scripts/ci-use-host-toolchain.sh header.
       - name: Validate matrix target values before shell use
+        shell: bash
         run: |
           set -euo pipefail
           case "${TARGET_TRIPLE}:${TARGET_NAME}:${TARGET_SIGNER_NAME}:${TARGET_EXT}" in
@@ -204,6 +205,7 @@ jobs:
 
       # Reproducible build: SOURCE_DATE_EPOCH from git commit timestamp.
       - name: Set SOURCE_DATE_EPOCH
+        shell: bash
         run: |
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           echo "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" >> "$GITHUB_ENV"
@@ -220,6 +222,7 @@ jobs:
       # leak with no functional value. Map all known prefixes to short
       # placeholders so debug strings carry semantics but not paths.
       - name: Set RUSTFLAGS path-remap
+        shell: bash
         run: |
           REMAP=""
           REMAP="$REMAP --remap-path-prefix=${CARGO_HOME}/registry=cargo-registry"
@@ -232,6 +235,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
           RUSTFLAGS: ${{ env.RUSTFLAGS }}
+        shell: bash
         run: |
           cargo zigbuild \
             -p corelink-cli \
@@ -416,6 +420,14 @@ jobs:
           PY
           )"
           test "${TAG}" = "cli-v${PACKAGE_VERSION}"
+
+      - name: Install checksum-pinned GitHub CLI 2.79.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          GH_BIN="${RUNNER_TEMP}/corelink-pinned-gh/gh"
+          python3 scripts/install_pinned_gh.py --output "${GH_BIN}"
+          echo "${RUNNER_TEMP}/corelink-pinned-gh" >> "${GITHUB_PATH}"
 
       - name: Verify pinned GitHub CLI
         env:
@@ -718,6 +730,14 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
+      - name: Install checksum-pinned GitHub CLI 2.79.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          GH_BIN="${RUNNER_TEMP}/corelink-pinned-gh/gh"
+          python3 scripts/install_pinned_gh.py --output "${GH_BIN}"
+          echo "${RUNNER_TEMP}/corelink-pinned-gh" >> "${GITHUB_PATH}"
+
       - name: Verify pinned GitHub CLI
         run: test "$(gh --version | awk 'NR == 1 {print $3}')" = "2.79.0"
       - name: Bind final signed inventory
@@ -872,6 +892,14 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
+      - name: Install checksum-pinned GitHub CLI 2.79.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          GH_BIN="${RUNNER_TEMP}/corelink-pinned-gh/gh"
+          python3 scripts/install_pinned_gh.py --output "${GH_BIN}"
+          echo "${RUNNER_TEMP}/corelink-pinned-gh" >> "${GITHUB_PATH}"
+
       - name: Verify pinned GitHub CLI
         run: test "$(gh --version | awk 'NR == 1 {print $3}')" = "2.79.0"
       - name: Verify complete authenticated inventory before publication
@@ -956,6 +984,14 @@ jobs:
           ref: ${{ needs.release.outputs.validated_tag }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Install checksum-pinned GitHub CLI 2.79.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          GH_BIN="${RUNNER_TEMP}/corelink-pinned-gh/gh"
+          python3 scripts/install_pinned_gh.py --output "${GH_BIN}"
+          echo "${RUNNER_TEMP}/corelink-pinned-gh" >> "${GITHUB_PATH}"
+
       - name: Verify pinned GitHub CLI
         run: test "$(gh --version | awk 'NR == 1 {print $3}')" = "2.79.0"
       - name: Download exact draft candidate and verify signatures, manifest, and provenance
