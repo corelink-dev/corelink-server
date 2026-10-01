@@ -44,16 +44,52 @@ const PROVIDER_FAILURE_CLASSES = new Set([
 ]);
 const WRANGLER_ERROR_CATEGORIES = new Set([
   "first_deploy_required",
+  "waf_block",
+  "malformed_api_response",
+  "network_failure",
   "authentication_failed",
   "permission_denied",
   "resource_not_found",
   "rate_limited",
   "invalid_configuration",
+  "api_request_rejected",
   "unknown_cli_failure",
 ]);
+// Which Cloudflare API endpoint Wrangler named in its first failure. Only these
+// labels are recorded; the path itself (account ID, Worker name) never is.
+const WRANGLER_FAILURE_ENDPOINTS = new Set([
+  "worker_service",
+  "worker_script",
+  "worker_secrets",
+  "worker_deployments",
+  "worker_settings",
+  "worker_subdomain",
+  "worker_versions",
+  "worker_resource",
+  "account_workers_subdomain",
+  "d1_database",
+  "user_or_membership",
+  "other_endpoint",
+  "none_reported",
+]);
+// How far Wrangler got before it failed: it prints "Total Upload:" once the bundle
+// is built and the pre-upload API checks passed, and "Uploaded <name>" once the
+// script upload request succeeded.
+const WRANGLER_FAILURE_PROGRESS = new Set(["before_bundle_report", "bundle_reported", "upload_reported"]);
+const MAX_PROVIDER_ERROR_CODES = 8;
 
 function boundedExitCode(value) {
   return Number.isInteger(value) && value >= 0 && value <= 255 ? value : null;
+}
+
+function boundedErrorCodes(value) {
+  if (!Array.isArray(value)) return [];
+  const codes = [];
+  for (const code of value) {
+    if (!Number.isInteger(code) || code < 0 || code > 999999) return [];
+    if (!codes.includes(code)) codes.push(code);
+  }
+  return codes.slice(0, MAX_PROVIDER_ERROR_CODES);
 }
 
 function sanitizeProviderFailure(value) {
@@ -69,11 +105,55 @@ function sanitizeProviderFailure(value) {
   return Object.freeze({
     provider_failure_class: failureClass,
     provider_error_code: providerCode,
+    provider_error_codes: Object.freeze(boundedErrorCodes(value?.provider_error_codes)),
     process_exit_code: boundedExitCode(value?.process_exit_code),
     provider_error_category: WRANGLER_ERROR_CATEGORIES.has(value?.provider_error_category)
       ? value.provider_error_category
       : null,
+    provider_failure_endpoint: WRANGLER_FAILURE_ENDPOINTS.has(value?.provider_failure_endpoint)
+      ? value.provider_failure_endpoint
+      : null,
+    provider_http_status: Number.isInteger(value?.provider_http_status)
+      && value.provider_http_status >= 100
+      && value.provider_http_status <= 599
+      ? value.provider_http_status
+      : null,
+    provider_progress: WRANGLER_FAILURE_PROGRESS.has(value?.provider_progress)
+      ? value.provider_progress
+      : null,
   });
+}
+
+export function labelWranglerEndpoint(resource) {
+  const path = String(resource).split("?", 1)[0];
+  if (/^\/(?:user|memberships)(?:\/|$)/.test(path) || path === "/accounts") return "user_or_membership";
+  const scoped = /^\/accounts\/[0-9a-f]{32}(\/.*)?$/i.exec(path);
+  if (!scoped) return "other_endpoint";
+  const rest = scoped[1] ?? "";
+  if (/^\/workers\/services\/[^/]+$/.test(rest)) return "worker_service";
+  if (/^\/workers\/scripts\/[^/]+$/.test(rest)) return "worker_script";
+  const child = /^\/workers\/scripts\/[^/]+\/(secrets|deployments|settings|subdomain|versions)(?:\/[^/]+)?$/.exec(rest);
+  if (child) return `worker_${child[1]}`;
+  if (/^\/workers\/workers\/[^/]+$/.test(rest)) return "worker_resource";
+  if (rest === "/workers/subdomain") return "account_workers_subdomain";
+  if (/^\/d1\/database(?:\/|$)/.test(rest)) return "d1_database";
+  return "other_endpoint";
+}
+
+// Wrangler names the failing request in one of two shapes: the coded/uncoded API
+// error header, or the "<METHOD> <path> -> <status>" note it adds to WAF-block and
+// malformed-response errors. The first one in the output is the root failure; any
+// later one comes from Wrangler's own follow-up (for example whoami after a 10000).
+function firstFailedRequest(output) {
+  const found = [];
+  for (const match of output.matchAll(/A request to the Cloudflare API \((\/[^)\s]*)\) failed\./g)) {
+    found.push({ index: match.index, resource: match[1], status: null });
+  }
+  for (const match of output.matchAll(/^[ \t]*(?:GET|PUT|POST|PATCH|DELETE|HEAD) (\/\S*) -> (\d{3})\b/gm)) {
+    found.push({ index: match.index, resource: match[1], status: Number(match[2]) });
+  }
+  found.sort((left, right) => left.index - right.index);
+  return found[0] ?? null;
 }
 
 export function classifyWranglerFailure(result) {
@@ -81,33 +161,45 @@ export function classifyWranglerFailure(result) {
   if (result?.error) {
     return sanitizeProviderFailure({ provider_failure_class: "spawn_failure", process_exit_code: processExitCode });
   }
+  // Wrangler colours its error banner even when stdout is a pipe. The colour codes
+  // wrap whole messages, never split one, so the patterns below match through them.
   const output = [result?.stdout, result?.stderr].filter((part) => typeof part === "string").join("\n");
   let providerErrorCategory = "unknown_cli_failure";
-  if (/first time[^\n]*(?:upload|worker)|(?:upload|worker)[^\n]*first time[^\n]*(?:fail|must use)/i.test(output)) providerErrorCategory = "first_deploy_required";
+  if (/first time[^\n]*(?:upload|worker)|(?:upload|worker)[^\n]*first time[^\n]*(?:fail|must use)|cannot upload a new version of a Worker that does not yet exist/i.test(output)) providerErrorCategory = "first_deploy_required";
+  else if (/responded with a WAF block page|firewall \(WAF\) blocked this API request/i.test(output)) providerErrorCategory = "waf_block";
+  else if (/Received a malformed response from the API/i.test(output)) providerErrorCategory = "malformed_api_response";
+  else if (/fetch request failed, likely due to a connectivity issue|request to Cloudflare's API timed out|\bfetch failed\b/i.test(output)) providerErrorCategory = "network_failure";
   else if (/invalid api token|authentication (?:failed|error)|unauthorized/i.test(output)) providerErrorCategory = "authentication_failed";
   else if (/permission denied|missing permission|not authorized|not permitted/i.test(output)) providerErrorCategory = "permission_denied";
   else if (/\b(?:worker|script|resource)\b[^\n]*\bnot found\b|\bnot found\b[^\n]*\b(?:worker|script|resource)\b/i.test(output)) providerErrorCategory = "resource_not_found";
   else if (/rate limit|too many requests|\b429\b/i.test(output)) providerErrorCategory = "rate_limited";
   else if (/invalid (?:wrangler )?config|configuration (?:is )?invalid|unknown configuration/i.test(output)) providerErrorCategory = "invalid_configuration";
+  else if (/A request to the Cloudflare API (?:\(\/[^)\s]*\) )?failed\./.test(output)) providerErrorCategory = "api_request_rejected";
+  const failedRequest = firstFailedRequest(output);
+  const details = {
+    process_exit_code: processExitCode,
+    provider_error_category: providerErrorCategory,
+    provider_failure_endpoint: failedRequest ? labelWranglerEndpoint(failedRequest.resource) : "none_reported",
+    provider_http_status: failedRequest?.status ?? null,
+    provider_progress: /^[ \t]*Uploaded \S+ \(/m.test(output)
+      ? "upload_reported"
+      : /^[ \t]*Total Upload: /m.test(output) ? "bundle_reported" : "before_bundle_report",
+  };
   const markerPattern = /\[code:\s*([^\]\r\n]*)\]/gi;
   const markers = [...output.matchAll(markerPattern)];
   const markerPrefixes = [...output.matchAll(/\[code:/gi)];
+  details.provider_error_codes = markers.filter((marker) => /^\d{1,6}$/.test(marker[1])).map((marker) => Number(marker[1]));
   if (markers.length === 1 && markerPrefixes.length === 1 && /^\d{1,6}$/.test(markers[0][1])) {
     return sanitizeProviderFailure({
+      ...details,
       provider_failure_class: "provider_error_code",
       provider_error_code: Number(markers[0][1]),
-      process_exit_code: processExitCode,
-      provider_error_category: providerErrorCategory,
     });
   }
   if (markerPrefixes.length > 0) {
-    return sanitizeProviderFailure({
-      provider_failure_class: "ambiguous_provider_error_code",
-      process_exit_code: processExitCode,
-      provider_error_category: providerErrorCategory,
-    });
+    return sanitizeProviderFailure({ ...details, provider_failure_class: "ambiguous_provider_error_code" });
   }
-  return sanitizeProviderFailure({ provider_failure_class: "process_exit", process_exit_code: processExitCode, provider_error_category: providerErrorCategory });
+  return sanitizeProviderFailure({ ...details, provider_failure_class: "process_exit" });
 }
 
 export function validateDispatch(context) {

@@ -1,0 +1,54 @@
+{
+  "_provenance": "Verbatim stdout/stderr of the pinned Wrangler 4.141.0 (apps/dsr-alert-receiver/pnpm-lock.yaml) running the route's exact deploy / versions-upload argv against a local mock of the Cloudflare API (CLOUDFLARE_API_BASE_URL), captured 2026-10-01. No credential, no request to Cloudflare. Only the local log-file path is normalized. After a code-10000 error Wrangler runs whoami against the mock's generic responses; that is where the trailing 'Spread syntax' error in the two coded cases comes from.",
+  "cases": {
+    "waf_block_on_script_upload": {
+      "command": "wrangler deploy",
+      "mock_failure": "PUT script -> 403 with cf-mitigated: challenge and an HTML body",
+      "status": 1,
+      "stdout": "\n ⛅️ wrangler 4.141.0 (update available 4.146.0)\n───────────────────────────────────────────────\nTotal Upload: 4.67 KiB / gzip: 1.74 KiB\nYour Worker has access to the following bindings:\nBinding                                                                Resource         \nenv.ALERT_RECEIPTS_DB (corelink-dsr-b216-alert-receipts-20260927)      D1 Database      \n\n\n",
+      "stderr": "\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mThe Cloudflare API responded with a WAF block page instead of the expected JSON response\u001b[0m\n\n  Cloudflare's firewall (WAF) blocked this API request. This is usually a false positive.\n  Cloudflare Ray ID: 8f0000000000abcd-IAD\n  If the issue persists, please open a Cloudflare Support ticket and include the Ray ID above.\n  PUT /accounts/51284495e71acdb5a7677e7383ab026b/workers/scripts/corelink-dsr-b216-alert-receiver-20260927 -> 403 Forbidden\n  \n  If you think this is a bug, please open an issue at: \u001b[4mhttps://github.com/cloudflare/workers-sdk/issues/new/choose\u001b[0m\n\n\n🪵  Logs were written to \"/home/runner/work/_temp/b216-run/home/.config/.wrangler/logs/wrangler.log\"\n"
+    },
+    "malformed_response_on_script_upload": {
+      "command": "wrangler deploy",
+      "mock_failure": "PUT script -> 403 with an HTML body, no cf-mitigated header",
+      "status": 1,
+      "stdout": "\n ⛅️ wrangler 4.141.0 (update available 4.146.0)\n───────────────────────────────────────────────\nTotal Upload: 4.67 KiB / gzip: 1.74 KiB\nYour Worker has access to the following bindings:\nBinding                                                                Resource         \nenv.ALERT_RECEIPTS_DB (corelink-dsr-b216-alert-receipts-20260927)      D1 Database      \n\n\n",
+      "stderr": "\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mReceived a malformed response from the API\u001b[0m\n\n  <html><head><title>403 Forbidden</title></head><body>403 Forbidden</body></html>\n  PUT /accounts/51284495e71acdb5a7677e7383ab026b/workers/scripts/corelink-dsr-b216-alert-receiver-20260927 -> 403 Forbidden\n  \n  If you think this is a bug, please open an issue at: \u001b[4mhttps://github.com/cloudflare/workers-sdk/issues/new/choose\u001b[0m\n\n\n🪵  Logs were written to \"/home/runner/work/_temp/b216-run/home/.config/.wrangler/logs/wrangler.log\"\n"
+    },
+    "uncoded_rejection_on_service_read": {
+      "command": "wrangler deploy",
+      "mock_failure": "GET workers/services -> 403 JSON whose error has no code",
+      "status": 1,
+      "stdout": "\n ⛅️ wrangler 4.141.0 (update available 4.146.0)\n───────────────────────────────────────────────\n\n",
+      "stderr": "\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mA request to the Cloudflare API (/accounts/51284495e71acdb5a7677e7383ab026b/workers/services/corelink-dsr-b216-alert-receiver-20260927) failed.\u001b[0m\n\n  Forbidden\n  \n  If you think this is a bug, please open an issue at: \u001b[4mhttps://github.com/cloudflare/workers-sdk/issues/new/choose\u001b[0m\n\n\n🪵  Logs were written to \"/home/runner/work/_temp/b216-run/home/.config/.wrangler/logs/wrangler.log\"\n"
+    },
+    "transport_failure_on_script_upload": {
+      "command": "wrangler deploy",
+      "mock_failure": "PUT script: socket closed before any response",
+      "status": 1,
+      "stdout": "\n ⛅️ wrangler 4.141.0 (update available 4.146.0)\n───────────────────────────────────────────────\nTotal Upload: 4.67 KiB / gzip: 1.74 KiB\nYour Worker has access to the following bindings:\nBinding                                                                Resource         \nenv.ALERT_RECEIPTS_DB (corelink-dsr-b216-alert-receipts-20260927)      D1 Database      \n\n\n\u001b[32mIf you think this is a bug then please create an issue at https://github.com/cloudflare/workers-sdk/issues/new/choose\u001b[0m\nNote that there is a newer version of Wrangler available (4.146.0). Consider checking whether upgrading resolves this error.\n",
+      "stderr": "\u001b[33m▲ \u001b[43;33m[\u001b[43;30mWARNING\u001b[43;33m]\u001b[0m \u001b[1mA fetch request failed, likely due to a connectivity issue.\u001b[0m\n\n  \n  Common causes:\n    - No internet connection or network connectivity problems\n    - Firewall or VPN blocking the request\n    - Network proxy configuration issues\n  \n  Please check your network connection and try again.\n\n\n\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mfetch failed\u001b[0m\n\n\n🪵  Logs were written to \"/home/runner/work/_temp/b216-run/home/.config/.wrangler/logs/wrangler.log\"\n"
+    },
+    "versions_upload_on_absent_worker": {
+      "command": "wrangler versions upload",
+      "mock_failure": "Worker absent: GET workers/services -> 404 code 10090",
+      "status": 1,
+      "stdout": "\n ⛅️ wrangler 4.141.0 (update available 4.146.0)\n───────────────────────────────────────────────\n\n",
+      "stderr": "\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mYou cannot upload a new version of a Worker that does not yet exist. Please run the `deploy` command first.\u001b[0m\n\n\n🪵  Logs were written to \"/home/runner/work/_temp/b216-run/home/.config/.wrangler/logs/wrangler.log\"\n"
+    },
+    "coded_auth_on_script_upload": {
+      "command": "wrangler deploy",
+      "mock_failure": "PUT script -> 403 JSON code 10000",
+      "status": 1,
+      "stdout": "\n ⛅️ wrangler 4.141.0 (update available 4.146.0)\n───────────────────────────────────────────────\nTotal Upload: 4.67 KiB / gzip: 1.74 KiB\nYour Worker has access to the following bindings:\nBinding                                                                Resource         \nenv.ALERT_RECEIPTS_DB (corelink-dsr-b216-alert-receipts-20260927)      D1 Database      \n\n\n📎 It looks like you are authenticating Wrangler via a custom API token set in an environment variable.\nPlease ensure it has the correct permissions for this operation.\n\nGetting User settings...\n\n\u001b[32mIf you think this is a bug then please create an issue at https://github.com/cloudflare/workers-sdk/issues/new/choose\u001b[0m\nNote that there is a newer version of Wrangler available (4.146.0). Consider checking whether upgrading resolves this error.\n",
+      "stderr": "\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mA request to the Cloudflare API (/accounts/51284495e71acdb5a7677e7383ab026b/workers/scripts/corelink-dsr-b216-alert-receiver-20260927) failed.\u001b[0m\n\n  Authentication error [code: 10000]\n\n\n\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mSpread syntax requires ...iterable[Symbol.iterator] to be a function\u001b[0m\n\n\n🪵  Logs were written to \"/home/runner/work/_temp/b216-run/home/.config/.wrangler/logs/wrangler.log\"\n"
+    },
+    "coded_auth_on_subdomain_after_upload": {
+      "command": "wrangler deploy",
+      "mock_failure": "POST script subdomain -> 403 JSON code 10000 after a successful PUT",
+      "status": 1,
+      "stdout": "\n ⛅️ wrangler 4.141.0 (update available 4.146.0)\n───────────────────────────────────────────────\nTotal Upload: 4.67 KiB / gzip: 1.74 KiB\nWorker Startup Time: 1 ms\nYour Worker has access to the following bindings:\nBinding                                                                Resource         \nenv.ALERT_RECEIPTS_DB (corelink-dsr-b216-alert-receipts-20260927)      D1 Database      \n\nUploaded corelink-dsr-b216-alert-receiver-20260927 (0.15 sec)\n\n📎 It looks like you are authenticating Wrangler via a custom API token set in an environment variable.\nPlease ensure it has the correct permissions for this operation.\n\nGetting User settings...\n\n\u001b[32mIf you think this is a bug then please create an issue at https://github.com/cloudflare/workers-sdk/issues/new/choose\u001b[0m\nNote that there is a newer version of Wrangler available (4.146.0). Consider checking whether upgrading resolves this error.\n",
+      "stderr": "\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mA request to the Cloudflare API (/accounts/51284495e71acdb5a7677e7383ab026b/workers/scripts/corelink-dsr-b216-alert-receiver-20260927/subdomain) failed.\u001b[0m\n\n  Authentication error [code: 10000]\n\n\n\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mSpread syntax requires ...iterable[Symbol.iterator] to be a function\u001b[0m\n\n\n🪵  Logs were written to \"/home/runner/work/_temp/b216-run/home/.config/.wrangler/logs/wrangler.log\"\n"
+    }
+  }
+}
