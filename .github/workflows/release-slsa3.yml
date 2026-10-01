@@ -212,10 +212,13 @@ jobs:
           PY
           )"
           test "${STAGING_ASSET_COUNT}" = "0"
+          NORMALIZED_BUNDLE="${RUNNER_TEMP}/corelink-slsa-bundle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          python3 -B scripts/normalize_cli_attestation_bundle.py \
+            provenance.intoto.jsonl.bundle "${NORMALIZED_BUNDLE}"
           while IFS='  ' read -r digest name; do
             test -n "${digest}" && test -n "${name}"
             gh attestation verify "release-assets/${name}" \
-              --bundle provenance.intoto.jsonl.bundle --repo "${REPO}" \
+              --bundle "${NORMALIZED_BUNDLE}" --repo "${REPO}" \
               --signer-workflow "${REPO}/.github/workflows/release-slsa3.yml" \
               --source-ref "refs/tags/${TAG}" --source-digest "${SOURCE_SHA}" \
               --cert-oidc-issuer "https://token.actions.githubusercontent.com"
