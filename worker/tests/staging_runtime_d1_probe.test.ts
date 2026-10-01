@@ -112,7 +112,12 @@ describe("temporary staging native D1 runtime Cron", () => {
     vi.setSystemTime(scheduledTime + 5000);
     const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
     await expect(runScheduled(controllerAt(scheduledTime), env(stub))).resolves.toBeUndefined();
-    expect(stub.runStagingD1RuntimeProbe).toHaveBeenCalledWith(scheduledTime);
+    expect(stub.runStagingD1RuntimeProbe).toHaveBeenCalledWith({
+      contract: "corelink-staging-d1-probe-admission-v1",
+      probe_nonce: STAGING_D1_PROBE_WINDOW.nonce,
+      worker_release: RELEASE,
+      scheduled_time_ms: scheduledTime,
+    });
   });
 
   it("reads only the existing receipt after latest entry and never claims or retires", async () => {
@@ -130,26 +135,68 @@ describe("temporary staging native D1 runtime Cron", () => {
     expect(target.CORELINK_SERVER.get).toHaveBeenCalledOnce();
   });
 
-  it("rejects wrong target and expired time before calling the DO", async () => {
+  it("admits a valid scheduled tick before the immutable entry cutoff", async () => {
+    vi.useFakeTimers();
+    const scheduledTime = Date.parse("2026-10-01T02:14:00Z");
+    vi.setSystemTime(scheduledTime + 5000);
+    const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
+    const tick = controllerAt(scheduledTime);
+    const target = env(stub);
+    await expect(runScheduled(tick, target)).resolves.toBeUndefined();
+    expect(stub.runStagingD1RuntimeProbe).toHaveBeenCalledWith({
+      contract: "corelink-staging-d1-probe-admission-v1",
+      probe_nonce: STAGING_D1_PROBE_WINDOW.nonce,
+      worker_release: RELEASE,
+      scheduled_time_ms: scheduledTime,
+    });
+    expect(tick.noRetry).not.toHaveBeenCalled();
+    expect(target.CORELINK_SERVER.get).toHaveBeenCalledTimes(3);
+  });
+
+  it("reads only a historical valid receipt after the entry lease closes, without admission or retirement", async () => {
+    vi.useFakeTimers();
+    const scheduledTime = Date.parse("2026-10-01T02:14:00Z");
+    const stub = {
+      runStagingD1RuntimeProbe: vi.fn(),
+      readStagingD1RuntimeProbeReceipt: vi.fn().mockResolvedValue(RECEIPT),
+    };
+    const target = env(stub);
+    const lateTick = controllerAt(scheduledTime);
+    vi.setSystemTime(new Date(STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS));
+    await expect(runScheduled(lateTick, target)).resolves.toBeUndefined();
+    expect(stub.readStagingD1RuntimeProbeReceipt).toHaveBeenCalledWith(scheduledTime);
+    expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
+    expect(target.CORELINK_SERVER.idFromName).toHaveBeenCalledWith(
+      `_staging_d1_binding_probe_v2:${STAGING_D1_PROBE_WINDOW.nonce}:${RELEASE}`);
+    expect(target.CORELINK_SERVER.get).toHaveBeenCalledOnce();
+    expect(lateTick.noRetry).not.toHaveBeenCalled();
+  });
+
+  it("rejects a newly scheduled timestamp at expiry before fetching a receipt or running the probe", async () => {
+    vi.useFakeTimers();
+    const stub = {
+      runStagingD1RuntimeProbe: vi.fn(),
+      readStagingD1RuntimeProbeReceipt: vi.fn().mockResolvedValue(RECEIPT),
+    };
+    const target = env(stub);
+    const expiredTick = controllerAt(STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS);
+    vi.setSystemTime(new Date(STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS));
+    await expect(runScheduled(expiredTick, target)).rejects.toThrow("staging runtime receipt read target rejected");
+    expect(stub.readStagingD1RuntimeProbeReceipt).not.toHaveBeenCalled();
+    expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
+    expect(target.CORELINK_SERVER.get).not.toHaveBeenCalled();
+    expect(expiredTick.noRetry).not.toHaveBeenCalled();
+  });
+
+  it("rejects a wrong target before the probe or retry", async () => {
     vi.useFakeTimers();
     const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
     const target = env(stub);
-    vi.setSystemTime(new Date(STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS - 1));
-    await expect(runScheduled(controller(), target)).resolves.toBeUndefined();
-    expect(stub.runStagingD1RuntimeProbe).toHaveBeenCalledOnce();
-
-    stub.runStagingD1RuntimeProbe.mockClear();
     const badTarget = { ...target, ENVIRONMENT: "production" } as Env;
-    const before = controller();
-    vi.setSystemTime(new Date("2026-09-30T22:02:05Z"));
-    await expect(runScheduled(before, badTarget)).rejects.toThrow("staging D1 runtime probe guard rejected");
-    expect(before.noRetry).toHaveBeenCalledOnce();
-    expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
-
-    const expired = controller();
-    vi.setSystemTime(new Date(STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS));
-    await expect(runScheduled(expired, target)).rejects.toThrow("staging D1 runtime probe guard rejected");
-    expect(expired.noRetry).toHaveBeenCalledOnce();
+    const tick = controllerAt(Date.parse("2026-09-30T22:02:00Z"));
+    vi.setSystemTime(new Date(tick.scheduledTime + 5000));
+    await expect(runScheduled(tick, badTarget)).rejects.toThrow("staging D1 runtime probe guard rejected");
+    expect(tick.noRetry).toHaveBeenCalledOnce();
     expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
   });
 
