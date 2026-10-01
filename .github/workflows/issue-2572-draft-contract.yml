@@ -11,6 +11,7 @@ on:
       - .github/workflows/sign-linux.yml
       - Cargo.lock
       - scripts/cli_release_draft_manifest.py
+      - scripts/cli_release_api.py
       - scripts/gh_2.79.0_checksums.json
       - scripts/install_pinned_gh.py
       - scripts/verify_cli_release_draft.py
@@ -75,7 +76,10 @@ jobs:
           python3 -B -m unittest tests.test_cli_release_draft_contract -v
           python3 -B scripts/verify_b112_release_root_cause.py
           python3 scripts/verify_i2050_release_dryrun_contract.py contract --base-sha "${BASE_SHA}"
-          cargo test --locked -p corelink-cli --test release_workflow_contract -- --nocapture
+          CARGO_MANIFEST_DIR="${GITHUB_WORKSPACE}/tools/cli" rustc --edition=2021 --test \
+            tools/cli/tests/release_workflow_contract.rs \
+            -o "${RUNNER_TEMP}/release-workflow-contract"
+          "${RUNNER_TEMP}/release-workflow-contract" --nocapture
       - name: Validate release workflow syntax
         run: |
           set -euo pipefail
@@ -100,8 +104,9 @@ jobs:
           .github/workflows/release-slsa3.yml
           .github/workflows/sign-linux.yml
           Cargo.lock
-          scripts/test_pinned_gh_consumers.py
-          scripts/verify_pinned_gh.py
+          scripts/cli_release_api.py
+          scripts/cli_release_draft_manifest.py
+          tests/test_cli_release_draft_contract.py
           tools/cli/Cargo.toml
           tools/cli/tests/release_workflow_contract/assertions.rs
           tools/cli/tests/release_workflow_contract/cases.rs

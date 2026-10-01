@@ -12,8 +12,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from scripts import cli_release_draft_manifest as draft
 from scripts import cli_release_manifest as production
+from scripts import cli_release_api as release_api
 from scripts import verify_cli_release_draft as draft_verifier
 
 
@@ -43,10 +46,7 @@ def write_checksums(directory: Path) -> None:
     )
     for name in names:
         (directory / f"{name}.sha256").write_text(f"{sha(directory / name)}  {name}\n", encoding="utf-8")
-    checksum_names = sorted(name for name in names)
-    (directory / "checksums.txt").write_text(
-        "".join(f"{sha(directory / name)}  {name}\n" for name in checksum_names), encoding="utf-8"
-    )
+    draft.write_checksums(directory)
 
 
 class DraftManifestContractTests(unittest.TestCase):
@@ -217,6 +217,283 @@ class DraftManifestContractTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "SLSA subjects"):
                 draft_verifier.verify(api, self.final, self.manifest, provenance, bundle,
                                       self.root / "unused-public-key", TAG, SOURCE, sha(self.manifest))
+
+
+class StableReleaseIdContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.draft = {
+            "id": 400918946,
+            "tag_name": "cli-v0.1.5",
+            "draft": True,
+            "published_at": None,
+            "prerelease": False,
+            "html_url": "https://github.com/HuGR-Labs/corelink-cli/releases/tag/cli-v0.1.5",
+            "upload_url": "https://uploads.github.com/repos/HuGR-Labs/corelink-cli/releases/400918946/assets{?name,label}",
+            "assets": [],
+        }
+        self.published = self.draft | {
+            "draft": False,
+            "published_at": "2026-10-01T12:00:00Z",
+        }
+
+    def test_explicit_id_reads_that_exact_release_and_accepts_only_requested_phase(self) -> None:
+        with patch.object(release_api, "gh_json", return_value=self.draft) as request:
+            result = release_api.resolve_release(
+                repository="HuGR-Labs/corelink-cli",
+                tag="cli-v0.1.5",
+                expected_state="draft",
+                release_id="400918946",
+                allow_absent=False,
+            )
+        self.assertEqual(result, self.draft)
+        request.assert_called_once_with("repos/HuGR-Labs/corelink-cli/releases/400918946")
+        with patch.object(release_api, "gh_json", return_value=self.draft):
+            with self.assertRaisesRegex(release_api.ReleaseApiError, "published release"):
+                release_api.resolve_release(
+                    repository="HuGR-Labs/corelink-cli", tag="cli-v0.1.5",
+                    expected_state="published", release_id="400918946", allow_absent=False,
+                )
+        with patch.object(release_api, "gh_json", return_value=self.published):
+            self.assertEqual(
+                release_api.resolve_release(
+                    repository="HuGR-Labs/corelink-cli", tag="cli-v0.1.5",
+                    expected_state="published", release_id="400918946", allow_absent=False,
+                ),
+                self.published,
+            )
+
+    def test_pagination_resolves_unique_tag_then_rechecks_by_id(self) -> None:
+        with patch.object(release_api, "gh_json", side_effect=[[[self.draft]], self.draft]) as request:
+            result = release_api.resolve_release(
+                repository="HuGR-Labs/corelink-cli", tag="cli-v0.1.5",
+                expected_state="draft", release_id=None, allow_absent=False,
+            )
+        self.assertEqual(result["id"], 400918946)
+        self.assertEqual(request.call_args_list[0].args, (
+            "--paginate", "--slurp", "repos/HuGR-Labs/corelink-cli/releases?per_page=100"
+        ))
+        self.assertEqual(request.call_args_list[1].args, (
+            "repos/HuGR-Labs/corelink-cli/releases/400918946",
+        ))
+
+    def test_only_explicit_precreate_inspection_may_report_absence(self) -> None:
+        with patch.object(release_api, "gh_json", return_value=[[]]):
+            self.assertIsNone(release_api.resolve_release(
+                repository="HuGR-Labs/corelink-cli", tag="cli-v0.1.5",
+                expected_state="draft", release_id=None, allow_absent=True,
+            ))
+        with patch.object(release_api, "gh_json", return_value=[[]]):
+            with self.assertRaisesRegex(release_api.ReleaseApiError, "exactly one"):
+                release_api.resolve_release(
+                    repository="HuGR-Labs/corelink-cli", tag="cli-v0.1.5",
+                    expected_state="draft", release_id=None, allow_absent=False,
+                )
+        with patch.object(release_api, "gh_json", side_effect=release_api.ReleaseApiError("404")):
+            with self.assertRaisesRegex(release_api.ReleaseApiError, "404"):
+                release_api.resolve_release(
+                    repository="HuGR-Labs/corelink-cli", tag="cli-v0.1.5",
+                    expected_state="draft", release_id="400918946", allow_absent=False,
+                )
+
+    def test_duplicate_tags_wrong_identity_and_malformed_pages_fail_closed(self) -> None:
+        with patch.object(release_api, "gh_json", return_value=[[self.draft, self.draft]]):
+            with self.assertRaisesRegex(release_api.ReleaseApiError, "exactly one"):
+                release_api.resolve_release(
+                    repository="HuGR-Labs/corelink-cli", tag="cli-v0.1.5",
+                    expected_state="draft", release_id=None, allow_absent=False,
+                )
+        wrong_tag = self.draft | {"tag_name": "cli-v0.1.6"}
+        with patch.object(release_api, "gh_json", return_value=wrong_tag):
+            with self.assertRaisesRegex(release_api.ReleaseApiError, "tag does not match"):
+                release_api.resolve_release(
+                    repository="HuGR-Labs/corelink-cli", tag="cli-v0.1.5",
+                    expected_state="draft", release_id="400918946", allow_absent=False,
+                )
+        with patch.object(release_api, "gh_json", return_value=[{"not": "a page"}]):
+            with self.assertRaisesRegex(release_api.ReleaseApiError, "malformed page"):
+                release_api.resolve_release(
+                    repository="HuGR-Labs/corelink-cli", tag="cli-v0.1.5",
+                    expected_state="draft", release_id=None, allow_absent=False,
+                )
+        for repo, tag, identifier in (
+            ("HuGR-Labs/corelink-cli/releases", "cli-v0.1.5", None),
+            ("HuGR-Labs/corelink-cli", "v0.1.5", None),
+            ("HuGR-Labs/corelink-cli", "cli-v0.1.5", "0"),
+        ):
+            with patch.object(release_api, "gh_json") as request:
+                with self.assertRaises(release_api.ReleaseApiError):
+                    release_api.resolve_release(
+                        repository=repo, tag=tag, expected_state="draft",
+                        release_id=identifier, allow_absent=False,
+                    )
+                request.assert_not_called()
+
+    def test_cli_integration_uses_authenticated_gh_api_shape_without_reading_credentials(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="corelink-release-id-gh-") as temporary:
+            root = Path(temporary)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            calls = root / "calls.jsonl"
+            fake_gh = fake_bin / "gh"
+            fake_gh.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "with open(os.environ['GH_CALL_LOG'], 'a', encoding='utf-8') as output:\n"
+                "    output.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                "release = {\n"
+                "  'id': 400918946, 'tag_name': 'cli-v0.1.5', 'draft': True,\n"
+                "  'published_at': None, 'prerelease': False,\n"
+                "  'html_url': 'https://github.com/HuGR-Labs/corelink-cli/releases/tag/cli-v0.1.5',\n"
+                "  'upload_url': 'https://uploads.github.com/repos/HuGR-Labs/corelink-cli/releases/400918946/assets{?name,label}',\n"
+                "  'assets': []}\n"
+                "json.dump(release, sys.stdout)\n"
+                "print()\n",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            environment = dict(__import__("os").environ)
+            environment.update({
+                "PATH": f"{fake_bin}:{environment['PATH']}",
+                "GH_CALL_LOG": str(calls),
+                "GH_TOKEN": "",
+                "GH_ENTERPRISE_TOKEN": "",
+                "GITHUB_ENTERPRISE_TOKEN": "",
+            })
+            result = subprocess.run(
+                [
+                    "python3", "scripts/cli_release_api.py", "--repo", "HuGR-Labs/corelink-cli",
+                    "--tag", "cli-v0.1.5", "--release-id", "400918946",
+                    "--expected-state", "draft", "--format", "id",
+                ],
+                cwd=Path(__file__).resolve().parents[1], env=environment,
+                text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "400918946\n")
+            self.assertEqual(json.loads(calls.read_text(encoding="utf-8")), [
+                "api", "repos/HuGR-Labs/corelink-cli/releases/400918946",
+            ])
+
+    def test_production_workflows_use_id_for_api_reads_and_preserve_source_oidc_identity(self) -> None:
+        caller = Path(".github/workflows/release-cli.yml").read_text(encoding="utf-8")
+        slsa = Path(".github/workflows/release-slsa3.yml").read_text(encoding="utf-8")
+        self.assertNotIn("releases/tags/", caller)
+        self.assertNotIn("releases/tags/", slsa)
+        self.assertIn("release_id: ${{ steps.create-release.outputs.release_id }}", caller)
+        self.assertIn("release_id: ${{ needs.release.outputs.release_id }}", caller)
+        self.assertIn("RELEASE_ID: ${{ needs.release.outputs.release_id }}", caller)
+        self.assertIn("RELEASE_ID: ${{ inputs.release_id }}", slsa)
+        self.assertIn("--expected-state draft", caller)
+        self.assertIn("--expected-state published", caller)
+        self.assertIn('test "${GITHUB_REF}" = "refs/tags/${TAG}"', slsa)
+        self.assertIn('test "${GITHUB_SHA}" = "${SOURCE_SHA}"', slsa)
+        self.assertIn('--source-ref "refs/tags/${TAG}" --source-digest "${SOURCE_SHA}"', caller)
+        self.assertIn('gh api --method PATCH "repos/HuGR-Labs/corelink-cli/releases/${RELEASE_ID}"', caller)
+
+
+class CanonicalChecksumWorkflowTests(unittest.TestCase):
+    repo = Path(__file__).resolve().parents[1]
+
+    def workflow_command(self, workflow_name: str, step_name: str, directory: Path) -> subprocess.CompletedProcess[str]:
+        workflow = yaml.safe_load((self.repo / ".github/workflows" / workflow_name).read_text(encoding="utf-8"))
+        step = next(
+            step for job in workflow["jobs"].values() for step in job.get("steps", [])
+            if step.get("name") == step_name
+        )
+        environment = dict(__import__("os").environ)
+        environment["CHECKSUM_DIRECTORY"] = str(directory)
+        return subprocess.run(
+            ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
+            cwd=self.repo, env=environment, text=True, capture_output=True, check=False,
+        )
+
+    def run_manifest_verifier(self, directory: Path, fake_bin: Path) -> subprocess.CompletedProcess[str]:
+        manifest = directory / "release-manifest.json"
+        environment = dict(__import__("os").environ)
+        environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+        return subprocess.run(
+            [
+                "python3", "scripts/cli_release_draft_manifest.py", "verify-manifest",
+                "--directory", str(directory), "--manifest", str(manifest),
+                "--public-key", "docs/internal/gpg-release-pubkey.asc",
+                "--tag", TAG, "--source-sha", SOURCE, "--manifest-sha256", sha(manifest),
+            ],
+            cwd=self.repo, env=environment, text=True, capture_output=True, check=False,
+        )
+
+    def test_real_workflow_checksum_commands_and_manifest_verifier_are_canonical(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="corelink-checksum-flow-") as temporary:
+            root = Path(temporary)
+            staged = root / "dist"
+            staged.mkdir()
+            for name in production.BASE_PAYLOADS:
+                (staged / name).write_bytes(f"realistic-staged:{name}".encode())
+                (staged / f"{name}.sha256").write_text(
+                    f"{sha(staged / name)}  {name}\n", encoding="ascii"
+                )
+            build = self.workflow_command("release-cli.yml", "Build combined checksums.txt", staged)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            self.assertEqual(
+                (staged / "checksums.txt").read_text(encoding="ascii").splitlines(),
+                [f"{sha(staged / name)}  {name}" for name in sorted(production.BASE_PAYLOADS)],
+            )
+
+            staged_manifest = staged / "staging-manifest.json"
+            production.create(staged, staged_manifest, TAG, SOURCE)
+            final = root / "assets"
+            shutil.copytree(staged, final, ignore=shutil.ignore_patterns("staging-manifest.json"))
+            for name in draft.LINUX_PAYLOADS:
+                (final / name).write_bytes(f"realistic-signed:{name}".encode())
+                (final / f"{name}.asc").write_bytes(f"fixture-signature:{name}".encode())
+            for path in final.glob("*.sha256"):
+                target = path.name[:-len(".sha256")]
+                path.write_text(f"{sha(final / target)}  {target}\n", encoding="ascii")
+            for path in final.glob("*.asc"):
+                (final / f"{path.name}.sha256").write_text(
+                    f"{sha(path)}  {path.name}\n", encoding="ascii"
+                )
+            signer = self.workflow_command(
+                "sign-linux.yml", "Build canonical checksum index from named sidecars", final
+            )
+            self.assertEqual(signer.returncode, 0, signer.stderr)
+            checksum_lines = (final / "checksums.txt").read_text(encoding="ascii").splitlines()
+            self.assertEqual(checksum_lines, sorted(checksum_lines, key=lambda line: line.split("  ", 1)[1]))
+            manifest = final / "release-manifest.json"
+            draft.create(final, manifest, TAG, SOURCE, staged_manifest)
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            fake_gpg = fake_bin / "gpg"
+            fake_gpg.write_text(
+                "#!/bin/sh\n"
+                "case \" $* \" in\n"
+                "  *' --import '*) exit 0 ;;\n"
+                "  *' --verify '*) printf '%s\\n' '[GNUPG:] VALIDSIG 795253CEBD6D54C862CFC4A3EC0AD89A75EC6756 20261001'; exit 0 ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_gpg.chmod(0o755)
+            verified = self.run_manifest_verifier(final, fake_bin)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+
+            index = final / "checksums.txt"
+            index.write_text("\n".join(reversed(checksum_lines)) + "\n", encoding="ascii")
+            changed_manifest = json.loads(manifest.read_text(encoding="utf-8"))
+            for artifact in changed_manifest["artifacts"]:
+                if artifact["name"] == "checksums.txt":
+                    artifact["sha256"] = sha(index)
+            manifest.write_text(
+                json.dumps(changed_manifest, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            rejected = self.run_manifest_verifier(final, fake_bin)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("canonical closed-world index", rejected.stderr)
+            draft.write_checksums(final)
+            draft.create(final, manifest, TAG, SOURCE, staged_manifest)
+            verified_again = self.run_manifest_verifier(final, fake_bin)
+            self.assertEqual(verified_again.returncode, 0, verified_again.stderr)
 
 
 if __name__ == "__main__":

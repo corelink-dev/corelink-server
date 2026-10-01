@@ -353,6 +353,7 @@ jobs:
       staging_manifest_sha256: ${{ steps.staging-manifest.outputs.sha256 }}
       source_sha: ${{ steps.release-identity.outputs.source_sha }}
       release_mode: ${{ steps.release-identity.outputs.release_mode }}
+      release_id: ${{ steps.create-release.outputs.release_id }}
     # The source-repo GITHUB_TOKEN cannot publish cross-repo. The only write
     # credential is injected in the two release steps below as the external,
     # manually provisioned CORELINK_CLI_RELEASE_TOKEN.
@@ -459,12 +460,15 @@ jobs:
           done
 
       - name: Build combined checksums.txt
+        env:
+          CHECKSUM_DIRECTORY: dist
         shell: bash
         run: |
           set -euo pipefail
-          LC_ALL=C sort dist/*.sha256 > dist/checksums.txt
+          python3 scripts/cli_release_draft_manifest.py write-checksums \
+            --directory "${CHECKSUM_DIRECTORY}"
           echo "=== checksums.txt ==="
-          cat dist/checksums.txt
+          cat "${CHECKSUM_DIRECTORY}/checksums.txt"
 
       - name: Bind staged artifacts to the immutable source manifest
         id: staging-manifest
@@ -530,23 +534,21 @@ jobs:
           gh api --method GET repos/HuGR-Labs/corelink-cli >/dev/null
 
       - name: Create GitHub Release in HuGR-Labs/corelink-cli
+        id: create-release
         env:
           GH_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
           TAG: ${{ steps.validate-release-tag.outputs.tag }}
         run: |
           set -euo pipefail
           RELEASE_JSON="${RUNNER_TEMP}/corelink-cli-existing-release.json"
-          set +e
-          API_HEADERS="$(gh api --include --silent \
-            "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" \
-            2>/dev/null)"
-          API_STATUS=$?
-          set -e
-          HTTP_STATUS="$(awk 'NR == 1 {print $2}' <<<"${API_HEADERS}")"
-          case "${API_STATUS}:${HTTP_STATUS}" in
-            0:200)
-              gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" \
-                > "${RELEASE_JSON}"
+          RELEASE_STATE="$(python3 scripts/cli_release_api.py \
+            --repo HuGR-Labs/corelink-cli --tag "${TAG}" \
+            --expected-state draft --allow-absent --format state)"
+          case "${RELEASE_STATE}" in
+            draft)
+              python3 scripts/cli_release_api.py \
+                --repo HuGR-Labs/corelink-cli --tag "${TAG}" \
+                --expected-state draft > "${RELEASE_JSON}"
               python3 - "${RELEASE_JSON}" "${TAG}" "${{ inputs.release_mode }}" <<'PY'
           import json, sys
           release = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -562,16 +564,21 @@ jobs:
           PY
               echo "Exact empty draft exists; no existing asset will be overwritten."
               ;;
-            1:404)
+            absent)
               gh release create "${TAG}" --repo HuGR-Labs/corelink-cli \
                 --title "CoreLink CLI ${TAG#cli-}" \
                 --notes-file /tmp/release-notes.md --draft
               ;;
             *)
-              echo "::error::cannot classify existing release state (API status ${API_STATUS}, HTTP ${HTTP_STATUS:-unknown})" >&2
+              echo "::error::cannot classify existing release state" >&2
               exit 1
               ;;
           esac
+          RELEASE_ID="$(python3 scripts/cli_release_api.py \
+            --repo HuGR-Labs/corelink-cli --tag "${TAG}" \
+            --expected-state draft --format id)"
+          [[ "${RELEASE_ID}" =~ ^[1-9][0-9]*$ ]]
+          printf 'release_id=%s\n' "${RELEASE_ID}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload binaries + checksums to release
         env:
@@ -746,10 +753,12 @@ jobs:
           TAG: ${{ needs.release.outputs.validated_tag }}
           SOURCE_SHA: ${{ needs.release.outputs.source_sha }}
           STAGING_MANIFEST_SHA256: ${{ needs.release.outputs.staging_manifest_sha256 }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
         run: |
           set -euo pipefail
           RELEASE_API="${RUNNER_TEMP}/corelink-final-manifest-release.json"
-          gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${RELEASE_API}"
+          python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli \
+            --tag "${TAG}" --release-id "${RELEASE_ID}" --expected-state draft > "${RELEASE_API}"
           mkdir final-assets
           STAGING_ASSET_COUNT="$(python3 - "${RELEASE_API}" <<'PY'
           import json, sys
@@ -828,7 +837,8 @@ jobs:
           # not a best-effort local filename.  A zero count is an idempotent
           # retry success; every API error and every duplicate remains fatal.
           RELEASE_API="${RUNNER_TEMP}/corelink-final-manifest-release-after-upload.json"
-          gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${RELEASE_API}"
+          python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli \
+            --tag "${TAG}" --release-id "${RELEASE_ID}" --expected-state draft > "${RELEASE_API}"
           STAGING_ASSET_COUNT="$(python3 - "${RELEASE_API}" <<'PY'
           import json, sys
           release = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -854,8 +864,14 @@ jobs:
               exit 1
               ;;
           esac
-          STAGING_ASSET_COUNT="$(gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" \
-            --jq '[.assets[] | select(.name == "staging-manifest.json")] | length')"
+          python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli \
+            --tag "${TAG}" --release-id "${RELEASE_ID}" --expected-state draft > "${RELEASE_API}"
+          STAGING_ASSET_COUNT="$(python3 - "${RELEASE_API}" <<'PY'
+          import json, sys
+          release = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(sum(asset.get("name") == "staging-manifest.json" for asset in release["assets"]))
+          PY
+          )"
           test "${STAGING_ASSET_COUNT}" = "0"
 
   release-slsa3:
@@ -873,6 +889,7 @@ jobs:
       source_sha: ${{ needs.release.outputs.source_sha }}
       manifest_sha256: ${{ needs.final-manifest.outputs.sha256 }}
       release_mode: ${{ needs.final-manifest.outputs.release_mode }}
+      release_id: ${{ needs.release.outputs.release_id }}
     secrets:
       CORELINK_CLI_RELEASE_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
 
@@ -908,12 +925,14 @@ jobs:
           TAG: ${{ needs.release.outputs.validated_tag }}
           SOURCE_SHA: ${{ needs.release.outputs.source_sha }}
           FINAL_MANIFEST_SHA256: ${{ needs.final-manifest.outputs.sha256 }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
         run: |
           set -euo pipefail
           API_JSON="${RUNNER_TEMP}/corelink-publish-release.json"
           PUBLISHED="${RUNNER_TEMP}/corelink-publish-assets"
           mkdir -p "${PUBLISHED}"
-          gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${API_JSON}"
+          python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli \
+            --tag "${TAG}" --release-id "${RELEASE_ID}" --expected-state draft > "${API_JSON}"
           gh release download "${TAG}" --repo HuGR-Labs/corelink-cli --dir "${PUBLISHED}" --clobber
           python3 scripts/verify_cli_release_inventory.py \
             --api-json "${API_JSON}" --directory "${PUBLISHED}" \
@@ -928,6 +947,7 @@ jobs:
           TAG: ${{ needs.release.outputs.validated_tag }}
           SOURCE_SHA: ${{ needs.release.outputs.source_sha }}
           FINAL_MANIFEST_SHA256: ${{ needs.final-manifest.outputs.sha256 }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
         run: |
           set -euo pipefail
           # Re-fetch the complete authenticated inventory and every asset in
@@ -939,7 +959,8 @@ jobs:
           FINAL_ASSETS="${RUNNER_TEMP}/corelink-publish-assets-final"
           rm -rf "${FINAL_ASSETS}"
           mkdir -p "${FINAL_ASSETS}"
-          gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${API_JSON}"
+          python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli \
+            --tag "${TAG}" --release-id "${RELEASE_ID}" --expected-state draft > "${API_JSON}"
           gh release download "${TAG}" --repo HuGR-Labs/corelink-cli \
             --dir "${FINAL_ASSETS}" --clobber
           python3 scripts/verify_cli_release_inventory.py \
@@ -956,14 +977,17 @@ jobs:
           for artifact in json.load(open(sys.argv[1], encoding="utf-8"))["artifacts"]:
               print(artifact["name"])
           PY
-            gh attestation verify "${FINAL_ASSETS}/${name}" \
+          gh attestation verify "${FINAL_ASSETS}/${name}" \
               --bundle "${FINAL_ASSETS}/provenance.intoto.jsonl.bundle" \
               --repo "${GITHUB_REPOSITORY}" \
               --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release-slsa3.yml" \
               --source-ref "refs/tags/${TAG}" --source-digest "${SOURCE_SHA}" \
               --cert-oidc-issuer "https://token.actions.githubusercontent.com"
           done
-          gh release edit "${TAG}" --repo HuGR-Labs/corelink-cli --draft=false
+          gh api --method PATCH "repos/HuGR-Labs/corelink-cli/releases/${RELEASE_ID}" \
+            --field draft=false > "${API_JSON}"
+          python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli \
+            --tag "${TAG}" --release-id "${RELEASE_ID}" --expected-state published > "${API_JSON}"
 
   verify-draft-release:
     name: verify exact draft bytes and unsigned Windows state
@@ -1001,12 +1025,14 @@ jobs:
           TAG: ${{ needs.release.outputs.validated_tag }}
           SOURCE_SHA: ${{ needs.release.outputs.source_sha }}
           MANIFEST_SHA256: ${{ needs.final-manifest.outputs.sha256 }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
         run: |
           set -euo pipefail
           API_JSON="${RUNNER_TEMP}/corelink-draft-release.json"
           ASSETS="${RUNNER_TEMP}/corelink-draft-assets"
           mkdir -p "${ASSETS}"
-          gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${API_JSON}"
+          python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli \
+            --tag "${TAG}" --release-id "${RELEASE_ID}" --expected-state draft > "${API_JSON}"
           gh release download "${TAG}" --repo HuGR-Labs/corelink-cli --dir "${ASSETS}"
           python3 scripts/verify_cli_release_draft.py \
             --api-json "${API_JSON}" --directory "${ASSETS}" \
