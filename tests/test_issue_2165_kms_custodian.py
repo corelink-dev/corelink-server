@@ -15,7 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "tests"))
-from issue_2165_kms_custodian import CustodianError, run_stage  # noqa: E402
+from issue_2165_kms_custodian import CustodianError, _cancel_deadline, run_stage  # noqa: E402
 from test_issue_2165_kms_runtime import fixture  # noqa: E402
 
 
@@ -79,6 +79,23 @@ class CustodianTests(unittest.TestCase):
         self.patch = patch.dict("os.environ", self.env)
         self.patch.start()
         self.addCleanup(self.patch.stop)
+
+    def _run_stage_at(self, stage: str, now: datetime):
+        with patch("issue_2165_kms_custodian._cancel_deadline", side_effect=lambda manifest: _cancel_deadline(manifest, now=now)):
+            return run_stage(stage, self.manifest, Path(self.temp.name), self.aws)
+
+    def test_cancel_deadline_preserves_exact_expiry_boundary(self):
+        _, manifest_env = fixture()
+        deadline = datetime(2026, 9, 30, 13, 0, tzinfo=timezone.utc)
+        manifest_env["key_deletion"] = {
+            "disposable_key_ownership_approved": True,
+            "ownership_approval_ref": "restricted://root/i2165/key",
+            "pending_window_days": 7,
+            "cancel_by": deadline.isoformat().replace("+00:00", "Z"),
+        }
+        self.assertEqual(_cancel_deadline(manifest_env, deadline - timedelta(seconds=1)), deadline)
+        with self.assertRaisesRegex(CustodianError, "deadline has passed"):
+            _cancel_deadline(manifest_env, deadline)
 
     def test_grant_creates_exact_operations_and_redacted_receipt(self):
         grant_id = run_stage("grant", self.manifest, Path(self.temp.name), self.aws)
@@ -198,10 +215,11 @@ class CustodianTests(unittest.TestCase):
         self.assertFalse(any(cmd[1:3] == ["kms", "schedule-key-deletion"] for cmd in self.aws.calls))
 
     def test_cancel_enables_key_and_verifies_enabled_state(self):
-        cancel_by = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        frozen_now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+        cancel_by = (frozen_now + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
         self.manifest["key_deletion"] = {"disposable_key_ownership_approved": True, "ownership_approval_ref": "restricted://root/i2165/key", "pending_window_days": 7, "cancel_by": cancel_by}
         self.aws.key_state = "PendingDeletion"
-        run_stage("cancel", self.manifest, Path(self.temp.name), self.aws)
+        self._run_stage_at("cancel", frozen_now)
         self.assertEqual(self.aws.key_state, "Enabled")
         actions = json.loads((Path(self.temp.name) / "custodian-cancel-receipt.json").read_text())["actions"]
         self.assertEqual([item["operation"] for item in actions], ["cancel-key-deletion", "enable-key"])
@@ -210,10 +228,11 @@ class CustodianTests(unittest.TestCase):
         self.assertFalse(any(cmd[1:3] == ["kms", "delete-key"] for cmd in self.aws.calls))
 
     def test_cleanup_cancels_pending_deletion_then_enables_exact_key(self):
-        cancel_by = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        frozen_now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+        cancel_by = (frozen_now + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
         self.manifest["key_deletion"] = {"disposable_key_ownership_approved": True, "ownership_approval_ref": "restricted://root/i2165/key", "pending_window_days": 7, "cancel_by": cancel_by}
         self.aws.key_state = "PendingDeletion"
-        run_stage("cleanup", self.manifest, Path(self.temp.name), self.aws)
+        self._run_stage_at("cleanup", frozen_now)
         self.assertEqual(self.aws.key_state, "Enabled")
         self.assertLess(
             next(i for i, cmd in enumerate(self.aws.calls) if cmd[1:3] == ["kms", "cancel-key-deletion"]),
