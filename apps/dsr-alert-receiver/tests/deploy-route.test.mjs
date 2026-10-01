@@ -687,29 +687,71 @@ describe("B-216 protected receiver route admission", () => {
   // PR #2877 review finding 3: the old patterns took ~54/214/854 ms at 14/28/56 KB
   // of repeated "worker " text. 4 MiB of each adversarial shape must classify well
   // inside the bound. The provider-message and code patterns only run inside an
-  // API-request block, so most shapes are put there.
-  const inScriptApiFailure = (note) => {
-    const line = `  ${note.repeat(Math.ceil(4000 / note.length))}\n`;
-    return `${scriptApiFailure("x")}${line.repeat(Math.ceil((4 * 1024 * 1024) / line.length))}`;
-  };
+  // API-request block, and only a block complete inside the window is read, so most
+  // shapes are a complete block of long notes followed by 4 MiB of filler.
+  const completeScriptApiFailure = (notes) => `${scriptApiFailure(...notes)}🪵  Logs were written\n${"z".repeat(4 * 1024 * 1024)}`;
+  const distinctCodeNote = (line) => Array.from({ length: 80 }, (_, index) => `[code: ${line * 80 + index}]`).join(" ");
   it.each([
-    ["repeated worker text", () => ({ stdout: "worker ".repeat(600_000), stderr: inScriptApiFailure("worker ") })],
-    ["repeated not found text", () => ({ stdout: "", stderr: inScriptApiFailure("not found ") })],
-    ["unterminated code marker", () => ({ stdout: "", stderr: `${scriptApiFailure(`[code:${" ".repeat(200 * 1024)}`)}${" ".repeat(4 * 1024 * 1024)}` })],
-    ["many unterminated markers", () => ({ stdout: "[code: 1".repeat(530_000), stderr: inScriptApiFailure("[code: 1") })],
-    ["huge first error block", () => ({ stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n  ${"GET /user -> 200 OK worker ".repeat(160_000)}` })],
-    ["many request notes", () => ({ stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n${"  GET /x -> 200 OK\n".repeat(222_000)}` })],
-    ["many banners", () => ({ stdout: "", stderr: "✘ [ERROR] fetch failed\n".repeat(183_000) })],
-    ["unauthorized text", () => ({ stdout: "", stderr: inScriptApiFailure("unauthorize permission rate limi ") })],
-    ["progress lookalikes", () => ({ stdout: `${"Total Upload: 1 KiB / gzip: ".repeat(150_000)}\n${"Uploaded x (".repeat(350_000)}`, stderr: "" })],
-    ["many distinct codes", () => ({ stdout: "", stderr: `${scriptApiFailure(Array.from({ length: 300_000 }, (_, index) => `[code: ${index}]`).join(" "))}` })],
-  ])("classifies 4 MiB of %s in bounded time", (_name, build) => {
+    ["repeated worker text", () => ({ stdout: "worker ".repeat(600_000), stderr: completeScriptApiFailure(Array(190).fill("worker ".repeat(143))) }), "first_error_block"],
+    ["repeated not found text", () => ({ stdout: "", stderr: completeScriptApiFailure(Array(190).fill("not found ".repeat(100))) }), "first_error_block"],
+    ["unterminated code marker", () => ({ stdout: "", stderr: completeScriptApiFailure(Array(50).fill(`[code:${" ".repeat(4000)}`)) }), "first_error_block"],
+    ["many unterminated markers", () => ({ stdout: "[code: 1".repeat(530_000), stderr: completeScriptApiFailure(Array(190).fill("[code: 1".repeat(125))) }), "first_error_block"],
+    ["provider message lookalikes", () => ({ stdout: "", stderr: completeScriptApiFailure(Array(190).fill("unauthorize permission rate limi ".repeat(30))) }), "first_error_block"],
+    ["many distinct codes", () => ({ stdout: "", stderr: completeScriptApiFailure(Array.from({ length: 190 }, (_, line) => distinctCodeNote(line))) }), "first_error_block"],
+    ["many banners", () => ({ stdout: "", stderr: "✘ [ERROR] fetch failed\n".repeat(183_000) }), "first_error_block"],
+    ["progress lookalikes", () => ({ stdout: `${"Total Upload: 1 KiB / gzip: ".repeat(150_000)}\n${"Uploaded x (".repeat(350_000)}`, stderr: "" }), "no_structured_error"],
+    ["huge first error block", () => ({ stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n  ${"GET /user -> 200 OK worker ".repeat(160_000)}` }), "truncated"],
+    ["many request notes", () => ({ stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n${"  GET /x -> 200 OK\n".repeat(222_000)}` }), "truncated"],
+  ])("classifies 4 MiB of %s in bounded time", (_name, build, structure) => {
     const { stdout, stderr } = build();
     expect(stdout.length + stderr.length).toBeGreaterThanOrEqual(4 * 1024 * 1024);
     const started = performance.now();
     const failure = classifyWranglerFailure({ status: 1, stdout, stderr });
     expect(performance.now() - started).toBeLessThan(1500);
+    expect(failure.provider_output_structure).toBe(structure);
     expect(failure.provider_error_codes.length).toBeLessThanOrEqual(8);
+  });
+
+  // PR #2877 round-3 finding: a block cut by the window must not be read as complete.
+  // Both cases put the cut where the visible part alone would mislead.
+  it("reports a first error block cut by the analysed window as truncated", () => {
+    const window = 256 * 1024;
+    const padTo = (visible) => `${"w".repeat(window - visible.length - 1)}\n${visible}`;
+    const echoedThenReal = [
+      "✘ [ERROR] Received a malformed response from the API",
+      "",
+      "  <p>",
+      "  GET /user -> 200 OK",
+      "",
+    ].join("\n");
+    const realNote = `  PUT /accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName} -> 403 Forbidden\n`;
+    const cutBetweenNotes = `${padTo(echoedThenReal)}${realNote}`;
+    expect(padTo(echoedThenReal)).toHaveLength(window);
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: cutBetweenNotes })).toEqual({
+      ...NO_STRUCTURED_ERROR,
+      process_exit_code: 1,
+      provider_output_structure: "truncated",
+    });
+    // Uncut, the same block has two request-shaped notes and neither is believed.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${echoedThenReal}${realNote}` })).toMatchObject({
+      provider_error_category: "malformed_api_response",
+      provider_failure_endpoint: "ambiguous_report",
+      provider_http_status: null,
+      provider_output_structure: "first_error_block",
+    });
+
+    const unrecognised = "✘ [ERROR] fetch failed";
+    const cutInBanner = `${padTo(unrecognised)} because the proxy refused the connection\n`;
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: cutInBanner })).toEqual({
+      ...NO_STRUCTURED_ERROR,
+      process_exit_code: 1,
+      provider_output_structure: "truncated",
+    });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${unrecognised} because the proxy refused the connection\n` })).toEqual({
+      ...NO_STRUCTURED_ERROR,
+      process_exit_code: 1,
+      provider_output_structure: "first_error_block",
+    });
   });
 
   it("reads only the head of stderr for the first error block", () => {
@@ -718,7 +760,17 @@ describe("B-216 protected receiver route admission", () => {
       provider_error_category: "network_failure",
       provider_output_structure: "first_error_block",
     });
-    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 23)}\n✘ [ERROR] fetch failed\n` }).provider_error_category).toBe("network_failure");
+    // Ending exactly at the window: complete only because stderr ends there too.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 24)}\n✘ [ERROR] fetch failed\n` }).provider_error_category).toBe("network_failure");
+    // Ending before stderr does: complete only because its terminating line starts inside.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 25)}\n✘ [ERROR] fetch failed\n▲ [WARNING] more` }).provider_error_category).toBe("network_failure");
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 24)}\n✘ [ERROR] fetch failed\n  ` })).toMatchObject({ provider_error_category: "unknown_cli_failure", provider_output_structure: "truncated" });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 23)}\n✘ [ERROR] fetch failed\n` })).toMatchObject({ provider_error_category: "unknown_cli_failure", provider_output_structure: "truncated" });
+    // A block past the line cap, or with a line past the line cap, is cut too.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n${"  GET /x -> 200 OK\n".repeat(200)}` })).toMatchObject({ provider_output_structure: "truncated", provider_failure_endpoint: "none_reported" });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n${"  GET /x -> 200 OK\n".repeat(150)}` })).toMatchObject({ provider_output_structure: "first_error_block", provider_failure_endpoint: "ambiguous_report" });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${scriptApiFailure(`Authentication error [code: 10000]${" ".repeat(4096)}`)}` })).toMatchObject({ provider_output_structure: "truncated", provider_error_codes: [] });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] fetch failed${" ".repeat(4096)}\n` })).toMatchObject({ provider_output_structure: "truncated", provider_error_category: "unknown_cli_failure" });
     // A banner beyond the analysed head cannot be placed as the first error, so
     // nothing more specific than unknown is claimed.
     expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(300 * 1024)}\n✘ [ERROR] fetch failed\n` })).toEqual({

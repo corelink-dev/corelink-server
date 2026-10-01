@@ -169,18 +169,38 @@ export function labelWranglerEndpoint(resource) {
 // response body it echoes, so a column-0 banner can only come from Wrangler. The
 // first banner in stderr is the root failure; later blocks are Wrangler's own
 // follow-up (for example whoami after a 10000) and must not change the diagnosis.
+//
+// The block counts only when it is complete inside the analysed window: its end,
+// the next column-0 line or the end of stderr, must be visible, and no line may
+// exceed the line or block caps. A cut block can be missing exactly what would
+// contradict the visible part: the real request note after an echoed body, or the
+// rest of a banner message. So a cut block is reported as truncated, and nothing is
+// read from it.
+const TRUNCATED_BLOCK = Object.freeze({ truncated: true });
+
 function rootErrorBlock(stderr) {
+  const windowCoversStderr = stderr.length <= MAX_ANALYSED_CHARS;
   const head = stderr.slice(0, MAX_ANALYSED_CHARS).replace(ANSI_SGR, "");
   const banner = ERROR_BANNER.exec(head);
-  if (!banner) return null;
+  if (!banner) return windowCoversStderr ? null : TRUNCATED_BLOCK;
   const lines = head.slice(banner.index).split("\n", MAX_ROOT_BLOCK_LINES + 1);
+  if (lines[0].length - banner[0].length > MAX_LINE_CHARS) return TRUNCATED_BLOCK;
   const notes = [];
-  for (const line of lines.slice(1)) {
+  let terminated = false;
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index];
     if (line.trim() === "") continue;
-    if (!line.startsWith("  ")) break;
-    notes.push(line.slice(0, MAX_LINE_CHARS));
+    if (!line.startsWith("  ")) {
+      terminated = true;
+      break;
+    }
+    if (line.length > MAX_LINE_CHARS) return TRUNCATED_BLOCK;
+    notes.push(line);
   }
-  return { message: lines[0].slice(banner[0].length, banner[0].length + MAX_LINE_CHARS), notes };
+  // Without a visible next line the block ends only where stderr itself ends, and
+  // only if the line cap did not stop the split first.
+  if (!terminated && !(windowCoversStderr && lines.length <= MAX_ROOT_BLOCK_LINES)) return TRUNCATED_BLOCK;
+  return { message: lines[0].slice(banner[0].length), notes };
 }
 
 // The banner messages Wrangler 4.141.0 prints for the failures this route can name,
@@ -269,11 +289,11 @@ export function classifyWranglerFailure(result) {
   }
   const stdout = typeof result?.stdout === "string" ? result.stdout : "";
   const stderr = typeof result?.stderr === "string" ? result.stderr : "";
-  // Without a Wrangler error block in the analysed head of stderr there is nothing
-  // to place as the first failure: no category, code or endpoint is read from the
-  // remaining text, which may be a later follow-up or an echoed body.
+  // Without a complete Wrangler error block in the analysed head of stderr there is
+  // nothing to place as the first failure: no category, code, endpoint or status is
+  // read from the remaining text, which may be a later follow-up or an echoed body.
   const root = rootErrorBlock(stderr);
-  const diagnosis = root ? classifyRootBlock(root) : UNKNOWN_DIAGNOSIS;
+  const diagnosis = root && !root.truncated ? classifyRootBlock(root) : UNKNOWN_DIAGNOSIS;
   // Progress lines are Wrangler's own stdout lines at column 0, naming the fixed
   // Worker; an echoed body is on stderr and indented, so it cannot produce them.
   const stdoutHead = stdout.slice(0, MAX_ANALYSED_CHARS).replace(ANSI_SGR, "");
@@ -287,9 +307,7 @@ export function classifyWranglerFailure(result) {
     provider_progress: UPLOAD_REPORTED.test(stdoutHead)
       ? "upload_reported"
       : BUNDLE_REPORTED.test(stdoutHead) ? "bundle_reported" : "before_bundle_report",
-    provider_output_structure: root
-      ? "first_error_block"
-      : stderr.length > MAX_ANALYSED_CHARS ? "truncated" : "no_structured_error",
+    provider_output_structure: root?.truncated ? "truncated" : root ? "first_error_block" : "no_structured_error",
   };
   if (wellFormed === 1 && prefixes === 1) {
     return sanitizeProviderFailure({ ...details, provider_failure_class: "provider_error_code", provider_error_code: codes[0] });
