@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "rust_affected_packages.py"
@@ -342,6 +344,102 @@ class CommandLine(Fixture):
         changed.write_bytes(b"")
         code, values = self.run_main("--changed", str(changed))
         self.assertEqual((code, values), (1, {}))
+
+
+WORKFLOW = ROOT / ".github" / "workflows" / "rust-affected-tests.yml"
+_GLOB_LINE = re.compile(r"^\s*- '(?P<glob>[^']+)'(?:\s+#.*)?$")
+
+
+def marked_globs(text: str, event: str) -> list[str]:
+    """The `paths:` globs between `# rust-affected-paths:begin|end <event>`.
+
+    Strict on purpose: a missing or repeated marker, a block that does not
+    open with `paths:`, any line that is not a single-quoted list item, or an
+    empty list is a ValueError — never a shorter list.
+    """
+    lines = text.splitlines()
+    begins = [i for i, line in enumerate(lines) if line.strip() == f"# rust-affected-paths:begin {event}"]
+    ends = [i for i, line in enumerate(lines) if line.strip() == f"# rust-affected-paths:end {event}"]
+    if len(begins) != 1 or len(ends) != 1 or ends[0] < begins[0]:
+        raise ValueError(f"expected exactly one begin/end marker pair for {event!r}, got {len(begins)}/{len(ends)}")
+    body = [line for line in lines[begins[0] + 1:ends[0]] if line.strip()]
+    if not body or body[0].strip() != "paths:":
+        raise ValueError(f"the {event!r} block does not open with `paths:`")
+    globs = []
+    for line in body[1:]:
+        match = _GLOB_LINE.match(line)
+        if match is None:
+            raise ValueError(f"unrecognised line in the {event!r} paths block: {line!r}")
+        globs.append(match.group("glob"))
+    if not globs:
+        raise ValueError(f"the {event!r} paths block is EMPTY")
+    return globs
+
+
+def glob_matches(glob: str, path: str) -> bool:
+    """GitHub path-filter semantics: `**` crosses `/`, `*` and `?` do not, and
+    `**/x` also matches a root-level `x` (GitHub's own cheat sheet example)."""
+    pattern, i = "", 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            pattern, i = pattern + "(?:.*/)?", i + 3
+        elif glob.startswith("**", i):
+            pattern, i = pattern + ".*", i + 2
+        elif glob[i] == "*":
+            pattern, i = pattern + "[^/]*", i + 1
+        elif glob[i] == "?":
+            pattern, i = pattern + "[^/]", i + 1
+        else:
+            pattern, i = pattern + re.escape(glob[i]), i + 1
+    return re.fullmatch(pattern, path) is not None
+
+
+def uncovered(globs: list[str], paths: Iterable[str]) -> list[str]:
+    return sorted(p for p in paths if not any(glob_matches(g, p) for g in globs))
+
+
+# Every path the selector gives a whole-workspace or diff-specific meaning to
+# must actually START the workflow, or that meaning is dead code.
+MUST_TRIGGER = sorted(rap.LANE_FILES | rap.WORKSPACE_WIDE_FILES
+                      | {rap.ROOT_MANIFEST, rap.LOCKFILE, "tests/test_rust_affected_packages.py",
+                         "tools/cli/src/main.rs", "tests/e2e-dsr/Cargo.toml"})
+
+
+class TriggerFilter(unittest.TestCase):
+    def setUp(self) -> None:
+        self.text = WORKFLOW.read_text(encoding="utf-8")
+
+    def test_pull_request_and_push_filters_are_identical(self) -> None:
+        self.assertEqual(marked_globs(self.text, "pull_request"), marked_globs(self.text, "push"))
+
+    def test_every_selector_input_triggers_the_workflow(self) -> None:
+        for event in ("pull_request", "push"):
+            with self.subTest(event=event):
+                self.assertEqual(uncovered(marked_globs(self.text, event), MUST_TRIGGER), [])
+
+    def test_teeth_a_dropped_glob_is_named(self) -> None:
+        planted = self.text.replace("      - 'rust-toolchain.toml'\n", "", 1)
+        self.assertNotEqual(planted, self.text)
+        self.assertEqual(uncovered(marked_globs(planted, "pull_request"), MUST_TRIGGER), ["rust-toolchain.toml"])
+
+    def test_teeth_missing_marker_fails(self) -> None:
+        planted = self.text.replace("# rust-affected-paths:end push", "# end", 1)
+        with self.assertRaisesRegex(ValueError, "marker pair for 'push'"):
+            marked_globs(planted, "push")
+
+    def test_teeth_unrecognised_line_fails_instead_of_shrinking(self) -> None:
+        planted = self.text.replace("      - 'Cargo.lock'\n", "      - Cargo.lock\n", 1)
+        with self.assertRaisesRegex(ValueError, "unrecognised line"):
+            marked_globs(planted, "pull_request")
+
+    def test_glob_semantics(self) -> None:
+        self.assertTrue(glob_matches("**/*.rs", "src/lib.rs"))
+        self.assertTrue(glob_matches("**/clippy.toml", "clippy.toml"))
+        self.assertTrue(glob_matches("**/Cargo.toml", "tools/sdks/go/Cargo.toml"))
+        self.assertFalse(glob_matches("**/clippy.toml", "notclippy.toml"))
+        self.assertTrue(glob_matches("crates/**", "crates/a/b/c.md"))
+        self.assertFalse(glob_matches("rust-toolchain", "rust-toolchain.toml"))
+        self.assertFalse(glob_matches("*.rs", "src/lib.rs"))
 
 
 if __name__ == "__main__":

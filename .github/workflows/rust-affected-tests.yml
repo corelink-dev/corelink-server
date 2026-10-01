@@ -35,6 +35,10 @@ name: rust-affected-tests
 
 on:
   pull_request:
+    # The two `paths:` lists below must stay identical and must cover every
+    # file the selector treats as workspace-wide; tests/test_rust_affected_packages.py
+    # reads them between these markers and fails if either drifts.
+    # rust-affected-paths:begin pull_request
     paths:
       - '**/*.rs'
       - '**/Cargo.toml'
@@ -49,10 +53,12 @@ on:
       - '.github/workflows/rust-affected-tests.yml'
       - 'scripts/rust_affected_packages.py'
       - 'tests/test_rust_affected_packages.py'
+    # rust-affected-paths:end pull_request
   # Post-merge: catches what two individually-green PRs break together inside
   # the closure, and is the only event whose caches every PR can restore.
   push:
     branches: [main]
+    # rust-affected-paths:begin push
     paths:
       - '**/*.rs'
       - '**/Cargo.toml'
@@ -67,6 +73,7 @@ on:
       - '.github/workflows/rust-affected-tests.yml'
       - 'scripts/rust_affected_packages.py'
       - 'tests/test_rust_affected_packages.py'
+    # rust-affected-paths:end push
   # Manual run = the whole workspace, for inputs the path mapping cannot see.
   workflow_dispatch:
 
