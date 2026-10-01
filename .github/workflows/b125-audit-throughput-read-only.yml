@@ -7,13 +7,21 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type "run-b125-read-only" to authorize the bounded read'
+        description: 'Type "run-b125-read-only" for full capture or "diagnose-b125-hourly" for one hourly diagnostic SELECT'
         required: true
         type: string
       deployment_receipt_ref:
         description: 'Exact #1648 issue-comment URL for the verified active repaired-image rollout'
         required: true
         type: string
+      capture_mode:
+        description: 'Use full closure evidence or one bounded hourly-query diagnostic'
+        required: true
+        type: choice
+        default: full_capture
+        options:
+          - full_capture
+          - hourly_diagnostic
 
 permissions:
   contents: read
@@ -44,6 +52,7 @@ jobs:
         id: read
         env:
           CONFIRM: ${{ inputs.confirm }}
+          CAPTURE_MODE: ${{ inputs.capture_mode }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -60,7 +69,7 @@ jobs:
           # Keep a non-empty failure receipt even when credentials or the
           # canonical database identity are unavailable.
           python3 - "$receipt" <<'PY'
-          import json, sys
+          import json, os, sys
           from datetime import datetime, timezone
           path = sys.argv[1]
           payload = {
@@ -69,6 +78,7 @@ jobs:
               "backlog_id": "B-125",
               "captured_at": datetime.now(timezone.utc).isoformat(),
               "window_hours": 6,
+              "capture_mode": os.environ.get("CAPTURE_MODE", "invalid"),
               "queries": [],
               "valid": False,
               "failure_reasons": ["read_not_started"],
@@ -108,7 +118,11 @@ jobs:
               raise SystemExit(1)
           PY
 
-          [[ "$CONFIRM" == "run-b125-read-only" ]] || fail_closed "confirmation_mismatch"
+          case "$CAPTURE_MODE" in
+            full_capture) [[ "$CONFIRM" == "run-b125-read-only" ]] || fail_closed "confirmation_mismatch" ;;
+            hourly_diagnostic) [[ "$CONFIRM" == "diagnose-b125-hourly" ]] || fail_closed "confirmation_mismatch" ;;
+            *) fail_closed "capture_mode_invalid" ;;
+          esac
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || fail_closed "protected_main_ref_required"
           [[ -n "${CF_ACCOUNT_ID:-}" ]] || fail_closed "CF_ACCOUNT_ID_missing"
           [[ -n "${CF_API_TOKEN:-}" ]] || fail_closed "CF_API_TOKEN_missing"
@@ -309,6 +323,10 @@ jobs:
             [[ ! "$sql" =~ (INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|PRAGMA|ATTACH|DETACH) ]] || fail_closed "query_contains_write_or_pragma_${id}"
             raw="$raw_dir/$id.json"
             stderr="$raw_dir/$id.stderr"
+            # Once the first provider call is about to begin, the startup
+            # marker is no longer truthful. Record each attempted query so a
+            # failed capture distinguishes preflight failure from read failure.
+            python3 scripts/b125_readonly_diagnostics.py mark-started "$receipt" "$id"
             set +e
             CI=1 pnpm --silent dlx wrangler@4.111.0 d1 execute "$D1_DATABASE_ID" --remote --command "$sql" --json >"$raw" 2>"$stderr"
             status=$?
@@ -369,9 +387,14 @@ jobs:
             fi
           }
 
-          for query_id in population partition hourly latency heads burst integrity replay head_tail; do
-            run_query "$query_id"
-          done
+          if [[ "$CAPTURE_MODE" == "hourly_diagnostic" ]]; then
+            run_query hourly
+            fail_closed "diagnostic_only_capture_not_closure_evidence"
+          else
+            for query_id in population partition hourly latency heads burst integrity replay head_tail; do
+              run_query "$query_id"
+            done
+          fi
 
           python3 - "$receipt" <<'PY'
           import json, math, sys
