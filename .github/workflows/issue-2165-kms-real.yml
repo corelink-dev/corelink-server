@@ -25,6 +25,7 @@ on:
       - scripts/verify_issue_2165_kms_contract.py
       - scripts/verify_issue_2165_kms_cleanup.py
       - scripts/verify_issue_2165_ecr_image_build.py
+      - scripts/issue_2165_cleanup_tasks.py
       - tests/test_issue_2165_kms_runtime.py
       - tests/test_issue_2165_kms_custodian.py
       - tests/test_issue_2165_kms_cycles.py
@@ -106,7 +107,7 @@ jobs:
           set -euo pipefail
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -config-file .github/actionlint.yaml .github/workflows/issue-2165-kms-real.yml
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -config-file .github/actionlint.yaml .github/workflows/issue-2165-ecr-image-build.yml
-          python3 -B scripts/verify_issue_2165_ecr_image_build.py --workflow .github/workflows/issue-2165-ecr-image-build.yml --runtime scripts/issue_2165_kms_runtime.py
+          python3 -B scripts/verify_issue_2165_ecr_image_build.py --workflow .github/workflows/issue-2165-ecr-image-build.yml --runtime scripts/issue_2165_kms_runtime.py --cleanup-tasks scripts/issue_2165_cleanup_tasks.py
           for phase in inventory pregrant-deny postgrant-readonly lifecycle cleanup; do
             python3 -B scripts/verify_issue_2165_kms_contract.py --workflow .github/workflows/issue-2165-kms-real.yml --env b083-kms-lifecycle --target-alias "$B083_TARGET_ALIAS" --phase "$phase"
           done
