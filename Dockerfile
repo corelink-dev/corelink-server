@@ -194,9 +194,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=corelink-cargo-regist
     cp /build/target/release/corelink-gc-sweep-production /out/corelink-gc-sweep-production; \
     cp /build/target/release/gc_sweep /out/gc_sweep
 
-# ---- Runtime stage ----
+# ---- Runtime base stage ----
 # HO-1: digest-pinned per Wave-32 Phase E audit (supply-chain integrity).
-FROM debian:bookworm-slim@sha256:b29f74a267526ae6ea104eed6c46133b0ca70ce812525df8cd5817698f0a624a
+FROM debian:bookworm-slim@sha256:b29f74a267526ae6ea104eed6c46133b0ca70ce812525df8cd5817698f0a624a AS runtime-base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -205,6 +205,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN groupadd --system --gid 1000 corelink \
  && useradd --system --uid 1000 --gid corelink corelink
+
+# GNU timeout and date are supplied by Debian's base coreutils package.
+# Keep this native oracle target before Rust artifacts are copied into the image.
+COPY scripts/issue_1700_native_supervisor.sh /usr/local/bin/corelink-staging-probe-supervisor
+RUN chmod 0755 /usr/local/bin/corelink-staging-probe-supervisor \
+ && test -x /usr/bin/timeout \
+ && test -x /usr/bin/date
+
+USER corelink
+
+# ---- Runtime image ----
+FROM runtime-base AS runtime
 
 # Binary copied out of the builder's cache mount into /out/ (see build
 # RUN step above). The cache mount itself is not visible to this stage.

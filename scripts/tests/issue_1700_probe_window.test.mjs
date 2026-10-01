@@ -11,19 +11,28 @@ const MIN_CLEANUP_MS = 75 * 60_000;
 const workflowPath = new URL("../../.github/workflows/issue-1700-container-staging-deploy.yml", import.meta.url);
 const runtimePath = new URL("../issue_1700_runtime_probe.mjs", import.meta.url);
 
-test("v10 window and full-cleanup admission boundaries are exact", () => {
+test("v11 window and full-cleanup admission boundaries are exact", () => {
   assert.deepEqual(PROBE_WINDOW, {
     cron: "*/2 * * * *",
-    starts_ms: Date.parse("2026-10-01T12:00:00Z"),
-    last_entry_ms: Date.parse("2026-10-01T18:00:00Z"),
-    expires_ms: Date.parse("2026-10-01T19:15:00Z"),
-    nonce: "issue-1700-recovery-20261001-v10",
+    starts_ms: Date.parse("2026-10-01T20:00:00Z"),
+    last_entry_ms: Date.parse("2026-10-01T22:00:00Z"),
+    expires_ms: Date.parse("2026-10-01T23:15:00Z"),
+    nonce: "issue-1700-recovery-20261001-v11",
   });
   assert.equal(isApprovedProbeWindow({ ...PROBE_WINDOW }), true);
-  assert.equal(isApprovedProbeWindow({ ...PROBE_WINDOW, nonce: "issue-1700-recovery-20261001-v7" }), false);
+  for (const nonce of ["issue-1700-recovery-20261001-v7", "issue-1700-recovery-20261001-v10"]) {
+    assert.equal(isApprovedProbeWindow({ ...PROBE_WINDOW, nonce }), false);
+  }
   assert.equal(deploymentWindowAllows(PROBE_WINDOW.starts_ms - 1), false);
   assert.equal(deploymentWindowAllows(PROBE_WINDOW.starts_ms), true);
-  assert.equal(deploymentWindowAllows(PROBE_WINDOW.last_entry_ms - MIN_CLEANUP_MS - 1), true);
+  const dispatchEnd = Date.parse("2026-10-01T20:20:00Z");
+  assert.equal(deploymentWindowAllows(PROBE_WINDOW.starts_ms + 1), true);
+  assert.equal(deploymentWindowAllows(dispatchEnd - 1), true);
+  assert.equal(deploymentWindowAllows(dispatchEnd), false);
+  assert.equal(deploymentWindowAllows(dispatchEnd + 1), false);
+  assert.equal(deploymentWindowAllows(dispatchEnd, 0), false);
+  assert.equal(deploymentWindowAllows(PROBE_WINDOW.starts_ms, PROBE_WINDOW.last_entry_ms - PROBE_WINDOW.starts_ms), false);
+  assert.equal(deploymentWindowAllows(PROBE_WINDOW.last_entry_ms - MIN_CLEANUP_MS - 1), false);
   assert.equal(deploymentWindowAllows(PROBE_WINDOW.last_entry_ms - MIN_CLEANUP_MS), false);
   assert.equal(deploymentWindowAllows(PROBE_WINDOW.last_entry_ms), false);
 });
@@ -52,12 +61,45 @@ test("pre-install window module executes from an empty node_modules directory", 
     await copyFile(modulePath, localModule);
     const child = spawnSync(process.execPath, ["--input-type=module", "-e",
       `import { PROBE_WINDOW, deploymentWindowAllows } from ${JSON.stringify(pathToFileURL(localModule).href)};\n` +
-      `if (PROBE_WINDOW.nonce !== "issue-1700-recovery-20261001-v10") process.exit(2);\n` +
+      `if (PROBE_WINDOW.nonce !== "issue-1700-recovery-20261001-v11") process.exit(2);\n` +
       `if (!deploymentWindowAllows(PROBE_WINDOW.starts_ms)) process.exit(3);\n` +
       `if (deploymentWindowAllows(PROBE_WINDOW.last_entry_ms - 75 * 60_000)) process.exit(4);\n`
     ], { cwd: temporary, encoding: "utf8", timeout: 5000 });
     assert.equal(child.status, 0, `${child.stderr}\n${child.stdout}`);
   } finally {
     await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+
+test("all compiled admission and cleanup consumers agree on the v11 tuple", async () => {
+  const source = async path => readFile(new URL(`../../${path}`, import.meta.url), "utf8");
+  assert.deepEqual(JSON.parse(await source("crates/corelink-container/src/routes/staging_d1_probe_window.json")), PROBE_WINDOW);
+  assert.deepEqual(JSON.parse(await source("worker/src/staging_d1_probe_cleanup_window.json")), {
+    starts_ms: PROBE_WINDOW.starts_ms, expires_ms: PROBE_WINDOW.expires_ms,
+  });
+  const shell = await source("scripts/issue_1700_native_supervisor.sh");
+  for (const [name, value] of [["window_start", PROBE_WINDOW.starts_ms], ["last_entry", PROBE_WINDOW.last_entry_ms], ["expiry", PROBE_WINDOW.expires_ms]]) {
+    assert.ok(shell.includes(`${name}=${value}\n`), name);
+  }
+  for (const path of ["scripts/issue_1700_rollback_quiescence.py", "scripts/verify_i2575_readiness.py"]) {
+    const text = await source(path);
+    for (const value of [PROBE_WINDOW.nonce, PROBE_WINDOW.starts_ms, PROBE_WINDOW.last_entry_ms, PROBE_WINDOW.expires_ms]) assert.ok(text.includes(String(value)), `${path}: ${value}`);
+    assert.doesNotMatch(text, /issue-1700-recovery-20261001-v10|1790856000000|1790877600000|1790882100000/);
+  }
+  for (const path of ["scripts/issue_1700_http_probe.mjs", "scripts/issue_1700_runtime_probe.mjs"]) {
+    const text = await source(path);
+    assert.ok(text.includes('Date.parse("2026-10-01T20:00:00Z")'));
+    assert.ok(text.includes('Date.parse("2026-10-01T23:15:00Z")'));
+    assert.doesNotMatch(text, /issue-1700-recovery-20261001-v10|2026-10-01T19:15:00Z/);
+  }
+  const native = await source("crates/corelink-container/src/routes/staging_d1_binding_probe.rs");
+  const fixtureTime = Number(native.match(/const TIME: u64 = (\d+);/)?.[1]);
+  assert.equal(fixtureTime, PROBE_WINDOW.starts_ms + 120_000);
+  assert.equal(fixtureTime % 120_000, 0);
+  assert.ok(fixtureTime <= PROBE_WINDOW.last_entry_ms);
+  assert.ok(native.includes(`"corelink_staging_d1_probe_0123456789abcdef_${fixtureTime}"`));
+  for (const key of ["starts_ms", "last_entry_ms", "expires_ms", "nonce"]) {
+    assert.ok(native.includes(`assert_eq!(window.${key}, ${JSON.stringify(PROBE_WINDOW[key])});`));
   }
 });

@@ -1,5 +1,6 @@
 import type { Container, D1Database, Fetcher } from "@cloudflare/workers-types";
 import type { Env } from "./index_env.js";
+import { checkHttpExecutionDeadline, type StagingD1HttpDeadline } from "./staging_d1_http_lifetime.js";
 
 const D1_PROXY_HOST = "corelink-d1-proxy.invalid";
 const STAGING_ACCOUNT_ID = "6a1fc1c626fc2628823e60b9db01f5cd";
@@ -29,7 +30,10 @@ export async function installD1BindingProxy(
 export async function handleStagingD1BindingRequest(
   request: Request,
   env: ProxyEnv,
+  deadline?: StagingD1HttpDeadline,
 ): Promise<Response> {
+  const checkDeadline = () => { if (deadline !== undefined) checkHttpExecutionDeadline(deadline); };
+  try { checkDeadline(); } catch { return jsonError(502, "D1 binding operation failed"); }
   const url = new URL(request.url);
   // `URL.port` normalizes an explicit default HTTP port (`:80`) to empty.
   // The intercepted Container request retains its HTTP authority in Host, so
@@ -68,8 +72,15 @@ export async function handleStagingD1BindingRequest(
   }
 
   let input: unknown;
+  let bytes: ArrayBuffer;
+  try { checkDeadline(); } catch { return jsonError(502, "D1 binding operation failed"); }
   try {
-    const bytes = await request.arrayBuffer();
+    bytes = await request.arrayBuffer();
+  } catch {
+    return jsonError(400, "D1 binding proxy body is malformed");
+  }
+  try { checkDeadline(); } catch { return jsonError(502, "D1 binding operation failed"); }
+  try {
     if (bytes.byteLength === 0 || bytes.byteLength > MAX_BODY_BYTES) {
       return jsonError(413, "D1 binding proxy body size rejected");
     }
@@ -78,7 +89,9 @@ export async function handleStagingD1BindingRequest(
     return jsonError(400, "D1 binding proxy body is malformed");
   }
   try {
-    const envelope = await executeD1Input(env.CONFIG_DB, input);
+    checkDeadline();
+    const envelope = await executeD1Input(env.CONFIG_DB, input, checkDeadline);
+    checkDeadline();
     return Response.json(envelope, { headers: { "cache-control": "no-store" } });
   } catch {
     return jsonError(502, "D1 binding operation failed");
@@ -88,12 +101,15 @@ export async function handleStagingD1BindingRequest(
 async function executeD1Input(
   db: D1Database,
   input: unknown,
+  checkDeadline: () => void,
 ): Promise<{ result: Array<{ results: unknown[]; success: boolean }>; success: boolean; errors: [] }> {
   const record = exactRecord(input);
   if (record === null) throw new Error("invalid request envelope");
   if (Object.keys(record).length === 2 && "sql" in record && "params" in record) {
     const statement = parseStatement(record);
+    checkDeadline();
     const result = await prepare(db, statement).all();
+    checkDeadline();
     return {
       result: [{ results: result.results, success: result.success }],
       success: result.success,
@@ -106,7 +122,9 @@ async function executeD1Input(
     }
     const statements = record["batch"].map((item) => prepare(db, parseStatement(exactRecord(item))));
     // D1Database.batch is transactional: any failed statement rolls back all.
+    checkDeadline();
     const results = await db.batch(statements);
+    checkDeadline();
     return {
       result: results.map((item) => ({ results: item.results, success: item.success })),
       success: results.every((item) => item.success),
