@@ -203,6 +203,8 @@ jobs:
       - name: Install protoc for the Rust lanes
         if: ${{ inputs.suite == 'i1700' || inputs.suite == 'i1629' || inputs.suite == 'i1630' || inputs.suite == 'i1631' || inputs.suite == 'i1632' || inputs.suite == 'i1636' || inputs.suite == 'i1638' || inputs.suite == 'i1639' || inputs.suite == 'i1628' || inputs.suite == 'i1671' || inputs.suite == 'i1668' || inputs.suite == 'i1722' || inputs.suite == 'i1665' || inputs.suite == 'i1663' || inputs.suite == 'i1659-dry' || inputs.suite == 'i1809-b063-archive-replay' || inputs.suite == 'i2421' }}
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ github.token }}
 
       - name: Prepare bounded campaign log directory
         shell: bash
