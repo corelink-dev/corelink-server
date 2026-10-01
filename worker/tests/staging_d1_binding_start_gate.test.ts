@@ -59,7 +59,8 @@ describe("staging D1 outbound interception boot gate", () => {
       return {
         context: {
           container,
-          env: { ENVIRONMENT: "staging", PAGERDUTY_ROUTING_KEY: "present-only-in-fixture" } as Env,
+          env: { ENVIRONMENT: "staging", PAGERDUTY_ROUTING_KEY: "present-only-in-fixture",
+            CORELINK_ADMIN_AUTH_KEY: "ephemeral-http-admin-sentinel-not-for-native" } as Env,
           doIdHash: "test-do",
           getLifecycleState: () => lifecycle,
           setLifecycleState: (state: StartContainerLifecycleState) => { lifecycle = state; },
@@ -81,9 +82,12 @@ describe("staging D1 outbound interception boot gate", () => {
       await expect(startContainer(probe.context, "staging-d1-binding-runtime-probe")).resolves.toEqual({ ok: true });
       expect(fetch).not.toHaveBeenCalled();
       expect(probe.context.container!.start).toHaveBeenCalledOnce();
+      expect(vi.mocked(probe.context.container!.start).mock.calls[0]?.[0]?.env?.["CORELINK_ADMIN_AUTH_KEY"]).toBe("");
 
       const ordinary = makeContext();
       await expect(startContainer(ordinary.context, "ordinary-test-start")).resolves.toEqual({ ok: true });
+      expect(vi.mocked(ordinary.context.container!.start).mock.calls[0]?.[0]?.env?.["CORELINK_ADMIN_AUTH_KEY"])
+        .toBe("ephemeral-http-admin-sentinel-not-for-native");
       expect(fetch).toHaveBeenCalledTimes(2);
       const events = fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).event_type);
       expect(events).toEqual(["corelink.do.cold_start.v1", "corelink.do.container_started.v1"]);

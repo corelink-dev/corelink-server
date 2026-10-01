@@ -1,6 +1,10 @@
 import { cleanOldProbeTables, cleanV5ProbeTables, OLD_PROBE_NAME, OLD_PROBE_RELEASE, OLD_PROBE_RETIRED_KEY, V5_PROBE_NAME, V5_PROBE_RELEASE, V5_PROBE_RETIRED_KEY, type OldProbeRetirement } from "./staging_d1_probe_retirement.js";
 import { recordStagingD1ProbePhase, STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
 import { cleanV8ProbeTables, isV8CleanupReceipt, withinV8CleanupDeadline, V8_PROBE_NAME, V8_PROBE_RELEASE, V8_PROBE_NONCE, V8_PROBE_RETIRED_KEY, V8_CLEANUP_RECEIPT_KEY, type V8CleanupReceipt } from "./staging_d1_probe_v8_cleanup.js";
+import { cleanV9ProbeTables, isV9CleanupReceipt, withinV9CleanupDeadline, V9_PROBE_NAME, V9_PROBE_RELEASE, V9_PROBE_NONCE, V9_PROBE_RETIRED_KEY, V9_CLEANUP_RECEIPT_KEY, type V9CleanupReceipt } from "./staging_d1_probe_v9_cleanup.js";
+import { STAGING_D1_HTTP_CONTRACT, STAGING_D1_HTTP_EXECUTE_MS, STAGING_D1_HTTP_CLEANUP_MS, isStagingD1HttpStatus, type StagingD1HttpStatus } from "./staging_d1_http_contract.js";
+import { StagingD1HttpLifecycle } from "./staging_d1_http_lifecycle.js";
+import { runStagingD1HttpSequence } from "./staging_runtime_d1_probe.js";
 import cleanupWindow from "./staging_d1_probe_cleanup_window.json";
 /**
  * CoreLinkServer Durable Object — container lifecycle manager + gRPC proxy.
@@ -180,6 +184,8 @@ const STARTUP_TIMEOUT_MS = 90_000;
 const STALE_STARTING_MS = STARTUP_TIMEOUT_MS + 30_000;
 const STAGING_D1_PROBE_CRON = STAGING_D1_PROBE_WINDOW.cron;
 const STAGING_D1_PROBE_EXPIRES_AT_MS = STAGING_D1_PROBE_WINDOW.expires_ms;
+export const STAGING_D1_HTTP_OPERATION_KEY = "staging-d1-http-operation-v1";
+export const STAGING_D1_HTTP_COMPLETION_DEADLINE_KEY = "staging-d1-http-completion-deadline-v1";
 const STAGING_D1_PROBE_RECEIPT_KEY = "staging-d1-binding-probe-receipt-v1";
 const STAGING_D1_PROBE_STATE_KEY = "staging-d1-binding-probe-state-v1";
 const STAGING_D1_PROBE_ADMISSION_KEY = "staging-d1-binding-probe-admission-v1";
@@ -238,6 +244,8 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     coldStartCount: 0,
     tenantId: null,
   };
+  private httpClaim: StagingD1HttpStatus | undefined;
+  private httpExecuting = false;
   private probeRetired = false;
   private probeActiveCalls = 0;
   private retirementActive = false;
@@ -254,7 +262,13 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     void this.state.blockConcurrencyWhile(async () => {
       this.probeRetired = (await this.storage.get(OLD_PROBE_RETIRED_KEY)) !== undefined ||
         (await this.storage.get(V5_PROBE_RETIRED_KEY)) !== undefined ||
-        (await this.storage.get(V8_PROBE_RETIRED_KEY)) !== undefined;
+        (await this.storage.get(V8_PROBE_RETIRED_KEY)) !== undefined ||
+        (await this.storage.get(V9_PROBE_RETIRED_KEY)) !== undefined;
+      const httpClaim = await this.storage.get<StagingD1HttpStatus>(STAGING_D1_HTTP_OPERATION_KEY);
+      if (httpClaim !== undefined) {
+        this.httpClaim = httpClaim.status === "complete" ? httpClaim : this.httpStatus("unknown");
+        if (httpClaim.status !== "complete") await this.storage.put(STAGING_D1_HTTP_OPERATION_KEY, this.httpClaim);
+      }
       const stored = await this.storage.get<LifecycleState>("lifecycle");
       if (stored !== undefined) {
         this.lifecycleState = stored;
@@ -271,7 +285,8 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     return typeof this.env.CORELINK_SERVER?.idFromName === "function" &&
       (this.state.id.equals(this.env.CORELINK_SERVER.idFromName(OLD_PROBE_NAME)) ||
        this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V5_PROBE_NAME)) ||
-       this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V8_PROBE_NAME)));
+       this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V8_PROBE_NAME)) ||
+       this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V9_PROBE_NAME)));
   }
 
   private async withProbeActivity<T>(operation: () => Promise<T>): Promise<T> {
@@ -280,7 +295,199 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     try { return await operation(); } finally { this.probeActiveCalls--; }
   }
 
+  private httpStatus(status: StagingD1HttpStatus["status"]): StagingD1HttpStatus {
+    return { contract: STAGING_D1_HTTP_CONTRACT, carrier: "authenticated_http",
+      worker_release: this.env.SENTRY_RELEASE ?? "", probe_nonce: STAGING_D1_PROBE_WINDOW.nonce,
+      status, rollback_safe: false, native_receipt: null, v8_cleanup: null, v9_cleanup: null };
+  }
+
+  private assertHttpProbeTarget(): void {
+    const release = this.env.SENTRY_RELEASE ?? "";
+    if (this.isOldProbeObject() || this.probeRetired || this.env.ENVIRONMENT !== "staging" ||
+        !/^[0-9a-f]{40}$/.test(release) ||
+        this.env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
+        this.env.D1_DATABASE_ID !== "d72a6b39-6a48-4338-bfda-1111dda98604" ||
+        this.env.R2_S3_ENDPOINT !== "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com" ||
+        !this.state.id.equals(this.env.CORELINK_SERVER.idFromName(`${STAGING_D1_RUNTIME_PROBE_DO_PREFIX}${release}`))) {
+      throw new Error("HTTP proof target rejected");
+    }
+  }
+
+  /** Status reads never start, stop, clean, admit or replay an operation. */
+  async readStagingD1HttpProof(): Promise<StagingD1HttpStatus> {
+    this.assertHttpProbeTarget();
+    const stored = this.httpClaim ?? await this.storage.get<StagingD1HttpStatus>(STAGING_D1_HTTP_OPERATION_KEY);
+    if (stored === undefined) return this.httpStatus("not_started");
+    if (stored.status !== "complete") return this.httpStatus(stored.status === "running" && this.httpExecuting ? "running" : "unknown");
+    const deadline = await this.storage.get<unknown>(STAGING_D1_HTTP_COMPLETION_DEADLINE_KEY);
+    const alarm = await this.storage.getAlarm();
+    if (!isStagingD1HttpStatus(stored, this.env.SENTRY_RELEASE!, this.now()) ||
+        !this.httpCompletionDeadlineValid(deadline, stored) || this.httpExecuting ||
+        this.probeActiveCalls !== 0 || this.state.container?.running !== false || alarm !== null) return this.httpStatus("unknown");
+    return stored;
+  }
+
+  private httpCompletionDeadlineValid(value: unknown, proof: StagingD1HttpStatus): boolean {
+    if (typeof value !== "object" || value === null || Array.isArray(value) || Reflect.ownKeys(value).length !== 2) return false;
+    const v = value as Record<string, unknown>;
+    const start = v["operation_started_ms"], end = v["completion_deadline_ms"];
+    const native = proof.native_receipt as { scheduled_time_ms?: unknown } | null;
+    return typeof start === "number" && typeof end === "number" && Number.isSafeInteger(start) && Number.isSafeInteger(end) &&
+      start >= STAGING_D1_PROBE_WINDOW.starts_ms && start <= STAGING_D1_PROBE_LAST_ENTRY_MS &&
+      typeof native?.scheduled_time_ms === "number" && native.scheduled_time_ms <= start &&
+      end > start && end <= start + STAGING_D1_HTTP_EXECUTE_MS + STAGING_D1_HTTP_CLEANUP_MS &&
+      end <= STAGING_D1_PROBE_EXPIRES_AT_MS && this.now() >= start && this.now() < end;
+  }
+
+  /** Single durable HTTP owner. A claim survives timeout, failure and eviction. */
+  async executeStagingD1HttpProof(scheduledTime: number): Promise<StagingD1HttpStatus> {
+    this.assertHttpProbeTarget();
+    if (!validStagingD1ProbeTime(scheduledTime, this.now()) || scheduledTime % 120_000 !== 0 ||
+        scheduledTime > this.now() || this.now() > STAGING_D1_PROBE_LAST_ENTRY_MS ||
+        this.httpExecuting || this.httpClaim !== undefined || this.probeActiveCalls !== 0) {
+      throw new Error("HTTP proof execution rejected");
+    }
+    const life = new StagingD1HttpLifecycle(this.now, STAGING_D1_PROBE_EXPIRES_AT_MS);
+    this.httpExecuting = true;
+    this.httpClaim = this.httpStatus("running");
+    try {
+      const claimed = await life.run(() => this.storage.transaction(async txn => {
+        if (await txn.get(STAGING_D1_HTTP_OPERATION_KEY) !== undefined ||
+            await txn.get(STAGING_D1_PROBE_ADMISSION_KEY) !== undefined ||
+            await txn.get(STAGING_D1_PROBE_STATE_KEY) !== undefined ||
+            await txn.get(STAGING_D1_PROBE_RECEIPT_KEY) !== undefined) return false;
+        life.check();
+        await txn.put(STAGING_D1_HTTP_OPERATION_KEY, this.httpStatus("running"));
+        life.check();
+        return true;
+      }));
+      if (!claimed) {
+        this.httpClaim = await this.storage.get<StagingD1HttpStatus>(STAGING_D1_HTTP_OPERATION_KEY) ?? this.httpStatus("unknown");
+        throw new Error("HTTP proof already claimed");
+      }
+    } catch {
+      this.httpExecuting = false;
+      // Even a timed-out claim write can finish later. The next persisted
+      // write fences it UNKNOWN; there is never a provider call in this arm.
+      if (!life.settled) {
+        this.httpClaim = this.httpStatus("unknown");
+        await life.record(() => this.storage.put(STAGING_D1_HTTP_OPERATION_KEY, this.httpClaim!));
+      }
+      throw new Error("HTTP proof claim rejected");
+    }
+
+    let nativeEntered = false;
+    try {
+      const proof = await runStagingD1HttpSequence(this.env, scheduledTime, life, {
+        admit: () => this.admitStagingD1RuntimeProbeOwned(scheduledTime, life),
+        run: admission => { nativeEntered = true; return this.runStagingD1RuntimeProbeActive(admission, life); },
+      });
+      // Cleanup itself may time out. Its durable preimage is already UNKNOWN.
+      this.httpClaim = this.httpStatus("unknown");
+      await life.record(() => this.storage.put(STAGING_D1_HTTP_OPERATION_KEY, this.httpClaim!));
+      await life.quiesce();
+      await this.stopHttpProbeContainer(life);
+      const complete: StagingD1HttpStatus = { ...this.httpStatus("complete"), rollback_safe: true,
+        native_receipt: proof.native, v8_cleanup: proof.v8, v9_cleanup: proof.v9 };
+      if (!life.settled || !isStagingD1HttpStatus(complete, this.env.SENTRY_RELEASE!, this.now())) {
+        throw new Error("HTTP proof receipts rejected");
+      }
+      // Keep the original native keys and their meanings. Only successful
+      // stopped/alarm-null proof can complete either receipt.
+      const { v4_probe_catalog_absent: _v4, old_probe_release: _oldRelease, old_probe_retired: _oldRetired,
+        old_probe_tables_absent: _oldTables, v5_probe_release: _v5Release, v5_probe_retired: _v5Retired,
+        v5_probe_tables_absent: _v5Tables, v5_prior_execution: _v5Prior, ...native } = proof.native;
+      await life.cleanup(() => this.storage.put(STAGING_D1_PROBE_RECEIPT_KEY, native));
+      await life.cleanup(() => this.storage.put(STAGING_D1_PROBE_STATE_KEY, "complete"));
+      await life.cleanup(() => this.storage.transaction(async txn => {
+        life.checkCleanup();
+        await txn.put(STAGING_D1_HTTP_COMPLETION_DEADLINE_KEY,
+          { operation_started_ms: life.startedAt, completion_deadline_ms: life.completionDeadline });
+        life.checkCleanup();
+        await txn.put(STAGING_D1_HTTP_OPERATION_KEY, complete);
+        // A late storage completion rolls back instead of resurrecting COMPLETE.
+        life.checkCleanup();
+      }));
+      if (!life.settled) throw new Error("HTTP proof operation pending");
+      this.httpClaim = complete;
+      return complete;
+    } catch {
+      this.httpClaim = this.httpStatus("unknown");
+      // Record UNKNOWN before waiting for uncancellable calls. Late settlement
+      // can permit cleanup, never admission, native replay, or COMPLETE.
+      try { await life.record(() => this.storage.put(STAGING_D1_HTTP_OPERATION_KEY, this.httpClaim!)); }
+      catch { throw new Error("HTTP proof status unavailable"); }
+      try {
+        await life.quiesce();
+        // A failed remote cleanup RPC may hide an unresolved provider call.
+        // It never authorizes a later cleanup or fresh admission.
+        if (nativeEntered) await this.stopHttpProbeContainer(life);
+      } catch { /* UNKNOWN remains durable; elapsed time is not quiescence. */ }
+      return this.httpClaim;
+    } finally { this.httpExecuting = false; }
+  }
+
+  private async stopHttpProbeContainer(life: StagingD1HttpLifecycle): Promise<void> {
+    const container = this.state.container;
+    if (container === undefined) throw new Error("HTTP proof Container unavailable");
+    if (container.running) await life.cleanup(() => container.destroy());
+    if (container.running !== false) throw new Error("HTTP proof Container stop unproven");
+    await life.cleanup(() => this.storage.deleteAlarm());
+    if (await life.cleanup(() => this.storage.getAlarm()) !== null) throw new Error("HTTP proof alarm unproven");
+    await life.cleanup(() => this.transitionStatus("stopped", "staging-d1-http-proof"));
+  }
+
+  /** Reuse native startup wiring with a deadline check at every async seam. */
+  private async startHttpProbeContainer(life: StagingD1HttpLifecycle): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const container = this.state.container;
+    if (container === undefined) throw new Error("HTTP proof Container unavailable");
+    const guarded = new Proxy(container, { get(target, key) {
+      const value = Reflect.get(target, key, target) as unknown;
+      if (key === "start") return (...args: Parameters<Container["start"]>) => {
+        life.check();
+        try { target.start(...args); } catch { throw new Error("HTTP proof Container start failed"); }
+        life.check();
+      };
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const health = async (): Promise<boolean> => {
+      const deadline = Math.min(this.now() + STARTUP_TIMEOUT_MS, STAGING_D1_PROBE_EXPIRES_AT_MS);
+      while (this.now() < deadline) {
+        life.check();
+        const response = await life.run(() => container.getTcpPort(CONTAINER_PORT).fetch(
+          new Request(`http://localhost:${CONTAINER_PORT}/_health`, { method: "GET" })).catch(() => null));
+        const ok = response?.status === 200;
+        if (response?.body) await life.run(() => response.body!.cancel());
+        if (ok) return true;
+        await life.run(() => new Promise<void>(resolve => setTimeout(resolve, 500)));
+      }
+      return false;
+    };
+    return life.run(() => runStartContainer({
+      container: guarded, env: this.env, doIdHash: this.doIdHash,
+      getLifecycleState: () => { life.check(); return this.lifecycleState; },
+      setLifecycleState: state => { life.check(); this.lifecycleState = state; },
+      transitionStatus: (status, id) => life.run(() => this.transitionStatus(status, id)),
+      updateLifecycleState: state => life.run(() => this.updateLifecycleState(state)),
+      waitForContainerReady: async () => await health() ? { ok: true as const } : { ok: false as const, reason: "http_proof_health" },
+      armInactivityTimeout: c => life.run(() => c.setInactivityTimeout(IDLE_TIMEOUT_MS)),
+      waitForContainerHealth: health,
+      destroyContainer: async () => {
+        await life.run(() => container.destroy());
+        await life.run(() => this.transitionStatus("stopped", "staging-d1-http-proof"));
+      },
+      installStagingD1BindingProxy: () => life.run(() => this.installStagingD1BindingProxy()),
+      setAlarm: when => life.run(() => this.storage.setAlarm(when)),
+      suppressLifecycleTelemetry: true,
+    }, "staging-d1-http-proof"));
+  }
+
   async admitStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeAdmissionResult> {
+    if (STAGING_D1_PROBE_WINDOW.nonce === "issue-1700-recovery-20261001-v10") throw new Error("HTTP admission required");
+    return this.admitStagingD1RuntimeProbeOwned(scheduledTime);
+  }
+
+  private async admitStagingD1RuntimeProbeOwned(scheduledTime: number, life?: StagingD1HttpLifecycle): Promise<StagingD1RuntimeProbeAdmissionResult> {
     const release = this.env.SENTRY_RELEASE ?? "";
     if (this.isOldProbeObject() || this.env.ENVIRONMENT !== "staging" ||
         this.env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
@@ -298,6 +505,9 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
       scheduled_time_ms: scheduledTime,
     };
     return this.storage.transaction(async (txn) => {
+      const claim = await txn.get(STAGING_D1_HTTP_OPERATION_KEY);
+      if ((claim !== undefined && life === undefined) || (life !== undefined && claim === undefined)) throw new Error("HTTP admission ownership rejected");
+      life?.check();
       const receipt = await txn.get<StagingD1RuntimeProbeReceipt>(STAGING_D1_PROBE_RECEIPT_KEY);
       if (receipt !== undefined) {
         if (!isStagingD1RuntimeProbeReceipt(receipt, release, receipt.scheduled_time_ms) ||
@@ -310,12 +520,14 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
       if (await txn.get<string>(STAGING_D1_PROBE_STATE_KEY) !== undefined) {
         throw new Error("staging D1 runtime probe is already claimed");
       }
+      life?.check();
       await txn.put(STAGING_D1_PROBE_ADMISSION_KEY, admission);
+      life?.check();
       return { status: "admitted", admission } as const;
     });
   }
 
-  async retireStagingD1RuntimeProbe(scheduledTime: number): Promise<OldProbeRetirement> {
+  async retireStagingD1RuntimeProbe(scheduledTime: number, deadlineMs?: number): Promise<OldProbeRetirement> {
     const isV5 = this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V5_PROBE_NAME));
     const expectedName = isV5 ? V5_PROBE_NAME : OLD_PROBE_NAME;
     const expectedRelease = isV5 ? V5_PROBE_RELEASE : OLD_PROBE_RELEASE;
@@ -328,6 +540,10 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
         !this.state.id.equals(this.env.CORELINK_SERVER.idFromName(expectedName))) {
       throw new Error("old probe retirement guard rejected");
     }
+    if (deadlineMs !== undefined && (!Number.isSafeInteger(deadlineMs) || deadlineMs <= this.now() ||
+        deadlineMs > this.now() + 600_000 || deadlineMs > STAGING_D1_PROBE_EXPIRES_AT_MS)) throw new Error("old probe deadline rejected");
+    const life = deadlineMs === undefined ? undefined : new StagingD1HttpLifecycle(this.now, STAGING_D1_PROBE_EXPIRES_AT_MS, deadlineMs);
+    const bounded = <T>(operation: () => Promise<T>): Promise<T> => life ? life.run(operation) : operation();
     // No await before these fences. Already-running fetch/alarm/probe work must
     // finish before retirement; arriving work observes probeRetired immediately.
     if (this.probeActiveCalls !== 0 || this.retirementActive) throw new Error("old probe retirement busy");
@@ -335,16 +551,16 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     this.probeRetired = true;
     try {
       // Preserve the original claim and receipt, including unknown/failed state.
-      await this.storage.put(retiredKey, { old_release: expectedRelease });
+      await bounded(() => this.storage.put(retiredKey, { old_release: expectedRelease }));
       const container = this.state.container;
       if (container === undefined) throw new Error("old probe Container binding unavailable");
-      if (container.running) await container.destroy();
+      if (container.running) await bounded(() => container.destroy());
       if (container.running !== false) throw new Error("old probe Container stop unproven");
-      await this.storage.deleteAlarm();
-      if (await this.storage.getAlarm() !== null) throw new Error("old probe alarm cleanup unproven");
-      await this.transitionStatus("stopped", "staging-d1-probe-retirement");
-      if (isV5) await cleanV5ProbeTables(this.env.CONFIG_DB, this.now);
-      else await cleanOldProbeTables(this.env.CONFIG_DB, this.now);
+      await bounded(() => this.storage.deleteAlarm());
+      if (await bounded(() => this.storage.getAlarm()) !== null) throw new Error("old probe alarm cleanup unproven");
+      await bounded(() => this.transitionStatus("stopped", "staging-d1-probe-retirement"));
+      if (isV5) await cleanV5ProbeTables(this.env.CONFIG_DB, this.now, bounded);
+      else await cleanOldProbeTables(this.env.CONFIG_DB, this.now, bounded);
       return isV5
         ? { v5_probe_release: V5_PROBE_RELEASE, v5_probe_retired: true, v5_probe_tables_absent: true }
         : { old_probe_release: OLD_PROBE_RELEASE, old_probe_retired: true, old_probe_tables_absent: true };
@@ -405,8 +621,63 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     } finally { this.retirementActive = false; }
   }
 
+  /** Exact failed v9 object only. Retirement never reopens its old admission. */
+  async cleanupV9StagingD1RuntimeProbe(scheduledTime: number, expectedRelease: string): Promise<V9CleanupReceipt> {
+    const release = this.env.SENTRY_RELEASE ?? "";
+    if (this.env.ENVIRONMENT !== "staging" ||
+        this.env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
+        this.env.D1_DATABASE_ID !== "d72a6b39-6a48-4338-bfda-1111dda98604" ||
+        this.env.R2_S3_ENDPOINT !== "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com" ||
+        !/^[0-9a-f]{40}$/.test(release) || release === V9_PROBE_RELEASE || expectedRelease !== release ||
+        !Number.isSafeInteger(scheduledTime) || scheduledTime % 120_000 !== 0 ||
+        scheduledTime < cleanupWindow.starts_ms || scheduledTime >= cleanupWindow.expires_ms ||
+        this.now() < scheduledTime || this.now() >= cleanupWindow.expires_ms ||
+        !this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V9_PROBE_NAME))) {
+      throw new Error("v9 cleanup guard rejected");
+    }
+    // Fence synchronously. A retirement marker is only an entry fence, never
+    // proof that an earlier execution, Container, alarm or table is gone.
+    if (this.probeActiveCalls !== 0 || this.retirementActive) throw new Error("v9 cleanup busy");
+    this.retirementActive = true;
+    this.probeRetired = true;
+    const deadline = Math.min(this.now() + 60_000, cleanupWindow.expires_ms);
+    const bounded = <T>(operation: () => Promise<T>) => withinV9CleanupDeadline(operation, this.now, deadline);
+    try {
+      const previousFence = await bounded(() => this.storage.get<{ old_release: string; destroy_attempted: boolean }>(V9_PROBE_RETIRED_KEY));
+      if (previousFence !== undefined && (previousFence.old_release !== V9_PROBE_RELEASE ||
+          typeof previousFence.destroy_attempted !== "boolean")) throw new Error("v9 cleanup fence rejected");
+      if (previousFence === undefined) await bounded(() => this.storage.put(V9_PROBE_RETIRED_KEY,
+        { old_release: V9_PROBE_RELEASE, destroy_attempted: false }));
+      const container = this.state.container;
+      if (container === undefined) throw new Error("v9 cleanup Container unavailable");
+      if (container.running) {
+        if (previousFence?.destroy_attempted) throw new Error("v9 cleanup prior stop unproven");
+        await bounded(() => this.storage.put(V9_PROBE_RETIRED_KEY,
+          { old_release: V9_PROBE_RELEASE, destroy_attempted: true }));
+        await bounded(() => container.destroy());
+      }
+      if (container.running !== false) throw new Error("v9 cleanup Container stop unproven");
+      await bounded(() => this.storage.deleteAlarm());
+      if (await bounded(() => this.storage.getAlarm()) !== null) throw new Error("v9 cleanup alarm unproven");
+      const admission = await bounded(() => this.storage.get(STAGING_D1_PROBE_ADMISSION_KEY));
+      await cleanV9ProbeTables(this.env.CONFIG_DB, admission, this.now, deadline);
+      const receipt: V9CleanupReceipt = {
+        contract: "corelink-staging-v9-cleanup-v1", old_release: V9_PROBE_RELEASE,
+        old_nonce: V9_PROBE_NONCE, worker_release: release, prior_execution: "unknown",
+        prior_admission_present: admission !== undefined, container_stopped: true,
+        alarm_absent: true, tables_absent: true, completed_at_ms: this.now(),
+      };
+      if (!isV9CleanupReceipt(receipt, release, this.now())) throw new Error("v9 cleanup receipt rejected");
+      // Every invocation revalidates live state and inventory, including when
+      // a previous completion exists. Original admission/state/receipt stay intact.
+      await bounded(() => this.storage.put(V9_CLEANUP_RECEIPT_KEY, receipt));
+      return receipt;
+    } finally { this.retirementActive = false; }
+  }
+
   async runStagingD1RuntimeProbe(admission: StagingD1RuntimeProbeAdmission): Promise<StagingD1RuntimeProbeReceipt> {
     if (this.isOldProbeObject()) throw new Error("old probe cannot be replayed");
+    if (this.httpClaim !== undefined || await this.storage.get(STAGING_D1_HTTP_OPERATION_KEY) !== undefined || this.httpClaim !== undefined) throw new Error("HTTP probe cannot be replayed");
     try {
       return await this.withProbeActivity(() => this.runStagingD1RuntimeProbeActive(admission));
     } catch (error) {
@@ -432,7 +703,9 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     return receipt;
   }
 
-  private async runStagingD1RuntimeProbeActive(admission: StagingD1RuntimeProbeAdmission): Promise<StagingD1RuntimeProbeReceipt> {
+  private async runStagingD1RuntimeProbeActive(admission: StagingD1RuntimeProbeAdmission, life?: StagingD1HttpLifecycle): Promise<StagingD1RuntimeProbeReceipt> {
+    const bounded = <T>(operation: () => Promise<T>): Promise<T> => life ? life.run(operation) : operation();
+    life?.check();
     const release = this.env.SENTRY_RELEASE ?? "";
     const scheduledTime = admission?.scheduled_time_ms;
     if (
@@ -450,7 +723,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
       throw new Error("staging D1 runtime probe guard rejected");
     }
 
-    const previous = await this.storage.get<StagingD1RuntimeProbeReceipt>(STAGING_D1_PROBE_RECEIPT_KEY);
+    const previous = await bounded(() => this.storage.get<StagingD1RuntimeProbeReceipt>(STAGING_D1_PROBE_RECEIPT_KEY));
     if (previous !== undefined) {
       if (!isStagingD1RuntimeProbeReceipt(previous, release, previous.scheduled_time_ms) ||
           previous.scheduled_time_ms > scheduledTime) {
@@ -462,7 +735,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
       throw new Error("staging D1 runtime probe completion window expired");
     }
     recordStagingD1ProbePhase(this.env, "native_start");
-    const claimed = await this.storage.transaction(async (txn) => {
+    const claimed = await bounded(() => this.storage.transaction(async (txn) => {
       const storedAdmission = await txn.get<StagingD1RuntimeProbeAdmission>(STAGING_D1_PROBE_ADMISSION_KEY);
       if (storedAdmission?.contract !== admission.contract || storedAdmission.probe_nonce !== admission.probe_nonce ||
           storedAdmission.worker_release !== admission.worker_release ||
@@ -470,26 +743,28 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
         throw new Error("staging D1 runtime probe admission receipt rejected");
       }
       if (await txn.get<string>(STAGING_D1_PROBE_STATE_KEY) !== undefined) return false;
+      life?.check();
       await txn.put(STAGING_D1_PROBE_STATE_KEY, "running");
+      life?.check();
       return true;
-    });
+    }));
     if (!claimed) throw new Error("staging D1 runtime probe is already claimed");
 
     const requestId = "staging-d1-binding-runtime-probe";
-    const started = await this.ensureContainerRunning(requestId, true);
+    const started = life ? await this.startHttpProbeContainer(life) : await this.ensureContainerRunning(requestId, true);
     if (!started.ok) {
-      await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
+      if (life === undefined) await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
       throw new Error("staging D1 runtime probe container unavailable");
     }
     const container = this.state.container;
     if (container === undefined || !container.running) {
-      await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
+      if (life === undefined) await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
       throw new Error("staging D1 runtime probe container not running");
     }
 
     let body: unknown;
     try {
-      const response = await container.getTcpPort(CONTAINER_PORT).fetch(new Request(
+      const response = await bounded(() => container.getTcpPort(CONTAINER_PORT).fetch(new Request(
         `http://localhost:${CONTAINER_PORT}${STAGING_D1_RUNTIME_PROBE_PATH}`,
         {
           method: "POST",
@@ -501,30 +776,33 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
             worker_release: release,
           }),
         },
-      ));
+      )));
       if (!response.ok) throw new Error("staging D1 runtime probe endpoint failed");
-      body = await response.json();
+      body = await bounded(() => response.json());
     } catch {
-      await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
+      if (life === undefined) await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
       throw new Error("staging D1 runtime probe request failed");
     } finally {
-      // This dedicated DO never retains an always-on probe Container. Suppress
-      // provider lifecycle events above; destroy and persist stopped state here.
-      try {
-        if (container.running) await container.destroy();
-        if (container.running) throw new Error("Container remained active");
-        await this.storage.deleteAlarm();
-        await this.transitionStatus("stopped", requestId);
-      } catch {
-        await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "unknown");
-        throw new Error("staging D1 runtime probe cleanup is unknown");
+      if (life === undefined) {
+        // The original RPC retains its own cleanup. HTTP cleanup is owned by
+        // the coordinator, after all submitted operations have settled.
+        try {
+          if (container.running) await container.destroy();
+          if (container.running) throw new Error("Container remained active");
+          await this.storage.deleteAlarm();
+          await this.transitionStatus("stopped", requestId);
+        } catch {
+          await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "unknown");
+          throw new Error("staging D1 runtime probe cleanup is unknown");
+        }
       }
     }
 
     if (!isStagingD1RuntimeProbeReceipt(body, release, scheduledTime)) {
-      await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
+      if (life === undefined) await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "failed");
       throw new Error("staging D1 runtime probe receipt rejected");
     }
+    if (life !== undefined) { life.check(); return body; }
     await this.storage.put(STAGING_D1_PROBE_RECEIPT_KEY, body);
     await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "complete");
     recordStagingD1ProbePhase(this.env, "native_complete");
@@ -604,7 +882,13 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   // ──────────────────────────────────────────────────────────────────────────
 
   override async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname === STAGING_D1_RUNTIME_PROBE_PATH) {
+      return new Response("not_found", { status: 404, headers: { "cache-control": "no-store" } });
+    }
     if (this.probeRetired || this.isOldProbeObject()) return new Response("gone", { status: 410 });
+    if (this.httpClaim !== undefined) {
+      return new Response("gone", { status: 410 });
+    }
     return this.withProbeActivity(() => this.fetchActive(request));
   }
 
@@ -1210,7 +1494,10 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   // Alarm — periodic health check
   // ──────────────────────────────────────────────────────────────────────────
   override async alarm(): Promise<void> {
-    if (this.probeRetired || this.isOldProbeObject()) { await this.storage.deleteAlarm(); return; }
+    if (this.httpClaim !== undefined) return; // HTTP coordinator owns stop/alarm cleanup.
+    // Retirement owns alarm deletion after Container stop settles. An alarm
+    // arriving during an uncancellable stop must not submit parallel cleanup.
+    if (this.probeRetired || this.isOldProbeObject()) return;
     return this.withProbeActivity(() => this.alarmActive());
   }
 

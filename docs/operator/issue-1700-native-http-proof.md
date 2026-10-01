@@ -1,0 +1,90 @@
+# Native Container/D1 proof through authenticated HTTP
+
+Issue #1700's native acceptance requires the real staging Container to use the
+bound D1 database, execute a parameterized read, observe a deliberately failed
+batch, prove rollback absence, and drop its owned probe table. Cron and Tail
+delivery remain separately **UNPROVEN**. HTTP delivery does not establish either.
+
+The existing `/_internal/staging/d1-binding-runtime-probe` literal is intercepted
+by the staging Worker before generic internal authentication. It requires the
+existing dedicated `CORELINK_ADMIN_AUTH_KEY` through `x-corelink-internal-auth`;
+the shared internal key is never a fallback. Non-staging returns 404. The DO's
+HTTP forwarding path still returns 404. Only a numeric admission tag reaches
+the coordinator RPC; HTTP authentication never enters the native Container.
+
+The POST body has exactly `worker_release`, `probe_nonce`, and
+`scheduled_time_ms`, at most 512 bytes. The timestamp is the current two-minute
+bucket and the nonce is `issue-1700-recovery-20261001-v10`. Its source admission
+window is 2026-10-01T12:00:00Z through 18:00:00Z inclusive; completion expires at
+19:15:00Z exclusively. These bounds do not authorize a runtime dispatch. A GET
+of the same path on the canonical domain reads persisted status without admission or cleanup. Query
+parameters, Authorization/Cookie headers, and other methods are rejected.
+The temporary workers.dev origin admits only that authenticated POST and a GET
+of the same exact literal for persisted status. Its other paths, methods and
+preview/alias origins return 404. The normal
+canonical-domain routing pipeline remains unchanged.
+
+The exact release DO persists a separate operation claim before any cleanup.
+It retires the immutable v8 namespace (`7d18bcfc450db97b1b987923050b92971da530a8`)
+and v9 namespace (`5da497051f0b11dbfc8b87d1dfa8e753304e2719`) before fresh native
+admission. Their original admission, execution-state and receipt keys stay
+intact; prior execution remains unknown. Every cleanup rechecks the stopped
+Container, absent alarm and exact owned catalog. The v9 table timestamp must
+lie within the actual 12:35:18Z–13:00:22Z invocation. An extra catalog object,
+unowned row, missing admission with a table, incoming or outgoing foreign key,
+or 129th catalog table prevents deletion. Each v8/v9 cleanup uses at most five
+statements and one DROP.
+
+The response carries nine fixed fields: `contract`, `carrier`,
+`worker_release`, `probe_nonce`, `status`, `rollback_safe`, `native_receipt`,
+`v8_cleanup`, and `v9_cleanup`. The carrier is `authenticated_http`. A complete
+response requires the unchanged strict twenty-field native receipt and two
+separate ten-field cleanup receipts. `scheduled_time_ms` and the native `cron`
+tag remain admission protocol fields; neither is evidence of a scheduled event.
+
+Execution has one cumulative deadline of 600 seconds. Quiescence and cleanup have a
+separate cumulative deadline of 600 seconds. A client timeout does not cancel a
+submitted provider operation. Failed or unresolved execution persists
+`unknown`, prohibits a new admission, and prevents automatic preimage rollback.
+Late resolution never resumes the execution pipeline. A lost HTTP response
+remains unknown unless at most three authenticated status GETs recover the
+complete receipt within the original lease; the POST is never retried.
+Only a validated complete response with `rollback_safe=true` can
+authorize rollback after an HTTP execution attempt, together with the existing
+empty schedules/tails and exact preimage guards.
+
+The authorized metadata-only read on 2026-10-01 identified
+`https://corelink-staging.gmhelmold.workers.dev`, with `enabled=false` and
+`previews_enabled=false`. The Worker secret-name list was empty; this did not
+inspect values or non-secret variables. A future runtime therefore needs a
+separate finite authorization for dedicated credential custody and temporary
+reachability, preserving exact preimages and mandatory restoration. No public
+Custom Domain, route, secret provisioning, HTTP execution, or runtime lease is
+authorized by this document or credentialless CI. A second names/types-only
+read checked all 35 bindings and confirmed the admin name absent at every type.
+
+The source bootstrap uses a private runner process to generate an ephemeral 32-byte
+admin key in memory. A Unix socket carries fixed commands and sanitized receipts;
+the key is never a process argument, artifact, log, environment export or IPC
+response. Fresh binding metadata must prove the admin name absent at every type
+before the one secret PUT. An existing or ambiguous binding stops the operation.
+Temporary workers.dev activation follows verified candidate identity and preserves
+the disabled preview setting. Only proven quiescence, or a positively fenced
+never-executed broker state, permits restoration of its owned bootstrap changes.
+An absent attempt file alone is not evidence that execution never started.
+
+Secret changes can create and deploy a new Worker version. Preserve that revision
+boundary separately from the code candidate and exact preimages; a cleanup-created
+revision is not automatically evidence of the candidate's code identity.
+See the official [Cloudflare secrets lifecycle](https://developers.cloudflare.com/workers/configuration/secrets/).
+
+This finite native proof always restores the exact Worker and Container
+preimages after accepted proof and owned bootstrap cleanup. Verify the original
+candidate before deleting the temporary secret, record any deletion-created
+revision separately, and then restore the preimages. The retained native proof
+describes that execution; it is not a claim that the candidate remains active.
+
+Native proof is only one part of #1700. Canonical Custom Domain publication,
+scoped `GET /v1/users/me` readiness and its negative controls, synthetic tenant
+custody, rotation and teardown still require their own actual receipts before
+the issue can close.

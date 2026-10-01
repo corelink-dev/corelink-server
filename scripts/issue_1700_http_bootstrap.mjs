@@ -1,0 +1,463 @@
+#!/usr/bin/env node
+// Cloudflare API contracts, checked against official documentation:
+// https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/update/
+// https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/delete/
+// https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/script_and_version_settings/methods/get/
+// https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/subdomain/methods/create/
+// https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/methods/list/
+import { randomBytes } from "node:crypto";
+import { constants } from "node:fs";
+import { chmod, lstat, mkdir, open, readFile, unlink } from "node:fs/promises";
+import { createConnection, createServer } from "node:net";
+import { spawn } from "node:child_process";
+import { isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { runProof, validateDeploymentProof } from "./issue_1700_http_probe.mjs";
+
+export const BROKER_CONTRACT = "corelink-staging-http-bootstrap-v1";
+export const MAX_LIFETIME_MS = 45 * 60_000;
+// 21m native transport + 8m owned bootstrap cleanup + three 30s preflight reads.
+export const BOOTSTRAP_CLEANUP_MS = 8 * 60_000;
+export const PROBE_RESERVE_MS = 21 * 60_000 + BOOTSTRAP_CLEANUP_MS + 90_000;
+export const SECRET_NAME = "CORELINK_ADMIN_AUTH_KEY";
+export const BROKER_SOCKET = "broker.sock";
+export const BROKER_LEDGER = "staging-http-bootstrap.json";
+export const ATTEMPT_LEDGER = "staging-http-probe-attempt.json";
+const API = "https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SHA = /^[0-9a-f]{40}$/;
+const MAX_API_BYTES = 262_144;
+const MAX_IPC_BYTES = 32_768;
+const SOURCE = fileURLToPath(import.meta.url);
+const reject = () => new Error("bootstrap_rejected");
+const unknown = () => new Error("bootstrap_unknown");
+const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
+const exact = (value, keys) => record(value) && Reflect.ownKeys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+const uuid = value => typeof value === "string" && UUID.test(value);
+const byName = (a, b) => a.name.localeCompare(b.name);
+const wrappedSettings = bindings => ({ success: true, errors: [], messages: [], result: { bindings } });
+
+function envelope(value) {
+  if (!record(value) || value.success !== true || !Array.isArray(value.errors) || value.errors.length !== 0 ||
+      !Array.isArray(value.messages) || value.messages.length !== 0 || !Object.hasOwn(value, "result")) throw reject();
+  return value.result;
+}
+export function bindingInventory(value) {
+  const result = envelope(value);
+  if (!record(result) || !Array.isArray(result.bindings) || result.bindings.length > 128) throw reject();
+  const names = new Set();
+  return result.bindings.map(binding => {
+    if (!record(binding) || typeof binding.name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(binding.name) ||
+        typeof binding.type !== "string" || !/^[a-z_]{1,64}$/.test(binding.type) || names.has(binding.name)) throw reject();
+    names.add(binding.name);
+    // No binding values (including plaintext fields) leave this extractor.
+    return { name: binding.name, type: binding.type };
+  });
+}
+export function subdomainState(value) {
+  const result = envelope(value);
+  if (!exact(result, ["enabled", "previews_enabled"]) || typeof result.enabled !== "boolean" ||
+      typeof result.previews_enabled !== "boolean") throw reject();
+  return { enabled: result.enabled, previews_enabled: result.previews_enabled };
+}
+export function deploymentInventory(value) {
+  const result = envelope(value);
+  if (!exact(result, ["deployments"]) || !Array.isArray(result.deployments) ||
+      result.deployments.length < 1 || result.deployments.length > 10) throw reject();
+  const ids = new Set();
+  let previous = Infinity;
+  return result.deployments.map(row => {
+    const at = typeof row?.created_on === "string" ? Date.parse(row.created_on) : NaN;
+    if (!record(row) || !uuid(row.id) || ids.has(row.id) || !Number.isSafeInteger(at) || at > previous ||
+        row.strategy !== "percentage" || !Array.isArray(row.versions) || row.versions.length !== 1 ||
+        !exact(row.versions[0], ["version_id", "percentage"]) || !uuid(row.versions[0].version_id) || row.versions[0].percentage !== 100) throw reject();
+    ids.add(row.id); previous = at;
+    return { deployment_id: row.id, version_id: row.versions[0].version_id, created_at_ms: at };
+  });
+}
+function startupInput(value) {
+  if (!exact(value, ["api_token", "operation_id", "expected_release", "preimage_deployment_id", "preimage_version_id"]) ||
+      typeof value.api_token !== "string" || value.api_token.length < 1 || value.api_token.length > 8192 || /[\r\n]/.test(value.api_token) ||
+      typeof value.operation_id !== "string" || !/^[1-9][0-9]{0,19}$/.test(value.operation_id) || !SHA.test(value.expected_release ?? "") ||
+      !uuid(value.preimage_deployment_id) || !uuid(value.preimage_version_id)) throw reject();
+  return value;
+}
+function candidateInput(value, input) {
+  if (!exact(value, ["operation_id", "candidate_deployment_id", "candidate_version_id", "worker_release", "image_digest"]) ||
+      value.operation_id !== input.operation_id || value.worker_release !== input.expected_release ||
+      !uuid(value.candidate_deployment_id) || !uuid(value.candidate_version_id) ||
+      value.candidate_deployment_id === input.preimage_deployment_id || value.candidate_version_id === input.preimage_version_id ||
+      !/^sha256:[0-9a-f]{64}$/.test(value.image_digest ?? "")) throw reject();
+  return { ...value };
+}
+async function boundedBody(response) {
+  if (response.status !== 200 || response.redirected || !/^application\/json(?:;|$)/i.test(response.headers.get("content-type") ?? "")) throw reject();
+  const reader = response.body?.getReader();
+  if (!reader) throw reject();
+  let length = 0;
+  const chunks = [];
+  try {
+    for (;;) {
+      const item = await reader.read();
+      if (item.done) break;
+      length += item.value.byteLength;
+      if (length > MAX_API_BYTES) throw reject();
+      chunks.push(item.value);
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+  } finally { await reader.cancel().catch(() => {}); }
+}
+export async function privateDirectory(directory, create = false) {
+  if (typeof directory !== "string" || !isAbsolute(directory) || resolve(directory) !== directory ||
+      Buffer.byteLength(join(directory, BROKER_SOCKET)) > 103) throw reject();
+  if (create) await mkdir(directory, { mode: 0o700 });
+  const stat = await lstat(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o700 || stat.uid !== process.getuid()) throw reject();
+}
+async function writeLedger(directory, value, initial = false) {
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | (initial ? constants.O_EXCL : constants.O_TRUNC);
+  const handle = await open(join(directory, BROKER_LEDGER), flags, 0o600);
+  try { await handle.writeFile(`${JSON.stringify(value)}\n`); await handle.sync(); }
+  finally { await handle.close(); }
+}
+
+// This closure alone owns both credentials. It exposes only fixed protocol data.
+export function createBootstrapBroker(inputValue, { directory, request = fetch, proofRunner = runProof,
+  now = Date.now, random = randomBytes, save = value => writeLedger(directory, value),
+  readAttempt = () => readFile(join(directory, ATTEMPT_LEDGER), "utf8").then(JSON.parse),
+  attemptExists = () => lstat(join(directory, ATTEMPT_LEDGER)).then(() => true, error => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }),
+  lifetimeMs = MAX_LIFETIME_MS,
+} = {}) {
+  const input = { ...startupInput(inputValue) };
+  if (!Number.isSafeInteger(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > MAX_LIFETIME_MS) throw reject();
+  const key = random(32);
+  if (!Buffer.isBuffer(key) || key.length !== 32) throw reject();
+  const started = now();
+  const deadline = started + lifetimeMs;
+  const controller = new AbortController();
+  let state = "starting", busy = false, candidate = null, proof = null, attempt = null, afterSecret = null;
+  let secretAttempted = false, secretConfirmed = false, enabledAttempted = false, enabled = false;
+  let restoreAttempted = false, restored = false, deleteAttempted = false, deleted = false;
+  let secretAt = null, preimage = null, bindings = null, postDelete = null;
+  let probeSeen = false, cleanupBasis = null, admissionClosed = false;
+  const snapshot = () => ({ contract: BROKER_CONTRACT, operation_id: input.operation_id,
+    worker_release: input.expected_release, started_at_ms: started, expires_at_ms: deadline, state,
+    secret_name: SECRET_NAME, secret_put_attempted: secretAttempted, secret_put_confirmed: secretConfirmed,
+    secret_put_at_ms: secretAt, subdomain_enable_attempted: enabledAttempted, subdomain_enabled: enabled,
+    subdomain_restore_attempted: restoreAttempted, subdomain_restored: restored,
+    secret_delete_attempted: deleteAttempted, secret_deleted: deleted,
+    rollback_safe: state === "cleaned", cleanup_basis: cleanupBasis, probe_command_seen: probeSeen, admission_closed: admissionClosed,
+    preimage, post_secret: afterSecret, post_delete: postDelete, candidate,
+    preimage_bindings: bindings, pid: process.pid });
+  const alive = () => { if (now() >= deadline || controller.signal.aborted || state === "unknown" || state === "closed") throw unknown(); };
+  async function persist() { await save(snapshot()); }
+  async function api(path, method = "GET", body) {
+    alive();
+    if (!["/settings", "/deployments", "/subdomain", "/secrets", `/secrets/${SECRET_NAME}`].includes(path) &&
+        !/^\/versions\/[0-9a-f-]{36}$/.test(path)) throw reject();
+    const budget = Math.min(30_000, deadline - now());
+    let timer;
+    const abort = new AbortController();
+    const onAbort = () => abort.abort();
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+    const timeout = new Promise((_, fail) => { timer = setTimeout(() => { abort.abort(); fail(unknown()); }, budget); });
+    const operation = (async () => {
+      const url = API + path;
+      const response = await request(url, { method, redirect: "error", credentials: "omit", cache: "no-store", signal: abort.signal,
+        headers: { authorization: `Bearer ${input.api_token}`, accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      if (response.url && response.url !== url) throw reject();
+      const result = await boundedBody(response);
+      alive();
+      return result;
+    })();
+    try { return await Promise.race([operation, timeout]); }
+    finally { clearTimeout(timer); controller.signal.removeEventListener("abort", onAbort); }
+  }
+  function requireSecret(inventory) {
+    const found = inventory.filter(row => row.name === SECRET_NAME);
+    if (found.length !== 1 || found[0].type !== "secret_text") throw reject();
+  }
+  async function currentCandidate() {
+    const rows = deploymentInventory(await api("/deployments"));
+    const current = rows[0];
+    if (!candidate || current.deployment_id !== candidate.candidate_deployment_id || current.version_id !== candidate.candidate_version_id ||
+        !afterSecret || !rows.some(row => row.deployment_id === afterSecret.deployment_id && row.version_id === afterSecret.version_id) ||
+        current.created_at_ms < afterSecret.created_at_ms || current.created_at_ms > now()) throw reject();
+    const version = envelope(await api(`/versions/${candidate.candidate_version_id}`));
+    if (!record(version) || version.id !== candidate.candidate_version_id ||
+        version.annotations?.["workers/message"] !== `issue-1700-route-free-${input.operation_id}-${input.expected_release}`) throw reject();
+    const rawBindings = version.resources?.bindings;
+    if (!Array.isArray(rawBindings)) throw reject();
+    bindingInventory({ success: true, errors: [], messages: [], result: { bindings: rawBindings } });
+    const release = rawBindings.filter(row => row.name === "SENTRY_RELEASE");
+    if (release.length !== 1 || release[0].type !== "plain_text" || release[0].text !== input.expected_release) throw reject();
+    requireSecret(bindingInventory(await api("/settings")));
+    return version;
+  }
+  async function currentOwned() {
+    if (candidate) return currentCandidate();
+    const rows = deploymentInventory(await api("/deployments"));
+    if (!afterSecret || rows[0].deployment_id !== afterSecret.deployment_id || rows[0].version_id !== afterSecret.version_id) throw reject();
+    requireSecret(bindingInventory(await api("/settings")));
+    const version = envelope(await api(`/versions/${afterSecret.version_id}`));
+    if (!record(version) || version.id !== afterSecret.version_id) throw reject();
+    return version;
+  }
+  async function prepare() {
+    if (state !== "starting") throw reject();
+    const rows = deploymentInventory(await api("/deployments"));
+    if (rows[0].deployment_id !== input.preimage_deployment_id || rows[0].version_id !== input.preimage_version_id) throw reject();
+    preimage = { ...rows[0], subdomain: subdomainState(await api("/subdomain")) };
+    if (preimage.subdomain.enabled !== false || preimage.subdomain.previews_enabled !== false) throw reject();
+    // Last read immediately before PUT: inspect ALL binding types, not secret-only inventory.
+    bindings = bindingInventory(await api("/settings"));
+    if (bindings.some(row => row.name === SECRET_NAME)) throw reject();
+    secretAttempted = true; secretAt = now(); await persist();
+    const result = envelope(await api("/secrets", "PUT", { name: SECRET_NAME, type: "secret_text", text: key.toString("base64url") }));
+    if (!exact(result, ["name", "type"]) || result.name !== SECRET_NAME || result.type !== "secret_text") throw reject();
+    secretConfirmed = true;
+    requireSecret(bindingInventory(await api("/settings")));
+    const after = deploymentInventory(await api("/deployments"));
+    afterSecret = after[0];
+    if (afterSecret.deployment_id === preimage.deployment_id || afterSecret.version_id === preimage.version_id ||
+        afterSecret.created_at_ms < Math.floor(secretAt / 1000) * 1000 || afterSecret.created_at_ms > now() ||
+        !after.some(row => row.deployment_id === preimage.deployment_id && row.version_id === preimage.version_id)) throw reject();
+    state = "prepared"; await persist(); return snapshot();
+  }
+  async function bindCandidate(value) {
+    if (state !== "prepared") throw reject();
+    candidate = candidateInput(value, input);
+    if (candidate.candidate_version_id === afterSecret.version_id || candidate.candidate_deployment_id === afterSecret.deployment_id) throw reject();
+    await currentCandidate();
+    const before = subdomainState(await api("/subdomain"));
+    if (before.enabled || before.previews_enabled) throw reject();
+    enabledAttempted = true; await persist();
+    const result = subdomainState(await api("/subdomain", "POST", { enabled: true, previews_enabled: false }));
+    if (!result.enabled || result.previews_enabled) throw reject();
+    const readback = subdomainState(await api("/subdomain"));
+    if (!readback.enabled || readback.previews_enabled) throw reject();
+    enabled = true; state = "enabled"; await persist(); return snapshot();
+  }
+  async function probe() {
+    if (state !== "enabled") throw reject();
+    await currentCandidate();
+    state = "running"; await persist();
+    proof = await proofRunner({ authKey: key.toString("base64url"), apiToken: input.api_token,
+      release: input.expected_release, expectedSha: input.expected_release, imageDigest: candidate.image_digest,
+      attemptPath: join(directory, ATTEMPT_LEDGER), signal: controller.signal });
+    alive();
+    attempt = await readAttempt();
+    if (!validateDeploymentProof(proof, attempt, { expectedRelease: input.expected_release,
+      expectedImageDigest: candidate.image_digest, observedAt: now() })) throw reject();
+    state = "complete"; await persist(); return proof;
+  }
+  async function cleanup() {
+    const neverExecute = !probeSeen && ["prepared", "enabled"].includes(state);
+    if (!secretConfirmed || restoreAttempted || deleteAttempted || (!neverExecute &&
+        (state !== "complete" || !validateDeploymentProof(proof, attempt, { expectedRelease: input.expected_release,
+          expectedImageDigest: candidate?.image_digest, observedAt: now() })))) throw reject();
+    // Irreversible close latch before the first await. Missing disk state alone
+    // never authorizes this arm: the broker must positively own never-executed RAM state.
+    state = "closing";
+    admissionClosed = true;
+    cleanupBasis = neverExecute ? "never_execute" : "complete_proof";
+    await persist();
+    if (neverExecute && await attemptExists()) throw reject();
+    await currentOwned();
+    const current = subdomainState(await api("/subdomain"));
+    if (current.enabled !== enabled || current.previews_enabled) throw reject();
+    if (enabled) {
+      restoreAttempted = true; await persist();
+      const restore = subdomainState(await api("/subdomain", "POST", preimage.subdomain));
+      if (restore.enabled || restore.previews_enabled) throw reject();
+    }
+    const readback = subdomainState(await api("/subdomain"));
+    if (readback.enabled || readback.previews_enabled) throw reject();
+    restored = true; enabled = false; await persist();
+    // Check the exact candidate chain again immediately before deleting our binding.
+    const original = await currentOwned();
+    const originalEtag = original.resources?.script?.etag;
+    if (typeof originalEtag !== "string" || originalEtag.length < 1 || originalEtag.length > 256) throw reject();
+    const originalBindings = bindingInventory(wrappedSettings(original.resources?.bindings)).filter(row => row.name !== SECRET_NAME);
+    const beforeDelete = candidate
+      ? { deployment_id: candidate.candidate_deployment_id, version_id: candidate.candidate_version_id }
+      : afterSecret;
+    const deleteAt = now();
+    deleteAttempted = true; await persist();
+    const result = envelope(await api(`/secrets/${SECRET_NAME}`, "DELETE"));
+    if (!exact(result, [])) throw reject();
+    if (bindingInventory(await api("/settings")).some(row => row.name === SECRET_NAME)) throw reject();
+    const after = deploymentInventory(await api("/deployments"));
+    postDelete = after[0];
+    if (postDelete.deployment_id === beforeDelete.deployment_id || postDelete.version_id === beforeDelete.version_id ||
+        postDelete.created_at_ms < Math.floor(deleteAt / 1000) * 1000 || postDelete.created_at_ms > now() ||
+        !after.some(row => row.deployment_id === beforeDelete.deployment_id && row.version_id === beforeDelete.version_id)) throw reject();
+    const derivative = envelope(await api(`/versions/${postDelete.version_id}`));
+    if (!record(derivative) || derivative.id !== postDelete.version_id || derivative.resources?.script?.etag !== originalEtag ||
+        JSON.stringify(bindingInventory(wrappedSettings(derivative.resources?.bindings)).sort(byName)) !== JSON.stringify(originalBindings.sort(byName))) throw reject();
+    deleted = true; state = "cleaned"; key.fill(0); await persist(); return snapshot();
+  }
+  async function dispatch(command, value) {
+    if (command === "status") { if (now() >= deadline) await expire(); return snapshot(); }
+    if (busy) throw reject();
+    if (!["prepare", "bind_candidate", "probe", "cleanup"].includes(command)) throw reject();
+    if (command === "probe" && (state !== "enabled" || admissionClosed)) throw reject();
+    if (command === "probe" && deadline - now() < PROBE_RESERVE_MS) {
+      admissionClosed = true; await persist(); throw reject();
+    }
+    alive(); busy = true;
+    if (command === "probe") probeSeen = true;
+    try { return await ({ prepare, bind_candidate: bindCandidate, probe, cleanup })[command](value); }
+    catch { state = "unknown"; await persist().catch(() => {}); throw unknown(); }
+    finally { busy = false; }
+  }
+  async function expire() {
+    state = "unknown"; controller.abort(); key.fill(0); await persist();
+  }
+  async function close() {
+    controller.abort(); key.fill(0);
+    if (state !== "cleaned") state = "unknown";
+    await persist(); return snapshot();
+  }
+  return { dispatch, snapshot, expire, close };
+}
+
+export async function serveBroker(directory, input, { brokerFactory = createBootstrapBroker, lifetimeMs = MAX_LIFETIME_MS,
+  onStopped = () => {},
+} = {}) {
+  if (!Number.isSafeInteger(lifetimeMs) || lifetimeMs < 1 || lifetimeMs > MAX_LIFETIME_MS) throw reject();
+  await privateDirectory(directory);
+  const broker = brokerFactory(input, { directory, lifetimeMs });
+  await writeLedger(directory, broker.snapshot(), true);
+  const sockets = new Set();
+  let closed = false;
+  const server = createServer(socket => {
+    sockets.add(socket); socket.on("close", () => sockets.delete(socket)); socket.on("error", () => {});
+    let data = Buffer.alloc(0), handled = false;
+    const invalidate = async () => { await broker.expire().catch(() => {}); socket.destroy(); };
+    socket.setTimeout(25 * 60_000, invalidate);
+    socket.on("end", () => { if (!handled) void invalidate(); });
+    socket.on("data", async chunk => {
+      if (handled) return invalidate();
+      data = Buffer.concat([data, chunk]);
+      if (data.length > MAX_IPC_BYTES) return invalidate();
+      if (!data.includes(10)) return;
+      handled = true;
+      let dispatched = false;
+      try {
+        const message = JSON.parse(data.toString("utf8"));
+        if (!exact(message, ["command", "payload"]) || !["bind_candidate", "probe", "status", "cleanup", "close"].includes(message.command) ||
+            (message.command !== "bind_candidate" && message.payload !== null)) throw reject();
+        // Dispatch owns its state transitions: a safe admission/busy rejection
+        // must not erase positively known never-execute or completed cleanup.
+        dispatched = message.command !== "close";
+        const result = message.command === "close" ? await broker.close() : await broker.dispatch(message.command, message.payload);
+        socket.end(`${JSON.stringify({ ok: true, result })}\n`);
+        if (message.command === "close") await shutdown();
+      } catch { if (!dispatched) await broker.expire().catch(() => {}); socket.end('{"ok":false,"error":"bootstrap_unknown"}\n'); }
+    });
+  });
+  const socketPath = join(directory, BROKER_SOCKET);
+  let expiry;
+  async function shutdown() {
+    if (closed) return;
+    closed = true; clearTimeout(expiry);
+    const forciblyClose = setTimeout(() => { for (const socket of sockets) socket.destroy(); }, 1000);
+    for (const socket of sockets) socket.end();
+    if (server.listening) await new Promise(resolveClosed => server.close(resolveClosed));
+    clearTimeout(forciblyClose);
+    await unlink(socketPath).catch(error => { if (error.code !== "ENOENT") throw error; });
+    onStopped();
+  }
+  expiry = setTimeout(async () => { try { await broker.expire(); } finally { await shutdown(); } }, lifetimeMs);
+  try {
+    await broker.dispatch("prepare");
+    if (closed) throw unknown();
+    await new Promise((yes, no) => { server.once("error", no); server.listen(socketPath, yes); });
+    await chmod(socketPath, 0o600);
+  } catch { await broker.close().catch(() => {}); await shutdown(); throw unknown(); }
+  return { broker, server, close: async () => { await broker.close(); await shutdown(); } };
+}
+
+export async function brokerCommand(directory, command, payload = null, { timeoutMs = 25 * 60_000 } = {}) {
+  await privateDirectory(directory);
+  const path = join(directory, BROKER_SOCKET);
+  const stat = await lstat(path);
+  if (!stat.isSocket() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid()) throw reject();
+  return new Promise((yes, no) => {
+    const socket = createConnection(path);
+    let data = Buffer.alloc(0);
+    const finish = (error, value) => { clearTimeout(timer); socket.destroy(); error ? no(unknown()) : yes(value); };
+    const timer = setTimeout(() => finish(unknown()), timeoutMs);
+    socket.on("connect", () => socket.write(`${JSON.stringify({ command, payload })}\n`));
+    socket.on("error", () => finish(unknown()));
+    socket.on("data", chunk => {
+      data = Buffer.concat([data, chunk]);
+      if (data.length > MAX_IPC_BYTES) return finish(unknown());
+      if (data.includes(10)) {
+        try { const reply = JSON.parse(data.toString("utf8")); if (reply.ok !== true) throw unknown(); finish(null, reply.result); }
+        catch { finish(unknown()); }
+      }
+    });
+    socket.on("end", () => { if (!data.includes(10)) finish(unknown()); });
+  });
+}
+async function stdinJson() {
+  let data = Buffer.alloc(0);
+  for await (const chunk of process.stdin) { data = Buffer.concat([data, chunk]); if (data.length > 16_384) throw reject(); }
+  return JSON.parse(data.toString("utf8"));
+}
+export async function startBroker(directory, input, { spawnProcess = spawn } = {}) {
+  startupInput(input);
+  await privateDirectory(directory, true);
+  // Do not inherit NODE_OPTIONS, CI credentials, or unrelated workflow secrets.
+  const child = spawnProcess(process.execPath, [SOURCE, "serve", directory], {
+    detached: true, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C.UTF-8" }, stdio: ["pipe", "pipe", "ignore"],
+  });
+  let data = Buffer.alloc(0);
+  const exited = new Promise(resolveExited => child.once("close", resolveExited));
+  const ready = new Promise((yes, no) => {
+    child.once("error", () => no(unknown())); child.once("exit", () => no(unknown()));
+    child.stdout.on("data", chunk => {
+      data = Buffer.concat([data, chunk]);
+      if (data.length > MAX_IPC_BYTES) return no(unknown());
+      if (data.includes(10)) {
+        try { const value = JSON.parse(data.toString("utf8")); if (value.state !== "prepared") throw unknown(); yes(value); }
+        catch { no(unknown()); }
+      }
+    });
+  });
+  const timer = setTimeout(() => child.kill("SIGTERM"), 5 * 60_000);
+  child.stdin.on("error", () => {});
+  child.stdin.end(JSON.stringify(input));
+  try { const result = await ready; child.stdout.destroy(); child.unref(); return result; }
+  catch {
+    child.kill("SIGTERM");
+    const force = setTimeout(() => child.kill("SIGKILL"), 1000);
+    try { await exited; } finally { clearTimeout(force); }
+    throw unknown();
+  }
+  finally { clearTimeout(timer); }
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [command, directory] = process.argv.slice(2);
+  try {
+    if (process.argv.length !== 4) throw reject();
+    if (command === "serve") {
+      const service = await serveBroker(directory, startupInput(await stdinJson()), { onStopped: () => process.exit(0) });
+      let stopping = false;
+      const stop = async () => { if (stopping) return; stopping = true; await service.close().catch(() => {}); process.exit(0); };
+      process.once("SIGTERM", stop); process.once("SIGINT", stop);
+      process.stdout.end(`${JSON.stringify(service.broker.snapshot())}\n`);
+    } else if (command === "start") {
+      process.stdout.write(`${JSON.stringify(await startBroker(directory, startupInput(await stdinJson())))}\n`);
+    } else if (["bind_candidate", "probe", "status", "cleanup", "close"].includes(command)) {
+      const result = await brokerCommand(directory, command, command === "bind_candidate" ? await stdinJson() : null);
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    } else throw reject();
+  } catch { process.stderr.write("issue-1700 bootstrap failed bootstrap_unknown\n"); process.exitCode = 1; }
+}

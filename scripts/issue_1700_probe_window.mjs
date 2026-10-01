@@ -5,7 +5,7 @@ export const PROBE_WINDOW = Object.freeze({
   starts_ms: 1790856000000,
   last_entry_ms: 1790877600000,
   expires_ms: 1790882100000,
-  nonce: "issue-1700-recovery-20261001-v9",
+  nonce: "issue-1700-recovery-20261001-v10",
 });
 
 export function isApprovedProbeWindow(value) {

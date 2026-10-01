@@ -102,6 +102,13 @@ workflow configuration or a green PR check as provider readiness.
 
 ## Readiness, load, and teardown
 
+The [native Container/D1 proof operator](../../docs/operator/issue-1700-native-http-proof.md)
+uses the existing dedicated authenticated HTTP boundary. Its strict native
+receipt and separate v8/v9 cleanup receipts do not establish Cron or Tail
+delivery. Unresolved provider operations persist an unknown state and block
+automatic rollback or replay. Source and credentialless CI do not authorize
+the temporary endpoint or credential bootstrap.
+
 After bootstrap, capture current provider identity and Custom Domain/DNS/TLS readback,
 then run the bounded authenticated readiness probe through its protected
 workflow on the declared GitHub-hosted `ubuntu-24.04` fleet. Configuration and

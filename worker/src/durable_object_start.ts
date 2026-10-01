@@ -133,7 +133,9 @@ export async function startContainer(
           // receiving it — 401s every mint/admin/erase call (a self-inflicted
           // outage). Forward them (empty when unset ⇒ shared fallback, unchanged).
           CORELINK_PAT_MINT_AUTH_KEY: ctx.env.CORELINK_PAT_MINT_AUTH_KEY ?? "",
-          CORELINK_ADMIN_AUTH_KEY: ctx.env.CORELINK_ADMIN_AUTH_KEY ?? "",
+          // The dedicated native proof is authenticated at the Worker only.
+          // Its temporary HTTP credential must never enter the Container env.
+          CORELINK_ADMIN_AUTH_KEY: ctx.suppressLifecycleTelemetry ? "" : (ctx.env.CORELINK_ADMIN_AUTH_KEY ?? ""),
           CORELINK_ERASE_AUTH_KEY: ctx.env.CORELINK_ERASE_AUTH_KEY ?? "",
           // Dual-key rotation: the OUTGOING erase key, accepted alongside the
           // current one by the container (`dsr::internal_auth_ok_any`) for the

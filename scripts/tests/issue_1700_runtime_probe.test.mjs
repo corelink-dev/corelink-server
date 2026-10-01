@@ -44,11 +44,11 @@ test("transport fixtures use the repository-pinned ws client", () => {
   assert.equal(createRequire(import.meta.url)("ws/package.json").version, "8.21.0");
 });
 
-test("compiled runtime window is the exact approved v9 tuple", () => {
+test("compiled runtime window is the exact approved v10 tuple", () => {
   assert.equal(approvedProbeWindow(), true);
   assert.deepEqual(PROBE_WINDOW, { cron: "*/2 * * * *", starts_ms: Date.parse("2026-10-01T12:00:00Z"),
     last_entry_ms: Date.parse("2026-10-01T18:00:00Z"), expires_ms: Date.parse("2026-10-01T19:15:00Z"),
-    nonce: "issue-1700-recovery-20261001-v9" });
+    nonce: "issue-1700-recovery-20261001-v10" });
   assert.equal(approvedProbeWindow({ ...PROBE_WINDOW, expires_ms: PROBE_WINDOW.expires_ms + 60_000 }), false);
   assert.equal(approvedProbeWindow({ ...PROBE_WINDOW, nonce: "issue-1700-recovery-20260930-v4" }), false);
 });
