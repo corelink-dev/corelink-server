@@ -9,8 +9,8 @@ use super::*;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+use rsa::RsaPrivateKey;
 
 const TEST_SHARED_KEY: &str = "shared-key-000000000000000000000";
 const TEST_DEDICATED_KEY: &str = "dedicated-key-000000000000000000";
@@ -315,10 +315,10 @@ fn missing_key_fails_closed() {
     assert!(parse_signing_key("").is_none());
     assert!(parse_signing_key("   ").is_none());
     assert!(parse_signing_key("not-a-pem").is_none());
-    assert!(
-        parse_signing_key("-----BEGIN PRIVATE KEY-----\nbm90YWtleQ==\n-----END PRIVATE KEY-----\n")
-            .is_none()
-    );
+    assert!(parse_signing_key(
+        "-----BEGIN PRIVATE KEY-----\nbm90YWtleQ==\n-----END PRIVATE KEY-----\n"
+    )
+    .is_none());
     // A real generated key ⇒ Some ⇒ mountable.
     let pem = {
         let mut rng = rand::thread_rng();
