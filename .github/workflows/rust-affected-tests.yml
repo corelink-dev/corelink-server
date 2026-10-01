@@ -191,13 +191,14 @@ jobs:
       # text, the way cargo dedupes them. The count must EQUAL the entry: more means a new lint
       # failure, which is red; fewer means the entry must come down in the same
       # PR, also red. An entry that reaches zero must be deleted. Shrink-only.
-      #   corelink-server
-      #     Measured on ubuntu-24.04 at this lane's first whole-workspace run:
-      #     unwrap/expect, indexing/slicing and signature lints in lib and
-      #     lib-test code, plus targets that never compiled under clippy
-      #     because the lib failed first.
+      #   corelink-server 349
+      #     Measured on ubuntu-24.04 by run 36942141564 (2026-10-01), and equal
+      #     to the 349 diagnostics the strict run printed before this ledger
+      #     existed. Largest classes: indexing/slicing 178, unwrap/expect 130,
+      #     too_many_arguments 11. 39 come from the plain lib build; the
+      #     other 310 appear only when the lib is compiled for its tests.
       CLIPPY_DEBT: |
-        corelink-server 1
+        corelink-server 349
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
