@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,7 +18,7 @@ class StagingTargetContractTests(unittest.TestCase):
     def fixture(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temp = tempfile.TemporaryDirectory()
         root = Path(temp.name)
-        for path in (module.CONTRACT, *module.WORKFLOWS, Path("wrangler.toml")):
+        for path in (module.CONTRACT, *module.RUNNER_WORKFLOWS, Path("wrangler.toml")):
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text((ROOT / path).read_text(encoding="utf-8"), encoding="utf-8")
@@ -49,6 +50,64 @@ class StagingTargetContractTests(unittest.TestCase):
             data["cloudflare"]["root_worker_settings"]["compatibility_flags"] = ["nodejs_compat"]
             path.write_text(json.dumps(data), encoding="utf-8")
             self.assertIn("root-request-signal-compatibility", module.assess(root))
+
+    def test_canonical_runner_rejects_obsolete_and_floating_labels(self) -> None:
+        for runner in ("corelink", "ubuntu-latest", "self-hosted", None):
+            with self.subTest(runner=runner):
+                temp, root = self.fixture()
+                with temp:
+                    path = root / module.CONTRACT
+                    data = json.loads(path.read_text())
+                    data["validated_inputs"]["runner_label"] = runner
+                    path.write_text(json.dumps(data), encoding="utf-8")
+                    self.assertIn("validated-inputs", module.assess(root))
+
+    def test_each_actual_job_rejects_runner_drift(self) -> None:
+        for workflow, jobs in module.RUNNER_WORKFLOWS.items():
+            for job in jobs:
+                for runner in ("corelink", "ubuntu-latest", "[self-hosted, corelink]", "${{ vars.RUNNER }}"):
+                    with self.subTest(workflow=workflow, job=job, runner=runner):
+                        temp, root = self.fixture()
+                        with temp:
+                            path = root / workflow
+                            source = path.read_text()
+                            start = source.index(f"  {job}:\n")
+                            position = source.index("    runs-on: ubuntu-24.04\n", start)
+                            body_start = start + len(f"  {job}:\n")
+                            following_job = re.search(r"(?m)^  [^\s#]", source[body_start:])
+                            if following_job:
+                                self.assertLess(position, body_start + following_job.start())
+                            path.write_text(source[:position] + source[position:].replace(
+                                "    runs-on: ubuntu-24.04\n", f"    runs-on: {runner}\n", 1,
+                            ))
+                            self.assertIn(f"workflow-runner:{workflow.name}", module.assess(root))
+
+    def test_runner_check_rejects_missing_duplicate_and_ambiguous_jobs(self) -> None:
+        workflow = Path(".github/workflows/i1675-live-probe.yml")
+        cases = {
+            "missing runner": ("    runs-on: ubuntu-24.04\n", ""),
+            "duplicate runner": ("    runs-on: ubuntu-24.04\n", "    runs-on: ubuntu-24.04\n    runs-on: corelink\n"),
+            "quoted override": ("    runs-on: ubuntu-24.04\n", "    runs-on: ubuntu-24.04\n    'runs-on': corelink\n"),
+            "explicit runner override": ("    runs-on: ubuntu-24.04\n", "    runs-on: ubuntu-24.04\n    ? runs-on\n    : corelink\n"),
+            "missing job": ("  probe:\n", "  other:\n"),
+            "duplicate job": ("  probe:\n", "  probe:\n    runs-on: ubuntu-24.04\n  probe:\n"),
+            "extra job": ("  probe:\n", "  extra:\n    runs-on: corelink\n  probe:\n"),
+            "inline extra job": ("  probe:\n", "  extra: {runs-on: corelink}\n  probe:\n"),
+            "explicit extra reusable job": ("  probe:\n", "  ? extra\n  :\n    uses: owner/repository/.github/workflows/reusable.yml@main\n  probe:\n"),
+            "duplicate section": ("jobs:\n", "jobs:\n  probe:\n    runs-on: corelink\njobs:\n"),
+            "quoted duplicate section": ("jobs:\n", "'jobs': {probe: {runs-on: corelink}}\njobs:\n"),
+            "explicit duplicate section": ("jobs:\n", "? jobs\n:\n  probe:\n    runs-on: corelink\njobs:\n"),
+            "merge key": ("    runs-on: ubuntu-24.04\n", "    <<: *runner\n    runs-on: ubuntu-24.04\n"),
+        }
+        for label, (old, new) in cases.items():
+            with self.subTest(case=label):
+                temp, root = self.fixture()
+                with temp:
+                    path = root / workflow
+                    source = path.read_text()
+                    self.assertEqual(source.count(old), 1)
+                    path.write_text(source.replace(old, new, 1))
+                    self.assertIn(f"workflow-runner:{workflow.name}", module.assess(root))
 
     def test_workflows_reject_host_and_duration_drift(self) -> None:
         temp, root = self.fixture()

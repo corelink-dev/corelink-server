@@ -10,6 +10,12 @@ from pathlib import Path
 ORIGIN = "https://staging.corelink.humangr.com"
 CONTRACT = Path("infra/staging/topology.json")
 WORKFLOWS = (Path(".github/workflows/load-test-nightly.yml"), Path(".github/workflows/endurance-2h-nightly.yml"))
+RUNNER_LABEL = "ubuntu-24.04"
+RUNNER_WORKFLOWS = {
+    WORKFLOWS[0]: {"k6-staging", "baseline-regression"},
+    WORKFLOWS[1]: {"endurance-2h", "baseline-drift-check"},
+    Path(".github/workflows/i1675-live-probe.yml"): {"probe"},
+}
 SECRETS = {
     "K6_STAGING_BYOK_CMK_ID",
     "K6_STAGING_MFA_STUB",
@@ -20,6 +26,48 @@ SECRETS = {
     "K6_TARGET_HOST",
 }
 RESOURCES = {"corelink-config-staging", "corelink-cas-staging", "corelink-ac-iad-staging", "corelink-chunk-iad-staging", "corelink-manifest-iad-staging", "corelink-metadata-staging", "corelink-clerk-jwks-staging", "corelink-negative-cache-staging", "corelink-dsr-erasure-staging", "corelink-dsr-erasure-dlq-staging"}
+
+
+def runner_matches(text: str, expected_jobs: set[str]) -> bool:
+    """Validate the checked-in block form without loading YAML dependencies.
+
+    Every declared job must use the fixed hosted image. Reject ambiguous keys,
+    duplicate jobs/properties and alternate YAML forms instead of guessing
+    which runner GitHub would select.
+    """
+    root_lines = re.findall(r"(?m)^([^\s#].*)$", text)
+    if any(not re.fullmatch(r"[a-z][a-z-]*:[^\n]*", line) for line in root_lines):
+        return False
+    root_keys = re.findall(r"(?m)^([^\s#][^:\n]*):", text)
+    if any(not re.fullmatch(r"[a-z][a-z-]*", key) for key in root_keys) or root_keys.count("jobs") != 1:
+        return False
+    sections = list(re.finditer(r"(?m)^jobs:[ \t]*$", text))
+    if len(sections) != 1:
+        return False
+    body = text[sections[0].end():]
+    boundary = re.search(r"(?m)^[^\s#]", body)
+    if boundary:
+        body = body[:boundary.start()]
+    job_lines = re.findall(r"(?m)^  ([^\s#].*)$", body)
+    if any(not re.fullmatch(r"[a-z][a-z0-9-]*:[ \t]*", line) for line in job_lines):
+        return False
+    jobs = list(re.finditer(r"(?m)^  ([^\s#][^:\n]*):([^\n]*)$", body))
+    names = [job.group(1) for job in jobs]
+    if len(names) != len(expected_jobs) or set(names) != expected_jobs or any(job.group(2).strip() for job in jobs):
+        return False
+    for index, job in enumerate(jobs):
+        block = body[job.end():jobs[index + 1].start() if index + 1 < len(jobs) else len(body)]
+        property_lines = re.findall(r"(?m)^    ([^\s#].*)$", block)
+        if any(not re.fullmatch(r"[a-z][a-z-]*:[^\n]*", line) for line in property_lines):
+            return False
+        properties = re.findall(r"(?m)^    ([^\s#][^\n]*?):([^\n]*)$", block)
+        keys = [key for key, _ in properties]
+        if any(not re.fullmatch(r"[a-z][a-z-]*", key) for key in keys) or len(keys) != len(set(keys)):
+            return False
+        runners = [value.strip() for key, value in properties if key == "runs-on"]
+        if runners != [RUNNER_LABEL]:
+            return False
+    return True
 
 
 def assess(root: Path) -> list[str]:
@@ -42,7 +90,7 @@ def assess(root: Path) -> list[str]:
     if not (0 < life.get("lease_ttl_hours", 0) <= 24 and 0 < life.get("idle_teardown_after_hours", 0) <= 2 and life.get("r2_object_ttl_hours") == 24 and teardown.get("manual_only") is True and teardown.get("automatic") is False and teardown.get("fail_closed") is True):
         gaps.append("lifecycle-or-teardown")
     inputs = data.get("validated_inputs", {})
-    if inputs.get("runner_label") != "corelink" or inputs.get("target_host") != ORIGIN or set(inputs.get("load_scenarios", [])) != {"signup", "webhook", "dsr", "cas", "byok"} or set(inputs.get("endurance_durations", [])) != {"30s", "2h"} or set(inputs.get("required_secret_names", [])) != SECRETS:
+    if inputs.get("runner_label") != RUNNER_LABEL or inputs.get("target_host") != ORIGIN or set(inputs.get("load_scenarios", [])) != {"signup", "webhook", "dsr", "cas", "byok"} or set(inputs.get("endurance_durations", [])) != {"30s", "2h"} or set(inputs.get("required_secret_names", [])) != SECRETS:
         gaps.append("validated-inputs")
     outputs = data.get("outputs", {})
     if outputs.get("target_host") != ORIGIN or outputs.get("github_environment") != "staging" or set(outputs.get("resource_names", [])) != RESOURCES:
@@ -64,6 +112,9 @@ def assess(root: Path) -> list[str]:
         if not isinstance(resource, str) or not resource.endswith("-staging"):
             gaps.append("non-staging-resource-name")
             break
+    for path, jobs in RUNNER_WORKFLOWS.items():
+        if not runner_matches((root / path).read_text(encoding="utf-8"), jobs):
+            gaps.append(f"workflow-runner:{path.name}")
     for path in WORKFLOWS:
         text = (root / path).read_text(encoding="utf-8")
         if "CANONICAL_TARGET='https://staging.corelink.humangr.com'" not in text or 'TARGET_HOST="${K6_TARGET_HOST%/}"' not in text or '[[ "$TARGET_HOST" != "$CANONICAL_TARGET" ]]' not in text:
