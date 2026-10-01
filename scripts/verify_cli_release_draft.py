@@ -54,7 +54,7 @@ def verify(api_path: Path, directory: Path, manifest: Path, provenance: Path, bu
         raise ValueError("draft asset inventory is not closed-world")
     for name, asset in api_assets.items():
         remote_digest = asset.get("digest")
-        if remote_digest is not None and remote_digest != f"sha256:{digest(directory / name)}":
+        if remote_digest != f"sha256:{digest(directory / name)}":
             raise ValueError(f"draft API digest differs from downloaded bytes: {name}")
     if _slsa_subjects(provenance, bundle) != expected:
         raise ValueError("draft SLSA subjects are not exactly bound to every final artifact")

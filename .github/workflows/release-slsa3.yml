@@ -145,10 +145,32 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
           TAG: ${{ inputs.release_tag }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
         run: |
           set -euo pipefail
-          gh release upload "${TAG}" --repo HuGR-Labs/corelink-cli --clobber \
-            provenance.intoto.jsonl provenance.intoto.jsonl.bundle
+          case "${RELEASE_MODE}" in
+            draft-only)
+              RELEASE_API="${RUNNER_TEMP}/corelink-slsa-upload-release.json"
+              gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${RELEASE_API}"
+              python3 - "${RELEASE_API}" "${TAG}" <<'PY'
+          import json, sys
+          release = json.load(open(sys.argv[1], encoding="utf-8"))
+          if (release.get("tag_name") != sys.argv[2] or release.get("draft") is not True
+                  or release.get("published_at") is not None):
+              raise SystemExit("provenance upload requires the exact unpublished draft")
+          names = [asset.get("name") for asset in release.get("assets", [])]
+          if any(name in {"provenance.intoto.jsonl", "provenance.intoto.jsonl.bundle"} for name in names):
+              raise SystemExit("draft provenance already exists; refusing to replace it")
+          PY
+              gh release upload "${TAG}" --repo HuGR-Labs/corelink-cli \
+                provenance.intoto.jsonl provenance.intoto.jsonl.bundle
+              ;;
+            signed-public)
+              gh release upload "${TAG}" --repo HuGR-Labs/corelink-cli --clobber \
+                provenance.intoto.jsonl provenance.intoto.jsonl.bundle
+              ;;
+            *) echo "::error::unknown release mode; refusing provenance upload" >&2; exit 1 ;;
+          esac
 
       - name: Verify official identity, issuer, and every exact subject
         env:

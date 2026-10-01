@@ -158,6 +158,19 @@ class DraftManifestContractTests(unittest.TestCase):
         with patch.object(draft, "_gpg_verify"):
             draft_verifier.verify(api, self.final, self.manifest, provenance, bundle,
                                   self.root / "unused-public-key", TAG, SOURCE, sha(self.manifest))
+        valid_api = json.loads(api.read_text(encoding="utf-8"))
+        for replacement in (None, "__missing__"):
+            invalid_api = json.loads(json.dumps(valid_api))
+            if replacement == "__missing__":
+                invalid_api["assets"][0].pop("digest")
+            else:
+                invalid_api["assets"][0]["digest"] = replacement
+            api.write_text(json.dumps(invalid_api), encoding="utf-8")
+            with patch.object(draft, "_gpg_verify"):
+                with self.assertRaisesRegex(ValueError, "API digest"):
+                    draft_verifier.verify(api, self.final, self.manifest, provenance, bundle,
+                                          self.root / "unused-public-key", TAG, SOURCE, sha(self.manifest))
+        api.write_text(json.dumps(valid_api), encoding="utf-8")
         statement["subject"] = subjects[:-1]
         payload = json.dumps(statement, sort_keys=True, separators=(",", ":")).encode()
         provenance.write_bytes(payload + b"\n")

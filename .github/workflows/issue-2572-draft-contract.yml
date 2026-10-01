@@ -181,13 +181,18 @@ jobs:
           cargo zigbuild -p corelink-cli --release --locked --target "${TARGET_TRIPLE}"
           SOURCE="${CARGO_TARGET_DIR}/${TARGET_TRIPLE}/release/corelink${TARGET_EXT}"
           mkdir out
+          PACKAGE_DIR="${RUNNER_TEMP}/corelink-package-${TARGET_NAME}"
+          mkdir -p "${PACKAGE_DIR}"
           ASSET="corelink-${TARGET_NAME}${TARGET_EXT}"
           cp "${SOURCE}" "out/${ASSET}"
+          cp "${SOURCE}" "${PACKAGE_DIR}/corelink${TARGET_EXT}"
           if [ "${TARGET_TRIPLE}" = x86_64-pc-windows-gnu ]; then
-            (cd out && zip -q -X corelink-windows-x86_64.zip "${ASSET}")
+            ARCHIVE=corelink-windows-x86_64.zip
+            (cd "${PACKAGE_DIR}" && zip -q -X "${RUNNER_TEMP}/${ARCHIVE}" corelink.exe)
+            mv "${RUNNER_TEMP}/${ARCHIVE}" out/
           else
             ARCHIVE="corelink-${TARGET_NAME}.tar.gz"
-            tar -czf "out/${ARCHIVE}" -C out "${ASSET}"
+            tar -czf "out/${ARCHIVE}" -C "${PACKAGE_DIR}" corelink
           fi
           (cd out && for payload in corelink-*; do
             case "${payload}" in *.sha256|checksums.txt) continue ;; esac
@@ -196,7 +201,7 @@ jobs:
           done && LC_ALL=C sort ./*.sha256 > checksums.txt)
           if [ "${TARGET_TRIPLE}" = x86_64-pc-windows-gnu ]; then
             unzip -t out/corelink-windows-x86_64.zip
-            test "$(unzip -Z1 out/corelink-windows-x86_64.zip)" = corelink-windows-x86_64.exe
+            test "$(unzip -Z1 out/corelink-windows-x86_64.zip)" = corelink.exe
           else
-            tar -tzf "out/${ARCHIVE}" | grep -Fx "${ASSET}"
+            test "$(tar -tzf "out/${ARCHIVE}")" = corelink
           fi
