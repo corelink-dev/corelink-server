@@ -259,22 +259,6 @@ fn ingestion_summary(_project_uuid: &str) -> serde_json::Value {
     serde_json::json!({ "ingested": true })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::ingestion_summary;
-
-    #[test]
-    fn ingestion_summary_reports_success_without_project_uuid() {
-        let secret_uuid = "8f14e45f-ea3e-45e3-aab7-080f14617aaf";
-        let summary = ingestion_summary(secret_uuid);
-        let output = summary.to_string();
-
-        assert!(output.contains("\"ingested\":true"));
-        assert!(!output.contains(secret_uuid));
-        assert!(summary.get("project_uuid").is_none());
-    }
-}
-
 fn exit_code_for_error(e: &SbomError) -> ExitCode {
     match e {
         SbomError::GenerationFailed(_)
@@ -288,5 +272,21 @@ fn exit_code_for_error(e: &SbomError) -> ExitCode {
         | SbomError::ApiKeyMissing(_) => ExitCode::from(4),
         SbomError::Http(_) => ExitCode::from(4),
         _ => ExitCode::from(1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ingestion_summary;
+
+    #[test]
+    fn ingestion_summary_reports_success_without_project_uuid() {
+        let secret_uuid = "8f14e45f-ea3e-45e3-aab7-080f14617aaf";
+        let summary = ingestion_summary(secret_uuid);
+        let output = summary.to_string();
+
+        assert!(output.contains("\"ingested\":true"));
+        assert!(!output.contains(secret_uuid));
+        assert!(summary.get("project_uuid").is_none());
     }
 }

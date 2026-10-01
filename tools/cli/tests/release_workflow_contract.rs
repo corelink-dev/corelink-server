@@ -6,6 +6,13 @@
 //! a superficially valid workflow cannot silently repoint, skip tool validation,
 //! or stop publishing the files downstream signers request.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests are allowed to use these primitives"
+)]
+
 #[path = "release_workflow_contract/assertions.rs"]
 mod assertions;
 #[path = "release_workflow_contract/cases.rs"]

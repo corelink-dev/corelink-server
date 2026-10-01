@@ -753,22 +753,3 @@ pub(super) fn assert_inventory_helper_contract(script: &str) {
         );
     }
 }
-
-pub(super) fn assert_rekor_helper_contract(script: &str) {
-    for required in [
-        "tlogEntries",
-        "if not entries:",
-        "inclusionProof",
-        "canonicalizedBody",
-        "expected = hashlib.sha256(payload_path.read_bytes()).hexdigest()",
-        "_inclusion_root",
-        "inclusionProof.rootHash",
-        "integrated_time is None",
-        "digest.lower() == expected",
-    ] {
-        assert!(
-            script.contains(required),
-            "Rekor verifier control missing: {required}"
-        );
-    }
-}
