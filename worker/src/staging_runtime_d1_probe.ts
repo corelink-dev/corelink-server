@@ -3,9 +3,21 @@ import window from "../../crates/corelink-container/src/routes/staging_d1_probe_
 export const STAGING_D1_PROBE_WINDOW = window;
 export const STAGING_D1_PROBE_LAST_ENTRY_MS = window.last_entry_ms;
 import type { Env } from "./index_common.js";
+import { isV8CleanupReceipt, withinV8CleanupDeadline, V8_PROBE_NAME, type V8CleanupReceipt } from "./staging_d1_probe_v8_cleanup.js";
+import cleanupWindow from "./staging_d1_probe_cleanup_window.json";
 
 export const STAGING_D1_RUNTIME_PROBE_DO_PREFIX = `_staging_d1_binding_probe_v2:${window.nonce}:`;
 export const STAGING_D1_RUNTIME_PROBE_PATH = "/_internal/staging/d1-binding-runtime-probe";
+
+/** Fixed stage evidence only; never provider errors, request data, or receipt payloads. */
+export function recordStagingD1ProbePhase(env: Env,
+  phase: "scheduled_entry" | "native_start" | "native_complete" | "native_error"): void {
+  const release = env.SENTRY_RELEASE ?? "";
+  if (env.ENVIRONMENT === "staging" && /^[0-9a-f]{40}$/.test(release) &&
+      ["scheduled_entry", "native_start", "native_complete", "native_error"].includes(phase)) {
+    console.info(`[staging_d1_runtime_probe] phase=${phase} release=${release}`);
+  }
+}
 
 export interface StagingD1RuntimeProbeReceipt {
   readonly contract: "corelink-staging-d1-binding-runtime-v1";
@@ -35,6 +47,7 @@ export type StagingD1RuntimeProbeAdmissionResult =
   | { readonly status: "complete"; readonly receipt: StagingD1RuntimeProbeReceipt };
 
 interface StagingD1RuntimeProbeStub {
+  cleanupV8StagingD1RuntimeProbe(scheduledTime: number, expectedRelease: string): Promise<V8CleanupReceipt>;
   admitStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeAdmissionResult>;
   retireStagingD1RuntimeProbe(scheduledTime: number): Promise<OldProbeRetirement>;
   readStagingD1RuntimeProbeReceipt(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt | undefined>;
@@ -91,6 +104,13 @@ export async function runStagingD1BindingRuntimeProbe(
   if (scheduledTime > window.last_entry_ms || Date.now() > window.last_entry_ms) {
     throw new Error("staging runtime probe entry lease closed");
   }
+  const v8 = env.CORELINK_SERVER.get(env.CORELINK_SERVER.idFromName(V8_PROBE_NAME)) as unknown as StagingD1RuntimeProbeStub;
+  const cleanup = await withinV8CleanupDeadline(
+    () => v8.cleanupV8StagingD1RuntimeProbe(scheduledTime, release), Date.now,
+    Math.min(Date.now() + 60_000, cleanupWindow.expires_ms),
+  );
+  if (!isV8CleanupReceipt(cleanup, release, Date.now())) throw new Error("v8 cleanup receipt rejected");
+  console.info(`[staging_d1_runtime_probe] v8_cleanup=${JSON.stringify(cleanup)}`);
   const stub = releaseStub(env, release);
   const stored = await stub.readStagingD1RuntimeProbeReceipt(scheduledTime);
   if (stored !== undefined) {

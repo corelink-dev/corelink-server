@@ -48,7 +48,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: issue-1700-staging-custom-domain
+  group: ${{ github.event_name == 'pull_request' && format('issue-1700-staging-contract-pr-{0}', github.event.pull_request.number) || 'issue-1700-staging-custom-domain' }}
   cancel-in-progress: false
 
 jobs:
@@ -57,6 +57,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Require a numeric PR identity for the isolated contract queue
+        if: github.event_name == 'pull_request'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false

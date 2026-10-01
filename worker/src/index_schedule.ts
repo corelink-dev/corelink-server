@@ -2,7 +2,7 @@
 import type { ScheduledController } from "@cloudflare/workers-types";
 import type { Env } from "./index_common.js";
 import { scheduledDrillForCron, scheduledWeekNumber, syntheticRegionForWeek, syntheticEmitAtMs, SYNTHETIC_PAGE_CONTRACT } from "./index_common.js";
-import { readStagingD1BindingRuntimeProbeReceipt, runStagingD1BindingRuntimeProbe, STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
+import { readStagingD1BindingRuntimeProbeReceipt, recordStagingD1ProbePhase, runStagingD1BindingRuntimeProbe, STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
 import { B072_ONE_SHOT_CRON, runB072OneShot } from "./b072_one_shot.js";
 
 export const STAGING_D1_RUNTIME_PROBE_CRON = STAGING_D1_PROBE_WINDOW.cron;
@@ -16,6 +16,7 @@ export async function runScheduled(controller: ScheduledController, env: Env): P
     }
 
     if (controller.cron === STAGING_D1_RUNTIME_PROBE_CRON) {
+      recordStagingD1ProbePhase(env, "scheduled_entry");
       const release = env.SENTRY_RELEASE ?? "";
       const targetIsStaging = env.ENVIRONMENT === "staging" &&
         /^[0-9a-f]{40}$/.test(release) &&

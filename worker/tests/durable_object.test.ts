@@ -12,9 +12,11 @@
  *   - Per-tenant isolation (DO IDs derived from tenant path)
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { CoreLinkServer, timingSafeEqual } from "../src/durable_object.js";
 import { STAGING_D1_PROBE_WINDOW } from "../src/staging_runtime_d1_probe.js";
+import { V8_PROBE_NAME, V8_PROBE_RELEASE, V8_PROBE_NONCE, V8_PROBE_RETIRED_KEY, V8_CLEANUP_RECEIPT_KEY } from "../src/staging_d1_probe_v8_cleanup.js";
+import cleanupWindow from "../src/staging_d1_probe_cleanup_window.json";
 import type { Env } from "../src/index.js";
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -295,8 +297,48 @@ describe("staging D1 runtime probe exposure", () => {
     now += 1000;
     const start = vi.spyOn(do_ as unknown as { ensureContainerRunning: (...args: unknown[]) => Promise<unknown> }, "ensureContainerRunning")
       .mockRejectedValue(new Error("container-start-stop"));
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
     await expect(do_.runStagingD1RuntimeProbe(first.admission)).rejects.toThrow("container-start-stop");
     expect(start).toHaveBeenCalledOnce();
+    expect(info.mock.calls.map(call => call[0])).toEqual([
+      `[staging_d1_runtime_probe] phase=native_start release=${release}`,
+      `[staging_d1_runtime_probe] phase=native_error release=${release}`,
+    ]);
+    expect(info.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0]!);
+    info.mockRestore();
+  });
+
+  it("emits native_complete only after the validated receipt and stopped state persist", async () => {
+    const window = STAGING_D1_PROBE_WINDOW, release = "a".repeat(40), scheduledTime = window.starts_ms;
+    const state = makeMockState(`_staging_d1_binding_probe_v2:${window.nonce}:${release}`);
+    const receipt = { contract: "corelink-staging-d1-binding-runtime-v1", outcome: "pass",
+      probe_nonce: window.nonce, worker_release: release, scheduled_time_ms: scheduledTime,
+      parameterized_select: true, failed_batch_observed: true, rollback_absence_verified: true,
+      probe_table_dropped: true, d1_binding_intercepted: true, authorization_absent: true, cf_api_token_absent: true };
+    const container = { running: true, destroy: vi.fn(async () => { container.running = false; }),
+      getTcpPort: () => ({ fetch: vi.fn(async () => Response.json(receipt)) }) };
+    Object.assign(state, { container });
+    const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: release,
+      CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd",
+      D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
+      R2_S3_ENDPOINT: "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com",
+      CORELINK_SERVER: { idFromName: (id: string) => ({ toString: () => id }) },
+    } as unknown as Env;
+    const do_ = new CoreLinkServer(state, env, () => scheduledTime + 5000);
+    const admitted = await do_.admitStagingD1RuntimeProbe(scheduledTime);
+    if (admitted.status !== "admitted") throw new Error("fixture admission rejected");
+    vi.spyOn(do_ as unknown as { ensureContainerRunning: (...args: unknown[]) => Promise<unknown> }, "ensureContainerRunning").mockResolvedValue({ ok: true });
+    const put = vi.spyOn(state.storage, "put");
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    await expect(do_.runStagingD1RuntimeProbe(admitted.admission)).resolves.toEqual(receipt);
+    expect(container.running).toBe(false);
+    expect(await state.storage.get("staging-d1-binding-probe-state-v1")).toBe("complete");
+    expect(info.mock.calls.map(call => call[0])).toEqual([
+      `[staging_d1_runtime_probe] phase=native_start release=${release}`,
+      `[staging_d1_runtime_probe] phase=native_complete release=${release}`,
+    ]);
+    expect(info.mock.invocationCallOrder[1]).toBeGreaterThan(put.mock.invocationCallOrder.at(-1)!);
+    info.mockRestore();
   });
 
   it("rejects first admission after latest entry and rejects a foreign admission", async () => {
@@ -1058,5 +1100,192 @@ describe("exact old probe retirement fence", () => {
     await expect(do_.retireStagingD1RuntimeProbe(time)).rejects.toThrow("stop unproven");
     expect(sql).not.toHaveBeenCalled();
     expect((await do_.fetch(new Request("https://test/"))).status).toBe(410);
+  });
+});
+
+describe("exact v8 cleanup fence and live proof", () => {
+  const release = "a".repeat(40);
+  const time = cleanupWindow.starts_ms;
+  const admissionKey = "staging-d1-binding-probe-admission-v1";
+  const claimKey = "staging-d1-binding-probe-state-v1";
+  const receiptKey = "staging-d1-binding-probe-receipt-v1";
+  const admission = { contract: "corelink-staging-d1-probe-admission-v1" as const,
+    probe_nonce: V8_PROBE_NONCE, worker_release: V8_PROBE_RELEASE,
+    scheduled_time_ms: Date.parse("2026-10-01T07:26:00Z") };
+  const completion = { contract: "corelink-staging-v8-cleanup-v1", old_release: V8_PROBE_RELEASE,
+    old_nonce: V8_PROBE_NONCE, worker_release: release, prior_execution: "unknown",
+    prior_admission_present: true, container_stopped: true, alarm_absent: true,
+    tables_absent: true, completed_at_ms: time };
+
+  async function fixture(id = V8_PROBE_NAME, now: () => number = () => time) {
+    const state = makeMockState(id);
+    let ready!: Promise<unknown>;
+    Object.assign(state, { blockConcurrencyWhile: (fn: () => Promise<unknown>) => (ready = fn()) });
+    const container = { running: false, destroy: vi.fn().mockResolvedValue(undefined) };
+    Object.assign(state, { container });
+    const catalog = vi.fn().mockResolvedValue({ success: true, results: [] });
+    const sql = vi.fn((_query: string) => ({ bind() { return this; }, all: catalog }));
+    const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: release,
+      CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd",
+      D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
+      R2_S3_ENDPOINT: "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com",
+      CONFIG_DB: { prepare: sql },
+      CORELINK_SERVER: { idFromName: (name: string) => ({ toString: () => name }) },
+    } as unknown as Env;
+    const do_ = new CoreLinkServer(state, env, now);
+    await ready;
+    return { do_, state, container, env, sql, catalog };
+  }
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it("preserves all three historical keys and only writes the exact completion after live proof", async () => {
+    const { do_, state, sql, container } = await fixture();
+    const historical = { [admissionKey]: admission, [claimKey]: "unknown", [receiptKey]: { execution: "unknown" } };
+    for (const [key, value] of Object.entries(historical)) await state.storage.put(key, value);
+    const put = vi.spyOn(state.storage, "put");
+    // The historical object is already ineligible for native replay before its marker exists.
+    await expect(do_.admitStagingD1RuntimeProbe(time)).rejects.toThrow("guard rejected");
+    await expect(do_.runStagingD1RuntimeProbe(admission)).rejects.toThrow("old probe cannot be replayed");
+    const result = await do_.cleanupV8StagingD1RuntimeProbe(time, release);
+    expect(result).toEqual(completion);
+    expect(Object.keys(result)).toHaveLength(10);
+    expect(await state.storage.get(V8_CLEANUP_RECEIPT_KEY)).toEqual(completion);
+    for (const [key, value] of Object.entries(historical)) {
+      expect(await state.storage.get(key)).toEqual(value);
+      expect(put.mock.calls.some(call => call[0] === key)).toBe(false);
+    }
+    expect(sql).toHaveBeenCalledTimes(2);
+    expect(container.destroy).not.toHaveBeenCalled();
+    expect(put.mock.calls.at(-1)).toEqual([V8_CLEANUP_RECEIPT_KEY, completion]);
+    expect(put.mock.invocationCallOrder.at(-1)).toBeGreaterThan(sql.mock.invocationCallOrder.at(-1)!);
+    expect((await do_.fetch(new Request("https://test/"))).status).toBe(410);
+    await expect(do_.admitStagingD1RuntimeProbe(time)).rejects.toThrow("guard rejected");
+    await expect(do_.runStagingD1RuntimeProbe(admission)).rejects.toThrow("old probe cannot be replayed");
+    await do_.alarm();
+    expect(sql).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses an active old call before any marker or SQL and permits cleanup after quiescence", async () => {
+    const { do_, state, sql } = await fixture();
+    let finish!: () => void;
+    const active = (do_ as unknown as { withProbeActivity: (f: () => Promise<void>) => Promise<void> })
+      .withProbeActivity(() => new Promise<void>(resolve => { finish = resolve; }));
+    await expect(do_.cleanupV8StagingD1RuntimeProbe(time, release)).rejects.toThrow("busy");
+    expect(sql).not.toHaveBeenCalled();
+    expect(await state.storage.get(V8_PROBE_RETIRED_KEY)).toBeUndefined();
+    finish(); await active;
+    await expect(do_.cleanupV8StagingD1RuntimeProbe(time, release)).resolves.toMatchObject({ tables_absent: true });
+    expect(sql).toHaveBeenCalledTimes(2);
+  });
+
+  it("fences incoming work synchronously and withholds SQL and completion while destroy is pending", async () => {
+    const { do_, state, container, sql } = await fixture();
+    let stop!: () => void;
+    container.running = true;
+    container.destroy.mockImplementation(() => new Promise<void>(resolve => {
+      stop = () => { container.running = false; resolve(); };
+    }));
+    const pending = do_.cleanupV8StagingD1RuntimeProbe(time, release);
+    await expect(do_.cleanupV8StagingD1RuntimeProbe(time, release)).rejects.toThrow("busy");
+    expect((await do_.fetch(new Request("https://test/"))).status).toBe(410);
+    for (let i = 0; i < 40 && !container.destroy.mock.calls.length; i++) await Promise.resolve();
+    expect(container.destroy).toHaveBeenCalledOnce();
+    expect(await state.storage.get(V8_PROBE_RETIRED_KEY)).toEqual({ old_release: V8_PROBE_RELEASE, destroy_attempted: true });
+    expect(await state.storage.get(V8_CLEANUP_RECEIPT_KEY)).toBeUndefined();
+    await do_.alarm();
+    expect(sql).not.toHaveBeenCalled();
+    stop();
+    await expect(pending).resolves.toMatchObject({ container_stopped: true, prior_admission_present: false });
+  });
+
+  it.each(["destroy-error", "timeout", "still-running", "missing-container", "alarm"])(
+    "cannot prove completion or touch D1 after %s", async failure => {
+      vi.useFakeTimers(); vi.setSystemTime(time);
+      const { do_, state, container, sql } = await fixture(V8_PROBE_NAME, Date.now);
+      if (failure === "missing-container") Object.assign(state, { container: undefined });
+      else if (failure === "alarm") vi.spyOn(state.storage, "getAlarm").mockResolvedValue(time);
+      else {
+        container.running = true;
+        if (failure === "destroy-error") container.destroy.mockRejectedValue(new Error("private-destroy-error"));
+        if (failure === "timeout") container.destroy.mockImplementation(() => new Promise<void>(() => {}));
+      }
+      const pending = do_.cleanupV8StagingD1RuntimeProbe(time, release);
+      const rejected = expect(pending).rejects.toThrow();
+      if (failure === "timeout") await vi.advanceTimersByTimeAsync(60_000);
+      await rejected;
+      expect(sql).not.toHaveBeenCalled();
+      expect(await state.storage.get(V8_PROBE_RETIRED_KEY)).toBeDefined();
+      expect(await state.storage.get(V8_CLEANUP_RECEIPT_KEY)).toBeUndefined();
+      if (["destroy-error", "timeout", "still-running"].includes(failure)) {
+        await expect(do_.cleanupV8StagingD1RuntimeProbe(time, release)).rejects.toThrow();
+        expect(container.destroy).toHaveBeenCalledOnce();
+        expect(sql).not.toHaveBeenCalled();
+      }
+    });
+
+  it.each(["wrong-id", "production", "account", "database", "r2", "malformed-release", "old-release", "wrong-release",
+    "start-minus-one", "expiry", "expiry-plus-one", "future", "fractional", "off-cadence"])(
+    "rejects %s before marker or SQL", async failure => {
+      let now = time;
+      const { do_, state, env, sql, container } = await fixture(failure === "wrong-id" ? "tenant" : V8_PROBE_NAME, () => now);
+      let scheduled = time;
+      let expectedRelease = release;
+      if (failure === "production") env.ENVIRONMENT = "production";
+      if (failure === "account") env.CLOUDFLARE_ACCOUNT_ID = "wrong";
+      if (failure === "database") env.D1_DATABASE_ID = "wrong";
+      if (failure === "r2") env.R2_S3_ENDPOINT = "https://wrong.invalid";
+      if (failure === "malformed-release") env.SENTRY_RELEASE = expectedRelease = "malformed";
+      if (failure === "old-release") env.SENTRY_RELEASE = expectedRelease = V8_PROBE_RELEASE;
+      if (failure === "wrong-release") expectedRelease = "b".repeat(40);
+      if (failure === "start-minus-one") scheduled = now = time - 1;
+      if (failure === "expiry") now = cleanupWindow.expires_ms;
+      if (failure === "expiry-plus-one") now = cleanupWindow.expires_ms + 1;
+      if (failure === "future") scheduled += 120_000;
+      if (failure === "fractional") scheduled += 0.5;
+      if (failure === "off-cadence") scheduled = now = time + 1;
+      await expect(do_.cleanupV8StagingD1RuntimeProbe(scheduled, expectedRelease)).rejects.toThrow("guard rejected");
+      expect(await state.storage.get(V8_PROBE_RETIRED_KEY)).toBeUndefined();
+      expect(sql).not.toHaveBeenCalled();
+      expect(container.destroy).not.toHaveBeenCalled();
+    });
+
+  it("accepts the last instant of cleanup without relaxing native admission or expiry", async () => {
+    const now = cleanupWindow.expires_ms - 1;
+    const scheduled = Math.floor(now / 120_000) * 120_000;
+    const { do_, state, env } = await fixture(V8_PROBE_NAME, () => now);
+    await expect(do_.cleanupV8StagingD1RuntimeProbe(scheduled, release)).resolves.toMatchObject({ completed_at_ms: now });
+    const freshState = makeMockState(`_staging_d1_binding_probe_v2:${STAGING_D1_PROBE_WINDOW.nonce}:${release}`);
+    const fresh = new CoreLinkServer(freshState, env, () => now);
+    await expect(fresh.admitStagingD1RuntimeProbe(scheduled)).rejects.toThrow("admission guard");
+    await expect(do_.runStagingD1RuntimeProbe(admission)).rejects.toThrow("old probe cannot be replayed");
+    const expired = new CoreLinkServer(state, env, () => cleanupWindow.expires_ms);
+    await expect(expired.cleanupV8StagingD1RuntimeProbe(scheduled, release)).rejects.toThrow("guard rejected");
+    const expiredNative = new CoreLinkServer(freshState, env, () => STAGING_D1_PROBE_WINDOW.expires_ms);
+    await expect(expiredNative.runStagingD1RuntimeProbe({ ...admission,
+      probe_nonce: STAGING_D1_PROBE_WINDOW.nonce, worker_release: release,
+      scheduled_time_ms: STAGING_D1_PROBE_WINDOW.starts_ms,
+    })).rejects.toThrow("guard rejected");
+  });
+
+  it.each(["valid", "running", "alarm", "catalog"])("revalidates stored retirement and completion against current %s state", async current => {
+    const { do_, state, container, catalog, sql } = await fixture();
+    await state.storage.put(V8_PROBE_RETIRED_KEY, { old_release: V8_PROBE_RELEASE, destroy_attempted: true });
+    await state.storage.put(V8_CLEANUP_RECEIPT_KEY, completion);
+    await state.storage.put(admissionKey, admission);
+    if (current === "running") container.running = true;
+    if (current === "alarm") vi.spyOn(state.storage, "getAlarm").mockResolvedValue(time);
+    if (current === "catalog") catalog.mockResolvedValue({ success: false, results: [] });
+    const put = vi.spyOn(state.storage, "put");
+    if (current === "valid") {
+      await expect(do_.cleanupV8StagingD1RuntimeProbe(time, release)).resolves.toEqual(completion);
+      expect(sql).toHaveBeenCalledTimes(2);
+      expect(put.mock.calls.some(call => call[0] === V8_CLEANUP_RECEIPT_KEY)).toBe(true);
+    } else {
+      await expect(do_.cleanupV8StagingD1RuntimeProbe(time, release)).rejects.toThrow();
+      expect(put.mock.calls.some(call => call[0] === V8_CLEANUP_RECEIPT_KEY)).toBe(false);
+      if (current !== "catalog") expect(sql).not.toHaveBeenCalled();
+    }
+    expect(container.destroy).not.toHaveBeenCalled();
+    expect(await state.storage.get(V8_CLEANUP_RECEIPT_KEY)).toEqual(completion);
   });
 });

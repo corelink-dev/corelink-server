@@ -11,13 +11,13 @@ const MIN_CLEANUP_MS = 75 * 60_000;
 const workflowPath = new URL("../../.github/workflows/issue-1700-container-staging-deploy.yml", import.meta.url);
 const runtimePath = new URL("../issue_1700_runtime_probe.mjs", import.meta.url);
 
-test("v8 window and full-cleanup admission boundaries are exact", () => {
+test("v9 window and full-cleanup admission boundaries are exact", () => {
   assert.deepEqual(PROBE_WINDOW, {
     cron: "*/2 * * * *",
-    starts_ms: Date.parse("2026-10-01T03:30:00Z"),
-    last_entry_ms: Date.parse("2026-10-01T09:30:00Z"),
-    expires_ms: Date.parse("2026-10-01T10:45:00Z"),
-    nonce: "issue-1700-recovery-20261001-v8",
+    starts_ms: Date.parse("2026-10-01T12:00:00Z"),
+    last_entry_ms: Date.parse("2026-10-01T18:00:00Z"),
+    expires_ms: Date.parse("2026-10-01T19:15:00Z"),
+    nonce: "issue-1700-recovery-20261001-v9",
   });
   assert.equal(isApprovedProbeWindow({ ...PROBE_WINDOW }), true);
   assert.equal(isApprovedProbeWindow({ ...PROBE_WINDOW, nonce: "issue-1700-recovery-20261001-v7" }), false);
@@ -52,7 +52,7 @@ test("pre-install window module executes from an empty node_modules directory", 
     await copyFile(modulePath, localModule);
     const child = spawnSync(process.execPath, ["--input-type=module", "-e",
       `import { PROBE_WINDOW, deploymentWindowAllows } from ${JSON.stringify(pathToFileURL(localModule).href)};\n` +
-      `if (PROBE_WINDOW.nonce !== "issue-1700-recovery-20261001-v8") process.exit(2);\n` +
+      `if (PROBE_WINDOW.nonce !== "issue-1700-recovery-20261001-v9") process.exit(2);\n` +
       `if (!deploymentWindowAllows(PROBE_WINDOW.starts_ms)) process.exit(3);\n` +
       `if (deploymentWindowAllows(PROBE_WINDOW.last_entry_ms - 75 * 60_000)) process.exit(4);\n`
     ], { cwd: temporary, encoding: "utf8", timeout: 5000 });

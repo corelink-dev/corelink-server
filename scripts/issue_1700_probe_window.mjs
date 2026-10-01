@@ -2,10 +2,10 @@
 // Keep this import safe before pnpm dependencies are installed.
 export const PROBE_WINDOW = Object.freeze({
   cron: "*/2 * * * *",
-  starts_ms: 1790825400000,
-  last_entry_ms: 1790847000000,
-  expires_ms: 1790851500000,
-  nonce: "issue-1700-recovery-20261001-v8",
+  starts_ms: 1790856000000,
+  last_entry_ms: 1790877600000,
+  expires_ms: 1790882100000,
+  nonce: "issue-1700-recovery-20261001-v9",
 });
 
 export function isApprovedProbeWindow(value) {

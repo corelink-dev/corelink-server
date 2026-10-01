@@ -314,6 +314,14 @@ jobs:
             --response "$RUNNER_TEMP/staging-worker-settings.json" \
             --topology infra/staging/topology.json \
             > "$RUNNER_TEMP/staging-worker-settings-readback.json"
+          python3 scripts/verify_issue_1700_existing_deployment.py capture-candidate-diagnostics \
+            --version "$RUNNER_TEMP/staging-current-candidate-version.json" \
+            --settings "$RUNNER_TEMP/staging-worker-settings.json" \
+            --expected-version-id "$CANDIDATE_VERSION_ID" \
+            --expected-deployment-id "$CANDIDATE_DEPLOYMENT_ID" \
+            --expected-sha "$GITHUB_SHA" \
+            --marker "$DEPLOYMENT_MARKER" \
+            --receipt "$RUNNER_TEMP/staging-candidate-runtime-diagnostics.json"
       - name: Verify candidate has no canonical staging route
         id: candidate_route
         if: steps.verify.outcome == 'success'
@@ -647,6 +655,7 @@ jobs:
             ${{ runner.temp }}/staging-route-inventory-after.json
             ${{ runner.temp }}/staging-route-inventory-after-rollback.json
             ${{ runner.temp }}/staging-worker-settings-readback.json
+            ${{ runner.temp }}/staging-candidate-runtime-diagnostics.json
             ${{ runner.temp }}/staging-worker-settings-final.json
             ${{ runner.temp }}/staging-route-inventory-after-runtime-probe.json
             ${{ runner.temp }}/staging-runtime-probe-receipt.json

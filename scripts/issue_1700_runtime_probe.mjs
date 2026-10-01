@@ -18,11 +18,47 @@ export function approvedProbeWindow(value = PROBE_WINDOW) {
 export const PROBE_CRON = PROBE_WINDOW.cron;
 export const PROBE_EXPIRY = PROBE_WINDOW.expires_ms;
 export const RECEIPT_PREFIX = "[staging_d1_runtime_probe] receipt=";
+export const V8_CLEANUP_PREFIX = "[staging_d1_runtime_probe] v8_cleanup=";
+const V8_PROBE_RELEASE = "7d18bcfc450db97b1b987923050b92971da530a8";
+const V8_CLEANUP_START_MS = Date.parse("2026-10-01T12:00:00Z");
+const V8_CLEANUP_EXPIRY_MS = Date.parse("2026-10-01T19:15:00Z");
 const MIN_TAIL_TTL_MS = 4 * 60_000;
 const TAIL_RENEW_LEAD_MS = 60_000;
 const MAX_OWNED_TAILS = 8;
 const TAIL_CREATE_TIMEOUT_MS = 20_000;
 const TAIL_RENEW_OPEN_TIMEOUT_MS = 20_000;
+const TAIL_INITIALIZE_TIMEOUT_MS = 10_000;
+
+// Match Wrangler 4.145.0 src/tail/createTail.ts, including its wire options.
+// Completion means the local write completed, not that the provider subscribed.
+export function initializeTailSocket(target, { timeoutMs = TAIL_INITIALIZE_TIMEOUT_MS,
+  setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > TAIL_INITIALIZE_TIMEOUT_MS) {
+      reject(new Error("Worker tail initialization failed"));
+      return;
+    }
+    let settled = false;
+    let timer;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeoutFn(timer);
+      signal?.removeEventListener("abort", abort);
+      if (error) reject(error); else resolve();
+    };
+    const abort = () => finish(new Error("Worker tail initialization cancelled"));
+    if (target.protocol !== "trace-v1") return finish(new Error("Worker tail protocol rejected"));
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) return abort();
+    timer = setTimeoutFn(() => finish(new Error("Worker tail initialization timed out")), timeoutMs);
+    try {
+      target.send(JSON.stringify({ debug: false }),
+        { binary: false, compress: false, mask: false, fin: true },
+        (error) => finish(error ? new Error("Worker tail initialization failed") : undefined));
+    } catch { finish(new Error("Worker tail initialization failed")); }
+  });
+}
 
 const apiBase = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}`;
 const allowedReceiptKeys = new Set([
@@ -30,6 +66,10 @@ const allowedReceiptKeys = new Set([
   "contract", "probe_nonce", "outcome", "worker_release", "scheduled_time_ms", "parameterized_select",
   "failed_batch_observed", "rollback_absence_verified", "probe_table_dropped",
   "d1_binding_intercepted", "authorization_absent", "cf_api_token_absent",
+]);
+const allowedV8CleanupKeys = new Set([
+  "contract", "old_release", "old_nonce", "worker_release", "prior_execution",
+  "prior_admission_present", "container_stopped", "alarm_absent", "tables_absent", "completed_at_ms",
 ]);
 
 export function captureDeployImageDigest(text) {
@@ -184,21 +224,51 @@ function exactReceipt(receipt, release, startedAt, deadline) {
       "cf_api_token_absent"].every((key) => receipt[key] === true);
 }
 
-function extractReceipt(event, release, startedAt, deadline) {
+function exactV8Cleanup(receipt, release, startedAt, deadline, observedAt) {
+  return receipt !== null && typeof receipt === "object" && !Array.isArray(receipt) &&
+    Object.keys(receipt).length === allowedV8CleanupKeys.size &&
+    Object.keys(receipt).every((key) => allowedV8CleanupKeys.has(key)) &&
+    receipt.contract === "corelink-staging-v8-cleanup-v1" &&
+    receipt.old_release === V8_PROBE_RELEASE &&
+    receipt.old_nonce === "issue-1700-recovery-20261001-v8" &&
+    /^[0-9a-f]{40}$/.test(receipt.worker_release) && receipt.worker_release === release &&
+    receipt.worker_release !== V8_PROBE_RELEASE && receipt.prior_execution === "unknown" &&
+    typeof receipt.prior_admission_present === "boolean" &&
+    receipt.container_stopped === true && receipt.alarm_absent === true && receipt.tables_absent === true &&
+    Number.isSafeInteger(receipt.completed_at_ms) && receipt.completed_at_ms >= startedAt &&
+    receipt.completed_at_ms <= observedAt && receipt.completed_at_ms < deadline &&
+    receipt.completed_at_ms >= V8_CLEANUP_START_MS && receipt.completed_at_ms < V8_CLEANUP_EXPIRY_MS;
+}
+
+function extractReceipt(event, release, startedAt, deadline, observedAt) {
+  const details = event?.event;
+  if (event?.scriptName !== WORKER_NAME || event.outcome !== "ok" ||
+      details?.cron !== PROBE_CRON || !Number.isSafeInteger(details.scheduledTime) ||
+      details.scheduledTime < startedAt || details.scheduledTime >= deadline ||
+      details.scheduledTime > observedAt) return undefined;
+  let receipt;
+  let v8Cleanup;
   const logs = Array.isArray(event?.logs) ? event.logs : [];
   for (const entry of logs) {
     const messages = Array.isArray(entry?.message) ? entry.message : [entry?.message];
     for (const message of messages) {
-      if (typeof message !== "string" || !message.startsWith(RECEIPT_PREFIX)) continue;
+      if (typeof message !== "string") continue;
       try {
-        const receipt = JSON.parse(message.slice(RECEIPT_PREFIX.length));
-        if (exactReceipt(receipt, release, startedAt, deadline)) return receipt;
+        if (message.startsWith(RECEIPT_PREFIX)) {
+          const value = JSON.parse(message.slice(RECEIPT_PREFIX.length));
+          if (exactReceipt(value, release, startedAt, deadline) &&
+              value.scheduled_time_ms <= details.scheduledTime) receipt = value;
+        } else if (message.startsWith(V8_CLEANUP_PREFIX)) {
+          const value = JSON.parse(message.slice(V8_CLEANUP_PREFIX.length));
+          if (exactV8Cleanup(value, release, startedAt, deadline, observedAt)) v8Cleanup = value;
+        }
       } catch {
         // Malformed/unrelated logs are discarded without being printed.
       }
     }
   }
-  return undefined;
+  // Never join receipts across provider events, even when their releases match.
+  return receipt !== undefined && v8Cleanup !== undefined ? { receipt, v8_cleanup: v8Cleanup } : undefined;
 }
 
 function observeTailEvent(event, counters, release, startedAt, deadline) {
@@ -227,6 +297,12 @@ function observeTailEvent(event, counters, release, startedAt, deadline) {
     for (const message of messages) {
       if (typeof message !== "string" || !message.startsWith("[staging_d1_runtime_probe]")) continue;
       incrementDiagnostic(counters, "probe_markers");
+      const phase = /^\[staging_d1_runtime_probe\] phase=(scheduled_entry|native_start|native_complete|native_error) release=([0-9a-f]{40})$/.exec(message);
+      if (phase) {
+        if (phase[2] === release) incrementDiagnostic(counters, `phase_${phase[1]}`);
+        else incrementDiagnostic(counters, "wrong_release_phases");
+        continue;
+      }
       if (message === "[staging_d1_runtime_probe] failed reason=probe_failed") {
         incrementDiagnostic(counters, "failed_markers");
         continue;
@@ -281,6 +357,8 @@ const diagnosticCounterNames = [
   "failed_markers", "rejected_markers", "malformed_receipts", "wrong_nonce_receipts",
   "wrong_release_receipts", "out_of_window_receipts", "schema_rejected_receipts",
   "nonpass_receipts", "accepted_receipts", "control_pings", "control_pongs", "reconnects",
+  "initialization_attempts", "initialization_completions", "initialization_failures",
+  "phase_scheduled_entry", "phase_native_start", "phase_native_complete", "phase_native_error", "wrong_release_phases",
 ];
 const MAX_DIAGNOSTIC_COUNT = 1_000_000;
 
@@ -330,6 +408,7 @@ const probeErrors = new Map([
   ["tail preflight rejected", "tail_envelope"],
   ["Worker tail connection timed out", "tail_open_timeout"],
   ["Worker tail initialization failed", "tail_initialization"],
+  ["Worker tail initialization timed out", "tail_initialization_timeout"],
   ["Worker tail protocol rejected", "tail_protocol"],
   ["Worker tail stream failed", "tail_stream"],
   ["Worker tail stream closed before receipt", "tail_closed"],
@@ -426,6 +505,7 @@ export async function runRuntimeProbe({
   let socket;
   let scheduleAttempted = false;
   let receipt;
+  let v8Cleanup;
   let primaryError;
   let receiptTimer;
   let openTimer;
@@ -441,7 +521,7 @@ export async function runRuntimeProbe({
   let rejectCandidateOpen;
   let renewalConnecting = false;
   let bindTailSocket;
-  let initializeTailSocket;
+  const initializationAbort = new AbortController();
   let lastPongAt;
   let pendingPongAt;
   let tailFrameCount = 0;
@@ -457,6 +537,30 @@ export async function runRuntimeProbe({
   let rejectOpen = () => {};
   let rejectReceipt = () => {};
   let failTail = (_reason) => {};
+  const initializedSockets = new WeakSet();
+  const ownedSockets = new Set();
+  function createSocket(url) {
+    const target = socketFactory(url, "trace-v1");
+    ownedSockets.add(target);
+    return target;
+  }
+  async function initialize(target) {
+    incrementDiagnostic(diagnosticCounters, "initialization_attempts");
+    try {
+      await initializeTailSocket(target, {
+        timeoutMs: Math.min(TAIL_INITIALIZE_TIMEOUT_MS, Math.max(1, deadline - now())),
+        setTimeoutFn, clearTimeoutFn, signal: initializationAbort.signal,
+      });
+      if (target !== socket || stopRequested || terminalFailure) throw new Error("Worker tail initialization cancelled");
+      initializedSockets.add(target);
+      pendingPongAt = undefined;
+      lastPongAt = now();
+      incrementDiagnostic(diagnosticCounters, "initialization_completions");
+    } catch (error) {
+      incrementDiagnostic(diagnosticCounters, "initialization_failures");
+      throw error;
+    }
+  }
   async function createTail() {
     if (tails.length >= MAX_OWNED_TAILS) throw new Error("Worker tail renewal limit exceeded");
     const record = (await request("/tails", { method: "POST",
@@ -492,6 +596,7 @@ export async function runRuntimeProbe({
   }
   const onAbort = () => {
     stopRequested = true;
+    initializationAbort.abort();
     rejectOpen(new Error("runtime probe cancelled"));
     rejectReceipt(new Error("runtime probe cancelled"));
     rejectCandidateOpen?.(new Error("runtime probe cancelled"));
@@ -509,18 +614,16 @@ export async function runRuntimeProbe({
     if (signal?.aborted) throw new Error("runtime probe cancelled");
 
     stage = "tail_connect";
-    socket = socketFactory(tail.url, "trace-v1");
+    socket = createSocket(tail.url);
     socket.binaryType = "arraybuffer";
     const opened = new Promise((resolve, reject) => {
       resolveOpen = resolve;
       rejectOpen = reject;
       openTimer = setTimeoutFn(() => reject(new Error("Worker tail connection timed out")), Math.min(30_000, Math.max(1, deadline - now())));
-      socket.onopen = () => {
+      const initialSocket = socket;
+      initialSocket.onopen = () => {
         clearTimeoutFn(openTimer);
-        if (socket.protocol !== "trace-v1") return reject(new Error("Worker tail protocol rejected"));
-        try { socket.send(JSON.stringify({ debug: false })); }
-        catch { return reject(new Error("Worker tail initialization failed")); }
-        resolve();
+        initialize(initialSocket).then(resolve, reject);
       };
     });
     const receiptPromise = new Promise((resolve, reject) => {
@@ -542,8 +645,9 @@ export async function runRuntimeProbe({
           return;
         }
         observeTailEvent(event, diagnosticCounters, release, startedAt, deadline);
-        const found = extractReceipt(event, release, startedAt, deadline);
-        if (found !== undefined && now() < deadline && found.scheduled_time_ms <= now()) {
+        const observedAt = now();
+        const found = extractReceipt(event, release, startedAt, deadline, observedAt);
+        if (found !== undefined && observedAt < deadline) {
           incrementDiagnostic(diagnosticCounters, "accepted_receipts");
           receiptAccepted = true;
           clearTimeoutFn(renewalTimer);
@@ -579,38 +683,31 @@ export async function runRuntimeProbe({
         pongTimer = undefined;
         resolveCandidatePong?.();
       };
-      const initialize = (target) => {
-        clearTimeoutFn(openTimer);
-        pendingPongAt = undefined;
-        if (target.protocol !== "trace-v1") return fail("Worker tail protocol rejected");
-        try { target.send(JSON.stringify({ debug: false })); }
-        catch { return fail("Worker tail initialization failed"); }
-        lastPongAt = now();
-        resolveOpen();
-      };
-      initializeTailSocket = initialize;
       const recover = () => {
-        if (receiptAccepted || tailReconnects >= 1 || now() >= deadline) return false;
+        if (stopRequested || terminalFailure || receiptAccepted || tailReconnects >= 1 || now() >= deadline) return false;
         tailReconnects += 1;
         incrementDiagnostic(diagnosticCounters, "reconnects");
         clearTimeoutFn(pongTimer);
         pongTimer = undefined;
         pendingPongAt = undefined;
         try {
-          const replacement = socketFactory(activeTail.url, "trace-v1");
+          const replacement = createSocket(activeTail.url);
           socket = replacement;
           replacement.binaryType = "arraybuffer";
           bind(replacement);
           openTimer = setTimeoutFn(() => fail("Worker tail reconnect timed out"),
             Math.min(30_000, Math.max(1, deadline - now())));
-          replacement.onopen = () => initialize(replacement);
+          replacement.onopen = () => {
+            clearTimeoutFn(openTimer);
+            initialize(replacement).then(resolveOpen, error => fail(error.message));
+          };
           return true;
         } catch { return false; }
       };
       const bind = (target) => {
         target.onmessage = onMessage;
         target.onerror = () => {
-          if (target !== socket) return;
+          if (target !== socket || stopRequested) return;
           if (renewalConnecting) {
             rejectCandidateOpen?.(new Error("Worker tail renewal stream failed"));
             rejectCandidatePong?.(new Error("Worker tail renewal stream failed"));
@@ -619,6 +716,7 @@ export async function runRuntimeProbe({
         target.onclose = (event) => {
           if (target !== socket) return;
           closeEvidenceFor(event);
+          if (stopRequested) return;
           if (renewalConnecting) {
             rejectCandidateOpen?.(new Error("Worker tail renewal stream closed"));
             rejectCandidatePong?.(new Error("Worker tail renewal stream closed"));
@@ -654,7 +752,7 @@ export async function runRuntimeProbe({
           clearIntervalFn(heartbeatTimer);
           const oldSocket = socket;
           stage = "tail_connect";
-          const replacement = socketFactory(next.url, "trace-v1");
+          const replacement = createSocket(next.url);
           replacement.binaryType = "arraybuffer";
           renewalConnecting = true;
           socket = replacement;
@@ -666,11 +764,7 @@ export async function runRuntimeProbe({
               Math.min(TAIL_RENEW_OPEN_TIMEOUT_MS, Math.max(1, deadline - now())));
             replacement.onopen = () => {
               clearTimeoutFn(openTimer);
-              if (replacement.protocol !== "trace-v1") return reject(new Error("Worker tail protocol rejected"));
-              initializeTailSocket(replacement);
-              resolveCandidateOpen = undefined;
-              rejectCandidateOpen = undefined;
-              resolve();
+              initialize(replacement).then(resolve, reject);
             };
           });
           resolveCandidateOpen = undefined;
@@ -706,6 +800,7 @@ export async function runRuntimeProbe({
     };
     scheduleRenewal(activeTail);
     heartbeatFn = () => {
+      if (!initializedSockets.has(socket)) return;
       if (pendingPongAt !== undefined && now() - pendingPongAt >= 10_000) {
         failTail("Worker tail pong deadline exceeded");
         return;
@@ -738,12 +833,13 @@ export async function runRuntimeProbe({
       throw error;
     }
     stage = "receipt_wait";
-    receipt = await receiptPromise;
+    ({ receipt, v8_cleanup: v8Cleanup } = await receiptPromise);
     socket.close();
   } catch (error) {
     primaryError = tagged(error);
   } finally {
     stopRequested = true;
+    initializationAbort.abort();
     clearTimeoutFn(receiptTimer);
     renewalConnecting = false;
     // Wake any renewal handshake before joining its tracked task. The task
@@ -761,7 +857,9 @@ export async function runRuntimeProbe({
     rejectCandidateOpen = undefined;
     resolveCandidatePong = undefined;
     rejectCandidatePong = undefined;
-    try { socket?.close(); } catch { /* best-effort close; tail is deleted below */ }
+    for (const ownedSocket of ownedSockets) {
+      try { ownedSocket.close(); } catch { /* each owned tail is deleted below */ }
+    }
     if (scheduleAttempted) {
       stage = "schedule_cleanup";
       try {
@@ -793,6 +891,7 @@ export async function runRuntimeProbe({
     throw primaryError;
   }
   if (!exactReceipt(receipt, release, startedAt, deadline)) throw new Error("runtime probe receipt rejected");
+  if (!exactV8Cleanup(v8Cleanup, release, startedAt, deadline, now())) throw new Error("runtime probe receipt rejected");
   return {
     contract: "corelink-staging-runtime-deployment-proof-v1",
     account_id: ACCOUNT_ID,
@@ -804,6 +903,7 @@ export async function runRuntimeProbe({
     probe_nonce: PROBE_WINDOW.nonce,
     window_expires_ms: PROBE_EXPIRY,
     receipt,
+    v8_cleanup: v8Cleanup,
     schedule_restored_empty: true,
     tail_deleted: true,
     tail_cleanup_receipts: tailCleanupReceipts,
