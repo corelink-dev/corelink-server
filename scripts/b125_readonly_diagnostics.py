@@ -13,6 +13,10 @@ ERROR_CLASSES = {
     "D1_ERROR", "SQLITE_BUSY", "SQLITE_CONSTRAINT", "SQLITE_ERROR",
     "WRANGLER_ERROR", "HTTP_ERROR", "PROVIDER_ERROR", "UNKNOWN_ERROR",
 }
+PROVIDER_ERROR_CATEGORIES = {
+    "syntax", "missing_table", "missing_column", "bind_mismatch",
+    "unsupported_function", "memory_limit", "query_timeout", "unknown",
+}
 SCHEMA_KEYS = {
     "code", "data", "error", "errors", "meta", "message", "messages",
     "result", "results", "success", "status",
@@ -61,6 +65,38 @@ def _error_entry(document: object) -> object:
         if "error" in result:
             return result["error"]
     return None
+
+
+def _semantic_error_category(stdout: str, stderr: str) -> str:
+    """Classify known provider wording without retaining any provider text."""
+    message_text: list[str] = [stderr]
+    try:
+        document = json.loads(stdout)
+    except (json.JSONDecodeError, UnicodeError):
+        document = None
+    pending = [_error_entry(document)]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            message_text.append(value)
+        elif isinstance(value, dict):
+            pending.extend(child for key, child in value.items() if key in {"message", "messages", "error"})
+        elif isinstance(value, list):
+            pending.extend(value)
+    text = "\n".join(message_text).casefold()
+    categories = (
+        ("syntax", r"\bsyntax error\b|\bnear\s+.+?:\s+syntax error\b"),
+        ("missing_table", r"\bno such table\b|\btable .+? does not exist\b"),
+        ("missing_column", r"\bno such column\b|\bcolumn .+? does not exist\b"),
+        ("bind_mismatch", r"\b(?:binding|bind) (?:parameter )?.{0,40}\b(?:mismatch|missing|not supplied|not found)\b|\bincorrect number of bindings\b|\bparameter count mismatch\b"),
+        ("unsupported_function", r"\bno such function\b|\bfunction .+? (?:not supported|not allowed|unsupported)\b"),
+        ("memory_limit", r"\bout of memory\b|\bmemory limit exceeded\b|\bsqlite_nomem\b"),
+        ("query_timeout", r"\bquery (?:execution )?timed out\b|\bexecution timeout\b|\bmaximum execution time\b"),
+    )
+    for category, pattern in categories:
+        if re.search(pattern, text):
+            return category
+    return "unknown"
 
 
 def _schema(stdout: str, stdout_truncated: bool, stderr_truncated: bool) -> dict[str, object]:
@@ -120,12 +156,13 @@ def make_provider_diagnostic(
     return {
         "query_stage": "wrangler_d1_execute", "query_id": query_id, "exit_code": exit_code,
         "error_class": error_class, "provider_code": provider_code,
+        "semantic_error_category": _semantic_error_category(stdout, stderr),
         "schema_shape": _schema(stdout, stdout_truncated, stderr_truncated),
     }
 
 
 def validate_provider_diagnostic(value: dict[str, object]) -> None:
-    fields = {"query_stage", "query_id", "exit_code", "error_class", "provider_code", "schema_shape"}
+    fields = {"query_stage", "query_id", "exit_code", "error_class", "provider_code", "semantic_error_category", "schema_shape"}
     if not isinstance(value, dict) or set(value) != fields:
         raise ValueError("provider diagnostic fields differ from the allowlist")
     if value["query_stage"] != "wrangler_d1_execute" or value["query_id"] not in QUERY_IDS:
@@ -138,6 +175,8 @@ def validate_provider_diagnostic(value: dict[str, object]) -> None:
         raise ValueError("provider exit code is invalid")
     if value["error_class"] not in ERROR_CLASSES:
         raise ValueError("provider error class is not allowlisted")
+    if value["semantic_error_category"] not in PROVIDER_ERROR_CATEGORIES:
+        raise ValueError("provider semantic error category is not allowlisted")
     code = value["provider_code"]
     if code is not None and (not isinstance(code, str) or not PROVIDER_CODE.fullmatch(code)):
         raise ValueError("provider code is invalid")
@@ -183,7 +222,27 @@ def record_provider_failure(receipt: Path, query_id: str, exit_code: int, stdout
     receipt.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def mark_query_started(receipt: Path, query_id: str) -> None:
+    """Replace the preflight marker when the first allowlisted provider call begins."""
+    if query_id not in QUERY_IDS:
+        raise ValueError("provider query identity is not allowlisted")
+    document = json.loads(receipt.read_text(encoding="utf-8"))
+    reasons = document.setdefault("failure_reasons", [])
+    if not isinstance(reasons, list):
+        raise ValueError("receipt failure reasons are invalid")
+    document["failure_reasons"] = [reason for reason in reasons if reason != "read_not_started"]
+    started = document.setdefault("provider_queries_started", [])
+    if not isinstance(started, list) or any(item not in QUERY_IDS for item in started):
+        raise ValueError("receipt provider query history is invalid")
+    started.append(query_id)
+    document["provider_queries_started"] = started
+    receipt.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 7 or sys.argv[1] != "record":
-        raise SystemExit("usage: b125_readonly_diagnostics.py record RECEIPT QUERY EXIT STDOUT STDERR")
-    record_provider_failure(Path(sys.argv[2]), sys.argv[3], int(sys.argv[4]), Path(sys.argv[5]), Path(sys.argv[6]))
+    if len(sys.argv) == 4 and sys.argv[1] == "mark-started":
+        mark_query_started(Path(sys.argv[2]), sys.argv[3])
+    elif len(sys.argv) == 7 and sys.argv[1] == "record":
+        record_provider_failure(Path(sys.argv[2]), sys.argv[3], int(sys.argv[4]), Path(sys.argv[5]), Path(sys.argv[6]))
+    else:
+        raise SystemExit("usage: b125_readonly_diagnostics.py mark-started RECEIPT QUERY | record RECEIPT QUERY EXIT STDOUT STDERR")
