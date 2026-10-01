@@ -3,17 +3,19 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import WebSocket from "ws";
 import { ACCOUNT_ID, normalizeContainerDetail, readContainerDetail, runRuntimeProbe, failureDiagnostic, decodeTailFrame, waitForContainerState, captureDeployImageDigest, captureContainerPreimage, verifyContainerPreimage, verifyContainerImageDigest, verifyContainerState, verifyContainerRollback, CONTAINER_APP_ID, CONTAINER_APP_NAME, PROBE_CRON, PROBE_EXPIRY, PROBE_WINDOW, approvedProbeWindow } from "../issue_1700_runtime_probe.mjs";
 
 const release = "0123456789abcdef0123456789abcdef01234567";
-const now = Date.parse("2026-10-01T03:30:00Z");
+const now = PROBE_WINDOW.starts_ms + 30 * 60_000;
 const imageDigest = `sha256:${"a".repeat(64)}`;
 const receipt = {
   contract: "corelink-staging-d1-binding-runtime-v1",
   outcome: "pass",
   probe_nonce: PROBE_WINDOW.nonce,
   worker_release: release,
-  scheduled_time_ms: Date.parse("2026-10-01T03:30:00Z"),
+  scheduled_time_ms: now,
   parameterized_select: true,
   failed_batch_observed: true,
   rollback_absence_verified: true,
@@ -25,29 +27,52 @@ const receipt = {
   v5_prior_execution: "unknown",
   v4_probe_catalog_absent: true,
 };
+const v8Cleanup = {
+  contract: "corelink-staging-v8-cleanup-v1",
+  old_release: "7d18bcfc450db97b1b987923050b92971da530a8",
+  old_nonce: "issue-1700-recovery-20261001-v8",
+  worker_release: release,
+  prior_execution: "unknown",
+  prior_admission_present: true,
+  container_stopped: true,
+  alarm_absent: true,
+  tables_absent: true,
+  completed_at_ms: now,
+};
 
-test("compiled runtime window is the exact approved v8 tuple", () => {
+test("transport fixtures use the repository-pinned ws client", () => {
+  assert.equal(createRequire(import.meta.url)("ws/package.json").version, "8.21.0");
+});
+
+test("compiled runtime window is the exact approved v9 tuple", () => {
   assert.equal(approvedProbeWindow(), true);
+  assert.deepEqual(PROBE_WINDOW, { cron: "*/2 * * * *", starts_ms: Date.parse("2026-10-01T12:00:00Z"),
+    last_entry_ms: Date.parse("2026-10-01T18:00:00Z"), expires_ms: Date.parse("2026-10-01T19:15:00Z"),
+    nonce: "issue-1700-recovery-20261001-v9" });
   assert.equal(approvedProbeWindow({ ...PROBE_WINDOW, expires_ms: PROBE_WINDOW.expires_ms + 60_000 }), false);
   assert.equal(approvedProbeWindow({ ...PROBE_WINDOW, nonce: "issue-1700-recovery-20260930-v4" }), false);
 });
 
 // Cloudflare workers-sdk TailEventMessage: scheduled event and console log envelope.
-function scheduledFrame(value = receipt, timestamp = now) {
+function scheduledFrame(value = receipt, timestamp = now, cleanup = { ...v8Cleanup, completed_at_ms: timestamp }) {
   return { outcome: "ok", scriptName: "corelink-staging", exceptions: [],
     eventTimestamp: timestamp, event: { cron: PROBE_CRON, scheduledTime: timestamp },
-    logs: [{ level: "info", timestamp,
-      message: [`[staging_d1_runtime_probe] receipt=${JSON.stringify(value)}`] }],
+    logs: [
+      ...(cleanup === null ? [] : [{ level: "info", timestamp,
+        message: [`[staging_d1_runtime_probe] v8_cleanup=${JSON.stringify(cleanup)}`] }]),
+      { level: "info", timestamp, message: [`[staging_d1_runtime_probe] receipt=${JSON.stringify(value)}`] },
+    ],
   };
 }
 
-function harness({ schedules: initial = [], installReadback, sendReceipt = true, driftAfterReceipt = false, emittedReceipt = receipt, emittedEvent, emittedRawFrame, frameKind = "text", openMode = "open", stallReplacementOpen = false, pingDuringInstall = false, acknowledgePong = true, receiptAfterMs = 0, reconnectOnce = false, tailTtlMs = 30 * 60_000, failTailRenewal = false, failTailDelete = false, deferTailRenewal = false, duplicateReceipt = false } = {}) {
+function harness({ schedules: initial = [], installReadback, sendReceipt = true, driftAfterReceipt = false, emittedReceipt = receipt, emittedEvent, emittedRawFrame, frameKind = "text", openMode = "open", stallReplacementOpen = false, pingDuringInstall = false, acknowledgePong = true, receiptAfterMs = 0, reconnectOnce = false, tailTtlMs = 30 * 60_000, failTailRenewal = false, failTailDelete = false, deferTailRenewal = false, duplicateReceipt = false, initializationMode = "complete", replacementInitializationMode = "complete" } = {}) {
   let schedules = initial;
   let socket;
   let tailDeleted = false;
   const puts = [];
   let scheduleReads = 0;
   let initialized = false;
+  let completeInitialization;
   let heartbeat;
   let pongs = 0;
   let socketsCreated = 0;
@@ -122,10 +147,21 @@ function harness({ schedules: initial = [], installReadback, sendReceipt = true,
       assert.equal(protocol, "trace-v1");
       socketsCreated += 1;
       const createdSocket = { protocol: openMode === "wrong_protocol" ? "" : protocol,
-        onmessage: undefined, onerror: undefined, onclose: undefined, close() {},
+        onmessage: undefined, onerror: undefined, onclose: undefined,
+        closed: false,
+        close() { this.closed = true; this.onclose?.({ code: 1000, wasClean: true }); },
         on(_name, listener) { this.pongListener = listener; },
         ping() { pongs += 1; if (acknowledgePong) this.pongListener?.(); },
-        send(value) { assert.deepEqual(JSON.parse(value), { debug: false }); initialized = true; },
+        send(value, options, callback) {
+          assert.deepEqual(JSON.parse(value), { debug: false });
+          assert.deepEqual(options, { binary: false, compress: false, mask: false, fin: true });
+          assert.equal(typeof callback, "function");
+          const mode = socketsCreated === 1 ? initializationMode : replacementInitializationMode;
+          if (mode === "error") return queueMicrotask(() => callback(new Error("private-initialization-error")));
+          if (mode === "timeout") return;
+          completeInitialization = () => { initialized = true; callback(); };
+          if (mode !== "defer") completeInitialization();
+        },
       };
       socket = createdSocket;
       sockets.push(createdSocket);
@@ -139,6 +175,7 @@ function harness({ schedules: initial = [], installReadback, sendReceipt = true,
       return socket;
     },
     get schedules() { return schedules; },
+    completeInitialization() { completeInitialization?.(); },
     puts,
     setHeartbeat(callback) { heartbeat = callback; },
     get heartbeat() { return heartbeat; },
@@ -153,11 +190,87 @@ function harness({ schedules: initial = [], installReadback, sendReceipt = true,
       const text = JSON.stringify(scheduledFrame(value, clock.value));
       socket?.onmessage?.({ data: text });
     },
+    emitEvent(event) { socket?.onmessage?.({ data: JSON.stringify(event) }); },
   };
 }
 
 function response(body, ok = true) {
   return { ok, status: ok ? 200 : 500, json: async () => body };
+}
+
+test("schedule installation waits for initialization write completion", async () => {
+  const h = harness({ initializationMode: "defer" });
+  const running = runRuntimeProbe({ token: "token", release, expectedSha: release,
+    imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.puts, [], "an open WebSocket is not a completed initialization");
+  h.completeInitialization();
+  assert.equal((await running).receipt.outcome, "pass");
+});
+
+for (const connection of ["initial", "reconnect", "renewal"]) {
+  for (const mode of ["error", "timeout"]) {
+    test(`${connection} initialization ${mode} fails closed and cleans owned resources`, async () => {
+      const h = harness({ sendReceipt: false,
+        initializationMode: connection === "initial" ? mode : "complete",
+        replacementInitializationMode: mode,
+        reconnectOnce: connection === "reconnect",
+        tailTtlMs: connection === "renewal" ? 5 * 60_000 : 30 * 60_000 });
+      const timers = [];
+      const running = runRuntimeProbe({ token: "token", release, expectedSha: release,
+        imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now,
+        setTimeoutFn(callback, delay) { const timer = { callback, delay, cleared: false }; timers.push(timer); return timer; },
+        clearTimeoutFn(timer) { if (timer) timer.cleared = true; },
+      });
+      const rejected = assert.rejects(running, error => {
+        const diagnostic = failureDiagnostic(error);
+        assert.equal(diagnostic.code, connection === "renewal" ? "tail_renewal"
+          : mode === "error" ? "tail_initialization" : "tail_initialization_timeout");
+        assert.equal(diagnostic.tail_evidence.counters.initialization_completions,
+          connection === "initial" ? 0 : 1);
+        assert.ok(!JSON.stringify(diagnostic).includes("private-initialization-error"));
+        return true;
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      if (connection === "renewal") {
+        timers.find(timer => !timer.cleared && timer.delay === 4 * 60_000).callback();
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      if (mode === "timeout") timers.find(timer => !timer.cleared && timer.delay === 10_000).callback();
+      await rejected;
+      assert.deepEqual(h.puts, connection === "initial" ? [] : [[{ cron: PROBE_CRON }], []]);
+      assert.deepEqual(h.schedules, []);
+      assert.equal(h.deleteAttempts.length, connection === "renewal" ? 2 : 1);
+      assert.equal(h.sockets.length, connection === "initial" ? 1 : 2,
+        "cleanup close must not open a replacement connection");
+      assert.ok(h.sockets.every(socket => socket.closed), "every owned socket is closed");
+    });
+  }
+  test(`${connection} initialization cancellation closes every owned socket`, async () => {
+    const h = harness({ sendReceipt: false,
+      initializationMode: connection === "initial" ? "defer" : "complete",
+      replacementInitializationMode: "defer", reconnectOnce: connection === "reconnect",
+      tailTtlMs: connection === "renewal" ? 5 * 60_000 : 30 * 60_000 });
+    const controller = new AbortController();
+    const timers = [];
+    const running = runRuntimeProbe({ token: "token", release, expectedSha: release,
+      imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now, signal: controller.signal,
+      setTimeoutFn(callback, delay) { const timer = { callback, delay, cleared: false }; timers.push(timer); return timer; },
+      clearTimeoutFn(timer) { if (timer) timer.cleared = true; },
+    });
+    const rejected = assert.rejects(running, /runtime probe cancelled/);
+    await new Promise(resolve => setImmediate(resolve));
+    if (connection === "renewal") {
+      timers.find(timer => !timer.cleared && timer.delay === 4 * 60_000).callback();
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    controller.abort();
+    await rejected;
+    assert.equal(h.sockets.length, connection === "initial" ? 1 : 2);
+    assert.ok(h.sockets.every(socket => socket.closed));
+    assert.deepEqual(h.schedules, []);
+    assert.equal(h.deleteAttempts.length, connection === "renewal" ? 2 : 1);
+  });
 }
 
 test("installs one exact cron, accepts the release-bound receipt, and restores empty schedules", async () => {
@@ -170,6 +283,9 @@ test("installs one exact cron, accepts the release-bound receipt, and restores e
   });
   assert.equal(proof.cron, PROBE_CRON);
   assert.equal(proof.receipt.worker_release, release);
+  assert.equal(Object.keys(proof.receipt).length, 20);
+  assert.deepEqual(proof.v8_cleanup, v8Cleanup);
+  assert.equal(Object.keys(proof.v8_cleanup).length, 10);
   assert.equal(proof.schedule_restored_empty, true);
   assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
   assert.deepEqual(h.schedules, []);
@@ -657,6 +773,128 @@ test("host ignores wrong nonce, release, expired and pre-invocation receipts and
   }
 });
 
+const missingCleanupKey = { ...v8Cleanup };
+delete missingCleanupKey.alarm_absent;
+for (const [name, cleanup] of [
+  ["missing cleanup", null],
+  ["wrong old nonce", { ...v8Cleanup, old_nonce: PROBE_WINDOW.nonce }],
+  ["wrong old release", { ...v8Cleanup, old_release: "f".repeat(40) }],
+  ["wrong current release", { ...v8Cleanup, worker_release: "f".repeat(40) }],
+  ["wrong contract", { ...v8Cleanup, contract: "corelink-staging-v8-cleanup-v2" }],
+  ["nine keys", missingCleanupKey],
+  ["eleven keys", { ...v8Cleanup, private_cleanup_payload: "must-not-be-retained" }],
+  ["prior execution claim", { ...v8Cleanup, prior_execution: "pass" }],
+  ["nonboolean admission", { ...v8Cleanup, prior_admission_present: 1 }],
+  ["container running", { ...v8Cleanup, container_stopped: false }],
+  ["alarm present", { ...v8Cleanup, alarm_absent: false }],
+  ["tables present", { ...v8Cleanup, tables_absent: false }],
+  ["before host start", { ...v8Cleanup, completed_at_ms: now - 1 }],
+  ["after observation", { ...v8Cleanup, completed_at_ms: now + 1 }],
+  ["at host deadline", { ...v8Cleanup, completed_at_ms: now + 5 }],
+  ["before cleanup window", { ...v8Cleanup, completed_at_ms: Date.parse("2026-10-01T11:59:59.999Z") }],
+  ["at cleanup expiry", { ...v8Cleanup, completed_at_ms: Date.parse("2026-10-01T19:15:00Z") }],
+  ["fractional completion", { ...v8Cleanup, completed_at_ms: now + 0.5 }],
+  ["unsafe completion", { ...v8Cleanup, completed_at_ms: Number.MAX_SAFE_INTEGER + 1 }],
+  ["array cleanup", []],
+]) {
+  test(`native receipt waits until timeout for ${name}`, async () => {
+    const h = harness({ emittedEvent: scheduledFrame(receipt, now, cleanup) });
+    await assert.rejects(runRuntimeProbe({ token: "token", release, expectedSha: release,
+      imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now, timeoutMs: 5,
+    }), error => {
+      const diagnostic = failureDiagnostic(error);
+      assert.equal(diagnostic.code, "receipt_timeout");
+      assert.equal(diagnostic.tail_evidence.counters.accepted_receipts, 0);
+      assert.equal(JSON.stringify(diagnostic).includes("private_cleanup_payload"), false);
+      assert.equal(JSON.stringify(diagnostic).includes("must-not-be-retained"), false);
+      return true;
+    });
+    assert.deepEqual(h.schedules, []);
+    assert.equal(h.tailDeleted, true);
+  });
+}
+
+for (const [name, change] of [
+  ["wrong Cron", event => { event.event.cron = "0 0 * * *"; }],
+  ["wrong Worker", event => { event.scriptName = "another-worker"; }],
+  ["missing scheduled event", event => { delete event.event; }],
+  ["failed scheduled event", event => { event.outcome = "exception"; }],
+  ["pre-invocation scheduled event", event => { event.event.scheduledTime = now - 1; }],
+  ["future scheduled event", event => { event.event.scheduledTime = now + 1; }],
+  ["malformed cleanup JSON", event => { event.logs[0].message = ["[staging_d1_runtime_probe] v8_cleanup=private_cleanup_payload"]; }],
+  ["phase marker instead of cleanup", event => { event.logs[0].message = [`[staging_d1_runtime_probe] phase=native_complete release=${release}`]; }],
+]) {
+  test(`paired receipts cannot pass with ${name}`, async () => {
+    const emittedEvent = scheduledFrame();
+    change(emittedEvent);
+    const h = harness({ emittedEvent });
+    await assert.rejects(runRuntimeProbe({ token: "token", release, expectedSha: release,
+      imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now, timeoutMs: 5,
+    }), error => {
+      assert.equal(failureDiagnostic(error).code, "receipt_timeout");
+      assert.equal(JSON.stringify(failureDiagnostic(error)).includes("private_cleanup_payload"), false);
+      return true;
+    });
+    assert.deepEqual(h.schedules, []);
+    assert.equal(h.tailDeleted, true);
+  });
+}
+
+test("cleanup and native receipts from separate events wait for matched outer proof", async () => {
+  const h = harness({ sendReceipt: false });
+  let settled = false;
+  const running = runRuntimeProbe({ token: "token", release, expectedSha: release,
+    imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => h.clock.value,
+  }).then(proof => { settled = true; return proof; });
+  await new Promise(resolve => setImmediate(resolve));
+  const cleanupOnly = scheduledFrame();
+  cleanupOnly.logs.pop();
+  h.emitEvent(cleanupOnly);
+  h.emitEvent(scheduledFrame(receipt, now, null));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, "proofs from separate events cannot be joined");
+  h.clock.value += 120_000;
+  const matchedCleanup = { ...v8Cleanup, prior_admission_present: false, completed_at_ms: h.clock.value };
+  h.emitEvent(scheduledFrame(receipt, h.clock.value, matchedCleanup));
+  const proof = await running;
+  assert.deepEqual(proof.receipt, receipt, "the native receipt keeps its original scheduled timestamp");
+  assert.deepEqual(proof.v8_cleanup, matchedCleanup);
+  assert.equal(Object.keys(proof.receipt).length, 20);
+  assert.equal(Object.keys(proof.v8_cleanup).length, 10);
+  assert.deepEqual(h.schedules, []);
+  assert.equal(h.tailDeleted, true);
+});
+
+test("cleanup accepts inclusive window/start and observation boundaries before deadline", async () => {
+  for (const elapsed of [0, 1, 999]) {
+    const startedAt = Date.parse("2026-10-01T12:00:00Z");
+    const h = harness({ sendReceipt: false });
+    h.clock.value = startedAt;
+    const running = runRuntimeProbe({ token: "token", release, expectedSha: release,
+      imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => h.clock.value, timeoutMs: 1000,
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    h.clock.value += elapsed;
+    const native = { ...receipt, scheduled_time_ms: startedAt };
+    const cleanup = { ...v8Cleanup, completed_at_ms: h.clock.value };
+    h.emitEvent(scheduledFrame(native, startedAt, cleanup));
+    const proof = await running;
+    assert.deepEqual(proof.v8_cleanup, cleanup);
+    assert.deepEqual(proof.receipt, native);
+  }
+});
+
+test("the old v8 release cannot attest its own cleanup as the current release", async () => {
+  const oldRelease = v8Cleanup.old_release;
+  const h = harness({ emittedEvent: scheduledFrame({ ...receipt, worker_release: oldRelease }, now,
+    { ...v8Cleanup, worker_release: oldRelease }) });
+  await assert.rejects(runRuntimeProbe({ token: "token", release: oldRelease, expectedSha: oldRelease,
+    imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now, timeoutMs: 5,
+  }), /receipt timed out/);
+  assert.deepEqual(h.schedules, []);
+  assert.equal(h.tailDeleted, true);
+});
+
 test("failed probe diagnostics distinguish no frames, empty events, malformed frames and fixed markers", async () => {
   const cases = [
     { name: "no frame", options: { sendReceipt: false }, expect: { frames_received: 0 } },
@@ -664,6 +902,13 @@ test("failed probe diagnostics distinguish no frames, empty events, malformed fr
     { name: "malformed frame", options: { emittedRawFrame: "not-json" }, expect: { frames_received: 1, frames_decoded: 0, malformed_frames: 1 } },
     { name: "failed marker", options: { emittedEvent: { ...scheduledFrame(), logs: [{ message: ["[staging_d1_runtime_probe] failed reason=probe_failed"] }] } }, expect: { failed_markers: 1, rejected_markers: 0 } },
     { name: "rejected marker", options: { emittedEvent: { ...scheduledFrame(), logs: [{ message: ["[staging_d1_runtime_probe] rejected reason=staging_guard"] }] } }, expect: { failed_markers: 0, rejected_markers: 1 } },
+    { name: "phase enums", options: { emittedEvent: { ...scheduledFrame(), logs: [{ message:
+      ["scheduled_entry", "native_start", "native_complete", "native_error"].map(phase => `[staging_d1_runtime_probe] phase=${phase} release=${release}`),
+    }] } }, expect: { phase_scheduled_entry: 1, phase_native_start: 1, phase_native_complete: 1, phase_native_error: 1 } },
+    { name: "foreign or arbitrary phase", options: { emittedEvent: { ...scheduledFrame(), logs: [{ message: [
+      `[staging_d1_runtime_probe] phase=native_start release=${"a".repeat(40)}`,
+      `[staging_d1_runtime_probe] phase=private_event_sentinel release=${release}`,
+    ] }] } }, expect: { wrong_release_phases: 1, phase_native_start: 0 } },
     { name: "malformed receipt", options: { emittedEvent: { ...scheduledFrame(), logs: [{ message: ["[staging_d1_runtime_probe] receipt=malformed-private-payload"] }] } }, expect: { receipt_markers: 1, malformed_receipts: 1 } },
     { name: "wrong nonce receipt", options: { emittedEvent: scheduledFrame({ ...receipt, probe_nonce: "wrong-window", private_event_sentinel: "must-not-be-retained" }) }, expect: { receipt_markers: 1, wrong_nonce_receipts: 1, accepted_receipts: 0 } },
     { name: "wrong release receipt", options: { emittedEvent: scheduledFrame({ ...receipt, worker_release: "f".repeat(40) }) }, expect: { wrong_release_receipts: 1, schema_rejected_receipts: 1 } },
@@ -733,7 +978,7 @@ test("diagnostics never echo exception text, body, credentials or tail URLs", as
   });
 });
 
-test("native WebSocket negotiates trace-v1, initializes, and consumes a binary Cloudflare event", async (t) => {
+test("pinned ws emits Wrangler's exact initialization frame and consumes a binary Cloudflare event", async (t) => {
   const server = createServer();
   let peer;
   let markInitialized;
@@ -746,13 +991,12 @@ test("native WebSocket negotiates trace-v1, initializes, and consumes a binary C
     let bytes = Buffer.alloc(0);
     socket.on("data", data => {
       bytes = Buffer.concat([bytes, data]);
-      if (bytes.length < 6) return;
+      if (bytes.length < 2) return;
       const length = bytes[1] & 127;
-      if (bytes.length < 6 + length) return;
+      if (bytes.length < 2 + length) return;
       assert.equal(bytes[0], 0x81);
-      assert.equal(bytes[1] & 128, 128);
-      const payload = Buffer.from(bytes.subarray(6, 6 + length));
-      for (let i = 0; i < length; i++) payload[i] ^= bytes[2 + i % 4];
+      assert.equal(bytes[1] & 128, 0);
+      const payload = Buffer.from(bytes.subarray(2, 2 + length));
       assert.deepEqual(JSON.parse(payload.toString()), { debug: false });
       socket.removeAllListeners("data");
       markInitialized();
