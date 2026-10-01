@@ -77,11 +77,13 @@ const WRANGLER_FAILURE_ENDPOINTS = new Set([
 // is built and the pre-upload API checks passed, and "Uploaded <name>" once the
 // script upload request succeeded.
 const WRANGLER_FAILURE_PROGRESS = new Set(["before_bundle_report", "bundle_reported", "upload_reported"]);
+// Whether the diagnosis rests on a Wrangler error block. Without one in the analysed
+// window ("truncated" when stderr ran past it), nothing beyond unknown is claimed.
+const WRANGLER_OUTPUT_STRUCTURES = new Set(["first_error_block", "no_structured_error", "truncated"]);
 const MAX_PROVIDER_ERROR_CODES = 8;
 // Bounds on how much Wrangler output is analysed. The first error block sits near
 // the start of stderr (only warnings can precede it) and the progress lines near
-// the start of stdout, so both heads are kept; unstructured output is read from its
-// tail, where a process failure prints its message.
+// the start of stdout, so only the head of each is read.
 const MAX_ANALYSED_CHARS = 256 * 1024;
 const MAX_ROOT_BLOCK_LINES = 200;
 const MAX_LINE_CHARS = 4096;
@@ -140,6 +142,9 @@ function sanitizeProviderFailure(value) {
     provider_progress: WRANGLER_FAILURE_PROGRESS.has(value?.provider_progress)
       ? value.provider_progress
       : null,
+    provider_output_structure: WRANGLER_OUTPUT_STRUCTURES.has(value?.provider_output_structure)
+      ? value.provider_output_structure
+      : null,
   });
 }
 
@@ -178,17 +183,20 @@ function rootErrorBlock(stderr) {
   return { message: lines[0].slice(banner[0].length, banner[0].length + MAX_LINE_CHARS), notes };
 }
 
-// Category from free text, checked line by line with linear patterns only. Order
-// keeps the original precedence.
-function categoryFromText(lines) {
+// The banner messages Wrangler 4.141.0 prints for the failures this route can name,
+// matched exactly: captured in tests/fixtures/wrangler-4.141.0-failures.json, except
+// the API timeout line, which is copied from the 4.141.0 error handler. Any other
+// banner is an unrecognised failure and stays unknown_cli_failure.
+const WAF_BLOCK_MESSAGE = "The Cloudflare API responded with a WAF block page instead of the expected JSON response";
+const MALFORMED_RESPONSE_MESSAGE = "Received a malformed response from the API";
+const NETWORK_FAILURE_MESSAGES = new Set(["fetch failed", "The request to Cloudflare's API timed out."]);
+const FIRST_DEPLOY_MESSAGE = "You cannot upload a new version of a Worker that does not yet exist. Please run the `deploy` command first.";
+
+// Category from the error messages the Cloudflare API returned, as Wrangler renders
+// them under an API-request banner. Linear patterns only; order keeps the original
+// precedence.
+function categoryFromProviderMessages(lines) {
   const tests = [
-    ["first_deploy_required", (line) => {
-      const lower = line.toLowerCase();
-      const at = lower.indexOf("first time");
-      if (at < 0) return false;
-      const after = lower.slice(at + 10);
-      return /upload|worker/.test(after) || (/upload|worker/.test(lower.slice(0, at)) && /fail|must use/.test(after));
-    }],
     ["authentication_failed", (line) => /invalid api token|authentication (?:failed|error)|unauthorized/i.test(line)],
     ["permission_denied", (line) => /permission denied|missing permission|not authorized|not permitted/i.test(line)],
     ["resource_not_found", (line) => /\bnot found\b/i.test(line) && /\b(?:worker|script|resource)\b/i.test(line)],
@@ -231,33 +239,27 @@ function reportedRequest(notes) {
   return { endpoint: labelWranglerEndpoint(requests[0][1]), status: Number(requests[0][2]) };
 }
 
+const UNKNOWN_DIAGNOSIS = Object.freeze({ category: "unknown_cli_failure", endpoint: "none_reported", status: null, codeLines: [] });
+
+// Only an API-request block carries the API's own error codes and messages; every
+// other recognised banner is classified by its exact message alone, and its notes
+// (which may echo a response body) are never read for codes or categories.
 function classifyRootBlock({ message, notes }) {
-  if (message.startsWith("The Cloudflare API responded with a WAF block page")) {
-    return { category: "waf_block", ...reportedRequest(notes), codeLines: [] };
-  }
-  if (message === "Received a malformed response from the API") {
-    return { category: "malformed_api_response", ...reportedRequest(notes), codeLines: [] };
-  }
-  if (message === "fetch failed" || message.startsWith("The request to Cloudflare's API timed out")) {
-    return { category: "network_failure", endpoint: "none_reported", status: null, codeLines: [] };
-  }
-  if (message.startsWith("You cannot upload a new version of a Worker that does not yet exist")) {
-    return { category: "first_deploy_required", endpoint: "none_reported", status: null, codeLines: [] };
-  }
+  if (message === WAF_BLOCK_MESSAGE) return { category: "waf_block", ...reportedRequest(notes), codeLines: [] };
+  if (message === MALFORMED_RESPONSE_MESSAGE) return { category: "malformed_api_response", ...reportedRequest(notes), codeLines: [] };
+  if (NETWORK_FAILURE_MESSAGES.has(message)) return { ...UNKNOWN_DIAGNOSIS, category: "network_failure" };
+  if (message === FIRST_DEPLOY_MESSAGE) return { ...UNKNOWN_DIAGNOSIS, category: "first_deploy_required" };
   const apiRequest = API_REQUEST_BANNER.exec(message);
-  if (apiRequest) {
-    const { codes } = codeSummary(notes);
-    return {
-      category: codes.some((code) => AUTHENTICATION_ERROR_CODES.has(code))
-        ? "authentication_failed"
-        : categoryFromText(notes) ?? "api_request_rejected",
-      endpoint: apiRequest[1] ? labelWranglerEndpoint(apiRequest[1]) : "none_reported",
-      status: null,
-      codeLines: notes,
-    };
-  }
-  const lines = [message, ...notes];
-  return { category: categoryFromText(lines) ?? "unknown_cli_failure", endpoint: "none_reported", status: null, codeLines: lines };
+  if (!apiRequest) return UNKNOWN_DIAGNOSIS;
+  const { codes } = codeSummary(notes);
+  return {
+    category: codes.some((code) => AUTHENTICATION_ERROR_CODES.has(code))
+      ? "authentication_failed"
+      : categoryFromProviderMessages(notes) ?? "api_request_rejected",
+    endpoint: apiRequest[1] ? labelWranglerEndpoint(apiRequest[1]) : "none_reported",
+    status: null,
+    codeLines: notes,
+  };
 }
 
 export function classifyWranglerFailure(result) {
@@ -267,16 +269,11 @@ export function classifyWranglerFailure(result) {
   }
   const stdout = typeof result?.stdout === "string" ? result.stdout : "";
   const stderr = typeof result?.stderr === "string" ? result.stderr : "";
+  // Without a Wrangler error block in the analysed head of stderr there is nothing
+  // to place as the first failure: no category, code or endpoint is read from the
+  // remaining text, which may be a later follow-up or an echoed body.
   const root = rootErrorBlock(stderr);
-  let diagnosis;
-  if (root) {
-    diagnosis = classifyRootBlock(root);
-  } else {
-    // No Wrangler error banner: keep the unstructured classification, read from the
-    // tail, and never name an endpoint or status from it.
-    const lines = `${stdout}\n${stderr}`.slice(-MAX_ANALYSED_CHARS).replace(ANSI_SGR, "").split("\n");
-    diagnosis = { category: categoryFromText(lines) ?? "unknown_cli_failure", endpoint: "none_reported", status: null, codeLines: lines };
-  }
+  const diagnosis = root ? classifyRootBlock(root) : UNKNOWN_DIAGNOSIS;
   // Progress lines are Wrangler's own stdout lines at column 0, naming the fixed
   // Worker; an echoed body is on stderr and indented, so it cannot produce them.
   const stdoutHead = stdout.slice(0, MAX_ANALYSED_CHARS).replace(ANSI_SGR, "");
@@ -290,6 +287,9 @@ export function classifyWranglerFailure(result) {
     provider_progress: UPLOAD_REPORTED.test(stdoutHead)
       ? "upload_reported"
       : BUNDLE_REPORTED.test(stdoutHead) ? "bundle_reported" : "before_bundle_report",
+    provider_output_structure: root
+      ? "first_error_block"
+      : stderr.length > MAX_ANALYSED_CHARS ? "truncated" : "no_structured_error",
   };
   if (wellFormed === 1 && prefixes === 1) {
     return sanitizeProviderFailure({ ...details, provider_failure_class: "provider_error_code", provider_error_code: codes[0] });
