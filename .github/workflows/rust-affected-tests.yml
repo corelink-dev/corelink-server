@@ -26,7 +26,9 @@
 # criterion's harness rejects `--skip`, so they are not executed); feature
 # combinations beyond the defaults; `PROPTEST_CASES` above 32 — full-intensity
 # property runs are not this lane's job, only the iteration count changes; and
-# the tests in the test job's SKIP_TESTS ledger, each with its reason.
+# the tests in the test job's SKIP_TESTS ledger, each with its reason. Tests in
+# its KNOWN_FAILING ledger are left out of the main run and then run on their
+# own, where each must still FAIL.
 #
 # THE VERDICT JOB is the single check to depend on. It fails unless the
 # selection succeeded AND either both clippy and test succeeded, or the
@@ -237,6 +239,23 @@ jobs:
       #     asserts the configured case count is >= 1000, i.e. it fails for any
       #     run that lowers PROPTEST_CASES below 1000, which this lane must.
       SKIP_TESTS: test_proptest_cases_runtime_configurable_s14
+      # KNOWN FAILURES — real defects on main that this lane exposed and that
+      # are not safe to fix inside the lane's own PR. One entry per line:
+      #   <package> <cargo target selector> <exact libtest name>
+      # The main run skips each by exact name; the step after it then runs each
+      # one ALONE and requires it to FAIL. Fixing the defect turns the lane red
+      # until its entry is deleted, so this ledger cannot outlive its reason.
+      # Each name must also resolve to exactly one `fn` (checked below).
+      # Shrink-only.
+      #   tests::b126_t1_files_remain_below_the_1000_line_ceiling
+      #     crates/corelink-container/src/main.rs is 1047 lines on main against
+      #     B-126's 1000-line ceiling. Its sha256 is pinned by
+      #     scripts/verify_i2176_grpc_deny_gate.py,
+      #     scripts/verify_i2574_grpc_diagnostic_policy.py and
+      #     scripts/backlog_verify.py, so splitting it belongs to the owners
+      #     of those pins, not to this lane.
+      KNOWN_FAILING: |
+        corelink-server --bin=corelink-server tests::b126_t1_files_remain_below_the_1000_line_ceiling
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
@@ -262,6 +281,10 @@ jobs:
         run: |
           set -euo pipefail
           read -ra skips <<< "$SKIP_TESTS"
+          # A known failure is named by its libtest path; its `fn` is the last segment.
+          while read -r _pkg _target known _extra; do
+            if [ -n "${known:-}" ]; then skips+=("${known##*::}"); fi
+          done <<< "$KNOWN_FAILING"
           for name in "${skips[@]}"; do
             matches="$(git grep -n -E "fn ${name}\(" -- '*.rs' || true)"
             hits="$(printf '%s' "$matches" | grep -c . || true)"
@@ -287,6 +310,9 @@ jobs:
             echo "::error::the select job reported mode != none but no cargo scope — refusing to test nothing"
             exit 1
           fi
+          while read -r _pkg _target known _extra; do
+            if [ -n "${known:-}" ]; then skips+=("$known"); fi
+          done <<< "$KNOWN_FAILING"
           skip_args=(--exact)
           for name in "${skips[@]}"; do skip_args+=(--skip "$name"); done
           # Measured 2026-10-01 on ubuntu-24.04: 85G free on / before any build,
@@ -295,6 +321,55 @@ jobs:
           echo "testing $SELECTED package(s): ${scope[*]} (skipping: ${skips[*]})"
           cargo test --locked --no-fail-fast --tests --bins --examples "${scope[@]}" -- "${skip_args[@]}"
           df -h /
+
+      # Strict expected-failure check for the KNOWN_FAILING ledger. The script
+      # between the markers is run verbatim, against a fake `cargo`, by
+      # tests/test_rust_affected_packages.py (KnownFailures) in the select job.
+      - name: Known failures still fail (strict)
+        env:
+          CARGO_SCOPE: ${{ needs.select.outputs.cargo_args }}
+        run: |
+          # rust-affected-xfail:begin
+          set -euo pipefail
+          read -ra scope <<< "$CARGO_SCOPE"
+          fail=0
+          ran=0
+          while read -r pkg target name extra; do
+            [ -n "${pkg:-}" ] || continue
+            if [ -z "${name:-}" ] || [ -n "${extra:-}" ]; then
+              echo "::error::malformed KNOWN_FAILING entry '${pkg} ${target:-} ${name:-} ${extra:-}' — expected <package> <target> <test>"
+              fail=1
+              continue
+            fi
+            selected=0
+            for ((i = 0; i < ${#scope[@]}; i++)); do
+              case "${scope[$i]}" in
+                --workspace) selected=1 ;;
+                -p) if [ "${scope[$((i + 1))]:-}" = "$pkg" ]; then selected=1; fi ;;
+              esac
+            done
+            if [ "$selected" -eq 0 ]; then
+              echo "known failure '$name': $pkg is not selected by this change, not run"
+              continue
+            fi
+            out="$(mktemp)"
+            rc=0
+            cargo test --locked -p "$pkg" "$target" -- --exact --color never "$name" >"$out" 2>&1 || rc=$?
+            cat "$out"
+            ran=$((ran + 1))
+            if [ "$rc" -ne 0 ] && grep -qxF "test $name ... FAILED" "$out"; then
+              echo "known failure '$name' still fails, as its ledger entry declares"
+            elif [ "$rc" -eq 0 ] && grep -qxF "test $name ... ok" "$out"; then
+              echo "::error::known failure '$name' now PASSES — delete its KNOWN_FAILING entry"
+              fail=1
+            else
+              echo "::error::known failure '$name' did not run and fail (cargo exit $rc) — the entry no longer names a failing test"
+              fail=1
+            fi
+          done <<< "$KNOWN_FAILING"
+          echo "known failures run: $ran"
+          exit "$fail"
+          # rust-affected-xfail:end
 
   verdict:
     name: rust-affected-tests

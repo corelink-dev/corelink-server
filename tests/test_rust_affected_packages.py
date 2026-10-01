@@ -18,8 +18,10 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from typing import Iterable
@@ -451,6 +453,131 @@ class TriggerFilter(unittest.TestCase):
         self.assertTrue(glob_matches("crates/**", "crates/a/b/c.md"))
         self.assertFalse(glob_matches("rust-toolchain", "rust-toolchain.toml"))
         self.assertFalse(glob_matches("*.rs", "src/lib.rs"))
+
+
+def marked_script(text: str, marker: str) -> str:
+    """The shell between `# <marker>:begin` and `# <marker>:end`, dedented.
+
+    Strict like `marked_globs`: a missing or repeated marker, or an empty body,
+    is a ValueError — never a shorter script that would test nothing.
+    """
+    lines = text.splitlines()
+    begins = [i for i, line in enumerate(lines) if line.strip() == f"# {marker}:begin"]
+    ends = [i for i, line in enumerate(lines) if line.strip() == f"# {marker}:end"]
+    if len(begins) != 1 or len(ends) != 1 or ends[0] < begins[0]:
+        raise ValueError(f"expected exactly one {marker} begin/end pair, got {len(begins)}/{len(ends)}")
+    body = textwrap.dedent("\n".join(lines[begins[0] + 1:ends[0]]))
+    if not body.strip():
+        raise ValueError(f"the {marker} script is EMPTY")
+    return body + "\n"
+
+
+KNOWN = "tests::b126_t1_files_remain_below_the_1000_line_ceiling"
+ENTRY = f"corelink-server --bin=corelink-server {KNOWN}\n"
+FAKE_CARGO = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$FAKE_CARGO_LOG"
+printf '%s\\n' "$FAKE_CARGO_OUT"
+exit "$FAKE_CARGO_RC"
+"""
+
+
+class KnownFailures(unittest.TestCase):
+    """Runs the workflow's strict expected-failure step verbatim against a fake
+    `cargo`, one planted cargo outcome per case."""
+
+    def setUp(self) -> None:
+        self.script = marked_script(WORKFLOW.read_text(encoding="utf-8"), "rust-affected-xfail")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.bin = Path(self._tmp.name) / "bin"
+        self.bin.mkdir()
+        cargo = self.bin / "cargo"
+        cargo.write_text(FAKE_CARGO, encoding="utf-8")
+        cargo.chmod(0o755)
+        self.log = Path(self._tmp.name) / "cargo.log"
+
+    def run_step(self, *, scope: str = "--workspace", ledger: str = ENTRY,
+                 out: str = "", rc: int = 0) -> tuple[int, str]:
+        env = {
+            "PATH": f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "CARGO_SCOPE": scope,
+            "KNOWN_FAILING": ledger,
+            "FAKE_CARGO_LOG": str(self.log),
+            "FAKE_CARGO_OUT": out,
+            "FAKE_CARGO_RC": str(rc),
+        }
+        proc = subprocess.run(["bash", "-c", self.script], env=env, capture_output=True, text=True, check=False)
+        return proc.returncode, proc.stdout + proc.stderr
+
+    def cargo_calls(self) -> list[str]:
+        return self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
+
+    def test_still_failing_is_green_and_runs_exactly_that_test(self) -> None:
+        code, log = self.run_step(out=f"running 1 test\ntest {KNOWN} ... FAILED\n", rc=101)
+        self.assertEqual(code, 0, log)
+        self.assertIn("still fails", log)
+        self.assertEqual(self.cargo_calls(), [
+            f"test --locked -p corelink-server --bin=corelink-server -- --exact --color never {KNOWN}"])
+
+    def test_now_passing_is_red_and_says_delete_the_entry(self) -> None:
+        code, log = self.run_step(out=f"running 1 test\ntest {KNOWN} ... ok\n", rc=0)
+        self.assertEqual(code, 1, log)
+        self.assertIn(f"known failure '{KNOWN}' now PASSES", log)
+
+    def test_compile_error_is_not_mistaken_for_the_failure(self) -> None:
+        code, log = self.run_step(out="error[E0425]: cannot find value `x` in this scope\n", rc=101)
+        self.assertEqual(code, 1, log)
+        self.assertIn("did not run and fail (cargo exit 101)", log)
+
+    def test_a_filter_that_matches_nothing_is_red(self) -> None:
+        code, log = self.run_step(out="running 0 tests\n\ntest result: ok. 0 passed\n", rc=0)
+        self.assertEqual(code, 1, log)
+        self.assertIn("did not run and fail (cargo exit 0)", log)
+
+    def test_another_test_failing_does_not_count(self) -> None:
+        code, log = self.run_step(out=f"test {KNOWN}_and_more ... FAILED\n", rc=101)
+        self.assertEqual(code, 1, log)
+        self.assertIn("did not run and fail", log)
+
+    def test_only_libtests_own_verdict_line_counts(self) -> None:
+        # The verdict is the whole line; the same words quoted inside other
+        # output (indented here) are not libtest saying this test failed.
+        code, log = self.run_step(out=f"  test {KNOWN} ... FAILED\n", rc=101)
+        self.assertEqual(code, 1, log)
+        self.assertIn("did not run and fail", log)
+
+    def test_failed_line_with_a_zero_exit_is_red(self) -> None:
+        code, log = self.run_step(out=f"test {KNOWN} ... FAILED\n", rc=0)
+        self.assertEqual(code, 1, log)
+        self.assertIn("did not run and fail (cargo exit 0)", log)
+
+    def test_unselected_package_is_not_run(self) -> None:
+        code, log = self.run_step(scope="-p corelink-hash", out=f"test {KNOWN} ... ok\n", rc=0)
+        self.assertEqual(code, 0, log)
+        self.assertIn("corelink-server is not selected", log)
+        self.assertEqual(self.cargo_calls(), [])
+
+    def test_package_selected_by_dash_p_is_run(self) -> None:
+        code, log = self.run_step(scope="-p corelink-hash -p corelink-server",
+                                  out=f"test {KNOWN} ... ok\n", rc=0)
+        self.assertEqual(code, 1, log)
+        self.assertEqual(len(self.cargo_calls()), 1)
+
+    def test_malformed_entry_is_red(self) -> None:
+        code, log = self.run_step(ledger=f"corelink-server {KNOWN}\n")
+        self.assertEqual(code, 1, log)
+        self.assertIn("malformed KNOWN_FAILING entry", log)
+        self.assertEqual(self.cargo_calls(), [])
+
+    def test_empty_ledger_runs_nothing(self) -> None:
+        code, log = self.run_step(ledger="\n")
+        self.assertEqual(code, 0, log)
+        self.assertIn("known failures run: 0", log)
+
+    def test_teeth_missing_marker_fails(self) -> None:
+        planted = WORKFLOW.read_text(encoding="utf-8").replace("# rust-affected-xfail:end", "# end", 1)
+        with self.assertRaisesRegex(ValueError, "rust-affected-xfail begin/end pair"):
+            marked_script(planted, "rust-affected-xfail")
 
 
 if __name__ == "__main__":
