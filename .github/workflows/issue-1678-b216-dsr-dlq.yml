@@ -14,6 +14,7 @@ on:
       - "migrations/d1/0145_dsr_dlq_redrive_authority.sql"
       - ".github/workflows/b216-receiver-deploy-nonprod.yml"
       - "apps/dsr-alert-receiver/scripts/deploy-route.mjs"
+      - "apps/dsr-alert-receiver/scripts/readback-route.mjs"
       - "apps/dsr-alert-receiver/scripts/run-disable-workers-dev.mjs"
       - "apps/dsr-alert-receiver/scripts/run-synthetic-exercise.mjs"
       - "apps/dsr-alert-receiver/scripts/synthetic-exercise.mjs"

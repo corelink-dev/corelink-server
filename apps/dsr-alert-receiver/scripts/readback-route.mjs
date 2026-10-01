@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,7 +115,13 @@ export async function readWorkerInventory({ context, fetchImpl = fetch, now = ()
   receipt.routes = !script || !Object.hasOwn(script, "routes")
     ? { status: "unknown" }
     : Array.isArray(script.routes) && script.routes.every((route) => route && typeof route === "object" && typeof route.id === "string" && typeof route.pattern === "string" && route.script === READBACK_TARGET.workerName)
-      ? { status: "known", count: script.routes.length }
+      ? {
+        status: "known",
+        count: script.routes.length,
+        pattern_sha256: script.routes
+          .map((route) => createHash("sha256").update(route.pattern, "utf8").digest("hex"))
+          .sort(),
+      }
       : fail("worker_routes_ambiguous");
 
   const workerPath = `/accounts/${READBACK_TARGET.accountId}/workers/scripts/${READBACK_TARGET.workerName}`;

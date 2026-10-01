@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { assertReadbackPath, READBACK_TARGET, ReadbackError, readWorkerInventory, validateReadbackContext } from "../scripts/readback-route.mjs";
 
@@ -55,7 +56,7 @@ describe("B-216 read-only Worker inventory", () => {
       expect(url).toContain(`/accounts/${READBACK_TARGET.accountId}/`);
     }
     expect(receipt.worker).toEqual({ exists: true, inventory_count: 1 });
-    expect(receipt.routes).toEqual({ status: "known", count: 0 });
+    expect(receipt.routes).toEqual({ status: "known", count: 0, pattern_sha256: [] });
     expect(receipt.versions.items[0]).toEqual({ id: versionId, tag: `b216-${"a".repeat(40)}` });
     expect(receipt.deployments.active.versions).toEqual([{ version_id: versionId, percentage: 100 }]);
     expect(receipt.subdomain).toEqual({ status: "known", enabled: true, previews_enabled: false });
@@ -187,17 +188,21 @@ describe("B-216 read-only Worker inventory", () => {
     await expect(readWorkerInventory({ context, fetchImpl: badSubdomain.fetchImpl })).rejects.toMatchObject({ code: "worker_subdomain_ambiguous" });
   });
 
-  it("never serializes route patterns, response bodies, or request URLs into a receipt", async () => {
+  it("serializes only route-pattern hashes, never routes, response bodies, or request URLs", async () => {
+    const routePattern = "alerts.example.invalid/*";
     const { fetchImpl } = apiFixture({
       [`/accounts/${READBACK_TARGET.accountId}/workers/scripts`]: {
         success: true,
-        result: [{ id: READBACK_TARGET.workerName, routes: [{ id: "route-id", pattern: "secret.example/*", script: READBACK_TARGET.workerName }] }],
+        result: [{ id: READBACK_TARGET.workerName, routes: [{ id: "route-id", pattern: routePattern, script: READBACK_TARGET.workerName }] }],
       },
     });
     const receipt = await readWorkerInventory({ context, fetchImpl });
     const serialized = JSON.stringify(receipt);
-    expect(serialized).not.toContain("secret.example");
+    expect(serialized).not.toContain(routePattern);
     expect(serialized).not.toContain("route-id");
     expect(serialized).not.toContain("test-token-never-real");
+    expect(receipt.routes.pattern_sha256).toEqual([
+      createHash("sha256").update(routePattern, "utf8").digest("hex"),
+    ]);
   });
 });

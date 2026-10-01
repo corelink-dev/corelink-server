@@ -32,6 +32,23 @@ on:
         description: 'Type the mode-specific confirmation phrase'
         required: true
         type: string
+      enable_b216_dsr_alert:
+        description: 'Explicitly bind the approved B-216 staging alert endpoint and bearer to corelink-signup-staging'
+        required: false
+        default: false
+        type: boolean
+      b216_authority_run_id:
+        description: 'Successful fixed-receiver readback run ID; required only for B-216 alert opt-in'
+        required: false
+        type: string
+      b216_authority_receipt_sha256:
+        description: 'SHA-256 of the redacted receiver readback artifact receipt'
+        required: false
+        type: string
+      b216_owner_ack_ref:
+        description: 'Issue #1678 comment URL recording the owner-approved reachable response path'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -331,6 +348,10 @@ jobs:
       github.ref == 'refs/heads/main' && github.ref_protected
     needs: contract
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: read
     environment: staging
     timeout-minutes: 45
     env:
@@ -346,14 +367,31 @@ jobs:
       STAGING_DSR_DLQ_REDRIVE_AUTH_KEY: ${{ secrets.STAGING_DSR_DLQ_REDRIVE_AUTH_KEY }}
       STAGING_R2_S3_ACCESS_KEY_ID: ${{ secrets.STAGING_R2_S3_ACCESS_KEY_ID }}
       STAGING_R2_S3_SECRET_ACCESS_KEY: ${{ secrets.STAGING_R2_S3_SECRET_ACCESS_KEY }}
+      ENABLE_B216_DSR_ALERT: ${{ inputs.enable_b216_dsr_alert }}
     steps:
       - name: Confirm exact protected existing-secret update
         env:
           CONFIRM: ${{ inputs.confirm }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          B216_AUTHORITY_RUN_ID: ${{ inputs.b216_authority_run_id }}
+          B216_AUTHORITY_RECEIPT_SHA256: ${{ inputs.b216_authority_receipt_sha256 }}
+          B216_OWNER_ACK_REF: ${{ inputs.b216_owner_ack_ref }}
+          STAGING_DSR_DLQ_ALERT_ENDPOINT: ${{ inputs.enable_b216_dsr_alert == true && secrets.STAGING_DSR_DLQ_ALERT_ENDPOINT || '' }}
+          STAGING_DSR_DLQ_ALERT_AUTH_TOKEN: ${{ inputs.enable_b216_dsr_alert == true && secrets.STAGING_DSR_DLQ_ALERT_AUTH_TOKEN || '' }}
+          STAGING_DSR_DLQ_ALERT_ENDPOINT_HOST: ${{ vars.STAGING_DSR_DLQ_ALERT_ENDPOINT_HOST }}
         run: |
           set -euo pipefail
-          test "$CONFIRM" = 'update-existing-secrets-staging-1700'
+          if [ "$ENABLE_B216_DSR_ALERT" = 'true' ]; then
+            test "$CONFIRM" = 'update-existing-secrets-staging-1700-b216-alert'
+            test -n "$STAGING_DSR_DLQ_ALERT_ENDPOINT"
+            test -n "$STAGING_DSR_DLQ_ALERT_AUTH_TOKEN"
+            [[ "$B216_AUTHORITY_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+            [[ "$B216_AUTHORITY_RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$B216_OWNER_ACK_REF" =~ ^https://github\.com/HuGR-dev/corelink-server/issues/1678#issuecomment-[1-9][0-9]*$ ]]
+            test -n "$STAGING_DSR_DLQ_ALERT_ENDPOINT_HOST"
+          else
+            test "$CONFIRM" = 'update-existing-secrets-staging-1700'
+          fi
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$EXPECTED_SHA" = "$GITHUB_SHA"
           test -n "$STAGING_CF_WORKER_API_TOKEN"
@@ -376,6 +414,80 @@ jobs:
           python3 scripts/verify_staging_topology_contract.py --expect ready
           test "$(jq -r '.deployment_state' infra/staging/topology.json)" = unprovisioned
 
+      - name: Verify exact successful fixed-receiver readback run
+        if: ${{ inputs.enable_b216_dsr_alert }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTHORITY_RUN_ID: ${{ inputs.b216_authority_run_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/HuGR-dev/corelink-server/actions/runs/$AUTHORITY_RUN_ID" \
+            > "$RUNNER_TEMP/b216-authority-run.json"
+          python3 - "$RUNNER_TEMP/b216-authority-run.json" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          row = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          if (
+              row.get("event") != "workflow_dispatch"
+              or row.get("head_branch") != "main"
+              or row.get("head_sha") != os.environ["GITHUB_SHA"]
+              or row.get("status") != "completed"
+              or row.get("conclusion") != "success"
+              or ".github/workflows/b216-receiver-deploy-nonprod.yml@refs/heads/main" not in row.get("path", "")
+          ):
+              raise SystemExit("B-216 authority run is not the exact successful main readback workflow")
+          PY
+
+      - name: Download exact B-216 receiver readback receipt
+        if: ${{ inputs.enable_b216_dsr_alert }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: b216-receiver-readback-${{ inputs.b216_authority_run_id }}
+          path: ${{ runner.temp }}/b216-authority
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.b216_authority_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify owner acknowledgement for exact endpoint authority
+        if: ${{ inputs.enable_b216_dsr_alert }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER_ACK_REF: ${{ inputs.b216_owner_ack_ref }}
+          RECEIPT_SHA256: ${{ inputs.b216_authority_receipt_sha256 }}
+          RECEIVER_HOST: ${{ vars.STAGING_DSR_DLQ_ALERT_ENDPOINT_HOST }}
+        run: |
+          set -euo pipefail
+          comment_id="${OWNER_ACK_REF##*issuecomment-}"
+          [[ "$comment_id" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/HuGR-dev/corelink-server/issues/comments/$comment_id" \
+            > "$RUNNER_TEMP/b216-owner-ack.json"
+          python3 - "$RUNNER_TEMP/b216-owner-ack.json" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          row = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          body = row.get("body", "")
+          required = (
+              "B-216 staging response-path acknowledgement",
+              f"Source SHA: {os.environ['GITHUB_SHA']}",
+              "Receiver account: 51284495e71acdb5a7677e7383ab026b",
+              "Receiver worker: corelink-dsr-b216-alert-receiver-20260927",
+              f"Readback receipt SHA-256: {os.environ['RECEIPT_SHA256']}",
+              f"Authorized endpoint host: {os.environ['RECEIVER_HOST']}",
+              "Acknowledged response path:",
+          )
+          if row.get("issue_url") != "https://api.github.com/repos/HuGR-dev/corelink-server/issues/1678":
+              raise SystemExit("B-216 owner acknowledgement is not on issue #1678")
+          if row.get("html_url") != os.environ["OWNER_ACK_REF"]:
+              raise SystemExit("B-216 owner acknowledgement URL does not match")
+          if row.get("author_association") != "OWNER":
+              raise SystemExit("B-216 endpoint authority acknowledgement must come from a repository owner")
+          if not isinstance(body, str) or any(line not in body for line in required):
+              raise SystemExit("B-216 owner acknowledgement does not bind the exact receiver path")
+          response_path = body.split("Acknowledged response path:", 1)[1].strip()
+          if not response_path:
+              raise SystemExit("B-216 owner acknowledgement response path is empty")
+          PY
+
       - name: Install locked Wrangler dependencies
         run: |
           set -euo pipefail
@@ -396,16 +508,31 @@ jobs:
         env:
           CONFIRM: ${{ inputs.confirm }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          B216_AUTHORITY_RECEIPT_SHA256: ${{ inputs.b216_authority_receipt_sha256 }}
+          B216_OWNER_ACK_REF: ${{ inputs.b216_owner_ack_ref }}
+          STAGING_DSR_DLQ_ALERT_ENDPOINT: ${{ inputs.enable_b216_dsr_alert == true && secrets.STAGING_DSR_DLQ_ALERT_ENDPOINT || '' }}
+          STAGING_DSR_DLQ_ALERT_AUTH_TOKEN: ${{ inputs.enable_b216_dsr_alert == true && secrets.STAGING_DSR_DLQ_ALERT_AUTH_TOKEN || '' }}
+          STAGING_DSR_DLQ_ALERT_ENDPOINT_HOST: ${{ vars.STAGING_DSR_DLQ_ALERT_ENDPOINT_HOST }}
         run: |
           set -euo pipefail
-          test "$CONFIRM" = 'update-existing-secrets-staging-1700'
+          args=()
+          if [ "$ENABLE_B216_DSR_ALERT" = 'true' ]; then
+            test "$CONFIRM" = 'update-existing-secrets-staging-1700-b216-alert'
+            args+=(--enable-b216-dsr-alert)
+            args+=(--b216-authority-receipt "$RUNNER_TEMP/b216-authority/b216-receiver-readback-receipt.json")
+            args+=(--b216-authority-sha256 "$B216_AUTHORITY_RECEIPT_SHA256")
+            args+=(--b216-owner-ack-ref "$B216_OWNER_ACK_REF")
+          else
+            test "$CONFIRM" = 'update-existing-secrets-staging-1700'
+          fi
           test "$EXPECTED_SHA" = "$GITHUB_SHA"
           python3 scripts/staging_bootstrap_provider.py \
             --phase update-existing-apply \
             --config-dir "$RUNNER_TEMP/staging-config" \
             --receipt "$RUNNER_TEMP/staging-existing-secrets-receipt.json" \
             --run-id "$GITHUB_RUN_ID" \
-            --sha "$GITHUB_SHA"
+            --sha "$GITHUB_SHA" \
+            "${args[@]}"
 
       - name: Upload redacted existing-secret update receipt
         if: always()
