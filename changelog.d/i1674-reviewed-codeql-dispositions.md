@@ -1,0 +1,3 @@
+### Fixed
+
+- **CodeQL HIGH/CRITICAL alerts are now dismissed only through an exact, reviewed disposition manifest (#1674).** `scripts/codeql_reviewed_dispositions.py` validates every result of the single trusted three-language scan against `specs/_audits/2026-10-01-i1674-reviewed-codeql-dispositions.json` (two fingerprints per case, SARIF/upload/live-alert/source joins) before any PATCH, re-reads every alert afterwards, and fails closed on any new, changed, ambiguous or unmatched HIGH+ result. It is read-only by default; writes need an explicit opt-in. No severity is lowered and no rule- or path-wide waiver exists.
