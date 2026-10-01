@@ -1,14 +1,16 @@
 name: B-125 read-only evidence contract
 
 # Credentialless PR gate for the bounded #1668 correction. It verifies the
-# aggregate and sanitized provider-error contracts without dispatching D1 reads.
+# aggregate and sanitized D1 API diagnostic contracts without dispatching reads.
 on:
   pull_request:
     paths:
       - ".github/workflows/b125-audit-throughput-read-only.yml"
       - ".github/workflows/b125-readonly-contract.yml"
+      - "scripts/b125_d1_api_diagnostic.py"
       - "scripts/b125_readonly_diagnostics.py"
       - "tests/test_b125_readonly_workflow.py"
+      - "tests/fixtures/b125-d1-api-sql-error.json"
       - "tests/fixtures/b125-d1-aggregate-*.json"
   workflow_dispatch:
 
