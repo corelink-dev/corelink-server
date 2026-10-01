@@ -14,6 +14,13 @@
 )]
 
 #[path = "release_workflow_contract/assertions.rs"]
+#[expect(
+    dead_code,
+    reason = "assert_rekor_helper_contract has had no caller since #1838 retired the Rekor \
+              lane; it can only be deleted inside assertions.rs, which the issue-2572 gate \
+              keeps closed-world. Once it is gone this `expect` is unfulfilled and fails \
+              `-D warnings`."
+)]
 mod assertions;
 #[path = "release_workflow_contract/cases.rs"]
 mod cases;
