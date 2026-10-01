@@ -61,3 +61,15 @@ it("cleanup cannot refresh its budget and provider error text is discarded", asy
   await expect(life.cleanup(async () => undefined)).rejects.toThrow("deadline");
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it("absolute stop latch fences execution without claiming submitted work cancelled", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const life = new StagingD1HttpLifecycle(Date.now, 2_000_000);
+  let resolve!: () => void;
+  const running = life.run(() => new Promise<void>(done => { resolve = done; }));
+  const rejected = expect(running).rejects.toThrow("execution stopped");
+  await Promise.resolve(); life.halt(); life.halt();
+  expect(life.settled).toBe(false);
+  const next = vi.fn(); await expect(life.run(next)).rejects.toThrow();
+  resolve(); await rejected; expect(next).not.toHaveBeenCalled();
+});

@@ -20,6 +20,9 @@ export class StagingD1HttpLifecycle {
     }
   }
 
+  /** Stop future execution without claiming cancellation or quiescence. */
+  halt(): void { this.stopped = true; }
+
   get settled(): boolean { return this.pending.size === 0; }
 
   private async bounded<T>(operation: () => Promise<T>, deadline: number): Promise<T> {
