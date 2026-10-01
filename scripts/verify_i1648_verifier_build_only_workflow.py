@@ -48,7 +48,14 @@ def verify(source: str) -> None:
     ):
         raise AssertionError("build_only must be bound to the exact main commit")
     native = build_steps["Assert native macOS arm64 Rust target"]["run"]
-    if "uname -m" not in native or "arm64" not in native or "aarch64-apple-darwin" not in native:
+    if (
+        "uname -m" not in native
+        or "arm64" not in native
+        or "aarch64-apple-darwin" not in native
+        or 'RUSTC_DETAILS="$(rustc -vV)"' not in native
+        or '<<<"$RUSTC_DETAILS"' not in native
+        or "rustc -vV |" in native
+    ):
         raise AssertionError("build_only must prove native Apple Silicon execution")
     for name in ("Create build-only provenance", "Upload native arm64 verifier artifact"):
         if name not in build_steps:
