@@ -10,4 +10,8 @@
   ledgers sit in the test job: `SKIP_TESTS` for tests that cannot pass under the lane's
   `PROPTEST_CASES`, and `KNOWN_FAILING` for real failures on `main`. Each `KNOWN_FAILING`
   entry is run on its own and must still fail, so a fix turns the lane red until its entry
-  is deleted.
+  is deleted. A third ledger, `CLIPPY_DEBT` in the clippy job, takes `corelink-server`
+  out of the `-D warnings` run, because its lint backlog on `main` is too large to fix in
+  this change. A ratchet counts the package's distinct diagnostics with lints capped at
+  warn. Any new diagnostic turns the lane red, and so does a fix until the declared count
+  is lowered.

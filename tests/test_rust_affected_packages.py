@@ -476,6 +476,10 @@ KNOWN = "tests::b126_t1_files_remain_below_the_1000_line_ceiling"
 ENTRY = f"corelink-server --bin=corelink-server {KNOWN}\n"
 FAKE_CARGO = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$FAKE_CARGO_LOG"
+if [ "$1" = pkgid ]; then
+  printf '%s\\n' "${FAKE_PKGID:-}"
+  exit 0
+fi
 printf '%s\\n' "$FAKE_CARGO_OUT"
 exit "$FAKE_CARGO_RC"
 """
@@ -578,6 +582,177 @@ class KnownFailures(unittest.TestCase):
         planted = WORKFLOW.read_text(encoding="utf-8").replace("# rust-affected-xfail:end", "# end", 1)
         with self.assertRaisesRegex(ValueError, "rust-affected-xfail begin/end pair"):
             marked_script(planted, "rust-affected-xfail")
+
+
+class FakeCargoStep(unittest.TestCase):
+    """Base: run one marked workflow script verbatim against the fake cargo."""
+
+    MARKER = ""
+
+    def setUp(self) -> None:
+        self.script = marked_script(WORKFLOW.read_text(encoding="utf-8"), self.MARKER)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.bin = Path(self._tmp.name) / "bin"
+        self.bin.mkdir()
+        cargo = self.bin / "cargo"
+        cargo.write_text(FAKE_CARGO, encoding="utf-8")
+        cargo.chmod(0o755)
+        self.log = Path(self._tmp.name) / "cargo.log"
+
+    def run_step(self, *, scope: str, debt: str, out: str = "", rc: int = 0,
+                 pkgid: str = "") -> tuple[int, str]:
+        env = {
+            "PATH": f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "CARGO_SCOPE": scope,
+            "CLIPPY_DEBT": debt,
+            "SELECTED": "n",
+            "FAKE_CARGO_LOG": str(self.log),
+            "FAKE_CARGO_OUT": out,
+            "FAKE_CARGO_RC": str(rc),
+            "FAKE_PKGID": pkgid,
+        }
+        proc = subprocess.run(["bash", "-c", self.script], env=env, capture_output=True, text=True, check=False)
+        return proc.returncode, proc.stdout + proc.stderr
+
+    def cargo_calls(self) -> list[str]:
+        return self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
+
+
+DEBT = "corelink-server 3\n"
+
+
+class ClippyScope(FakeCargoStep):
+    """The strict `-D warnings` run must leave out exactly the CLIPPY_DEBT packages."""
+
+    MARKER = "rust-affected-clippy-scope"
+
+    def strict_call(self) -> str:
+        calls = [c for c in self.cargo_calls() if c.startswith("clippy ")]
+        self.assertEqual(len(calls), 1, calls)
+        return calls[0]
+
+    def test_workspace_excludes_each_debt_package(self) -> None:
+        code, log = self.run_step(scope="--workspace", debt=DEBT)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(self.strict_call(),
+                         "clippy --locked --keep-going --all-targets --workspace --exclude corelink-server -- -D warnings")
+
+    def test_dash_p_drops_only_the_debt_package(self) -> None:
+        code, log = self.run_step(scope="-p corelink-hash -p corelink-server -p corelink-cli", debt=DEBT)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(self.strict_call(),
+                         "clippy --locked --keep-going --all-targets -p corelink-hash -p corelink-cli -- -D warnings")
+
+    def test_only_debt_packages_selected_runs_no_strict_lint(self) -> None:
+        code, log = self.run_step(scope="-p corelink-server", debt=DEBT)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(self.cargo_calls(), [])
+        self.assertIn("every selected package carries declared CLIPPY_DEBT", log)
+
+    def test_empty_debt_lints_the_scope_unchanged(self) -> None:
+        code, log = self.run_step(scope="-p corelink-server", debt="\n")
+        self.assertEqual(code, 0, log)
+        self.assertEqual(self.strict_call(),
+                         "clippy --locked --keep-going --all-targets -p corelink-server -- -D warnings")
+
+    def test_strict_lint_failure_fails_the_step(self) -> None:
+        code, log = self.run_step(scope="--workspace", debt=DEBT, rc=101)
+        self.assertEqual(code, 101, log)
+
+    def test_empty_scope_is_refused(self) -> None:
+        code, log = self.run_step(scope="", debt=DEBT)
+        self.assertEqual(code, 1, log)
+        self.assertIn("refusing to lint nothing", log)
+
+
+PKGID = "path+file:///w/crates/corelink-container#corelink-server@0.1.2"
+
+
+def diagnostic(line: int, *, package_id: str = PKGID, code: str = "clippy::indexing_slicing",
+               primary: bool = True, level: str = "warning", text: str = "indexing may panic") -> str:
+    spans = [{"file_name": "crates/corelink-container/src/x.rs", "line_start": line,
+              "column_start": 5, "is_primary": primary}]
+    return json.dumps({
+        "reason": "compiler-message",
+        "package_id": package_id,
+        "message": {"level": level, "message": text, "code": {"code": code}, "spans": spans,
+                    "rendered": f"{level}: {text} at x.rs:{line}\n"},
+    })
+
+
+def stream(*lines: str) -> str:
+    return "\n".join([*lines, json.dumps({"reason": "build-finished", "success": True})])
+
+
+class ClippyDebt(FakeCargoStep):
+    """The ratchet: distinct diagnostics of a CLIPPY_DEBT package must equal its entry."""
+
+    MARKER = "rust-affected-clippy-debt"
+
+    def run_debt(self, out: str, *, debt: str = DEBT, scope: str = "--workspace", rc: int = 0) -> tuple[int, str]:
+        return self.run_step(scope=scope, debt=debt, out=out, rc=rc, pkgid=PKGID)
+
+    def test_equal_count_is_green_and_capped_at_warn(self) -> None:
+        code, log = self.run_debt(stream(diagnostic(1), diagnostic(2), diagnostic(3)))
+        self.assertEqual(code, 0, log)
+        self.assertIn("3 distinct diagnostics, declared 3", log)
+        self.assertEqual(self.cargo_calls(), [
+            "pkgid -p corelink-server",
+            "clippy --locked --keep-going --all-targets -p corelink-server --message-format=json "
+            "-- -D warnings --cap-lints warn"])
+
+    def test_growth_is_red_and_lists_the_diagnostics(self) -> None:
+        code, log = self.run_debt(stream(*(diagnostic(n) for n in range(1, 5))))
+        self.assertEqual(code, 1, log)
+        self.assertIn("GREW from 3 to 4", log)
+        self.assertIn("indexing may panic at x.rs:4", log)
+
+    def test_shrinking_is_red_until_the_entry_is_lowered(self) -> None:
+        code, log = self.run_debt(stream(diagnostic(1), diagnostic(2)))
+        self.assertEqual(code, 1, log)
+        self.assertIn("lower its CLIPPY_DEBT entry to 2", log)
+
+    def test_zero_debt_says_delete_the_entry(self) -> None:
+        code, log = self.run_debt(stream())
+        self.assertEqual(code, 1, log)
+        self.assertIn("delete its CLIPPY_DEBT entry", log)
+
+    def test_the_same_span_in_lib_and_lib_test_counts_once(self) -> None:
+        code, log = self.run_debt(stream(diagnostic(1), diagnostic(1), diagnostic(2), diagnostic(3)))
+        self.assertEqual(code, 0, log)
+
+    def test_other_packages_and_spanless_summaries_do_not_count(self) -> None:
+        other = diagnostic(9, package_id="path+file:///w/crates/corelink-billing#0.1.2")
+        summary = diagnostic(10, primary=False, text="3 warnings emitted")
+        note = diagnostic(11, level="note")
+        code, log = self.run_debt(stream(diagnostic(1), diagnostic(2), diagnostic(3), other, summary, note))
+        self.assertEqual(code, 0, log)
+
+    def test_a_hard_build_error_is_not_debt(self) -> None:
+        code, log = self.run_debt(stream(diagnostic(1), diagnostic(2), diagnostic(3)), rc=101)
+        self.assertEqual(code, 1, log)
+        self.assertIn("a hard error, not lint debt", log)
+
+    def test_unselected_package_is_not_linted(self) -> None:
+        code, log = self.run_debt(stream(), scope="-p corelink-hash")
+        self.assertEqual(code, 0, log)
+        self.assertEqual(self.cargo_calls(), [])
+        self.assertIn("not selected by this change", log)
+
+    def test_malformed_entries_are_red(self) -> None:
+        for entry in ("corelink-server\n", "corelink-server 0\n", "corelink-server many\n", "corelink-server 3 x\n"):
+            with self.subTest(entry=entry):
+                code, log = self.run_debt(stream(), debt=entry)
+                self.assertEqual(code, 1, log)
+                self.assertIn("malformed CLIPPY_DEBT entry", log)
+
+    def test_the_committed_ledger_is_well_formed(self) -> None:
+        match = re.search(r"^      CLIPPY_DEBT: \|\n((?:        \S.*\n)+)", WORKFLOW.read_text(encoding="utf-8"), re.M)
+        self.assertIsNotNone(match, "CLIPPY_DEBT block not found")
+        assert match is not None
+        for line in match.group(1).splitlines():
+            self.assertRegex(line.strip(), r"^[a-z0-9][a-z0-9_-]* [1-9][0-9]*$")
 
 
 if __name__ == "__main__":
