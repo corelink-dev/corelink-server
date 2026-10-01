@@ -36,6 +36,12 @@ on:
   schedule:
     - cron: '30 5 * * *'
   workflow_dispatch:
+    inputs:
+      apply_reviewed_dispositions:
+        description: Apply only root-approved exact alert cases after current SARIF, upload, and source-blob verification.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -254,15 +260,6 @@ jobs:
           sarif_file: codeql-results
           category: "/language:${{ matrix.language }}"
 
-      - name: Retain CodeQL SARIF evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7.0.1
-        with:
-          name: codeql-sarif-${{ matrix.language }}
-          path: codeql-results
-          retention-days: 90
-          if-no-files-found: error
-
       - name: Report Security-tab upload status
         if: always()
         shell: bash
@@ -301,10 +298,10 @@ jobs:
           fi
           python3 scripts/codeql_severity_gate.py "${sarif_files[@]}"
 
-      # The exact reviewed dispositions are only usable by a completed scan
-      # of trusted main in the canonical repository. The verifier checks this
-      # context again, binds the local SARIF to upload-sarif's output and the
-      # exact uploaded analysis, then re-reads each matching dismissed alert.
+      # The exact reviewed cases are only usable by a completed scan of trusted
+      # main in the canonical repository. All SARIF, live-alert, fingerprint,
+      # and source-blob joins finish before any optional exact-ID update. The
+      # explicit input is false by default and only applies root-approved IDs.
       # A manual dispatch on any other branch/repository fails closed.
       - name: Reviewed severity gate (trusted main only)
         if: steps.evidence.outputs.evidence_status == 'present' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
@@ -317,6 +314,7 @@ jobs:
           REF: ${{ github.ref }}
           SHA: ${{ github.sha }}
           MATRIX_LANGUAGE: ${{ matrix.language }}
+          APPLY_REVIEWED_DISPOSITIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.apply_reviewed_dispositions || false }}
         shell: bash
         run: |
           set -euo pipefail
@@ -326,6 +324,10 @@ jobs:
             echo "::error::Expected exactly one local SARIF file for the uploaded language analysis."
             exit 1
           fi
+          disposition_args=()
+          if [[ "${APPLY_REVIEWED_DISPOSITIONS}" == "true" ]]; then
+            disposition_args+=(--apply-approved-dispositions)
+          fi
           python3 scripts/codeql_reviewed_dispositions.py \
             --repository "${REPOSITORY}" \
             --repository-id "${REPOSITORY_ID}" \
@@ -334,4 +336,15 @@ jobs:
             --sha "${SHA}" \
             --language "${MATRIX_LANGUAGE}" \
             --sarif-id "${SARIF_ID}" \
+            --receipt codeql-results/issue-1674-reviewed-disposition-receipt.json \
+            "${disposition_args[@]}" \
             "${sarif_files[@]}"
+
+      - name: Retain CodeQL SARIF and disposition receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7.0.1
+        with:
+          name: codeql-sarif-${{ matrix.language }}
+          path: codeql-results
+          retention-days: 90
+          if-no-files-found: error
