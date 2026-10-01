@@ -69,14 +69,14 @@ class DraftManifestContractTests(unittest.TestCase):
         for workflow in (production_workflow, contract_workflow):
             self.assertIn("actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97", workflow)
             self.assertIn('ZipInfo("corelink.exe", (1980, 1, 1, 0, 0, 0))', workflow)
-            self.assertIn("info.create_system = 0", workflow)
-            self.assertIn("info.external_attr = 0", workflow)
+            self.assertIn("info.create_system=0", workflow)
+            self.assertIn("info.external_attr=0", workflow)
             self.assertIn("ZIP_STORED", workflow)
-            self.assertIn('check.namelist() != ["corelink.exe"]', workflow)
+            self.assertIn('check.namelist()==["corelink.exe"]', workflow)
             self.assertIn('check.read("corelink.exe")', workflow)
         self.assertIn("runs-on: ubuntu-24.04", contract_workflow)
         self.assertIn("runs-on: windows-2022", contract_workflow)
-        self.assertIn("first != second", contract_workflow)
+        self.assertIn("first.read_bytes()==second.read_bytes()", contract_workflow)
         self.assertNotIn("cargo zigbuild", contract_workflow)
         self.assertNotIn("command -v zip", production_workflow)
 
