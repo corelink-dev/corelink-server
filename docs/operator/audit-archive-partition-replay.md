@@ -26,7 +26,8 @@ For the independent R2 object-chain verifier, the existing
 `audit-chain-daily-verify` workflow has a closed `build_only` dispatch mode.
 Use it only from protected `main`, with `expected_sha` equal to the exact
 dispatched commit SHA. It runs on standard GitHub-hosted macOS arm64, has only
-`contents:read`, and skips the seven-day R2/PagerDuty job. The artifact contains
+`contents:read`, and skips the normal Ubuntu smoke job and seven-day R2/PagerDuty
+job (the build-only job runs its own empty-input smoke check). The artifact contains
 the native verifier and `provenance.json`; it contains no archive object or
 production receipt. Validate the artifact's commit, run URL, source blob,
 crate Rust tree digest, lockfile digest, runner architecture, and binary SHA-256
