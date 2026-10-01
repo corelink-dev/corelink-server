@@ -63,6 +63,23 @@ class DraftManifestContractTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_windows_release_packaging_is_pinned_canonical_and_smoked_without_builds(self) -> None:
+        production_workflow = Path(".github/workflows/release-cli.yml").read_text(encoding="utf-8")
+        contract_workflow = Path(".github/workflows/issue-2572-draft-contract.yml").read_text(encoding="utf-8")
+        for workflow in (production_workflow, contract_workflow):
+            self.assertIn("actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97", workflow)
+            self.assertIn('ZipInfo("corelink.exe", (1980, 1, 1, 0, 0, 0))', workflow)
+            self.assertIn("info.create_system = 0", workflow)
+            self.assertIn("info.external_attr = 0", workflow)
+            self.assertIn("ZIP_STORED", workflow)
+            self.assertIn('check.namelist() != ["corelink.exe"]', workflow)
+            self.assertIn('check.read("corelink.exe")', workflow)
+        self.assertIn("runs-on: ubuntu-24.04", contract_workflow)
+        self.assertIn("runs-on: windows-2022", contract_workflow)
+        self.assertIn("first != second", contract_workflow)
+        self.assertNotIn("cargo zigbuild", contract_workflow)
+        self.assertNotIn("command -v zip", production_workflow)
+
     def test_draft_manifest_is_typed_and_production_loader_rejects_it(self) -> None:
         value = json.loads(self.manifest.read_text(encoding="utf-8"))
         self.assertEqual(value["version"], 3)
