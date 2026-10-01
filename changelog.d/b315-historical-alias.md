@@ -1,0 +1,3 @@
+### Fixed
+
+- **The one-command merge (`pre-merge-gate-check.sh --merge`) refused every PR from 2026-09-22 to 2026-10-01 (B-315).** The B-315 id allocator required the whole `BACKLOG.md` id population to be dense, but `B-1630` — the historical external-issue identity that `backlog_verify.py` already exempts (GitHub issue #1630, bound by immutable V0004) — made it read 1,256 "gaps". The allocator now imports that exact table from `backlog_verify`, keeps the alias out of the dense sequence and out of the next-id maximum, refuses its removal or minting, and still fails on every other gap. Its verifier now also runs the allocator on the real `BACKLOG.md`, because it had only exercised fixtures and stayed green the whole time.

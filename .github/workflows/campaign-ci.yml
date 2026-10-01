@@ -429,8 +429,8 @@ jobs:
             python3 -B scripts/apply_staging_b216_dsr_schema.py --check-contract
             bash -n scripts/verify-signup-worker-dsr-redrive-schema.sh
             python3 scripts/verify_staging_topology_contract.py --expect ready
-            test "$(sha256sum scripts/verify_i2574_grpc_diagnostic_policy.py | cut -d ' ' -f 1)" = "58c85ba647de0023e647d17bbc5345f80011e4b7a310e8eaec71c21ae900487d"
-            test "$(sha256sum tests/test_verify_i2574_grpc_diagnostic_policy.py | cut -d ' ' -f 1)" = "e654f03671d9ba65c7de73c1fc5126b056ce5c5bfd7d3489d8a431d2ba7be935"
+            test "$(sha256sum scripts/verify_i2574_grpc_diagnostic_policy.py | cut -d ' ' -f 1)" = "28023901b65dd1046af666fb26c8d862a389b94cafc11e3870a2794d869a6743"
+            test "$(sha256sum tests/test_verify_i2574_grpc_diagnostic_policy.py | cut -d ' ' -f 1)" = "12bb5162be58fa408328dcc87fcb10a80fe3a7c50319ff71dad36760d2b3d7eb"
             python3 -B -S -m unittest -v tests/test_verify_i2574_grpc_diagnostic_policy.py
             python3 -B -S - <<'PY'
           from pathlib import Path

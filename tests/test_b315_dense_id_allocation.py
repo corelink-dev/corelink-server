@@ -293,3 +293,40 @@ def test_backlog_verify_commands_cannot_recurse_on_their_own_record():
         verify = item.raw.get("verify")
         if isinstance(record_id, str) and isinstance(verify, str):
             assert f"backlog_verify.py --id {record_id}" not in verify
+
+
+# B-1630 is the one historical external-issue identity (backlog_verify owns the
+# table). It sits outside the dense allocator sequence; nothing else may.
+def test_historical_alias_is_outside_the_dense_sequence():
+    main = _backlog(1, 2, 1630)
+    assert allocation(main, main, base_text=main) == ()
+    assert allocation(main, _backlog(1, 2, 3, 1630), base_text=main) == (3,)
+
+
+def test_historical_alias_does_not_move_the_next_allocation():
+    main = _backlog(1, 2, 1630)
+    for candidate in (_backlog(1, 2, 1630, 1631), _backlog(1, 2, 4, 1630)):
+        with pytest.raises(AllocationError, match="gaps"):
+            allocation(main, candidate, base_text=main)
+
+
+def test_historical_alias_cannot_disappear():
+    with pytest.raises(AllocationError, match="removed"):
+        allocation(_backlog(1, 2, 1630), _backlog(1, 2), base_text=_backlog(1, 2, 1630))
+
+
+def test_historical_alias_cannot_be_minted_by_a_candidate():
+    base = _backlog(1, 2)
+    with pytest.raises(AllocationError, match="historical alias cannot be allocated"):
+        allocation(base, _backlog(1, 2, 1630), base_text=base)
+
+
+@pytest.mark.parametrize("ids", [(1, 3, 1630), (1, 2, 1629), (1, 2, 1631)])
+def test_every_other_gap_stays_fatal(ids: tuple[int, ...]):
+    with pytest.raises(AllocationError, match="gaps"):
+        allocation(_backlog(*ids), _backlog(*ids))
+
+
+def test_real_main_backlog_allocates_cleanly():
+    text = (Path(__file__).resolve().parents[1] / "BACKLOG.md").read_text(encoding="utf-8")
+    assert allocation(text, text, base_text=text) == ()
