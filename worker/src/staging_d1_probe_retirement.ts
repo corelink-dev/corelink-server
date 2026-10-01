@@ -1,5 +1,6 @@
 import window from "../../crates/corelink-container/src/routes/staging_d1_probe_window.json";
 import type { D1Database } from "@cloudflare/workers-types";
+import { PROBE_FOREIGN_KEY_CHECK_SQL, probeForeignKeysClear } from "./staging_d1_probe_v8_cleanup.js";
 
 export const OLD_PROBE_RELEASE = "0f785fb9b096afe01247f1057d46377b9f604f13";
 export const OLD_PROBE_NAME = `_staging_d1_binding_probe_v2:issue-1700-recovery-20260929:${OLD_PROBE_RELEASE}`;
@@ -79,8 +80,8 @@ async function cleanProbeTables(db: D1Database, release: string, prefix: string,
   }
   // Validate every object and row before the first DROP. Never return row data.
   for (const { name } of tables) {
-    const foreign = await db.prepare(`PRAGMA foreign_key_list("${name}")`).all();
-    if (!foreign.success || foreign.results.length !== 0) throw new Error("old probe foreign key rejected");
+    const foreign = await db.prepare(PROBE_FOREIGN_KEY_CHECK_SQL).bind(name).first();
+    if (!probeForeignKeysClear(foreign)) throw new Error("old probe foreign key rejected");
     const rows = await db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN probe_id = ?1 AND value IN (?2, ?3) THEN 0 ELSE 1 END), 0) AS invalid FROM "${name}"`)
       .bind(`${release}:${allowedTables.get(name)}`, "probe", "intentional-failure").first<{ total: number; invalid: number }>();
     if (!rows || !Number.isInteger(rows.total) || rows.total < 0 || rows.total > 1 || rows.invalid !== 0) {

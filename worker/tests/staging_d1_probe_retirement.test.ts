@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { D1Database } from "@cloudflare/workers-types";
 import { STAGING_D1_PROBE_WINDOW } from "../src/staging_runtime_d1_probe.js";
 import { assertV4FailedProbeCatalogAbsent, cleanOldProbeTables, cleanV5ProbeTables, OLD_PROBE_TABLES, OLD_TABLE_PREFIX, OLD_PROBE_RUN_BOUNDS, V4_FAILED_PROBE_TABLE_PREFIX, V5_PROBE_RELEASE, V5_PROBE_RUN_BOUNDS, V5_PROBE_TABLES, V5_TABLE_PREFIX } from "../src/staging_d1_probe_retirement.js";
+import { PROBE_FOREIGN_KEY_CHECK_SQL } from "../src/staging_d1_probe_v8_cleanup.js";
 
 const table = [...OLD_PROBE_TABLES.keys()][0]!;
 const schema = { type: "table", name: table, tbl_name: table,
@@ -12,7 +13,7 @@ async function atProbeTime<T>(time: number, action: () => Promise<T>): Promise<T
   try { return await action(); } finally { vi.useRealTimers(); }
 }
 
-function database(options: { objects?: object[]; foreign?: object[]; rows?: object; dropFails?: boolean; retained?: boolean } = {}, ownedTable = table) {
+function database(options: { objects?: object[]; foreign?: object[]; incoming?: number; tableCount?: number; rows?: object; dropFails?: boolean; retained?: boolean } = {}, ownedTable = table) {
   const ownedSchema = { type: "table", name: ownedTable, tbl_name: ownedTable,
     sql: `CREATE TABLE ${ownedTable} (probe_id TEXT PRIMARY KEY, value TEXT NOT NULL)` };
   let objects = options.objects ?? [ownedSchema, { type: "index", name: `sqlite_autoindex_${ownedTable}_1`, tbl_name: ownedTable, sql: null }];
@@ -20,7 +21,9 @@ function database(options: { objects?: object[]; foreign?: object[]; rows?: obje
   const prepare = vi.fn((sql: string) => ({
     bind: vi.fn(function (this: unknown) { return this; }),
     all: async () => ({ success: true, results: sql.startsWith("SELECT type") ? objects : options.foreign ?? [] }),
-    first: async () => options.rows ?? { total: 0, invalid: 0 },
+    first: async () => sql === PROBE_FOREIGN_KEY_CHECK_SQL
+      ? { table_count: options.tableCount ?? 1, outgoing: options.foreign?.length ? 1 : 0, incoming: options.incoming ?? 0 }
+      : options.rows ?? { total: 0, invalid: 0 },
     run: async () => { drops.push(sql); if (!options.retained) objects = []; return { success: !options.dropFails }; },
   }));
   return { db: { prepare } as unknown as D1Database, drops, prepare };
@@ -42,7 +45,8 @@ describe("exact old staging probe SQL retirement", () => {
     const db = { prepare(sql: string) { return {
       bind() { return this; },
       all: async () => ({ success: true, results: sql.startsWith("SELECT type") ? inventory : [] }),
-      first: async () => ({ total: 1, invalid: 0 }),
+      first: async () => sql === PROBE_FOREIGN_KEY_CHECK_SQL
+        ? { table_count: 1, outgoing: 0, incoming: 0 } : { total: 1, invalid: 0 },
       run: async () => { drops.push(sql); inventory.splice(0); return { success: true }; },
     }; } } as unknown as D1Database;
     await atProbeTime(STAGING_D1_PROBE_WINDOW.starts_ms, () => cleanV5ProbeTables(db));
@@ -103,6 +107,17 @@ describe("exact old staging probe SQL retirement", () => {
     const { db, drops } = database(options);
     await atProbeTime(STAGING_D1_PROBE_WINDOW.starts_ms, () => expect(cleanOldProbeTables(db)).rejects.toThrow());
     expect(drops).toEqual([]);
+  });
+  it.each([
+    ["v3", cleanOldProbeTables, table],
+    ["v5", cleanV5ProbeTables, [...V5_PROBE_TABLES.keys()][0]!],
+  ] as const)("%s refuses inbound references and unbounded catalog before DROP", async (_label, clean, ownedTable) => {
+    for (const options of [{ incoming: 1 }, { tableCount: 129 }]) {
+      const { db, drops, prepare } = database(options, ownedTable);
+      await atProbeTime(STAGING_D1_PROBE_WINDOW.starts_ms, () => expect(clean(db)).rejects.toThrow("foreign key rejected"));
+      expect(drops).toEqual([]);
+      expect(prepare).toHaveBeenCalledWith(PROBE_FOREIGN_KEY_CHECK_SQL);
+    }
   });
   it.each([
     ["v3", cleanOldProbeTables, table],

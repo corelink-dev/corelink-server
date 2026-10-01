@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import copy
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -124,6 +126,223 @@ def verify_existing_evidence(data: dict) -> dict:
         preimage_version_id=PREIMAGE_VERSION,
         image_digest=IMAGE_DIGEST,
     )
+
+
+def candidate_diagnostics_evidence() -> dict:
+    data = existing_evidence()
+    data["version"]["metadata"] = {"author_email": "author-sentinel@example.invalid"}
+    data["version"]["annotations"]["unwanted"] = "annotation-sentinel"
+    data["version"]["resources"]["script"] = {
+        "handlers": ["fetch", "scheduled", "queue", "unknown-handler-sentinel"],
+        "named_handlers": [
+            {"name": name, "handlers": ["fetch"]}
+            for name in ("CoreLinkServer", "ContainerProxy", "StagingD1BindingProxy")
+        ],
+    }
+    bindings = [
+        {"name": name, "type": "plain_text", "text": value}
+        for name, value in {
+            "ENVIRONMENT": "staging", "SENTRY_RELEASE": ROLLOUT_SHA,
+            "D1_DATABASE_ID": "d72a6b39-6a48-4338-bfda-1111dda98604",
+            "R2_S3_ENDPOINT": f"https://{existing.ACCOUNT_ID}.r2.cloudflarestorage.com",
+        }.items()
+    ] + [
+        {"name": "CORELINK_SERVER", "type": "durable_object_namespace", "namespace_id": "namespace-sentinel"},
+        {"name": "CONFIG_DB", "type": "d1", "id": "database-sentinel"},
+        {"name": "unknown-binding-sentinel", "type": "plain_text", "text": "payload-sentinel"},
+    ]
+    data["version"]["resources"]["bindings"] = copy.deepcopy(bindings)
+    data["settings"]["result"]["bindings"] = bindings + [
+        {"name": "CLOUDFLARE_ACCOUNT_ID", "type": "secret_text", "text": "secret-sentinel"},
+    ]
+    return data
+
+
+def capture_diagnostics(data: dict, **overrides) -> dict:
+    arguments = {
+        "expected_version_id": ACTIVE_VERSION,
+        "expected_deployment_id": ACTIVE_DEPLOYMENT,
+        "expected_sha": ROLLOUT_SHA,
+        "marker": FULL_MARKER,
+        **overrides,
+    }
+    return existing.capture_candidate_diagnostics(data["version"], data["settings"], **arguments)
+
+
+class CandidateDiagnosticsTests(unittest.TestCase):
+    def test_realistic_capture_is_allowlisted_and_distinguishes_version_from_deployment(self) -> None:
+        receipt = capture_diagnostics(candidate_diagnostics_evidence())
+        self.assertEqual(receipt["contract"], "issue1700-candidate-runtime-diagnostics-v1")
+        self.assertEqual(receipt["expected_version_id"], ACTIVE_VERSION)
+        self.assertEqual(receipt["expected_deployment_id"], ACTIVE_DEPLOYMENT)
+        self.assertTrue(receipt["identity_matches"])
+        self.assertTrue(receipt["exact_run_marker"])
+        self.assertEqual(receipt["sources"]["run_marker"], "available")
+        self.assertEqual(receipt["default_handlers"], {"fetch": True, "scheduled": True, "queue": True})
+        self.assertEqual(receipt["named_exports"], {"CoreLinkServer": True, "ContainerProxy": True, "StagingD1BindingProxy": True})
+        self.assertEqual(receipt["effective_variables_match"], {
+            "ENVIRONMENT": True, "SENTRY_RELEASE": True,
+            "D1_DATABASE_ID": True, "R2_S3_ENDPOINT": True,
+        })
+        self.assertIn({"name": "CLOUDFLARE_ACCOUNT_ID", "type": "secret_text"}, receipt["bindings"]["settings"])
+        self.assertNotIn("CLOUDFLARE_ACCOUNT_ID", receipt["effective_variables_match"])
+        self.assertNotIn("sentinel", json.dumps(receipt))
+        self.assertNotIn("author", json.dumps(receipt))
+        self.assertNotIn("r2.cloudflarestorage.com", json.dumps(receipt))
+        for inventory in receipt["bindings"].values():
+            self.assertTrue(all(set(item) == {"name", "type"} for item in inventory))
+
+    def test_omitted_optional_schema_is_unavailable_not_reported_absent(self) -> None:
+        receipt = capture_diagnostics(existing_evidence())
+        for field in ("default_handlers", "named_exports", "effective_variables"):
+            self.assertEqual(receipt["sources"][field], "unavailable")
+        self.assertEqual(receipt["sources"]["bindings"], {"version": "unavailable", "settings": "unavailable"})
+        self.assertEqual(set(receipt["effective_variables_status"].values()), {"unavailable"})
+        self.assertFalse(any(receipt["default_handlers"].values()))
+
+    def test_observed_empty_handlers_are_available_and_false(self) -> None:
+        data = candidate_diagnostics_evidence()
+        data["version"]["resources"]["script"] = {"handlers": [], "named_handlers": []}
+        receipt = capture_diagnostics(data)
+        self.assertEqual(receipt["sources"]["default_handlers"], "available")
+        self.assertEqual(receipt["sources"]["named_exports"], "available")
+        self.assertFalse(any(receipt["default_handlers"].values()))
+        self.assertFalse(any(receipt["named_exports"].values()))
+
+    def test_named_exports_accept_optional_handlers_and_mark_missing_names_unavailable(self) -> None:
+        data = candidate_diagnostics_evidence()
+        named = data["version"]["resources"]["script"]["named_handlers"]
+        for entry in named:
+            del entry["handlers"]
+        receipt = capture_diagnostics(data)
+        self.assertEqual(receipt["sources"]["named_exports"], "available")
+        self.assertTrue(all(receipt["named_exports"].values()))
+        named.append({"handlers": ["fetch"]})
+        receipt = capture_diagnostics(data)
+        self.assertEqual(receipt["sources"]["named_exports"], "unavailable")
+        self.assertTrue(all(receipt["named_exports"].values()))
+
+    def test_mismatches_remain_diagnostics_without_conflating_identities(self) -> None:
+        data = candidate_diagnostics_evidence()
+        data["version"]["id"] = ACTIVE_DEPLOYMENT
+        data["version"]["annotations"]["workers/message"] = "wrong-marker-sentinel"
+        data["version"]["resources"]["bindings"][0]["text"] = "production"
+        receipt = capture_diagnostics(data)
+        self.assertFalse(receipt["identity_matches"])
+        self.assertFalse(receipt["exact_run_marker"])
+        self.assertFalse(receipt["effective_variables_match"]["ENVIRONMENT"])
+        self.assertNotIn("wrong-marker-sentinel", json.dumps(receipt))
+
+    def test_version_identity_and_run_attribution_are_independent(self) -> None:
+        for field in ("id", "marker"):
+            with self.subTest(field=field):
+                data = candidate_diagnostics_evidence()
+                if field == "id":
+                    data["version"]["id"] = ACTIVE_DEPLOYMENT
+                else:
+                    data["version"]["annotations"]["workers/message"] = "wrong-marker-sentinel"
+                receipt = capture_diagnostics(data)
+                self.assertEqual(receipt["identity_matches"], field != "id")
+                self.assertEqual(receipt["exact_run_marker"], field != "marker")
+                self.assertEqual(receipt["expected_version_id"], ACTIVE_VERSION)
+                self.assertEqual(receipt["expected_deployment_id"], ACTIVE_DEPLOYMENT)
+                self.assertEqual(receipt["sources"]["run_marker"], "available")
+
+    def test_missing_run_marker_is_unavailable(self) -> None:
+        data = candidate_diagnostics_evidence()
+        del data["version"]["annotations"]["workers/message"]
+        receipt = capture_diagnostics(data)
+        self.assertEqual(receipt["sources"]["run_marker"], "unavailable")
+        self.assertFalse(receipt["exact_run_marker"])
+        self.assertTrue(receipt["identity_matches"])
+
+    def test_settings_fallback_and_secret_values_are_explicit(self) -> None:
+        data = candidate_diagnostics_evidence()
+        del data["version"]["resources"]["bindings"]
+        data["settings"]["result"]["bindings"][0]["type"] = "secret_text"
+        receipt = capture_diagnostics(data)
+        self.assertEqual(receipt["sources"]["effective_variables"], "settings")
+        self.assertEqual(receipt["effective_variables_status"]["ENVIRONMENT"], "not_plain_text")
+        self.assertFalse(receipt["effective_variables_match"]["ENVIRONMENT"])
+        self.assertTrue(receipt["effective_variables_match"]["SENTRY_RELEASE"])
+
+    def test_unknown_binding_type_maps_to_fixed_other(self) -> None:
+        data = candidate_diagnostics_evidence()
+        data["version"]["resources"]["bindings"][0]["type"] = "type-sentinel"
+        receipt = capture_diagnostics(data)
+        self.assertIn({"name": "ENVIRONMENT", "type": "other"}, receipt["bindings"]["version"])
+        self.assertNotIn("sentinel", json.dumps(receipt))
+
+    def test_malformed_or_oversized_inputs_have_only_a_fixed_error(self) -> None:
+        for target, field, value in (
+            ("version", "id", "uuid-sentinel"),
+            ("version", "resources", {"bindings": {"ENVIRONMENT": "sentinel"}}),
+            ("version", "resources", {"bindings": ["sentinel"]}),
+            ("version", "resources", {"bindings": [{"name": "ENVIRONMENT", "type": "plain_text", "text": []}]}),
+            ("version", "resources", {"bindings": [{}] * (existing.DIAGNOSTICS_MAX_ITEMS + 1)}),
+            ("version", "resources", {"script": {"handlers": ["fetch", {}]}}),
+            ("version", "resources", {"script": {"named_handlers": [{"name": 7}]}}),
+            ("version", "resources", {"script": {"named_handlers": [{"name": "CoreLinkServer", "handlers": {}}]}}),
+            ("version", "resources", {"script": {"named_handlers": ["sentinel"]}}),
+            ("version", "annotations", {"workers/message": "x" * 8193}),
+            ("version", "annotations", {"workers/message": ["malformed"]}),
+            ("version", "annotations", {"workers/message": None}),
+            ("version", "metadata", {"invalid_number": float("nan")}),
+            ("settings", "errors", [{"message": "provider-error-sentinel"}]),
+        ):
+            with self.subTest(field=field, target=target):
+                data = candidate_diagnostics_evidence()
+                data[target][field] = value
+                with self.assertRaisesRegex(guard.DeploymentError, "^" + existing.DIAGNOSTICS_ERROR + "$"):
+                    capture_diagnostics(data)
+        for name, value in (("expected_version_id", "uuid-sentinel"), ("expected_deployment_id", "uuid-sentinel"), ("expected_sha", None), ("marker", FULL_MARKER + "-sentinel")):
+            with self.subTest(argument=name), self.assertRaisesRegex(guard.DeploymentError, "^" + existing.DIAGNOSTICS_ERROR + "$"):
+                capture_diagnostics(candidate_diagnostics_evidence(), **{name: value})
+
+    def test_cli_writes_private_sanitized_receipt_and_rejects_oversized_input(self) -> None:
+        data = candidate_diagnostics_evidence()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            version, settings, receipt = (root / name for name in ("version.json", "settings.json", "receipt.json"))
+            version.write_text(json.dumps(data["version"]))
+            settings.write_text(json.dumps(data["settings"]))
+            receipt.write_text("stale-sentinel")
+            receipt.chmod(0o644)
+            command = [
+                sys.executable, "-B", str(Path(existing.__file__)), "capture-candidate-diagnostics",
+                "--version", str(version), "--settings", str(settings),
+                "--expected-version-id", ACTIVE_VERSION, "--expected-deployment-id", ACTIVE_DEPLOYMENT,
+                "--expected-sha", ROLLOUT_SHA, "--marker", FULL_MARKER, "--receipt", str(receipt),
+            ]
+            result = subprocess.run(command, text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(receipt.read_text()), capture_diagnostics(data))
+            self.assertNotIn("sentinel", receipt.read_text() + result.stdout + result.stderr)
+            receipt.unlink()
+            for content in ("secret-sentinel" * existing.DIAGNOSTICS_MAX_BYTES, '{"secret-sentinel":'):
+                version.write_text(content)
+                result = subprocess.run(command, text=True, capture_output=True, check=False)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stderr.strip(), "::error::" + existing.DIAGNOSTICS_ERROR)
+                self.assertEqual(result.stdout, "")
+                self.assertFalse(receipt.exists())
+
+    def test_workflow_capture_uses_existing_inputs_before_runtime_and_uploads_only_new_receipt(self) -> None:
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/issue-1700-container-staging-deploy.yml").read_text()
+        verify = workflow.split("        id: verify\n", 1)[1].split("      - name:", 1)[0]
+        capture = verify.split("capture-candidate-diagnostics", 1)[1]
+        self.assertIn('--version "$RUNNER_TEMP/staging-current-candidate-version.json"', capture)
+        self.assertIn('--settings "$RUNNER_TEMP/staging-worker-settings.json"', capture)
+        self.assertIn('--expected-version-id "$CANDIDATE_VERSION_ID"', capture)
+        self.assertIn('--expected-deployment-id "$CANDIDATE_DEPLOYMENT_ID"', capture)
+        self.assertLess(workflow.index("capture-candidate-diagnostics"), workflow.index("        id: runtime_probe"))
+        self.assertEqual(verify.count("pnpm exec wrangler"), 2)
+        self.assertEqual(verify.count("curl --fail"), 1)
+        artifact = workflow.split("      - name: Upload redacted route-free deployment receipt", 1)[1].split("\n  verify_existing:", 1)[0]
+        self.assertIn("${{ runner.temp }}/staging-candidate-runtime-diagnostics.json", artifact)
+        self.assertNotIn("staging-current-candidate-version.json", artifact)
+        self.assertNotIn("staging-worker-settings.json", artifact)
 
 
 class StagingDeploymentGuardTests(unittest.TestCase):
