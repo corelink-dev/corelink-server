@@ -109,9 +109,9 @@ use crate::webhook::{verify_webhook_signature, DEFAULT_TOLERANCE_SECONDS};
 pub use corelink_billing_stripe_traits::{
     AuditEmitter, AuditOutcome, AuditRecord, CanonicalWebhookEventType, DispatchResponse,
     DurableWebhookEvent, DurableWebhookInbox, DurableWebhookRequestContext, EffectReservation,
-    IdempotencyOutcome, IdempotencyStore, IdempotencyToken, InboxClaim, InboxReceiveOutcome,
-    InboxTerminalState, MaterializerError, SliObservation, SliRecorder, StateMaterializer,
-    StripeWebhookEnvelope, SLI_BILLING_STRIPE_EVENT_SECONDS,
+    IdempotencyOutcome, IdempotencyStore, IdempotencyToken, InboxClaim, InboxEffect,
+    InboxReceiveOutcome, InboxTerminalState, MaterializerError, SliObservation, SliRecorder,
+    StateMaterializer, StripeWebhookEnvelope, SLI_BILLING_STRIPE_EVENT_SECONDS,
 };
 
 // =========================================================================
@@ -967,15 +967,18 @@ impl WebhookDispatcher {
             Ok(None) | Err(_) => return DispatchResponse::InternalError500,
         };
         let effect_key = format!("stripe-webhook-effect:{}", context.token.to_hex());
-        match context.inbox.reserve_effect_with_context(
+        let effect = InboxEffect::new(
             &claim,
             OWNER,
             &event,
             &effect_key,
             context.canon.label(),
             context.now_ms,
-            context.request_context,
-        ) {
+        );
+        match context
+            .inbox
+            .reserve_effect_with_context(effect, context.request_context)
+        {
             Ok(EffectReservation::Reserved) => {}
             Ok(EffectReservation::Applied) => {
                 return if matches!(
@@ -1046,15 +1049,9 @@ impl WebhookDispatcher {
                 )
                 .is_some()
                     || !matches!(
-                        context.inbox.commit_effect_with_context(
-                            &claim,
-                            OWNER,
-                            &event,
-                            &effect_key,
-                            context.canon.label(),
-                            context.now_ms,
-                            context.request_context,
-                        ),
+                        context
+                            .inbox
+                            .commit_effect_with_context(effect, context.request_context),
                         Ok(true)
                     )
                 {
@@ -1064,15 +1061,9 @@ impl WebhookDispatcher {
             }
             Err(MaterializerError::AppliedButUnconfirmed(message)) => {
                 let sealed = matches!(
-                    context.inbox.commit_effect_with_context(
-                        &claim,
-                        OWNER,
-                        &event,
-                        &effect_key,
-                        context.canon.label(),
-                        context.now_ms,
-                        context.request_context,
-                    ),
+                    context
+                        .inbox
+                        .commit_effect_with_context(effect, context.request_context),
                     Ok(true)
                 );
                 emit_audit(
@@ -1218,18 +1209,9 @@ impl WebhookDispatcher {
         let _ = dlq.try_quarantine(row);
     }
 
-    /// Emit one audit row + one SLI observation. Returns
-    /// `Some(audit_err)` iff the audit emit failed (caller maps to 500).
-    fn emit_audit_and_sli(
-        &self,
-        record: AuditRecord,
-        event_type: CanonicalWebhookEventType,
-        outcome: AuditOutcome,
-        start_marker: u64,
-    ) -> Option<String> {
-        self.emit_audit_and_sli_with_context(record, event_type, outcome, start_marker, None)
-    }
-
+    /// Emit one audit row + one SLI observation under the request's ownership
+    /// context. Returns `Some(audit_err)` iff the audit emit failed (caller
+    /// maps to 500).
     fn emit_audit_and_sli_with_context(
         &self,
         record: AuditRecord,

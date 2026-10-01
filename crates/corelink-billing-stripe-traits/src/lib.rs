@@ -347,6 +347,50 @@ pub enum EffectReservation {
     Applied,
 }
 
+/// One effect-witness operation on a fenced inbox claim.
+///
+/// The context-carrying effect seams take this value instead of six
+/// positional arguments. Every field is part of the witness identity, so a
+/// caller builds it once and passes the same copy to reserve and to commit.
+#[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
+pub struct InboxEffect<'a> {
+    /// Live, fenced claim that owns the event.
+    pub claim: &'a InboxClaim,
+    /// Owner identity holding `claim`.
+    pub owner: &'a str,
+    /// Authenticated event the effect belongs to.
+    pub event: &'a DurableWebhookEvent,
+    /// Deterministic effect key for the event.
+    pub effect_key: &'a str,
+    /// Effect kind recorded with the witness.
+    pub effect_kind: &'a str,
+    /// Wall-clock milliseconds of the operation.
+    pub now_ms: u64,
+}
+
+impl<'a> InboxEffect<'a> {
+    /// Bind one effect operation to its claim, owner, event and identity.
+    #[must_use]
+    pub fn new(
+        claim: &'a InboxClaim,
+        owner: &'a str,
+        event: &'a DurableWebhookEvent,
+        effect_key: &'a str,
+        effect_kind: &'a str,
+        now_ms: u64,
+    ) -> Self {
+        Self {
+            claim,
+            owner,
+            event,
+            effect_key,
+            effect_kind,
+            now_ms,
+        }
+    }
+}
+
 /// Opaque, immutable request authority carried through the webhook pipeline.
 ///
 /// This leaf crate deliberately knows no container admission type. The native
@@ -415,16 +459,18 @@ pub trait DurableWebhookInbox: fmt::Debug + Send + Sync {
     /// as the pending effect witness.
     fn reserve_effect_with_context(
         &self,
-        claim: &InboxClaim,
-        owner: &str,
-        event: &DurableWebhookEvent,
-        effect_key: &str,
-        effect_kind: &str,
-        now_ms: u64,
+        effect: InboxEffect<'_>,
         context: Option<&dyn DurableWebhookRequestContext>,
     ) -> Result<EffectReservation, String> {
         let _ = context;
-        self.reserve_effect(claim, owner, event, effect_key, effect_kind, now_ms)
+        self.reserve_effect(
+            effect.claim,
+            effect.owner,
+            effect.event,
+            effect.effect_key,
+            effect.effect_kind,
+            effect.now_ms,
+        )
     }
     /// Remove a pending witness only when the materializer proved no business
     /// mutation happened. Ownership loss is retryable and must not delete it.
@@ -457,18 +503,21 @@ pub trait DurableWebhookInbox: fmt::Debug + Send + Sync {
 
     /// Commit an effect while carrying the same request authority used to
     /// reserve it. Implementations fail closed if that registration is absent.
+    /// Pass the same `effect` value that was reserved.
     fn commit_effect_with_context(
         &self,
-        claim: &InboxClaim,
-        owner: &str,
-        event: &DurableWebhookEvent,
-        effect_key: &str,
-        effect_kind: &str,
-        now_ms: u64,
+        effect: InboxEffect<'_>,
         context: Option<&dyn DurableWebhookRequestContext>,
     ) -> Result<bool, String> {
         let _ = context;
-        self.commit_effect(claim, owner, event, effect_key, effect_kind, now_ms)
+        self.commit_effect(
+            effect.claim,
+            effect.owner,
+            effect.event,
+            effect.effect_key,
+            effect.effect_kind,
+            effect.now_ms,
+        )
     }
 }
 
@@ -875,5 +924,197 @@ mod tests {
         let s = format!("{t:?}");
         assert!(s.starts_with("IdempotencyToken("));
         assert!(s.contains("..."));
+    }
+
+    /// One positional call the default context seams forwarded.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Forwarded {
+        op: &'static str,
+        claim: InboxClaim,
+        owner: String,
+        event_id: String,
+        effect_key: String,
+        effect_kind: String,
+        now_ms: u64,
+    }
+
+    impl Forwarded {
+        /// Built from the positional parameters only, never through
+        /// `InboxEffect::new`, so a constructor defect cannot cancel itself.
+        fn positional(
+            op: &'static str,
+            claim: &InboxClaim,
+            owner: &str,
+            event: &DurableWebhookEvent,
+            effect_key: &str,
+            effect_kind: &str,
+            now_ms: u64,
+        ) -> Self {
+            Self {
+                op,
+                claim: claim.clone(),
+                owner: owner.to_owned(),
+                event_id: event.event_id.clone(),
+                effect_key: effect_key.to_owned(),
+                effect_kind: effect_kind.to_owned(),
+                now_ms,
+            }
+        }
+    }
+
+    /// Inbox that keeps every trait default and records what reaches the
+    /// positional effect methods.
+    #[derive(Debug, Default)]
+    struct RecordingInbox {
+        calls: std::sync::Mutex<Vec<Forwarded>>,
+    }
+
+    impl DurableWebhookInbox for RecordingInbox {
+        fn receive(
+            &self,
+            _event: &DurableWebhookEvent,
+            _now_ms: u64,
+        ) -> Result<InboxReceiveOutcome, String> {
+            Ok(InboxReceiveOutcome::Received)
+        }
+
+        fn claim(
+            &self,
+            _event_id: &str,
+            _owner: &str,
+            _now_ms: u64,
+            _lease_ms: u64,
+        ) -> Result<Option<InboxClaim>, String> {
+            Ok(None)
+        }
+
+        fn finish(
+            &self,
+            _claim: &InboxClaim,
+            _owner: &str,
+            _state: InboxTerminalState,
+            _error: Option<&str>,
+            _now_ms: u64,
+        ) -> Result<bool, String> {
+            Ok(false)
+        }
+
+        fn reserve_effect(
+            &self,
+            claim: &InboxClaim,
+            owner: &str,
+            event: &DurableWebhookEvent,
+            effect_key: &str,
+            effect_kind: &str,
+            now_ms: u64,
+        ) -> Result<EffectReservation, String> {
+            self.calls.lock().unwrap().push(Forwarded::positional(
+                "reserve",
+                claim,
+                owner,
+                event,
+                effect_key,
+                effect_kind,
+                now_ms,
+            ));
+            Ok(EffectReservation::PendingRecovery)
+        }
+
+        fn abort_reserved_effect(
+            &self,
+            _claim: &InboxClaim,
+            _owner: &str,
+            _event: &DurableWebhookEvent,
+            _effect_key: &str,
+            _effect_kind: &str,
+            _now_ms: u64,
+        ) -> Result<bool, String> {
+            Ok(false)
+        }
+
+        fn commit_effect(
+            &self,
+            claim: &InboxClaim,
+            owner: &str,
+            event: &DurableWebhookEvent,
+            effect_key: &str,
+            effect_kind: &str,
+            now_ms: u64,
+        ) -> Result<bool, String> {
+            self.calls.lock().unwrap().push(Forwarded::positional(
+                "commit",
+                claim,
+                owner,
+                event,
+                effect_key,
+                effect_kind,
+                now_ms,
+            ));
+            Ok(true)
+        }
+    }
+
+    #[derive(Debug)]
+    struct OpaqueContext;
+
+    impl DurableWebhookRequestContext for OpaqueContext {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    fn durable_event() -> DurableWebhookEvent {
+        DurableWebhookEvent {
+            event_id: "evt_effect".to_owned(),
+            event_type: "invoice.paid".to_owned(),
+            raw_body_hex: "7b7d".to_owned(),
+            payload_sha256: "0".repeat(64),
+            stripe_created_at_ms: 11,
+        }
+    }
+
+    #[test]
+    fn inbox_effect_new_binds_each_argument_to_its_field() {
+        let claim = InboxClaim::new("evt_effect".to_owned(), 7);
+        let event = durable_event();
+        let effect = InboxEffect::new(&claim, "owner-a", &event, "key-b", "kind-c", 42);
+        assert!(core::ptr::eq(effect.claim, &claim));
+        assert!(core::ptr::eq(effect.event, &event));
+        assert_eq!(effect.owner, "owner-a");
+        assert_eq!(effect.effect_key, "key-b");
+        assert_eq!(effect.effect_kind, "kind-c");
+        assert_eq!(effect.now_ms, 42);
+    }
+
+    #[test]
+    fn default_context_seams_forward_every_effect_field_unchanged() {
+        let inbox = RecordingInbox::default();
+        let claim = InboxClaim::new("evt_effect".to_owned(), 7);
+        let event = durable_event();
+        let effect = InboxEffect::new(&claim, "owner-a", &event, "key-b", "kind-c", 42);
+        let context = OpaqueContext;
+
+        assert_eq!(
+            inbox.reserve_effect_with_context(effect, None),
+            Ok(EffectReservation::PendingRecovery)
+        );
+        assert_eq!(
+            inbox.commit_effect_with_context(effect, Some(&context)),
+            Ok(true)
+        );
+
+        let expected = |op: &'static str| Forwarded {
+            op,
+            claim: InboxClaim::new("evt_effect".to_owned(), 7),
+            owner: "owner-a".to_owned(),
+            event_id: "evt_effect".to_owned(),
+            effect_key: "key-b".to_owned(),
+            effect_kind: "kind-c".to_owned(),
+            now_ms: 42,
+        };
+        assert_eq!(
+            *inbox.calls.lock().unwrap(),
+            vec![expected("reserve"), expected("commit")]
+        );
     }
 }

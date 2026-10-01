@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use corelink_billing::stripe::real::webhook_dispatch::{
     DurableWebhookEvent, DurableWebhookInbox, DurableWebhookRequestContext, EffectReservation,
-    InboxClaim as DispatcherInboxClaim, InboxReceiveOutcome,
+    InboxClaim as DispatcherInboxClaim, InboxEffect, InboxReceiveOutcome,
     InboxTerminalState as DispatcherInboxTerminalState,
 };
 use serde_json::{json, Value};
@@ -657,24 +657,19 @@ impl DurableWebhookInbox for D1WebhookInbox {
 
     fn reserve_effect_with_context(
         &self,
-        claim: &DispatcherInboxClaim,
-        owner: &str,
-        event: &DurableWebhookEvent,
-        effect_key: &str,
-        effect_kind: &str,
-        now_ms: u64,
+        effect: InboxEffect<'_>,
         context: Option<&dyn DurableWebhookRequestContext>,
     ) -> Result<EffectReservation, String> {
         self.reserve_effect_with_ownership_context(
             &InboxClaim {
-                event_id: claim.event_id.clone(),
-                fence: claim.fence,
+                event_id: effect.claim.event_id.clone(),
+                fence: effect.claim.fence,
             },
-            owner,
-            event,
-            effect_key,
-            effect_kind,
-            now_ms,
+            effect.owner,
+            effect.event,
+            effect.effect_key,
+            effect.effect_kind,
+            effect.now_ms,
             context,
         )
     }
@@ -725,24 +720,19 @@ impl DurableWebhookInbox for D1WebhookInbox {
 
     fn commit_effect_with_context(
         &self,
-        claim: &DispatcherInboxClaim,
-        owner: &str,
-        event: &DurableWebhookEvent,
-        effect_key: &str,
-        effect_kind: &str,
-        now_ms: u64,
+        effect: InboxEffect<'_>,
         context: Option<&dyn DurableWebhookRequestContext>,
     ) -> Result<bool, String> {
         self.commit_effect_with_ownership_context(
             &InboxClaim {
-                event_id: claim.event_id.clone(),
-                fence: claim.fence,
+                event_id: effect.claim.event_id.clone(),
+                fence: effect.claim.fence,
             },
-            owner,
-            event,
-            effect_key,
-            effect_kind,
-            now_ms,
+            effect.owner,
+            effect.event,
+            effect.effect_key,
+            effect.effect_kind,
+            effect.now_ms,
             context,
         )
     }
