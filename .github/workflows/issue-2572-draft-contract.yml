@@ -8,9 +8,16 @@ on:
       - .github/workflows/release-cli.yml
       - .github/workflows/release-slsa3.yml
       - .github/workflows/issue-2572-draft-contract.yml
+      - .github/workflows/sign-linux.yml
+      - Cargo.lock
       - scripts/cli_release_draft_manifest.py
+      - scripts/gh_2.79.0_checksums.json
+      - scripts/install_pinned_gh.py
       - scripts/verify_cli_release_draft.py
+      - scripts/test_pinned_gh_consumers.py
+      - scripts/verify_pinned_gh.py
       - tests/test_cli_release_draft_contract.py
+      - tools/cli/Cargo.toml
       - tools/cli/tests/release_workflow_contract/assertions.rs
       - tools/cli/tests/release_workflow_contract/cases.rs
       - changelog.d/2572-draft-only-cli-release.md
@@ -50,13 +57,21 @@ jobs:
           [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
           git cat-file -e "${BASE_SHA}^{commit}"
           git merge-base --is-ancestor "${BASE_SHA}" "${CANDIDATE_SHA}"
+      - name: Install Python contract dependencies
+        run: python3 -m pip install --requirement requirements-ci.txt
+      - name: Install checksum-pinned Linux gh and execute all six exact guard steps
+        env:
+          GH_TOKEN: ""
+          GH_ENTERPRISE_TOKEN: ""
+          GITHUB_ENTERPRISE_TOKEN: ""
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -B scripts/test_pinned_gh_consumers.py
       - name: Run deterministic draft inventory negatives
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -euo pipefail
-          python3 -m pip install --requirement requirements-ci.txt
           python3 -B -m unittest tests.test_cli_release_draft_contract -v
           python3 -B scripts/verify_b112_release_root_cause.py
           python3 scripts/verify_i2050_release_dryrun_contract.py contract --base-sha "${BASE_SHA}"
@@ -69,7 +84,8 @@ jobs:
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
             | tar -xz -C "${RUNNER_TEMP}" actionlint
           "${RUNNER_TEMP}/actionlint" .github/workflows/release-cli.yml \
-            .github/workflows/release-slsa3.yml .github/workflows/issue-2572-draft-contract.yml
+            .github/workflows/release-slsa3.yml .github/workflows/sign-linux.yml \
+            .github/workflows/issue-2572-draft-contract.yml
       - name: Validate DCO and tracked diff boundary
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
@@ -84,7 +100,8 @@ jobs:
           .github/workflows/release-slsa3.yml
           .github/workflows/sign-linux.yml
           Cargo.lock
-          tests/test_cli_release_draft_contract.py
+          scripts/test_pinned_gh_consumers.py
+          scripts/verify_pinned_gh.py
           tools/cli/Cargo.toml
           tools/cli/tests/release_workflow_contract/assertions.rs
           tools/cli/tests/release_workflow_contract/cases.rs
@@ -92,7 +109,7 @@ jobs:
           LC_ALL=C sort -o "${RUNNER_TEMP}/changed-paths.txt" "${RUNNER_TEMP}/changed-paths.txt"
           LC_ALL=C sort -o "${RUNNER_TEMP}/allowed-paths.txt" "${RUNNER_TEMP}/allowed-paths.txt"
           if ! diff -u "${RUNNER_TEMP}/allowed-paths.txt" "${RUNNER_TEMP}/changed-paths.txt"; then
-            echo 'issue 2572 candidate must match the exact frozen nine-path source scope' >&2
+            echo 'issue 2572 candidate must match the exact frozen corrective source scope' >&2
             exit 1
           fi
 

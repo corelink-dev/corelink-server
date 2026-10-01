@@ -75,8 +75,10 @@ fn assert_gh_install_precedes_use(name: &str, section: &str) {
         .find("- name: Verify pinned GitHub CLI")
         .unwrap_or_else(|| panic!("{name} must retain the exact version guard"));
     let command = section[guard..]
-        .find("gh --version")
-        .unwrap_or_else(|| panic!("{name} must execute the CLI version guard"))
+        .find(
+            "python3 scripts/verify_pinned_gh.py --binary \"${RUNNER_TEMP}/corelink-pinned-gh/gh\"",
+        )
+        .unwrap_or_else(|| panic!("{name} must verify the absolute checksum-pinned CLI"))
         + guard;
     let use_index = ["gh api ", "gh release "]
         .iter()
@@ -91,6 +93,10 @@ fn assert_gh_install_precedes_use(name: &str, section: &str) {
             && command < use_index,
         "{name} must provision checksum-pinned gh before checking and consuming it"
     );
+    assert!(
+        !section.contains("2025-09-08"),
+        "{name} must not retain the obsolete pinned CLI build date"
+    );
 }
 
 pub(super) fn assert_pinned_gh_contract(
@@ -99,6 +105,8 @@ pub(super) fn assert_pinned_gh_contract(
     slsa: &str,
     installer: &str,
     checksums: &str,
+    verifier: &str,
+    smoke: &str,
 ) {
     for required in [
         "VERSION = \"2.79.0\"",
@@ -115,6 +123,49 @@ pub(super) fn assert_pinned_gh_contract(
         checksums.contains("\"version\": \"2.79.0\""),
         "gh checksum manifest must pin 2.79.0"
     );
+    for required in [
+        "from install_pinned_gh import InstallError, VERSION, verify_binary",
+        "verify_binary(binary)",
+        "shutil.which(\"gh\")",
+        "PATH does not resolve gh to the checksum-pinned executable",
+        "re.escape(VERSION)",
+        "date.fromisoformat(match.group(1))",
+    ] {
+        assert!(
+            verifier.contains(required),
+            "pinned gh verifier missing {required}"
+        );
+    }
+    for required in [
+        "(\"release-cli.yml\", \"release\", \"release\")",
+        "(\"release-cli.yml\", \"final-manifest\", \"final-manifest\")",
+        "(\"release-cli.yml\", \"publish-release\", \"publish-release\")",
+        "(\"release-cli.yml\", \"verify-draft-release\", \"verify-draft-release\")",
+        "(\"sign-linux.yml\", \"sign\", \"Linux signer\")",
+        "(\"release-slsa3.yml\", \"attest-final-inventory\", \"SLSA consumer\")",
+        "\"release-cli.yml\": 8",
+        "\"sign-linux.yml\": 4",
+        "\"release-slsa3.yml\": 3",
+        "GH_TOKEN",
+        "OLD_DATE = \"2025-09-08\"",
+        "yaml.safe_load",
+        "step.get(\"shell\") == \"bash\"",
+        "\"if\" not in step",
+        "install(binary)",
+        "for label, run in consumers",
+        "[\"bash\", \"--noprofile\", \"--norc\", \"-e\", \"-o\", \"pipefail\", \"-c\", run]",
+        "mutant.returncode == 23",
+        "stale_date_result.returncode != 0",
+        "actual Bash guard must reject an unpinned PATH executable",
+        "wrong_result.returncode != 0",
+        "target_counts == TARGET_STEP_COUNTS",
+        "missing destination read credential mutation must be rejected",
+    ] {
+        assert!(
+            smoke.contains(required),
+            "pinned gh six-consumer smoke missing {required}"
+        );
+    }
     assert!(
         checksums.contains("gh_2.79.0_linux_amd64.tar.gz")
             && checksums
@@ -131,6 +182,29 @@ pub(super) fn assert_pinned_gh_contract(
     }
     assert_gh_install_precedes_use("Linux signer", job_section(linux_signer, "sign"));
     assert_gh_install_precedes_use("SLSA consumer", job_section(slsa, "attest-final-inventory"));
+}
+
+pub(super) fn assert_pinned_gh_hosted_smoke(pack: &str) {
+    let section = job_section(pack, "contract");
+    for required in [
+        "fetch-depth: 0",
+        "Install Python contract dependencies",
+        "Install checksum-pinned Linux gh and execute all six exact guard steps",
+        "persist-credentials: false",
+        "GH_TOKEN: \"\"",
+        "GH_ENTERPRISE_TOKEN: \"\"",
+        "GITHUB_ENTERPRISE_TOKEN: \"\"",
+        "python3 -B scripts/test_pinned_gh_consumers.py",
+    ] {
+        assert!(
+            section.contains(required),
+            "credentialless pinned gh pack missing {required}"
+        );
+    }
+    assert!(
+        !section.contains("${{ secrets."),
+        "pinned gh consumer smoke must not receive repository secrets"
+    );
 }
 
 pub(super) fn assert_windows_build_steps_use_bash(workflow: &str) {

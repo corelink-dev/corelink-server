@@ -430,12 +430,10 @@ jobs:
           echo "${RUNNER_TEMP}/corelink-pinned-gh" >> "${GITHUB_PATH}"
 
       - name: Verify pinned GitHub CLI
-        env:
-          EXPECTED_GH_VERSION: "2.79.0"
+        shell: bash
         run: |
           set -euo pipefail
-          gh_version="$(gh --version)"
-          grep -Fx "gh version ${EXPECTED_GH_VERSION} (2025-09-08)" <<<"${gh_version}" >/dev/null
+          python3 scripts/verify_pinned_gh.py --binary "${RUNNER_TEMP}/corelink-pinned-gh/gh"
 
       - name: Download all build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -739,7 +737,8 @@ jobs:
           echo "${RUNNER_TEMP}/corelink-pinned-gh" >> "${GITHUB_PATH}"
 
       - name: Verify pinned GitHub CLI
-        run: test "$(gh --version | awk 'NR == 1 {print $3}')" = "2.79.0"
+        shell: bash
+        run: python3 scripts/verify_pinned_gh.py --binary "${RUNNER_TEMP}/corelink-pinned-gh/gh"
       - name: Bind final signed inventory
         id: manifest
         env:
@@ -901,7 +900,8 @@ jobs:
           echo "${RUNNER_TEMP}/corelink-pinned-gh" >> "${GITHUB_PATH}"
 
       - name: Verify pinned GitHub CLI
-        run: test "$(gh --version | awk 'NR == 1 {print $3}')" = "2.79.0"
+        shell: bash
+        run: python3 scripts/verify_pinned_gh.py --binary "${RUNNER_TEMP}/corelink-pinned-gh/gh"
       - name: Verify complete authenticated inventory before publication
         env:
           GH_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
@@ -993,7 +993,8 @@ jobs:
           echo "${RUNNER_TEMP}/corelink-pinned-gh" >> "${GITHUB_PATH}"
 
       - name: Verify pinned GitHub CLI
-        run: test "$(gh --version | awk 'NR == 1 {print $3}')" = "2.79.0"
+        shell: bash
+        run: python3 scripts/verify_pinned_gh.py --binary "${RUNNER_TEMP}/corelink-pinned-gh/gh"
       - name: Download exact draft candidate and verify signatures, manifest, and provenance
         env:
           GH_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}

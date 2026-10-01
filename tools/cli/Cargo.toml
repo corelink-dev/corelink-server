@@ -1,7 +1,7 @@
 [package]
 name = "corelink-cli"
 description = "CoreLink CLI — 7 subcommands (ls/get/put/stat/bench/doctor/version) with JSON output, auth via env var / config file, cross-OS signed builds (WI-S15-001), and telemetry opt-IN (WI-S15-005)."
-version = "0.1.4"
+version = "0.1.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

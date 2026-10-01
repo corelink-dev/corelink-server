@@ -23,6 +23,9 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
     let linux_signer = load_workflow("sign-linux.yml")?;
     let slsa = load_workflow("release-slsa3.yml")?;
     let installer = load_script("install_pinned_gh.py")?;
+    let verifier = load_script("verify_pinned_gh.py")?;
+    let smoke = load_script("test_pinned_gh_consumers.py")?;
+    let pack = load_workflow("issue-2572-draft-contract.yml")?;
     let checksum_manifest = load_repo_file("scripts/gh_2.79.0_checksums.json")?;
     assert_pinned_gh_contract(
         &workflow,
@@ -30,11 +33,28 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
         &slsa,
         &installer,
         &checksum_manifest,
+        &verifier,
+        &smoke,
     );
+    assert_pinned_gh_hosted_smoke(&pack);
     assert_draft_only_release_contract(&workflow);
     assert_release_tag_shell_boundary(&workflow);
     assert_publication_inventory_contract(&workflow);
     assert_retry_manifest_contract(&workflow);
+
+    let no_credentialless_smoke = pack.replace(
+        "python3 -B scripts/test_pinned_gh_consumers.py",
+        "echo pinned gh smoke skipped",
+    );
+    assert_ne!(
+        no_credentialless_smoke, pack,
+        "smoke removal mutation must take effect"
+    );
+    assert!(
+        std::panic::catch_unwind(|| assert_pinned_gh_hosted_smoke(&no_credentialless_smoke))
+            .is_err(),
+        "the issue pack must reject removal of the actual-binary six-consumer smoke"
+    );
 
     for (mutant, label) in [
         (
@@ -111,7 +131,9 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
                 &linux_signer,
                 &slsa,
                 &installer,
-                &checksum_manifest
+                &checksum_manifest,
+                &verifier,
+                &smoke
             ))
             .is_err(),
             "each GH-using caller job must reject missing pinned gh provisioning"
@@ -124,7 +146,9 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
             &no_linux_install,
             &slsa,
             &installer,
-            &checksum_manifest
+            &checksum_manifest,
+            &verifier,
+            &smoke
         ))
         .is_err(),
         "the Linux signing job must reject missing pinned gh provisioning"
@@ -136,13 +160,15 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
             &linux_signer,
             &no_slsa_install,
             &installer,
-            &checksum_manifest
+            &checksum_manifest,
+            &verifier,
+            &smoke
         ))
         .is_err(),
         "the SLSA job must reject missing pinned gh provisioning"
     );
     let no_slsa_guard = slsa.replace(
-        "      - name: Verify pinned GitHub CLI\n        shell: bash\n        run: test \"$(gh --version | awk 'NR == 1 {print $3}')\" = \"2.79.0\"\n",
+        "      - name: Verify pinned GitHub CLI\n        shell: bash\n        run: python3 scripts/verify_pinned_gh.py --binary \"${RUNNER_TEMP}/corelink-pinned-gh/gh\"\n",
         "      - name: SLSA CLI version guard removed\n",
     );
     assert_ne!(
@@ -155,7 +181,9 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
             &linux_signer,
             &no_slsa_guard,
             &installer,
-            &checksum_manifest
+            &checksum_manifest,
+            &verifier,
+            &smoke
         ))
         .is_err(),
         "the SLSA job must reject a missing pinned gh version guard"
@@ -175,7 +203,9 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
             &linux_signer,
             &slsa,
             &installer,
-            &bad_digest
+            &bad_digest,
+            &verifier,
+            &smoke
         ))
         .is_err(),
         "the gh download digest must be frozen"
