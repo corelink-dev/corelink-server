@@ -11,9 +11,9 @@
     "rust_packages": 95,
     "crate_directories": 75,
     "okf_concepts": 174,
-    "specs_full_schema": 488,
+    "specs_full_schema": 490,
     "specs_yaml_only": 11,
-    "specs_total": 499,
+    "specs_total": 501,
     "lint_policy": "workspace-inherited"
   },
   "release_state": {
