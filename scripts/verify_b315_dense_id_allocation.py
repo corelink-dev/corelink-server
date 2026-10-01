@@ -73,6 +73,22 @@ def main() -> int:
     if result.returncode:
         print(result.stdout + result.stderr, file=sys.stderr)
         return 1
+    # The self-test only sees fixtures. From 2026-09-22 to 2026-10-01 the real
+    # ledger carried an id the allocator did not know (B-1630), every --merge was
+    # refused, and this verifier stayed green. Run the allocator on the real
+    # population too: if it cannot allocate on BACKLOG.md, no merge can.
+    backlog = str(ROOT / "BACKLOG.md")
+    result = subprocess.run(
+        [sys.executable, str(ALLOCATOR), "--main", backlog, "--candidate", backlog, "--base", backlog],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode or "added=none" not in result.stdout:
+        print("B-315 allocator refuses the real BACKLOG.md population:", file=sys.stderr)
+        print(result.stdout + result.stderr, file=sys.stderr)
+        return 1
     print("B-315 dense allocation and merge revalidation: PASS")
     return 0
 
