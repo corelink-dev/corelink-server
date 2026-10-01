@@ -80,7 +80,10 @@ def _semantic_error_category(stdout: str, stderr: str) -> str:
         if isinstance(value, str):
             message_text.append(value)
         elif isinstance(value, dict):
-            pending.extend(child for key, child in value.items() if key in {"message", "messages", "error"})
+            # Provider versions may put their message under an undocumented
+            # field. Inspect nested values in memory, but emit only the fixed
+            # category below; never retain field names or text.
+            pending.extend(value.values())
         elif isinstance(value, list):
             pending.extend(value)
     text = "\n".join(message_text).casefold()

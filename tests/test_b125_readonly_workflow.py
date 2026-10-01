@@ -519,6 +519,30 @@ def test_provider_error_categories_are_allowlisted_and_never_retain_messages() -
         assert "private tenant" not in serialized
 
 
+def test_provider_error_classifier_reads_unknown_nested_message_fields_only_in_memory() -> None:
+    diagnostic = make_provider_diagnostic(
+        "hourly",
+        1,
+        json.dumps(
+            {
+                "error": {
+                    "code": 7500,
+                    "provider_internal_context_9": {
+                        "private_result_42": "no such column: tenant-private.secret-token"
+                    },
+                }
+            }
+        ),
+        "",
+    )
+    validate_provider_diagnostic(diagnostic)
+    assert diagnostic["semantic_error_category"] == "missing_column"
+    serialized = json.dumps(diagnostic)
+    assert "provider_internal_context_9" not in serialized
+    assert "private_result_42" not in serialized
+    assert "tenant-private.secret-token" not in serialized
+
+
 def test_diagnostic_mutations_that_add_values_or_identifiers_are_rejected() -> None:
     diagnostic = make_provider_diagnostic(
         "hourly",
