@@ -451,15 +451,21 @@ export async function shutdownBroker(directory, { inspect = inspectBrokerProcess
       owner.contract !== "corelink-staging-http-bootstrap-process-v1" || owner.directory !== directory) throw reject();
   const { contract: _contract, directory: _directory, ...identity } = owner;
   if (!exactProcess(identity, directory) || identity.pid === process.pid) throw reject();
-  const gone = async () => {
+  let observationOnly = false;
+  const gone = async (observeTransition = false) => {
     const current = await inspect(identity.pid);
     if (current === null) return true;
-    if (!exactProcess(current, directory) || current.pid !== identity.pid || current.started !== identity.started) throw reject();
+    if (!exactProcess(current, directory) || current.pid !== identity.pid || current.started !== identity.started) {
+      if (!observeTransition) throw reject();
+      // During shutdown, OS command metadata can change before actual absence.
+      // A mismatch is never exit proof and permanently forbids further signals.
+      observationOnly = true;
+    }
     return false;
   };
   const waitGone = async () => {
-    for (let index = 0; index < 10; index++) { if (await gone()) return true; await pause(100); }
-    return gone();
+    for (let index = 0; index < 10; index++) { if (await gone(true)) return true; await pause(100); }
+    return gone(true);
   };
   let exited = await gone();
   if (!exited) {
@@ -467,7 +473,7 @@ export async function shutdownBroker(directory, { inspect = inspectBrokerProcess
     exited = await waitGone();
   }
   for (const name of ["SIGTERM", "SIGKILL"]) {
-    if (exited) break;
+    if (exited || observationOnly) break;
     // Revalidate immediately before each signal; a missing/reused/unrelated PID is never killed.
     if (await gone()) { exited = true; break; }
     try { signal(identity.pid, name); } catch (error) { if (error.code !== "ESRCH") throw unknown(); }

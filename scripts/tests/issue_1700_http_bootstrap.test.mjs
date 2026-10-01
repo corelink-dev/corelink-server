@@ -463,3 +463,28 @@ test("local shutdown has a finite inspection ceiling and never reports a still-l
     assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+for (const phase of ["close", "signal"]) for (const becomesAbsent of [true, false]) {
+  test(`post-${phase} command change is observation-only until actual absence: ${becomesAbsent}`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "i1700-stop-transition-")); await chmod(directory, 0o700);
+    const identity = processIdentity(directory), signals = [];
+    let shutdownStarted = false, transitionReads = 0;
+    try {
+      await captureBrokerProcess(directory, identity.pid, async () => identity);
+      const shutdown = shutdownBroker(directory, {
+        inspect: async () => {
+          if (!shutdownStarted) return identity;
+          if (++transitionReads > 1 && becomesAbsent) return null;
+          return { ...identity, command: "termination-metadata-fixture" };
+        },
+        command: async () => { if (phase === "close") { shutdownStarted = true; return { state: "unknown" }; }
+          throw new Error("IPC unavailable"); },
+        signal: (_pid, name) => { shutdownStarted = true; signals.push(name); }, pause: async () => {},
+      });
+      if (becomesAbsent) assert.equal((await shutdown).process_exited, true);
+      else await assert.rejects(shutdown, /bootstrap_unknown/);
+      assert.deepEqual(signals, phase === "close" ? [] : ["SIGTERM"]);
+      assert.equal(transitionReads, becomesAbsent ? 2 : 11);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+}
