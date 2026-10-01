@@ -31,9 +31,17 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Existing cli-vMAJOR.MINOR.PATCH tag to build and publish"
+        description: "Existing cli-vMAJOR.MINOR.PATCH tag bound to the exact source commit"
         required: true
         type: string
+      release_mode:
+        description: "Draft-only by default; signed-public requires every production signature gate"
+        required: true
+        type: choice
+        default: draft-only
+        options:
+          - draft-only
+          - signed-public
 
 # Workflow-level least-privilege.
 # The cross-repo release write is handled by CORELINK_CLI_RELEASE_TOKEN.
@@ -326,6 +334,7 @@ jobs:
       validated_tag: ${{ steps.validate-release-tag.outputs.tag }}
       staging_manifest_sha256: ${{ steps.staging-manifest.outputs.sha256 }}
       source_sha: ${{ steps.release-identity.outputs.source_sha }}
+      release_mode: ${{ steps.release-identity.outputs.release_mode }}
     # The source-repo GITHUB_TOKEN cannot publish cross-repo. The only write
     # credential is injected in the two release steps below as the external,
     # manually provisioned CORELINK_CLI_RELEASE_TOKEN.
@@ -361,6 +370,7 @@ jobs:
         id: release-identity
         env:
           TAG: ${{ steps.validate-release-tag.outputs.tag }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
         shell: bash
         run: |
           set -euo pipefail
@@ -370,6 +380,28 @@ jobs:
           test "$(git rev-parse HEAD)" = "${SOURCE_SHA}"
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "source_sha=${SOURCE_SHA}" >> "${GITHUB_OUTPUT}"
+          case "${RELEASE_MODE}" in
+            draft-only|signed-public) ;;
+            *) echo "::error::unsupported release mode" >&2; exit 1 ;;
+          esac
+          echo "release_mode=${RELEASE_MODE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Bind package version to the exact release tag
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          PACKAGE_VERSION="$(python3 - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path("tools/cli/Cargo.toml").read_text(encoding="utf-8")
+          match = re.search(r'(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)"\s*$', text)
+          if not match:
+              raise SystemExit("CLI package version is not an explicit canonical value")
+          print(match.group(1))
+          PY
+          )"
+          test "${TAG}" = "cli-v${PACKAGE_VERSION}"
 
       - name: Verify pinned GitHub CLI
         env:
@@ -452,6 +484,14 @@ jobs:
           NOTES_EOF
           echo "Built from \`${GITHUB_REPOSITORY}\` tag \`${TAG}\`." \
             >> /tmp/release-notes.md
+          if [ "${{ inputs.release_mode }}" = "draft-only" ]; then
+            cat >> /tmp/release-notes.md <<'DRAFT_NOTES'
+
+          ## Signing status
+
+          Linux artifacts have detached GPG signatures. The Windows artifact is unsigned and deferred; no Authenticode or RFC 3161 timestamp is claimed. This draft is not a public release. No Apple artifact or support claim is included.
+          DRAFT_NOTES
+          fi
 
       - name: Assert external cross-repository release credential
         env:
@@ -483,15 +523,20 @@ jobs:
             0:200)
               gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" \
                 > "${RELEASE_JSON}"
-              python3 - "${RELEASE_JSON}" "${TAG}" <<'PY'
+              python3 - "${RELEASE_JSON}" "${TAG}" "${{ inputs.release_mode }}" <<'PY'
           import json, sys
           release = json.load(open(sys.argv[1], encoding="utf-8"))
           if release.get("tag_name") != sys.argv[2] or release.get("draft") is not True:
               raise SystemExit("existing release is not the exact retryable draft")
           if release.get("published_at") is not None:
               raise SystemExit("existing release was already published; refusing staged overwrite")
+          mode = sys.argv[3]
+          if mode not in {"draft-only", "signed-public"}:
+              raise SystemExit("unknown release mode")
+          if mode == "draft-only" and release.get("assets"):
+              raise SystemExit("draft-only mode refuses to overwrite or resume a non-empty draft")
           PY
-              echo "Exact draft already exists; continuing the same tag idempotently."
+              echo "Exact empty draft exists; no existing asset will be overwritten."
               ;;
             1:404)
               gh release create "${TAG}" --repo HuGR-Labs/corelink-cli \
@@ -509,7 +554,11 @@ jobs:
           GH_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
           TAG: ${{ steps.validate-release-tag.outputs.tag }}
         run: |
-          gh release upload "${TAG}" dist/* --repo HuGR-Labs/corelink-cli --clobber
+          if [ "${{ inputs.release_mode }}" = "draft-only" ]; then
+            gh release upload "${TAG}" dist/* --repo HuGR-Labs/corelink-cli
+          else
+            gh release upload "${TAG}" dist/* --repo HuGR-Labs/corelink-cli --clobber
+          fi
 
       - name: Read back published artifacts and verify release-root digests
         env:
@@ -557,17 +606,20 @@ jobs:
       GPG_KEY_FINGERPRINT: ${{ secrets.GPG_KEY_FINGERPRINT }}
 
   release-readiness:
-    name: decide signed-release preflight
+    name: decide release-mode preflight
     needs: build
     runs-on: ubuntu-24.04
+    outputs:
+      release_mode: ${{ steps.decision.outputs.release_mode }}
     steps:
       - name: Checkout credentialless signing readiness verifier
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
           persist-credentials: false
-      - name: Validate credentialless signing preflight packet
+      - name: Validate signed-public Linux and Windows preflight packet
         id: packet
+        if: inputs.release_mode == 'signed-public'
         shell: bash
         run: |
           set -euo pipefail
@@ -578,26 +630,46 @@ jobs:
           esac
       - id: decision
         env:
-          PACKET_READY: ${{ steps.packet.outputs.packet_ready }}
+          GPG_PACKET_READY: ${{ steps.packet.outputs.packet_ready }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PRIVATE_KEY_PASS: ${{ secrets.GPG_PRIVATE_KEY_PASS }}
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
           GPG_KEY_FINGERPRINT: ${{ secrets.GPG_KEY_FINGERPRINT }}
+          GPG_PUBLIC_KEY: docs/internal/gpg-release-pubkey.asc
+        run: |
+          set -euo pipefail
+          case "${RELEASE_MODE}" in draft-only|signed-public) ;; *) exit 1 ;; esac
+          if [ -z "${GPG_PRIVATE_KEY}" ] || [ -z "${GPG_PRIVATE_KEY_PASS}" ] || [ -z "${GPG_KEY_ID}" ] || [ -z "${GPG_KEY_FINGERPRINT}" ]; then
+            echo "::error::release GPG readiness is incomplete; artifact signing is blocked." >&2
+            exit 1
+          fi
+          PUBLIC_KEY_FINGERPRINT="$(gpg --batch --with-colons --show-keys "${GPG_PUBLIC_KEY}" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          EXPECTED_FINGERPRINT=795253CEBD6D54C862CFC4A3EC0AD89A75EC6756
+          test "${PUBLIC_KEY_FINGERPRINT}" = "${EXPECTED_FINGERPRINT}"
+          test "$(printf '%s' "${GPG_KEY_FINGERPRINT}" | tr '[:lower:]' '[:upper:]')" = "${EXPECTED_FINGERPRINT}"
+          if [ "${RELEASE_MODE}" = "signed-public" ] && [ "${GPG_PACKET_READY}" != "true" ]; then
+            echo "::error::signed-public mode requires the Linux + Windows identity/access preflight packet." >&2
+            exit 1
+          fi
+          printf 'release_mode=%s\n' "${RELEASE_MODE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Require Windows Authenticode credentials for signed-public mode
+        if: inputs.release_mode == 'signed-public'
+        env:
           WINDOWS_CERT: ${{ secrets.WINDOWS_CODE_SIGNING_CERT }}
           WINDOWS_PASSWORD: ${{ secrets.WINDOWS_CODE_SIGNING_PASSWORD }}
           WINDOWS_FINGERPRINT: ${{ secrets.WINDOWS_CODE_SIGNING_FINGERPRINT }}
           WINDOWS_SUBJECT: ${{ secrets.WINDOWS_CODE_SIGNING_SUBJECT }}
         run: |
           set -euo pipefail
-          if [ "${PACKET_READY}" = "true" ] && [ -n "${GPG_PRIVATE_KEY}" ] && [ -n "${GPG_PRIVATE_KEY_PASS}" ] && [ -n "${GPG_KEY_ID}" ] && [ -n "${GPG_KEY_FINGERPRINT}" ] && \
-             [ -n "${WINDOWS_CERT}" ] && [ -n "${WINDOWS_PASSWORD}" ] && [ -n "${WINDOWS_FINGERPRINT}" ] && [ -n "${WINDOWS_SUBJECT}" ]; then
-            exit 0
-          else
-            echo "::error::release signing preflight is incomplete; publication is blocked." >&2
+          if [ -z "${WINDOWS_CERT}" ] || [ -z "${WINDOWS_PASSWORD}" ] || [ -z "${WINDOWS_FINGERPRINT}" ] || [ -z "${WINDOWS_SUBJECT}" ]; then
+            echo "::error::Windows Authenticode prerequisites are incomplete; signed-public mode is blocked." >&2
             exit 1
           fi
 
   sign-windows:
+    if: inputs.release_mode == 'signed-public'
     needs: [sign-linux, release]
     uses: ./.github/workflows/sign-windows.yml
     with:
@@ -612,13 +684,20 @@ jobs:
       WINDOWS_CODE_SIGNING_SUBJECT: ${{ secrets.WINDOWS_CODE_SIGNING_SUBJECT }}
 
   final-manifest:
-    name: bind final signed inventory
+    name: bind final inventory for selected release mode
+    if: >-
+      always() && needs.release.result == 'success' &&
+      needs.sign-linux.result == 'success' &&
+      needs.release-readiness.result == 'success' &&
+      ((inputs.release_mode == 'draft-only' && needs.sign-windows.result == 'skipped') ||
+       (inputs.release_mode == 'signed-public' && needs.sign-windows.result == 'success'))
     # Successful signer jobs are post-run verification receipts for this exact
     # tag and inventory. The packet gates preflight before release staging.
     needs: [sign-linux, sign-windows, release-readiness, release]
     runs-on: ubuntu-24.04
     outputs:
       sha256: ${{ steps.manifest.outputs.sha256 }}
+      release_mode: ${{ inputs.release_mode }}
     steps:
       - name: Checkout manifest tool
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -645,15 +724,35 @@ jobs:
           print(sum(asset.get("name") == "staging-manifest.json" for asset in release.get("assets", [])))
           PY
           )"
-          case "${STAGING_ASSET_COUNT}" in
-            0)
-              # A retry after a successful cleanup must re-derive the complete
-              # downloaded inventory and prove it is byte-equivalent to the
-              # existing final manifest before provenance/publication resumes.
+          RELEASE_MODE="${{ inputs.release_mode }}"
+          case "${RELEASE_MODE}" in
+            draft-only)
+              if [ "${STAGING_ASSET_COUNT}" != "1" ]; then
+                echo "::error::draft-only mode requires exactly one staging manifest and refuses retry/replacement." >&2
+                exit 1
+              fi
               gh release download "${TAG}" --repo HuGR-Labs/corelink-cli --dir final-assets \
-                --pattern 'corelink-*' --pattern checksums.txt --pattern release-manifest.json --clobber
-              test -f final-assets/release-manifest.json
-              python3 - "final-assets/release-manifest.json" "${STAGING_MANIFEST_SHA256}" "${TAG}" "${SOURCE_SHA}" <<'PY'
+                --pattern 'corelink-*' --pattern checksums.txt --pattern staging-manifest.json
+              test "$(shasum -a 256 final-assets/staging-manifest.json | awk '{print $1}')" = "${STAGING_MANIFEST_SHA256}"
+              python3 scripts/cli_release_draft_manifest.py create --directory final-assets \
+                --output final-assets/release-manifest.json --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
+                --staging-manifest final-assets/staging-manifest.json
+              rm -f final-assets/staging-manifest.json
+              DRAFT_MANIFEST_SHA256="$(shasum -a 256 final-assets/release-manifest.json | awk '{print $1}')"
+              python3 scripts/cli_release_draft_manifest.py verify-manifest \
+                --directory final-assets --manifest final-assets/release-manifest.json \
+                --public-key docs/internal/gpg-release-pubkey.asc --tag "${TAG}" \
+                --source-sha "${SOURCE_SHA}" --manifest-sha256 "${DRAFT_MANIFEST_SHA256}"
+              echo "${DRAFT_MANIFEST_SHA256}" > manifest.sha256
+              gh release upload "${TAG}" --repo HuGR-Labs/corelink-cli final-assets/release-manifest.json
+              ;;
+            signed-public)
+              case "${STAGING_ASSET_COUNT}" in
+                0)
+                  gh release download "${TAG}" --repo HuGR-Labs/corelink-cli --dir final-assets \
+                    --pattern 'corelink-*' --pattern checksums.txt --pattern release-manifest.json
+                  test -f final-assets/release-manifest.json
+                  python3 - "final-assets/release-manifest.json" "${STAGING_MANIFEST_SHA256}" "${TAG}" "${SOURCE_SHA}" <<'PY'
           import json, sys
           manifest = json.load(open(sys.argv[1], encoding="utf-8"))
           if (manifest.get("version") != 2
@@ -662,27 +761,31 @@ jobs:
                   or manifest.get("source_sha") != sys.argv[4]):
               raise SystemExit("retry manifest is not bound to the staging manifest")
           PY
-              python3 scripts/cli_release_manifest.py verify --directory final-assets \
-                --manifest final-assets/release-manifest.json --tag "${TAG}" --source-sha "${SOURCE_SHA}"
-              shasum -a 256 final-assets/release-manifest.json | awk '{print $1}' > manifest.sha256
-              ;;
-            1)
-              gh release download "${TAG}" --repo HuGR-Labs/corelink-cli --dir final-assets \
-                --pattern 'corelink-*' --pattern checksums.txt --pattern staging-manifest.json --clobber
-              test "$(shasum -a 256 final-assets/staging-manifest.json | awk '{print $1}')" = "${STAGING_MANIFEST_SHA256}"
-              python3 scripts/cli_release_manifest.py create --directory final-assets \
-                --output final-assets/release-manifest.json --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
-                --staging-manifest final-assets/staging-manifest.json
-              # The parent staging manifest is consumed into the final manifest's
-              # content-addressed lineage; it is not a final public subject.
-              rm -f final-assets/staging-manifest.json
-              python3 scripts/cli_release_manifest.py verify --directory final-assets \
-                --manifest final-assets/release-manifest.json --tag "${TAG}" --source-sha "${SOURCE_SHA}"
-              shasum -a 256 final-assets/release-manifest.json | awk '{print $1}' > manifest.sha256
-              gh release upload "${TAG}" --repo HuGR-Labs/corelink-cli --clobber final-assets/release-manifest.json
+                  python3 scripts/cli_release_manifest.py verify --directory final-assets \
+                    --manifest final-assets/release-manifest.json --tag "${TAG}" --source-sha "${SOURCE_SHA}"
+                  shasum -a 256 final-assets/release-manifest.json | awk '{print $1}' > manifest.sha256
+                  ;;
+                1)
+                  gh release download "${TAG}" --repo HuGR-Labs/corelink-cli --dir final-assets \
+                    --pattern 'corelink-*' --pattern checksums.txt --pattern staging-manifest.json
+                  test "$(shasum -a 256 final-assets/staging-manifest.json | awk '{print $1}')" = "${STAGING_MANIFEST_SHA256}"
+                  python3 scripts/cli_release_manifest.py create --directory final-assets \
+                    --output final-assets/release-manifest.json --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
+                    --staging-manifest final-assets/staging-manifest.json
+                  rm -f final-assets/staging-manifest.json
+                  python3 scripts/cli_release_manifest.py verify --directory final-assets \
+                    --manifest final-assets/release-manifest.json --tag "${TAG}" --source-sha "${SOURCE_SHA}"
+                  shasum -a 256 final-assets/release-manifest.json | awk '{print $1}' > manifest.sha256
+                  gh release upload "${TAG}" --repo HuGR-Labs/corelink-cli --clobber final-assets/release-manifest.json
+                  ;;
+                *)
+                  echo "::error::authenticated release inventory contains ${STAGING_ASSET_COUNT} staging manifests" >&2
+                  exit 1
+                  ;;
+              esac
               ;;
             *)
-              echo "::error::authenticated release inventory contains ${STAGING_ASSET_COUNT} staging manifests" >&2
+              echo "::error::unknown release mode; refusing to finalize inventory" >&2
               exit 1
               ;;
           esac
@@ -736,12 +839,18 @@ jobs:
       release_tag: ${{ inputs.release_tag }}
       source_sha: ${{ needs.release.outputs.source_sha }}
       manifest_sha256: ${{ needs.final-manifest.outputs.sha256 }}
+      release_mode: ${{ needs.final-manifest.outputs.release_mode }}
     secrets:
       CORELINK_CLI_RELEASE_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
 
   publish-release:
     name: publish verified signed release
-    needs: [release-slsa3, release-readiness, final-manifest, release]
+    needs: [release-slsa3, release-readiness, final-manifest, release, sign-windows]
+    if: >-
+      always() && inputs.release_mode == 'signed-public' &&
+      needs.release.outputs.release_mode == 'signed-public' &&
+      needs.release-readiness.result == 'success' && needs.sign-windows.result == 'success' &&
+      needs.final-manifest.result == 'success' && needs.release-slsa3.result == 'success'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout release inventory verifier
@@ -813,3 +922,58 @@ jobs:
               --cert-oidc-issuer "https://token.actions.githubusercontent.com"
           done
           gh release edit "${TAG}" --repo HuGR-Labs/corelink-cli --draft=false
+
+  verify-draft-release:
+    name: verify exact draft bytes and unsigned Windows state
+    needs: [release-slsa3, release-readiness, final-manifest, release]
+    if: >-
+      always() && inputs.release_mode == 'draft-only' &&
+      needs.release.outputs.release_mode == 'draft-only' &&
+      needs.release-readiness.result == 'success' &&
+      needs.final-manifest.result == 'success' && needs.release-slsa3.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact release source without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.release.outputs.validated_tag }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify pinned GitHub CLI
+        run: test "$(gh --version | awk 'NR == 1 {print $3}')" = "2.79.0"
+      - name: Download exact draft candidate and verify signatures, manifest, and provenance
+        env:
+          GH_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
+          TAG: ${{ needs.release.outputs.validated_tag }}
+          SOURCE_SHA: ${{ needs.release.outputs.source_sha }}
+          MANIFEST_SHA256: ${{ needs.final-manifest.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          API_JSON="${RUNNER_TEMP}/corelink-draft-release.json"
+          ASSETS="${RUNNER_TEMP}/corelink-draft-assets"
+          mkdir -p "${ASSETS}"
+          gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${API_JSON}"
+          gh release download "${TAG}" --repo HuGR-Labs/corelink-cli --dir "${ASSETS}"
+          python3 scripts/verify_cli_release_draft.py \
+            --api-json "${API_JSON}" --directory "${ASSETS}" \
+            --manifest "${ASSETS}/release-manifest.json" \
+            --provenance "${ASSETS}/provenance.intoto.jsonl" \
+            --bundle "${ASSETS}/provenance.intoto.jsonl.bundle" \
+            --public-key docs/internal/gpg-release-pubkey.asc \
+            --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
+            --manifest-sha256 "${MANIFEST_SHA256}"
+          python3 - "${ASSETS}/release-manifest.json" <<'PY' | while IFS= read -r name; do
+          import json, sys
+          for entry in json.load(open(sys.argv[1], encoding="utf-8"))["artifacts"]:
+              print(entry["name"])
+          PY
+            gh attestation verify "${ASSETS}/${name}" \
+              --bundle "${ASSETS}/provenance.intoto.jsonl.bundle" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release-slsa3.yml" \
+              --source-ref "refs/tags/${TAG}" --source-digest "${SOURCE_SHA}" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com"
+          done
