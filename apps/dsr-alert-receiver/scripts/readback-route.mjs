@@ -190,12 +190,22 @@ export async function readWorkerInventory({ context, fetchImpl = fetch, now = ()
   return receipt;
 }
 
-function unknownTokenPolicyDiagnostic(status = "unknown_response", tokenActive = null) {
+function tokenVerificationDiagnostic({ httpStatus = null, errorClass = "not_attempted", activeStatus = "unknown", tokenIdShape = "not_checked" } = {}) {
+  return Object.freeze({
+    http_status: Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? httpStatus : null,
+    error_class: errorClass,
+    active_status: activeStatus,
+    token_id_shape: tokenIdShape,
+  });
+}
+
+function unknownTokenPolicyDiagnostic(status = "unknown_response", tokenActive = null, verification = tokenVerificationDiagnostic()) {
   return Object.freeze({
     status,
     token_active: tokenActive,
     account_5128_scope: null,
     workers_admin_on_5128: null,
+    verification,
   });
 }
 
@@ -251,7 +261,7 @@ export async function readTokenPolicyDiagnostic({ apiToken, fetchImpl = fetch, n
   const request = async (path) => {
     assertTokenDiagnosticPath(path);
     const remaining = deadline - now();
-    if (remaining <= 0) return { kind: "timeout" };
+    if (remaining <= 0) return { kind: "timeout", diagnostic: tokenVerificationDiagnostic({ errorClass: "timeout" }) };
     let response;
     try {
       response = await fetchImpl(`${API}${path}`, {
@@ -260,30 +270,48 @@ export async function readTokenPolicyDiagnostic({ apiToken, fetchImpl = fetch, n
         signal: AbortSignal.timeout(remaining),
         headers: { authorization: `Bearer ${apiToken}`, accept: "application/json" },
       });
-    } catch {
-      return { kind: "transport_unknown" };
+    } catch (error) {
+      const timedOut = error instanceof Error && error.name === "TimeoutError";
+      return { kind: timedOut ? "timeout" : "transport_unknown", diagnostic: tokenVerificationDiagnostic({ errorClass: timedOut ? "timeout" : "transport_error" }) };
     }
-    if (response.status !== 200) return { kind: response.status === 403 ? "unknown_access" : "http_unknown" };
+    if (response.status !== 200) {
+      return {
+        kind: response.status === 403 ? "unknown_access" : "http_unknown",
+        diagnostic: tokenVerificationDiagnostic({ httpStatus: response.status, errorClass: "http_response" }),
+      };
+    }
     let payload;
-    try { payload = await response.json(); } catch { return { kind: "response_unknown" }; }
+    try { payload = await response.json(); } catch {
+      return { kind: "response_unknown", diagnostic: tokenVerificationDiagnostic({ httpStatus: response.status, errorClass: "malformed_json" }) };
+    }
     return payload?.success === true && payload.result && typeof payload.result === "object" && !Array.isArray(payload.result)
-      ? { kind: "ok", result: payload.result }
-      : { kind: "response_unknown" };
+      ? { kind: "ok", result: payload.result, diagnostic: tokenVerificationDiagnostic({ httpStatus: response.status, errorClass: "none" }) }
+      : { kind: "response_unknown", diagnostic: tokenVerificationDiagnostic({ httpStatus: response.status, errorClass: "malformed_payload" }) };
   };
 
   const verification = await request("/user/tokens/verify");
   if (verification.kind !== "ok") {
-    return unknownTokenPolicyDiagnostic(verification.kind === "unknown_access" ? "unknown_access" : "verify_unknown");
+    return unknownTokenPolicyDiagnostic(verification.kind === "unknown_access" ? "unknown_access" : "verify_unknown", null, verification.diagnostic);
   }
   const tokenStatus = verification.result.status;
-  if (["disabled", "expired"].includes(tokenStatus)) return unknownTokenPolicyDiagnostic("inactive", false);
-  if (tokenStatus !== "active" || typeof verification.result.id !== "string" || !TOKEN_ID.test(verification.result.id)) {
-    return unknownTokenPolicyDiagnostic("verify_unknown");
+  const activeStatus = tokenStatus === "active" ? "active" : ["disabled", "expired"].includes(tokenStatus) ? "inactive" : "other";
+  const tokenIdShape = typeof verification.result.id !== "string" ? "missing" : TOKEN_ID.test(verification.result.id) ? "valid_32_hex" : "malformed";
+  const verificationDiagnostic = tokenVerificationDiagnostic({
+    httpStatus: verification.diagnostic.http_status,
+    errorClass: ["active", "disabled", "expired"].includes(tokenStatus) && (activeStatus !== "active" || tokenIdShape === "valid_32_hex")
+      ? "none"
+      : "malformed_verification_fields",
+    activeStatus,
+    tokenIdShape,
+  });
+  if (["disabled", "expired"].includes(tokenStatus)) return unknownTokenPolicyDiagnostic("inactive", false, verificationDiagnostic);
+  if (tokenStatus !== "active" || tokenIdShape !== "valid_32_hex") {
+    return unknownTokenPolicyDiagnostic("verify_unknown", null, verificationDiagnostic);
   }
   const details = await request(`/user/tokens/${encodeURIComponent(verification.result.id)}`);
-  if (details.kind === "unknown_access") return unknownTokenPolicyDiagnostic("unknown_access", true);
-  if (details.kind !== "ok") return unknownTokenPolicyDiagnostic("details_unknown", true);
-  return summarizeTokenPolicies(details.result.policies);
+  if (details.kind === "unknown_access") return unknownTokenPolicyDiagnostic("unknown_access", true, verificationDiagnostic);
+  if (details.kind !== "ok") return unknownTokenPolicyDiagnostic("details_unknown", true, verificationDiagnostic);
+  return Object.freeze({ ...summarizeTokenPolicies(details.result.policies), verification: verificationDiagnostic });
 }
 
 export async function writeReadbackReceipt(context, options = {}) {
