@@ -23,8 +23,11 @@ import codeql_reviewed_dispositions as gate  # noqa: E402
 
 def _sarif(case: dict, *, uploaded: bool, score: str = "7.5", alert_number: int | None = None,
            results: bool = True, extra: dict | None = None,
-           uploaded_column_fingerprint: str | None = None) -> dict:
+           uploaded_column_fingerprint: str | None = None,
+           region: dict | None = None) -> dict:
     rule = case["rule"]
+    if region is None:
+        region = {"startLine": case["line"], "startColumn": case["start_column"]}
     rule_info = {
         "id": rule,
         "properties": {"security-severity": score, "tags": ["security"]},
@@ -38,7 +41,7 @@ def _sarif(case: dict, *, uploaded: bool, score: str = "7.5", alert_number: int 
             "locations": [{
                 "physicalLocation": {
                     "artifactLocation": {"uri": case["path"]},
-                    "region": {"startLine": case["line"], "startColumn": case["start_column"]},
+                    "region": dict(region),
                 }
             }],
             "partialFingerprints": {
@@ -132,7 +135,7 @@ class ReviewedDispositionGateTests(unittest.TestCase):
             event="workflow_dispatch",
             ref="refs/heads/main",
             sha=self.current_sha,
-            language="python",
+            language=self.case["language"],
             sarif_id=self.sarif_id,
             sarif=[self.sarif_path],
             apply_approved_dispositions=False,
@@ -188,9 +191,11 @@ class ReviewedDispositionGateTests(unittest.TestCase):
              patch.object(gate.GitHubApi, "get", fake_get), \
              patch.object(gate.GitHubApi, "patch", fake_patch), \
              contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.last_error = None
             try:
                 code = gate.verify(args)
-            except gate.ReviewedGateError:
+            except gate.ReviewedGateError as exc:
+                self.last_error = str(exc)
                 code = 2
         return code, calls, patches
 
@@ -374,6 +379,85 @@ class ReviewedDispositionGateTests(unittest.TestCase):
         moved_alert["most_recent_instance"]["location"]["start_line"] += 1
         code, _calls, patches = self._run(local=local, uploaded=uploaded, alert=moved_alert, apply=True)
         self.assertEqual(code, 2)
+        self.assertEqual(patches, [])
+
+    def _region_records(self, region: dict, *, uploaded: bool) -> list[dict]:
+        payload = _sarif(
+            self.case,
+            uploaded=uploaded,
+            alert_number=self.case["alert_number"] if uploaded else None,
+            region=region,
+        )
+        records, count = gate._sarif_records(payload, language=self.case["language"], uploaded=uploaded)
+        self.assertEqual(count, 1)
+        return records
+
+    def test_absent_sarif_start_column_takes_the_spec_default_of_one(self) -> None:
+        # Trusted run 36920507526: CodeQL omitted region.startColumn for alert
+        # 447 (native.rs:284) and kept only startLine/endColumn. SARIF 2.1.0
+        # defaults an absent startColumn to 1.
+        for uploaded in (False, True):
+            with self.subTest(uploaded=uploaded):
+                records = self._region_records(
+                    {"startLine": self.case["line"], "endColumn": 31}, uploaded=uploaded
+                )
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]["start_column"], gate.SARIF_DEFAULT_START_COLUMN)
+                self.assertEqual(records[0]["start_column"], 1)
+
+    def test_present_valid_sarif_start_column_is_kept_not_defaulted(self) -> None:
+        for uploaded in (False, True):
+            for column in (1, 2, self.case["start_column"], 4096):
+                with self.subTest(uploaded=uploaded, column=column):
+                    records = self._region_records(
+                        {"startLine": self.case["line"], "startColumn": column}, uploaded=uploaded
+                    )
+                    self.assertEqual(records[0]["start_column"], column)
+
+    def test_present_invalid_sarif_start_column_still_fails_closed(self) -> None:
+        # Only an ABSENT key takes the default; a present value that is null,
+        # bool, non-integer, zero or negative is malformed and must not be
+        # coerced to 1.
+        invalid = (0, -1, -18, None, True, False, "1", "18", 1.0, 18.5, [1], {"value": 1})
+        for uploaded in (False, True):
+            for column in invalid:
+                with self.subTest(uploaded=uploaded, column=column):
+                    with self.assertRaisesRegex(gate.ReviewedGateError, "start column is invalid"):
+                        self._region_records(
+                            {"startLine": self.case["line"], "startColumn": column}, uploaded=uploaded
+                        )
+
+    def test_omitted_start_column_passes_only_for_the_reviewed_column_one_alert(self) -> None:
+        column_one = next(c for c in self.manifest["approved_alerts"] if c["alert_number"] == 447)
+        self.assertEqual(column_one["start_column"], 1)
+        self.assertEqual(column_one["language"], "rust")
+        self.case = column_one
+        region = {"startLine": column_one["line"], "endColumn": 31}
+        local = _sarif(column_one, uploaded=False, region=region)
+        uploaded = _sarif(column_one, uploaded=True, alert_number=447, region=region)
+        code, calls, patches = self._run(local=local, uploaded=uploaded)
+        self.assertEqual(code, 0, self.last_error)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(patches, [])
+
+        # The defaulted column is still bound to the live alert's column.
+        moved_live = _live_alert(column_one)
+        moved_live["most_recent_instance"]["location"]["start_column"] = 2
+        code, _calls, patches = self._run(local=local, uploaded=uploaded, alert=moved_live, apply=True)
+        self.assertEqual(code, 2)
+        self.assertEqual(self.last_error, "live alert state/reason/tool/location differs from its approval")
+        self.assertEqual(patches, [])
+
+    def test_omitted_start_column_cannot_stand_in_for_a_reviewed_other_column(self) -> None:
+        self.assertNotEqual(self.case["start_column"], 1)
+        region = {"startLine": self.case["line"]}
+        local = _sarif(self.case, uploaded=False, region=region)
+        uploaded = _sarif(self.case, uploaded=True, alert_number=self.case["alert_number"], region=region)
+        code, _calls, patches = self._run(local=local, uploaded=uploaded, apply=True)
+        self.assertEqual(code, 2)
+        # Rejected at the reviewed-identity join (default 1 != reviewed
+        # column), not at SARIF parsing.
+        self.assertEqual(self.last_error, "current finding differs from its exact approved alert identity")
         self.assertEqual(patches, [])
 
     def test_changed_reviewed_file_blob_is_rejected(self) -> None:
