@@ -6,6 +6,10 @@
 //! cargo run -p corelink-audit-chain --bin verifier -- <ndjson_chunk_path>...
 //! ```
 //!
+//! A single validated legacy E0 object may also be checked from the
+//! protocol-defined genesis anchor with `--verify-genesis-only --verify-day
+//! YYYY-MM-DD`. This verify-only path never reads or writes daily checkpoints.
+//!
 //! For each NDJSON chunk path passed on the CLI, this binary reads the file and
 //! verifies every line. Two line formats are accepted, distinguished by the
 //! `schema` field:
@@ -115,6 +119,7 @@ struct CliArgs {
     keyring: LinkKeyring,
     paths: Vec<String>,
     verify_day: Option<String>,
+    verify_genesis_only: bool,
     checkpoint_key_id: Option<u64>,
     checkpoint_in: Option<PathBuf>,
     checkpoint_out: Option<PathBuf>,
@@ -339,8 +344,16 @@ fn run(args: &CliArgs) -> Result<String, String> {
         }
     }
 
-    if total_events == 0 && args.checkpoint_out.is_none() {
+    if total_events == 0 && args.checkpoint_out.is_none() && !args.verify_genesis_only {
         return Ok("no events in input (clean)".to_string());
+    }
+
+    if args.verify_genesis_only
+        && (args.paths.len() != 1 || !by_tenant.is_empty() || by_partition.len() != 1)
+    {
+        return Err(
+            "genesis-only verification requires one sealed object and one partition".to_owned(),
+        );
     }
 
     // A receipt directory is mutable transport, not freshness evidence. When
@@ -387,10 +400,13 @@ fn run(args: &CliArgs) -> Result<String, String> {
             .map(|receipt| &receipt.anchor)
             .filter(|anchor| anchor_matches_first(anchor, first))
             .collect();
+        let genesis_anchor = genesis_anchor_for(first);
         let anchor = if let Some(checkpoint) = checkpoint_anchor.as_ref() {
             checkpoint
         } else if let [anchor] = witness_matches.as_slice() {
             *anchor
+        } else if args.verify_genesis_only && is_legacy_e0_genesis(&lines) {
+            &genesis_anchor
         } else {
             return Err(format!(
                 "tenant={tenant_id}: region={region}: authenticated external bootstrap anchor is absent or ambiguous"
@@ -427,10 +443,47 @@ fn run(args: &CliArgs) -> Result<String, String> {
     if let Some(path) = &args.checkpoint_out {
         write_checkpoints_atomic(path, next_checkpoints.values())?;
     }
-    Ok(format!(
-        "chains_verified={} events_verified={}",
-        chains_verified, events_verified
-    ))
+    if args.verify_genesis_only {
+        Ok(format!(
+            "verification_scope=STRUCTURAL_GENESIS_CHUNK_INTEGRITY chains_verified={} events_verified={}",
+            chains_verified, events_verified
+        ))
+    } else {
+        Ok(format!(
+            "chains_verified={} events_verified={}",
+            chains_verified, events_verified
+        ))
+    }
+}
+
+fn is_legacy_e0_genesis(lines: &[SealedArchiveLine]) -> bool {
+    let Some(first) = lines.first() else {
+        return false;
+    };
+    first.schema == SEALED_LINE_SCHEMA
+        && first.algorithm_id == 0
+        && first.epoch_id == 0
+        && first.link_key_id.is_none()
+        && first.sequence_number == 0
+        && first.prev_hash == ChainHash::genesis().to_hex()
+        && lines.iter().all(|line| {
+            line.schema == SEALED_LINE_SCHEMA
+                && line.algorithm_id == 0
+                && line.epoch_id == 0
+                && line.link_key_id.is_none()
+        })
+}
+
+fn genesis_anchor_for(first: &SealedArchiveLine) -> PartitionAnchor {
+    PartitionAnchor {
+        tenant_id: first.tenant_id.clone(),
+        region: first.region.clone(),
+        next_sequence: 0,
+        next_prev_hash: ChainHash::genesis().to_hex(),
+        current_epoch_id: 0,
+        current_link_key_id: None,
+        allow_epoch_transition: false,
+    }
 }
 
 fn verify_archive_object_binding(
@@ -604,13 +657,35 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
                 _ => unreachable!(),
             }
         } else if arg == "--help" || arg == "-h" {
-            return Err("--chain-keyring PATH is optional; paths are NDJSON archives".to_owned());
+            return Err("usage: verifier [--verify-genesis-only --verify-day YYYY-MM-DD] [--chain-keyring PATH] <ndjson_chunk_path>...".to_owned());
+        } else if arg == "--verify-genesis-only" {
+            if parsed.verify_genesis_only {
+                return Err("--verify-genesis-only may be supplied only once".to_owned());
+            }
+            parsed.verify_genesis_only = true;
         } else if arg.starts_with('-') {
             return Err(format!("unknown option: {arg}"));
         } else {
             parsed.paths.push(arg.clone());
         }
         index = index.saturating_add(1);
+    }
+    let witness_options = usize::from(parsed.witness_id.is_some())
+        + usize::from(parsed.witness_public_keys.is_some())
+        + usize::from(parsed.witness_receipts_dir.is_some())
+        + usize::from(parsed.witness_url.is_some())
+        + usize::from(parsed.witness_head_public_keys.is_some())
+        + usize::from(parsed.witness_epoch_ledger_dir.is_some());
+    if parsed.verify_genesis_only
+        && (parsed.verify_day.is_none()
+            || parsed.paths.len() != 1
+            || keyring_path.is_some()
+            || parsed.checkpoint_in.is_some()
+            || parsed.checkpoint_out.is_some()
+            || parsed.checkpoint_key_id.is_some()
+            || witness_options != 0)
+    {
+        return Err("genesis-only mode requires one object and --verify-day, and forbids keyrings, checkpoints, and witness options".to_owned());
     }
     parsed.keyring = match keyring_path {
         Some(path) => {
@@ -621,32 +696,23 @@ fn parse_args(args: &[String]) -> Result<CliArgs, String> {
         }
         None => LinkKeyring::default(),
     };
-    let checkpoint_mode = parsed.checkpoint_in.is_some()
-        || parsed.checkpoint_out.is_some()
-        || parsed.verify_day.is_some()
-        || parsed.checkpoint_key_id.is_some()
-        || parsed.witness_id.is_some()
-        || parsed.witness_public_keys.is_some()
-        || parsed.witness_receipts_dir.is_some()
-        || parsed.witness_url.is_some()
-        || parsed.witness_head_public_keys.is_some()
-        || parsed.witness_epoch_ledger_dir.is_some();
-    if checkpoint_mode
-        && (parsed.verify_day.is_none()
-            || parsed.checkpoint_key_id.is_none()
-            || parsed.checkpoint_out.is_none())
-    {
-        return Err(
-            "checkpoint mode requires --verify-day, --checkpoint-key-id, and --checkpoint-out"
-                .to_owned(),
-        );
+    if !parsed.verify_genesis_only {
+        let checkpoint_mode = parsed.checkpoint_in.is_some()
+            || parsed.checkpoint_out.is_some()
+            || parsed.verify_day.is_some()
+            || parsed.checkpoint_key_id.is_some()
+            || witness_options != 0;
+        if checkpoint_mode
+            && (parsed.verify_day.is_none()
+                || parsed.checkpoint_key_id.is_none()
+                || parsed.checkpoint_out.is_none())
+        {
+            return Err(
+                "checkpoint mode requires --verify-day, --checkpoint-key-id, and --checkpoint-out"
+                    .to_owned(),
+            );
+        }
     }
-    let witness_options = usize::from(parsed.witness_id.is_some())
-        + usize::from(parsed.witness_public_keys.is_some())
-        + usize::from(parsed.witness_receipts_dir.is_some())
-        + usize::from(parsed.witness_url.is_some())
-        + usize::from(parsed.witness_head_public_keys.is_some())
-        + usize::from(parsed.witness_epoch_ledger_dir.is_some());
     if witness_options != 0 && witness_options != 6 {
         return Err("witness bootstrap requires id, receipt keys, receipt directory, witness URL, head keys, and epoch ledger evidence".to_owned());
     }
@@ -1628,6 +1694,140 @@ mod tests {
             current_link_key_id: value.current_link_key_id,
             allow_epoch_transition: true,
         }
+    }
+
+    fn run_genesis_test_object(lines: &[SealedArchiveLine], day: &str) -> Result<String, String> {
+        let root = std::env::temp_dir().join(format!(
+            "corelink-genesis-verify-test-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let mut body = String::new();
+        for line in lines {
+            body.push_str(&serde_json::to_string(line).map_err(|e| e.to_string())?);
+            body.push('\n');
+        }
+        let first = lines.first().ok_or("test object is empty")?;
+        let base_key = sealed_chunk_key(first);
+        let key = if first.schema == SEALED_LINE_SCHEMA_V2 {
+            format!(
+                "{base_key}.epoch-{}.{}",
+                first.epoch_id,
+                domain_hash(&[], body.as_bytes())
+            )
+        } else {
+            base_key
+        };
+        let path = root.join(".audit-verify-staging/test/chunks").join(key);
+        let parent = path.parent().ok_or("test object path has no parent")?;
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        std::fs::write(&path, body).map_err(|e| e.to_string())?;
+        let raw_args = vec![
+            "--verify-genesis-only".to_owned(),
+            "--verify-day".to_owned(),
+            day.to_owned(),
+            path.display().to_string(),
+        ];
+        let result = parse_args(&raw_args).and_then(|args| run(&args));
+        let _ = std::fs::remove_dir_all(&root);
+        result
+    }
+
+    #[test]
+    fn genesis_only_mode_accepts_one_exact_legacy_e0_chunk_without_checkpoint_output(
+    ) -> Result<(), String> {
+        let epoch = ChainEpoch::legacy();
+        let first = line(&epoch, None, 0, ChainHash::genesis());
+        let second = line(&epoch, None, 1, parse_chain_hash(&first.chain_hash)?);
+        let third = line(&epoch, None, 2, parse_chain_hash(&second.chain_hash)?);
+        let summary = run_genesis_test_object(&[first, second, third], "1970-01-01")?;
+        assert!(summary.contains("verification_scope=STRUCTURAL_GENESIS_CHUNK_INTEGRITY"));
+        assert!(summary.contains("chains_verified=1 events_verified=3"));
+        Ok(())
+    }
+
+    #[test]
+    fn genesis_only_mode_rejects_non_genesis_keyed_mixed_gap_tampered_and_wrong_day_objects(
+    ) -> Result<(), String> {
+        let epoch = ChainEpoch::legacy();
+        let first = line(&epoch, None, 0, ChainHash::genesis());
+        let second = line(&epoch, None, 1, parse_chain_hash(&first.chain_hash)?);
+        let gap = line(&epoch, None, 2, parse_chain_hash(&first.chain_hash)?);
+        assert!(run_genesis_test_object(
+            &[line(&epoch, None, 1, ChainHash::genesis())],
+            "1970-01-01"
+        )
+        .is_err());
+        assert!(run_genesis_test_object(
+            &[line(&epoch, None, 0, ChainHash([3; 32]))],
+            "1970-01-01"
+        )
+        .is_err());
+
+        let keyring = LinkKeyring::parse_json(&format!(r#"{{"7":"{}"}}"#, "ab".repeat(32)))
+            .map_err(|e| e.to_string())?;
+        let keyed_epoch = ChainEpoch::keyed_successor(1, 7, 0, ChainHash::genesis(), 0)
+            .map_err(|e| e.to_string())?;
+        let keyed = line(&keyed_epoch, keyring.get(7), 0, ChainHash::genesis());
+        assert!(run_genesis_test_object(&[keyed], "1970-01-01").is_err());
+
+        let mut mixed = second.clone();
+        mixed.tenant_id = "other-tenant".to_owned();
+        assert!(
+            run_genesis_test_object(&[first.clone(), mixed], "1970-01-01")
+                .is_err_and(|error| error.contains("mixes tenant/region partitions"))
+        );
+        assert!(run_genesis_test_object(&[first.clone(), gap], "1970-01-01").is_err());
+        let mut tampered = second;
+        tampered.chain_hash = "ff".repeat(32);
+        assert!(run_genesis_test_object(&[first, tampered], "1970-01-01").is_err());
+
+        let valid_single = line(&epoch, None, 0, ChainHash::genesis());
+        assert!(run_genesis_test_object(&[valid_single], "1970-01-02")
+            .is_err_and(|error| error.contains("cross-day")));
+        Ok(())
+    }
+
+    #[test]
+    fn genesis_only_mode_rejects_checkpoint_witness_and_multiple_object_options() {
+        assert!(parse_args(&[
+            "--verify-genesis-only".to_owned(),
+            "archive.ndjson".to_owned(),
+        ])
+        .is_err());
+        assert!(parse_args(&[
+            "--verify-genesis-only".to_owned(),
+            "--verify-day".to_owned(),
+            "1970-01-01".to_owned(),
+            "a.ndjson".to_owned(),
+            "b.ndjson".to_owned(),
+        ])
+        .is_err());
+        assert!(parse_args(&[
+            "--verify-genesis-only".to_owned(),
+            "--verify-genesis-only".to_owned(),
+            "--verify-day".to_owned(),
+            "1970-01-01".to_owned(),
+            "a.ndjson".to_owned(),
+        ])
+        .is_err());
+        assert!(parse_args(&[
+            "--verify-genesis-only".to_owned(),
+            "--verify-day".to_owned(),
+            "1970-01-01".to_owned(),
+            "--checkpoint-in".to_owned(),
+            "checkpoint.ndjson".to_owned(),
+            "a.ndjson".to_owned(),
+        ])
+        .is_err());
+        assert!(parse_args(&[
+            "--verify-genesis-only".to_owned(),
+            "--verify-day".to_owned(),
+            "1970-01-01".to_owned(),
+            "--witness-id".to_owned(),
+            "test-witness".to_owned(),
+            "a.ndjson".to_owned(),
+        ])
+        .is_err());
     }
 
     #[test]
