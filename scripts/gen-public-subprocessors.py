@@ -90,12 +90,14 @@ PUBLIC_EXCLUDED = {
 }
 
 # The §2 register table describes vendor risk, not storage topology. Keep the
-# one architecture-sensitive public disclosure explicit here so generation
-# cannot resurrect the old blanket "tenant-pinned" claim for Cloudflare: R2
-# objects and jurisdictional DO state are tenant-pinned, while the shared D1
-# control-plane metadata is global and covered by SCC/TIA safeguards.
+# architecture-sensitive public disclosures explicit here so generation
+# cannot resurrect blanket "tenant-pinned" claims: Cloudflare R2/DO state
+# differs from shared D1 metadata; Resend stores data in the US even when
+# an email-sending region varies.
 PUBLIC_REGION_OVERRIDES = {
     "Cloudflare, Inc.": "R2/DO tenant-pinned; D1 control-plane metadata global under SCC/TIA safeguards",
+    "Resend, Inc.": "United States (data storage; [sending region may vary](https://resend.com/security/gdpr))",
+    "Plausible Insights OÜ (Plausible Analytics)": "European Union (visitor data)",
 }
 
 # Vendors that are registered (real client code + reviewed contract posture)
