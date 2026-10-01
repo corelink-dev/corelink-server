@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -42,6 +45,41 @@ def secret_listing(*, key_id: str = KEY_ID, fingerprint: str = FINGERPRINT, vali
 
 
 class GpgAuditContractTest(unittest.TestCase):
+    def test_primary_uid_export_filter_on_public_fixture_and_legacy_failure(self) -> None:
+        fixture = ROOT / "tests/fixtures/i2571-release-pubkey.asc"
+        self.assertEqual(fixture.read_bytes(), (ROOT / "docs/internal/gpg-release-pubkey.asc").read_bytes())
+        self.assertEqual(audit.PRIMARY_UID_EXPORT_FILTER, "keep-uid=primary -t")
+        with tempfile.TemporaryDirectory(prefix="i2571-public-gpg-fixture-") as home:
+            env = {**os.environ, "GNUPGHOME": home, "LC_ALL": "C"}
+            imported = subprocess.run(
+                ["gpg", "--batch", "--no-tty", "--import", str(fixture)],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=20,
+            )
+            self.assertEqual(imported.returncode, 0)
+            good = subprocess.run(
+                ["gpg", "--batch", "--no-tty", "--export-filter", audit.PRIMARY_UID_EXPORT_FILTER,
+                 "--export", FINGERPRINT],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=20,
+            )
+            self.assertEqual(good.returncode, 0, good.stderr.decode("utf-8", errors="replace"))
+            self.assertTrue(good.stdout)
+            inspected = subprocess.run(
+                ["gpg", "--batch", "--no-tty", "--with-colons", "--fixed-list-mode",
+                 "--with-fingerprint", "--show-keys"],
+                input=good.stdout, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                check=False, timeout=20,
+            )
+            self.assertEqual(inspected.returncode, 0)
+            parsed = audit.parse_identity(inspected.stdout.decode("utf-8"), now_epoch=NOW)
+            self.assertEqual(parsed["fingerprint"], FINGERPRINT)
+            self.assertEqual(parsed["primary_uid"], UID)
+            legacy = subprocess.run(
+                ["gpg", "--batch", "--no-tty", "--export-filter", "keep-uid=primary",
+                 "--export", FINGERPRINT],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=20,
+            )
+            self.assertNotEqual(legacy.returncode, 0)
+
     def test_synthetic_expected_identity_is_bound(self) -> None:
         observed = audit.parse_identity(listing(), now_epoch=NOW)
         self.assertEqual(observed["fingerprint"], FINGERPRINT)
