@@ -33,6 +33,7 @@ from b125_d1_api_diagnostic import (  # noqa: E402
     record_diagnostic,
     request_once,
 )
+from b125_attribution_query import ATTRIBUTION_SQL  # noqa: E402
 
 
 WORKFLOW = ROOT / ".github/workflows/b125-audit-throughput-read-only.yml"
@@ -221,6 +222,12 @@ def test_workflow_keeps_all_required_query_ids_and_remote_only_execution() -> No
     assert "deployment_receipt_ref:" in source
     assert "capture_mode:" in source
     assert "diagnostic_only" in source
+    assert "attribution_diagnostic" in source
+    assert 'attribution_diagnostic) [[ "$CONFIRM" == "attribute-b125-history" ]]' in source
+    assert 'elif [[ "$CAPTURE_MODE" == "attribution_diagnostic" ]]; then\n            run_query attribution' in source
+    assert 'fail_closed "attribution_diagnostic_not_closure_evidence"' in source
+    assert 'SQL[attribution]="$(python3 -B scripts/b125_attribution_query.py --emit-sql)"' in source
+    assert hashlib.sha256(ATTRIBUTION_SQL.encode()).hexdigest() == "2093264114d40f6bcd86171faedfb6adc2eba597ada6974a3bbfb1ea28a9459b"
     assert 'diagnostic_only) [[ "$CONFIRM" == "diagnose-b125-hourly" ]]' in source
     assert 'if [[ "$CAPTURE_MODE" == "diagnostic_only" ]]; then\n            python3 scripts/b125_d1_api_diagnostic.py' in source
     assert 'fail_closed "diagnostic_only_capture_not_closure_evidence"' in source
