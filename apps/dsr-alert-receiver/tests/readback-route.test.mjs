@@ -15,6 +15,8 @@ const context = {
 };
 const versionId = "123e4567-e89b-42d3-a456-426614174000";
 const deploymentId = "123e4567-e89b-42d3-a456-426614174001";
+const activeVerification = { http_status: 200, error_class: "none", active_status: "active", token_id_shape: "valid_32_hex" };
+const inactiveVerification = { http_status: 200, error_class: "none", active_status: "inactive", token_id_shape: "valid_32_hex" };
 
 function apiFixture(overrides = {}) {
   const calls = [];
@@ -80,6 +82,7 @@ describe("B-216 read-only Worker inventory", () => {
       token_active: true,
       account_5128_scope: true,
       workers_admin_on_5128: true,
+      verification: activeVerification,
     });
     expect(calls.map(({ url }) => new URL(url).pathname)).toEqual([
       "/client/v4/user/tokens/verify",
@@ -93,6 +96,127 @@ describe("B-216 read-only Worker inventory", () => {
     }
     expect(JSON.stringify(diagnostic)).not.toContain(apiToken);
     expect(JSON.stringify(diagnostic)).not.toContain(tokenId);
+  });
+
+  it("records only an allowlisted active-status and ID-shape summary for malformed verification fields", async () => {
+    const tokenId = "f".repeat(32);
+    const diagnostic = await readTokenPolicyDiagnostic({
+      apiToken: context.apiToken,
+      fetchImpl: async () => Response.json({ success: true, result: { id: tokenId, status: { private: "status" } } }),
+    });
+    expect(diagnostic).toEqual({
+      status: "verify_unknown",
+      token_active: null,
+      account_5128_scope: null,
+      workers_admin_on_5128: null,
+      verification: { http_status: 200, error_class: "malformed_verification_fields", active_status: "other", token_id_shape: "valid_32_hex" },
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain(tokenId);
+    expect(JSON.stringify(diagnostic)).not.toContain("private");
+  });
+
+  it("records a malformed ID shape without retaining its value", async () => {
+    const secretLikeId = "provider-private-id-value";
+    const diagnostic = await readTokenPolicyDiagnostic({
+      apiToken: context.apiToken,
+      fetchImpl: async () => Response.json({ success: true, result: { id: secretLikeId, status: "active" } }),
+    });
+    expect(diagnostic.verification).toEqual({
+      http_status: 200,
+      error_class: "malformed_verification_fields",
+      active_status: "active",
+      token_id_shape: "malformed",
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain(secretLikeId);
+  });
+
+  it("records an HTTP error class and numeric status without reading a non-200 body", async () => {
+    const privateBody = "private provider response must not persist";
+    const diagnostic = await readTokenPolicyDiagnostic({
+      apiToken: context.apiToken,
+      fetchImpl: async () => new Response(privateBody, { status: 502 }),
+    });
+    expect(diagnostic).toEqual({
+      status: "verify_unknown",
+      token_active: null,
+      account_5128_scope: null,
+      workers_admin_on_5128: null,
+      verification: { http_status: 502, error_class: "http_response", active_status: "unknown", token_id_shape: "not_checked" },
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain(privateBody);
+  });
+
+  it("distinguishes a verify 403 by status while keeping response data private", async () => {
+    const diagnostic = await readTokenPolicyDiagnostic({
+      apiToken: context.apiToken,
+      fetchImpl: async () => new Response("private access details", { status: 403 }),
+    });
+    expect(diagnostic.status).toBe("unknown_access");
+    expect(diagnostic.verification).toEqual({
+      http_status: 403,
+      error_class: "http_response",
+      active_status: "unknown",
+      token_id_shape: "not_checked",
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("private access details");
+  });
+
+  it("records a timeout without retaining an exception message", async () => {
+    const diagnostic = await readTokenPolicyDiagnostic({
+      apiToken: context.apiToken,
+      fetchImpl: async () => { throw new DOMException("private timeout text", "TimeoutError"); },
+    });
+    expect(diagnostic.verification).toEqual({
+      http_status: null,
+      error_class: "timeout",
+      active_status: "unknown",
+      token_id_shape: "not_checked",
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("private timeout text");
+  });
+
+  it("records a transport error class without retaining an exception message", async () => {
+    const diagnostic = await readTokenPolicyDiagnostic({
+      apiToken: context.apiToken,
+      fetchImpl: async () => { throw new Error("private transport detail"); },
+    });
+    expect(diagnostic.verification).toEqual({
+      http_status: null,
+      error_class: "transport_error",
+      active_status: "unknown",
+      token_id_shape: "not_checked",
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("private transport detail");
+  });
+
+  it("classifies malformed JSON without retaining its body", async () => {
+    const privateBody = "private malformed JSON body";
+    const diagnostic = await readTokenPolicyDiagnostic({
+      apiToken: context.apiToken,
+      fetchImpl: async () => new Response(privateBody, { status: 200 }),
+    });
+    expect(diagnostic.verification).toEqual({
+      http_status: 200,
+      error_class: "malformed_json",
+      active_status: "unknown",
+      token_id_shape: "not_checked",
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain(privateBody);
+  });
+
+  it("classifies an unsuccessful 200 envelope without retaining provider data", async () => {
+    const privateMarker = "private provider error marker";
+    const diagnostic = await readTokenPolicyDiagnostic({
+      apiToken: context.apiToken,
+      fetchImpl: async () => Response.json({ success: false, errors: [{ message: privateMarker }] }),
+    });
+    expect(diagnostic.verification).toEqual({
+      http_status: 200,
+      error_class: "malformed_payload",
+      active_status: "unknown",
+      token_id_shape: "not_checked",
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain(privateMarker);
   });
 
   it("never treats denied detail access as absent token or missing Workers Admin", async () => {
@@ -110,6 +234,7 @@ describe("B-216 read-only Worker inventory", () => {
       token_active: true,
       account_5128_scope: null,
       workers_admin_on_5128: null,
+      verification: activeVerification,
     });
     expect(calls).toHaveLength(2);
     expect(JSON.stringify(diagnostic)).not.toContain("private provider message");
@@ -127,6 +252,7 @@ describe("B-216 read-only Worker inventory", () => {
       token_active: false,
       account_5128_scope: null,
       workers_admin_on_5128: null,
+      verification: inactiveVerification,
     });
     expect(calls).toHaveLength(1);
   });
@@ -149,6 +275,7 @@ describe("B-216 read-only Worker inventory", () => {
       token_active: true,
       account_5128_scope: null,
       workers_admin_on_5128: null,
+      verification: activeVerification,
     });
   });
 
@@ -169,6 +296,7 @@ describe("B-216 read-only Worker inventory", () => {
       token_active: true,
       account_5128_scope: null,
       workers_admin_on_5128: null,
+      verification: activeVerification,
     });
   });
 
@@ -191,6 +319,7 @@ describe("B-216 read-only Worker inventory", () => {
       token_active: true,
       account_5128_scope: true,
       workers_admin_on_5128: false,
+      verification: activeVerification,
     });
   });
 
@@ -218,6 +347,7 @@ describe("B-216 read-only Worker inventory", () => {
       token_active: true,
       account_5128_scope: null,
       workers_admin_on_5128: null,
+      verification: activeVerification,
     });
   });
 
@@ -241,6 +371,7 @@ describe("B-216 read-only Worker inventory", () => {
         token_active: true,
         account_5128_scope: null,
         workers_admin_on_5128: null,
+        verification: activeVerification,
       });
       expect(JSON.stringify(receipt)).not.toContain("private provider message");
       expect(JSON.stringify(receipt)).not.toContain(context.apiToken);

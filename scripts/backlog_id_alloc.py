@@ -41,9 +41,21 @@ class AllocationError(ValueError):
 ID_RE = re.compile(r"^B-(\d+)$")
 
 
+# Historical external-issue identities sit outside the allocator sequence.
+# backlog_verify owns the table (B-1630 = GitHub issue #1630, bound by immutable
+# V0004); importing it keeps one authority. Such an id is never allocated and
+# never counted toward the dense primary range or its maximum, but once present
+# it may not disappear. Every other gap stays fatal.
+HISTORICAL_ALIASES = frozenset(
+    int(ID_RE.fullmatch(key).group(1))  # type: ignore[union-attr]
+    for key in backlog_verify.HISTORICAL_EXTERNAL_ISSUE_IDS
+)
+
+
 @dataclass(frozen=True)
 class Census:
     ids: tuple[int, ...]
+    aliases: tuple[int, ...] = ()
 
     @property
     def maximum(self) -> int:
@@ -81,14 +93,17 @@ def _strict_ids(text: str, source: str) -> Census:
         raise AllocationError(
             f"{source}: duplicate ids: {', '.join(f'B-{n:03d}' for n in duplicates)}"
         )
-    ordered = sorted(numbers)
+    aliases = sorted(number for number in numbers if number in HISTORICAL_ALIASES)
+    ordered = sorted(number for number in numbers if number not in HISTORICAL_ALIASES)
+    if not ordered:
+        raise AllocationError(f"{source}: no primary backlog ids")
     expected = list(range(1, ordered[-1] + 1))
     if ordered != expected:
         missing = sorted(set(expected) - set(ordered))
         rendered = ", ".join(f"B-{n:03d}" for n in missing[:12])
         suffix = " …" if len(missing) > 12 else ""
         raise AllocationError(f"{source}: dense census has gaps: {rendered}{suffix}")
-    return Census(tuple(ordered))
+    return Census(tuple(ordered), tuple(aliases))
 
 
 def allocation(
@@ -111,11 +126,18 @@ def allocation(
     candidate = _strict_ids(candidate_text, candidate_source)
     main_set = set(main.ids)
     candidate_set = set(candidate.ids)
-    missing = sorted(main_set - candidate_set)
+    missing = sorted((main_set | set(main.aliases)) - (candidate_set | set(candidate.aliases)))
     if missing:
         shown = ", ".join(f"B-{n:03d}" for n in missing[:12])
         suffix = " …" if len(missing) > 12 else ""
         raise AllocationError(f"candidate silently removed main ids: {shown}{suffix}")
+    reference_aliases = set(main.aliases)
+    if base_text is not None:
+        reference_aliases &= set(_strict_ids(base_text, base_source).aliases)
+    minted = sorted(set(candidate.aliases) - reference_aliases)
+    if minted:
+        shown = ", ".join(f"B-{n:03d}" for n in minted)
+        raise AllocationError(f"historical alias cannot be allocated: {shown}")
     # An ID introduced by this PR must be identified against the PR's base,
     # not only against current main.  Otherwise a second PR carrying the same
     # B-NNN after the first one merged would appear to add nothing and pass.

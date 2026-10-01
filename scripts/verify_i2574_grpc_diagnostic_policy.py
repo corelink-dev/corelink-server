@@ -555,6 +555,12 @@ def self_test() -> None:
 
 RECEIVER_ALLOWED = re.compile(r"^(apps/dsr-alert-receiver/|\.github/workflows/(issue-2730-dsr-alert-receiver|b216-receiver-deploy-nonprod)\.yml$|docs/campaigns/remediation/wp150-workflow-ownership\.md$|docs/internal/secrets-checklist\.md$)")
 RECEIVER_OWNED = re.compile(r"^(apps/dsr-alert-receiver/|\.github/workflows/b216-receiver-deploy-nonprod\.yml$)")
+# changelog-validate requires an ADDED changelog.d fragment on every feat:/fix:
+# PR, so a receiver change may carry exactly one more shape: a flat, ADDED
+# fragment. A modified or deleted fragment, README.md, or any nested/dotted
+# path stays foreign; added-ness comes from git, never from the path alone.
+RECEIVER_CHANGELOG_FRAGMENT = re.compile(r"^changelog\.d/[a-z0-9][a-z0-9._-]*\.md$")
+RECEIVER_CHANGELOG_README = "changelog.d/README.md"
 WALLET_ROUTE_PATHS = frozenset({
     "crates/corelink-stripe-real/src/client.rs",
     "crates/corelink-stripe-real/src/client/tests_part_01.rs",
@@ -565,9 +571,22 @@ WALLET_ROUTE_PATHS = frozenset({
 PRIVACY_MARKERS = re.compile(r"console\.(?:log|error|warn)|DSR_DLQ_ALERT_AUTH_TOKEN|tenant_id|subject_id|raw body", re.IGNORECASE)
 
 
-def validate_receiver_path_boundary(changed_paths: set[str], repository: Path) -> None:
+def is_added_receiver_changelog_fragment(path: str, added_paths: frozenset[str] | set[str]) -> bool:
+    return (
+        path in added_paths
+        and path != RECEIVER_CHANGELOG_README
+        and RECEIVER_CHANGELOG_FRAGMENT.fullmatch(path) is not None
+    )
+
+
+def validate_receiver_path_boundary(
+    changed_paths: set[str], repository: Path, added_paths: frozenset[str] | set[str] = frozenset()
+) -> None:
     if any(RECEIVER_OWNED.search(path) for path in changed_paths):
-        foreign = sorted(path for path in changed_paths if not RECEIVER_ALLOWED.search(path))
+        foreign = sorted(
+            path for path in changed_paths
+            if not RECEIVER_ALLOWED.search(path) and not is_added_receiver_changelog_fragment(path, added_paths)
+        )
         if foreign:
             raise ContractError(f"receiver change includes foreign paths: {foreign}")
     source = repository / "apps/dsr-alert-receiver/src"
@@ -581,7 +600,13 @@ def check_receiver_path_boundary(repository: Path, base_sha: str) -> None:
         ["git", "-C", str(repository), "diff", "--name-only", f"{base_sha}...HEAD"],
         check=True, capture_output=True, text=True,
     )
-    validate_receiver_path_boundary(set(result.stdout.splitlines()), repository)
+    added = subprocess.run(
+        ["git", "-C", str(repository), "diff", "--name-only", "--diff-filter=A", f"{base_sha}...HEAD"],
+        check=True, capture_output=True, text=True,
+    )
+    validate_receiver_path_boundary(
+        set(result.stdout.splitlines()), repository, frozenset(added.stdout.splitlines())
+    )
 
 
 def main() -> int:

@@ -1,4 +1,6 @@
 """Adversarial regressions for the protected #2574 delivery predicate."""
+import re
+import subprocess
 import sys
 import hashlib
 import tempfile
@@ -115,6 +117,77 @@ class PolicyTests(unittest.TestCase):
             entry.write_text("console.log('raw body');\n")
             with self.assertRaises(policy.ContractError):
                 policy.validate_receiver_path_boundary({"infra/staging/topology.json"}, root)
+
+    def test_receiver_boundary_admits_only_an_added_flat_changelog_fragment(self) -> None:
+        receiver = "apps/dsr-alert-receiver/src/handler.ts"
+        fragment = "changelog.d/i1678-token-verify-error-class.md"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            policy.validate_receiver_path_boundary({receiver, fragment}, root, {fragment})
+            # Modified: changed but not added. The two-argument caller has no
+            # added-path evidence, so it must keep refusing the fragment too.
+            for added in ({receiver}, frozenset()):
+                with self.assertRaisesRegex(policy.ContractError, "i1678-token-verify-error-class"):
+                    policy.validate_receiver_path_boundary({receiver, fragment}, root, added)
+            with self.assertRaisesRegex(policy.ContractError, "i1678-token-verify-error-class"):
+                policy.validate_receiver_path_boundary({receiver, fragment}, root)
+            for foreign in (
+                "changelog.d/README.md",
+                "changelog.d/../x.md",
+                "changelog.d/sub/x.md",
+                "changelog.d/.hidden.md",
+                "changelog.d/x.md.txt",
+                "changelog.d/x.md\n",
+                "CHANGELOG.md",
+                "scripts/verify_i2574_grpc_diagnostic_policy.py",
+            ):
+                with self.subTest(foreign=foreign):
+                    with self.assertRaises(policy.ContractError) as raised:
+                        policy.validate_receiver_path_boundary({receiver, foreign}, root, {foreign})
+                    self.assertIn(repr(foreign), str(raised.exception))
+
+    def test_receiver_boundary_reads_added_status_from_git(self) -> None:
+        def git(root: Path, *args: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(root), "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                 "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", *args],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+        receiver = Path("apps/dsr-alert-receiver/src/handler.ts")
+        existing = Path("changelog.d/existing-fragment.md")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            git(root, "init", "-q")
+            for relative in (receiver, existing, Path("changelog.d/README.md")):
+                (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative).write_text("base\n")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "base")
+            base = git(root, "rev-parse", "HEAD")
+
+            def candidate(*edits: Path) -> None:
+                git(root, "checkout", "-q", "--detach", base)
+                for relative in (receiver, *edits):
+                    (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                    (root / relative).write_text("candidate\n")
+                git(root, "add", "-A")
+                git(root, "commit", "-q", "-m", "candidate")
+
+            candidate(Path("changelog.d/i1678-new-entry.md"))
+            policy.check_receiver_path_boundary(root, base)
+            for edit in (existing, Path("changelog.d/README.md"), Path("CHANGELOG.md")):
+                with self.subTest(edit=str(edit)):
+                    candidate(edit)
+                    with self.assertRaisesRegex(policy.ContractError, re.escape(str(edit))):
+                        policy.check_receiver_path_boundary(root, base)
+            git(root, "checkout", "-q", "--detach", base)
+            git(root, "rm", "-q", str(existing))
+            (root / receiver).write_text("candidate\n")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "delete fragment")
+            with self.assertRaisesRegex(policy.ContractError, re.escape(str(existing))):
+                policy.check_receiver_path_boundary(root, base)
 
 
 if __name__ == "__main__":
