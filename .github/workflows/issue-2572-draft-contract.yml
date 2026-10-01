@@ -12,6 +12,7 @@ on:
       - Cargo.lock
       - scripts/cli_release_draft_manifest.py
       - scripts/cli_release_api.py
+      - scripts/normalize_cli_attestation_bundle.py
       - scripts/gh_2.79.0_checksums.json
       - scripts/install_pinned_gh.py
       - scripts/verify_cli_release_draft.py
@@ -19,11 +20,13 @@ on:
       - scripts/verify_pinned_gh.py
       - tests/test_cli_release_b112_behavior.py
       - tests/test_cli_release_draft_contract.py
+      - tests/test_cli_attestation_bundle.py
       - scripts/verify_b112_release_root_cause.py
       - tools/cli/Cargo.toml
       - tools/cli/tests/release_workflow_contract/assertions.rs
       - tools/cli/tests/release_workflow_contract/cases.rs
       - changelog.d/2572-draft-only-cli-release.md
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -76,6 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -B -m unittest tests.test_cli_release_draft_contract -v
+          python3 -B -m unittest tests.test_cli_attestation_bundle -v
           python3 -B -m pytest tests/test_cli_release_b112_behavior.py -q
           python3 -B scripts/verify_b112_release_root_cause.py
           python3 scripts/verify_i2050_release_dryrun_contract.py contract --base-sha "${BASE_SHA}"
@@ -104,12 +108,11 @@ jobs:
           cat > "${RUNNER_TEMP}/allowed-paths.txt" <<'EOF'
           .github/workflows/issue-2572-draft-contract.yml
           .github/workflows/release-cli.yml
-          Cargo.lock
-          scripts/cli_release_api.py
-          scripts/verify_b112_release_root_cause.py
-          tests/test_cli_release_b112_behavior.py
+          .github/workflows/release-slsa3.yml
+          scripts/normalize_cli_attestation_bundle.py
+          scripts/test_pinned_gh_consumers.py
+          tests/test_cli_attestation_bundle.py
           tests/test_cli_release_draft_contract.py
-          tools/cli/Cargo.toml
           tools/cli/tests/release_workflow_contract/assertions.rs
           tools/cli/tests/release_workflow_contract/cases.rs
           EOF
@@ -119,6 +122,132 @@ jobs:
             echo 'issue 2572 candidate must match the exact frozen corrective source scope' >&2
             exit 1
           fi
+
+  verify-preserved-cli-017-draft:
+    name: read-only verification of preserved CLI 0.1.7 draft
+    if: github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      attestations: read
+      contents: read
+    steps:
+      - name: Check out trusted main without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Bind operator source separately from immutable artifact source
+        env:
+          OPERATOR_SHA: ${{ github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
+          test "${REPOSITORY_ID}" = "1232040291"
+          test "${EVENT_REF}" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "${OPERATOR_SHA}"
+          test "${OPERATOR_SHA}" = "${GITHUB_SHA}"
+          printf 'Trusted operator SHA: %s\nImmutable release source SHA: %s\n' \
+            "${OPERATOR_SHA}" 'd36cb1639ecd406e304d612da4143e9b28fba6a7' \
+            >> "${GITHUB_STEP_SUMMARY}"
+      - name: Verify the original annotated source tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: d36cb1639ecd406e304d612da4143e9b28fba6a7
+          TAG_OBJECT: ff20044f73ec116ba118ef6d8a35e85c959e244e
+        run: |
+          set -euo pipefail
+          REF_JSON="${RUNNER_TEMP}/cli-v0.1.7-source-ref.json"
+          TAG_JSON="${RUNNER_TEMP}/cli-v0.1.7-source-tag.json"
+          gh api "repos/HuGR-dev/corelink-server/git/ref/tags/cli-v0.1.7" > "${REF_JSON}"
+          python3 - "${REF_JSON}" "${TAG_OBJECT}" <<'PY'
+          import json, sys
+          ref = json.load(open(sys.argv[1], encoding="utf-8"))
+          obj = ref.get("object")
+          if not isinstance(obj, dict) or obj.get("sha") != sys.argv[2] or obj.get("type") != "tag":
+              raise SystemExit("release source ref is not the pinned annotated tag object")
+          PY
+          gh api "repos/HuGR-dev/corelink-server/git/tags/${TAG_OBJECT}" > "${TAG_JSON}"
+          python3 - "${TAG_JSON}" "${SOURCE_SHA}" <<'PY'
+          import json, sys
+          tag = json.load(open(sys.argv[1], encoding="utf-8"))
+          target = tag.get("object")
+          if (not isinstance(target, dict) or target.get("sha") != sys.argv[2]
+                  or target.get("type") != "commit"
+                  or tag.get("verification", {}).get("verified") is not True):
+              raise SystemExit("original source tag is not the exact verified annotated tag")
+          PY
+      - name: Install checksum-pinned GitHub CLI 2.79.0
+        run: |
+          set -euo pipefail
+          GH_BIN="${RUNNER_TEMP}/corelink-pinned-gh/gh"
+          python3 -B scripts/install_pinned_gh.py --output "${GH_BIN}"
+          python3 -B scripts/verify_pinned_gh.py --binary "${GH_BIN}"
+          echo "${RUNNER_TEMP}/corelink-pinned-gh" >> "${GITHUB_PATH}"
+      - name: Verify exact draft assets and original SLSA signatures without mutation
+        env:
+          GH_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
+          TAG: cli-v0.1.7
+          RELEASE_ID: "401070424"
+          SOURCE_SHA: d36cb1639ecd406e304d612da4143e9b28fba6a7
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$(gh --version | awk 'NR == 1 {print $3}')" = "2.79.0"
+          test "$(command -v gh)" = "${RUNNER_TEMP}/corelink-pinned-gh/gh"
+          API_JSON="${RUNNER_TEMP}/cli-v0.1.7-release.json"
+          ASSETS="${RUNNER_TEMP}/cli-v0.1.7-assets"
+          mkdir -m 700 "${ASSETS}"
+          python3 -B scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli \
+            --tag "${TAG}" --release-id "${RELEASE_ID}" --expected-state draft \
+            --format json > "${API_JSON}"
+          gh release download "${TAG}" --repo HuGR-Labs/corelink-cli --dir "${ASSETS}"
+          MANIFEST_SHA256="$(python3 - "${API_JSON}" <<'PY'
+          import json, re, sys
+          release_assets = json.load(open(sys.argv[1], encoding="utf-8")).get("assets")
+          matches = [item.get("digest") for item in release_assets
+                     if isinstance(item, dict) and item.get("name") == "release-manifest.json"]
+          if len(matches) != 1 or not isinstance(matches[0], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", matches[0]):
+              raise SystemExit("release API lacks one canonical manifest digest")
+          print(matches[0].split(":", 1)[1])
+          PY
+          )"
+          python3 -B scripts/verify_cli_release_draft.py \
+            --api-json "${API_JSON}" --directory "${ASSETS}" \
+            --manifest "${ASSETS}/release-manifest.json" \
+            --provenance "${ASSETS}/provenance.intoto.jsonl" \
+            --bundle "${ASSETS}/provenance.intoto.jsonl.bundle" \
+            --public-key docs/internal/gpg-release-pubkey.asc \
+            --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
+            --manifest-sha256 "${MANIFEST_SHA256}"
+      - name: Verify original SLSA attestations with source-repository read permission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: cli-v0.1.7
+          SOURCE_SHA: d36cb1639ecd406e304d612da4143e9b28fba6a7
+          SOURCE_REPOSITORY: HuGR-dev/corelink-server
+        run: |
+          set -euo pipefail
+          umask 077
+          ASSETS="${RUNNER_TEMP}/cli-v0.1.7-assets"
+          NORMALIZED_BUNDLE="${RUNNER_TEMP}/cli-v0.1.7-attestation.json"
+          python3 -B scripts/normalize_cli_attestation_bundle.py \
+            "${ASSETS}/provenance.intoto.jsonl.bundle" "${NORMALIZED_BUNDLE}"
+          python3 - "${ASSETS}/release-manifest.json" <<'PY' | while IFS= read -r name; do
+          import json, sys
+          for item in json.load(open(sys.argv[1], encoding="utf-8"))["artifacts"]:
+              print(item["name"])
+          PY
+            gh attestation verify "${ASSETS}/${name}" \
+              --bundle "${NORMALIZED_BUNDLE}" --repo "${SOURCE_REPOSITORY}" \
+              --signer-workflow "${SOURCE_REPOSITORY}/.github/workflows/release-slsa3.yml" \
+              --source-ref "refs/tags/${TAG}" --source-digest "${SOURCE_SHA}" \
+              --cert-oidc-issuer "https://token.actions.githubusercontent.com"
+          done
+          echo 'Verified preserved release ID 401070424 as an unpublished draft; no release mutation was issued.' \
+            >> "${GITHUB_STEP_SUMMARY}"
 
   package-smoke-linux:
     name: Linux package smoke (${{ matrix.target.name }})

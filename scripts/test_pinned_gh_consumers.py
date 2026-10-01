@@ -125,6 +125,50 @@ def execute_run(run: str, runner_temp: Path, path: str) -> subprocess.CompletedP
     )
 
 
+def assert_bundle_suffix_behavior(binary: Path, runner_temp: Path) -> None:
+    """Prove the actual pinned CLI rejects `.bundle` and accepts `.json` parsing."""
+    fixture = runner_temp / "bundle-extension-fixture"
+    fixture.mkdir(mode=0o700)
+    artifact = fixture / "subject.bin"
+    artifact.write_bytes(b"fixed offline bundle suffix fixture")
+    unsupported = fixture / "attestation.bundle"
+    supported = fixture / "attestation.json"
+    malformed = b"{}\n"
+    unsupported.write_bytes(malformed)
+    supported.write_bytes(malformed)
+    environment = {
+        "PATH": str(binary.parent),
+        "HOME": str(fixture / "home"),
+        "GH_CONFIG_DIR": str(fixture / "config"),
+        "LC_ALL": "C",
+        "GH_TOKEN": "",
+        "GH_ENTERPRISE_TOKEN": "",
+        "GITHUB_ENTERPRISE_TOKEN": "",
+    }
+    Path(environment["HOME"]).mkdir(mode=0o700)
+    Path(environment["GH_CONFIG_DIR"]).mkdir(mode=0o700)
+    common = [
+        str(binary), "attestation", "verify", str(artifact),
+        "--repo", "HuGR-Labs/corelink-cli",
+        "--signer-workflow", "HuGR-dev/corelink-server/.github/workflows/release-slsa3.yml",
+        "--source-ref", "refs/tags/cli-v0.1.7",
+        "--source-digest", "d36cb1639ecd406e304d612da4143e9b28fba6a7",
+        "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
+    ]
+    rejected = subprocess.run(
+        [*common, "--bundle", str(unsupported)], capture_output=True, text=True,
+        env=environment, check=False, timeout=20,
+    )
+    require(rejected.returncode != 0 and "bundle file extension not supported" in rejected.stderr,
+            "pinned gh must reject the public `.bundle` suffix with its exact extension error")
+    parsed = subprocess.run(
+        [*common, "--bundle", str(supported)], capture_output=True, text=True,
+        env=environment, check=False, timeout=20,
+    )
+    require(parsed.returncode != 0 and "bundle file extension not supported" not in parsed.stderr,
+            "pinned gh must accept `.json` and proceed to parse the bundle without network credentials")
+
+
 def main() -> int:
     workflows = read_workflows()
     consumers = []
@@ -177,6 +221,7 @@ def main() -> int:
         binary = binary_dir / "gh"
         installed = install(binary)
         require(installed == binary, "installer returned a different executable path")
+        assert_bundle_suffix_behavior(binary, runner_temp)
         python_dir = str(Path(sys.executable).resolve().parent)
         pinned_path = os.pathsep.join((str(binary_dir), python_dir, os.defpath))
 
@@ -219,7 +264,7 @@ def main() -> int:
         require(wrong_result.returncode != 0 and "digest mismatch" in wrong_result.stderr,
                 "actual Bash guard must reject a wrong-version executable by digest")
 
-    print("checksum-pinned Linux gh, exact six Bash guard bytes, auth census, and negatives: PASS")
+    print("checksum-pinned Linux gh, actual bundle suffix behavior, six Bash guards, auth census, negatives: PASS")
     return 0
 
 
