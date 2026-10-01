@@ -5,9 +5,37 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
 ) -> Result<(), String> {
     let workflow = release_workflow()?;
     assert_release_contract(&workflow);
+    assert_draft_only_release_contract(&workflow);
     assert_release_tag_shell_boundary(&workflow);
     assert_publication_inventory_contract(&workflow);
     assert_retry_manifest_contract(&workflow);
+
+    for (mutant, label) in [
+        (
+            workflow.replacen("default: draft-only", "default: signed-public", 1),
+            "draft-only must remain the default",
+        ),
+        (
+            workflow.replace(
+                "always() && inputs.release_mode == 'signed-public' &&",
+                "always() && true &&",
+            ),
+            "draft-only must never reach public publication",
+        ),
+        (
+            workflow.replace(
+                "if: inputs.release_mode == 'signed-public'\n    needs: [sign-linux, release]",
+                "if: always()\n    needs: [sign-linux, release]",
+            ),
+            "Windows signer must stay out of draft-only mode",
+        ),
+    ] {
+        assert_ne!(mutant, workflow, "{label} mutation must take effect");
+        assert!(
+            std::panic::catch_unwind(|| assert_draft_only_release_contract(&mutant)).is_err(),
+            "draft-only release contract accepted {label}"
+        );
+    }
 
     for target in [
         "x86_64-unknown-linux-gnu",
@@ -110,7 +138,7 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
         "provenance must directly depend on the staged release"
     );
     let publish_without_release = workflow.replace(
-        "needs: [release-slsa3, release-readiness, final-manifest, release]",
+        "needs: [release-slsa3, release-readiness, final-manifest, release, sign-windows]",
         "needs: [release-slsa3, release-readiness, final-manifest]",
     );
     assert!(
@@ -184,7 +212,7 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
 
     let windows = load_workflow("sign-windows.yml")?;
     assert!(
-        workflow.contains("sign-windows:\n    needs: [sign-linux, release]"),
+        workflow.contains("sign-windows:\n    if: inputs.release_mode == 'signed-public'\n    needs: [sign-linux, release]"),
         "Windows signing must wait for Linux through a release-root needs edge"
     );
     assert!(
