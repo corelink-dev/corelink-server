@@ -1,6 +1,6 @@
 name: Issue 2165 bounded nonproduction ECR image build
 
-# Manual build only. No deployment or ECR deletion is performed here. A
+# Manual build only. No deployment is performed here. A
 # protected lease in the B083 target manifest authorizes one run. The current
 # manifest contract has no cumulative campaign ledger; image_build.spent_usd,
 # remaining_usd, spend_receipt_ref, and budget_checked_at are an explicit new
@@ -47,6 +47,7 @@ jobs:
       MANIFEST_ARN: ${{ vars.B083_TARGET_MANIFEST_SECRET_ARN }}
       PREFLIGHT_ROLE_ARN: ${{ vars.B083_AWS_PREFLIGHT_ROLE_ARN }}
       IMAGE_BUILD_ROLE_ARN: ${{ vars.B083_AWS_IMAGE_BUILD_ROLE_ARN }}
+      IMAGE_CLEANUP_ROLE_ARN: ${{ vars.B083_AWS_IMAGE_CLEANUP_ROLE_ARN }}
       APP_REPOSITORY: ${{ vars.B083_AWS_ECR_APP_REPOSITORY }}
       OPERATOR_REPOSITORY: ${{ vars.B083_AWS_ECR_OPERATOR_REPOSITORY }}
       CONTROLLER_ROLE_ARN: ${{ vars.B083_AWS_CONTROLLER_ROLE_ARN }}
@@ -80,13 +81,22 @@ jobs:
           [[ "$AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]]
           [[ "$PREFLIGHT_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
           [[ "$IMAGE_BUILD_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
+          [[ "$IMAGE_CLEANUP_ROLE_ARN" == "arn:aws:iam::${AWS_ACCOUNT_ID}:role/"* ]]
           test "$IMAGE_BUILD_ROLE_ARN" != "$PREFLIGHT_ROLE_ARN"
+          test "$IMAGE_CLEANUP_ROLE_ARN" != "$PREFLIGHT_ROLE_ARN"
+          test "$IMAGE_CLEANUP_ROLE_ARN" != "$IMAGE_BUILD_ROLE_ARN"
           test "$IMAGE_BUILD_ROLE_ARN" != "$CONTROLLER_ROLE_ARN"
           test "$IMAGE_BUILD_ROLE_ARN" != "$RUNTIME_ROLE_ARN"
           test "$IMAGE_BUILD_ROLE_ARN" != "$CUSTODIAN_ROLE_ARN"
           test "$IMAGE_BUILD_ROLE_ARN" != "$APP_EXECUTION_ROLE_ARN"
           test "$IMAGE_BUILD_ROLE_ARN" != "$OPERATOR_ROLE_ARN"
           test "$IMAGE_BUILD_ROLE_ARN" != "$OPERATOR_EXECUTION_ROLE_ARN"
+          test "$IMAGE_CLEANUP_ROLE_ARN" != "$CONTROLLER_ROLE_ARN"
+          test "$IMAGE_CLEANUP_ROLE_ARN" != "$RUNTIME_ROLE_ARN"
+          test "$IMAGE_CLEANUP_ROLE_ARN" != "$CUSTODIAN_ROLE_ARN"
+          test "$IMAGE_CLEANUP_ROLE_ARN" != "$APP_EXECUTION_ROLE_ARN"
+          test "$IMAGE_CLEANUP_ROLE_ARN" != "$OPERATOR_ROLE_ARN"
+          test "$IMAGE_CLEANUP_ROLE_ARN" != "$OPERATOR_EXECUTION_ROLE_ARN"
           [[ "$APP_REPOSITORY" =~ ^(i2165-b083-[0-9]{8}-[a-f0-9]{8})-app$ ]]
           repository_namespace="${BASH_REMATCH[1]}"
           [[ "$OPERATOR_REPOSITORY" =~ ^(i2165-b083-[0-9]{8}-[a-f0-9]{8})-operator$ ]]
@@ -154,6 +164,45 @@ jobs:
           except Exception:
               raise SystemExit("protected image-build lease invalid, stale, missing, or outside the $20 cumulative budget")
           PY
+
+      - name: Assume dedicated ECR retention role
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_IMAGE_CLEANUP_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-ecr-retention-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+
+      - name: Set and verify one-day retention for untagged run images
+        run: |
+          set -euo pipefail
+          actual_account="$(aws sts get-caller-identity --query Account --output text)"
+          test "$actual_account" = "$AWS_ACCOUNT_ID"
+          policy='{"rules":[{"rulePriority":1,"description":"Expire only untagged Issue 2165 run images after one day","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}}]}'
+          for repository in "$APP_REPOSITORY" "$OPERATOR_REPOSITORY"; do
+            if aws ecr get-lifecycle-policy --registry-id "$AWS_ACCOUNT_ID" --repository-name "$repository" \
+              --output json > "$RUNNER_TEMP/retention-readback.json" 2> "$RUNNER_TEMP/retention-error.txt"; then
+              jq -e --arg repo "$repository" --argjson expected "$policy" '
+                .repositoryName == $repo and ((.lifecyclePolicyText | fromjson) == $expected)
+              ' "$RUNNER_TEMP/retention-readback.json" >/dev/null || {
+                echo 'Existing ECR retention policy differs; refusing to replace it.' >&2
+                exit 1
+              }
+            else
+              if ! grep -q 'LifecyclePolicyNotFoundException' "$RUNNER_TEMP/retention-error.txt"; then
+                echo 'Could not read ECR retention policy; refusing to replace or guess.' >&2
+                exit 1
+              fi
+              aws ecr put-lifecycle-policy --registry-id "$AWS_ACCOUNT_ID" --repository-name "$repository" \
+                --lifecycle-policy-text "$policy" > "$RUNNER_TEMP/retention-put.json"
+              aws ecr get-lifecycle-policy --registry-id "$AWS_ACCOUNT_ID" --repository-name "$repository" \
+                --output json > "$RUNNER_TEMP/retention-readback.json"
+              jq -e --arg repo "$repository" --argjson expected "$policy" '
+                .repositoryName == $repo and ((.lifecyclePolicyText | fromjson) == $expected)
+              ' "$RUNNER_TEMP/retention-readback.json" >/dev/null
+            fi
+          done
 
       - name: Assume the dedicated nonproduction ECR image-build role through OIDC
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
@@ -242,6 +291,64 @@ jobs:
             test "$saw_sbom" = true
           done
 
+      - name: Enforce 20 GB aggregate image cap
+        id: image-size
+        if: always() && steps.app.outcome == 'success' && steps.operator.outcome == 'success' && steps.readback.outcome == 'success'
+        run: |
+          set -euo pipefail
+          registry="$(cat "$RUNNER_TEMP/registry-host")"
+          total_bytes=0
+          for repository in "$APP_REPOSITORY" "$OPERATOR_REPOSITORY"; do
+            docker buildx imagetools inspect --raw "$registry/$repository:$SOURCE_SHA" > "$RUNNER_TEMP/image-size-index.json"
+            jq -e '.schemaVersion == 2 and (.manifests | length >= 3)' "$RUNNER_TEMP/image-size-index.json" >/dev/null
+            jq -r '.manifests[].digest' "$RUNNER_TEMP/image-size-index.json" > "$RUNNER_TEMP/image-size-digests.txt"
+            while IFS= read -r digest; do
+              [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+              bytes="$(aws ecr describe-images --registry-id "$AWS_ACCOUNT_ID" --repository-name "$repository" --image-ids imageDigest="$digest" --query 'imageDetails[0].imageSizeInBytes' --output text)"
+              [[ "$bytes" =~ ^[0-9]+$ ]]
+              total_bytes=$((total_bytes + bytes))
+            done < "$RUNNER_TEMP/image-size-digests.txt"
+          done
+          cap_bytes=$((20 * 1000 * 1000 * 1000))
+          if (( total_bytes <= cap_bytes )); then within_cap=true; else within_cap=false; fi
+          {
+            echo "bytes=$total_bytes"
+            echo "within_cap=$within_cap"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Assume exact-tag ECR cleanup role for failed or oversized build
+        id: cleanup-role
+        if: always() && (steps.app.outcome != 'skipped' || steps.operator.outcome != 'skipped') && (steps.app.outcome != 'success' || steps.operator.outcome != 'success' || steps.readback.outcome != 'success' || steps.image-size.outcome != 'success' || steps.image-size.outputs.within_cap == 'false')
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.2.2
+        with:
+          role-to-assume: ${{ vars.B083_AWS_IMAGE_CLEANUP_ROLE_ARN }}
+          aws-region: ${{ vars.B083_AWS_REGION }}
+          role-session-name: i2165-ecr-cleanup-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.B083_AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+
+      - name: Delete only this run's image tags after failure or cap violation
+        id: cleanup
+        if: always() && steps.cleanup-role.outcome == 'success'
+        run: |
+          set -euo pipefail
+          actual_account="$(aws sts get-caller-identity --query Account --output text)"
+          test "$actual_account" = "$AWS_ACCOUNT_ID"
+          for repository in "$APP_REPOSITORY" "$OPERATOR_REPOSITORY"; do
+            aws ecr list-images --registry-id "$AWS_ACCOUNT_ID" --repository-name "$repository" \
+              --filter tagStatus=TAGGED --query "imageIds[?imageTag=='$SOURCE_SHA']" --output json > "$RUNNER_TEMP/cleanup-candidates.json"
+            jq -e 'length <= 1' "$RUNNER_TEMP/cleanup-candidates.json" >/dev/null
+            if jq -e 'length == 1' "$RUNNER_TEMP/cleanup-candidates.json" >/dev/null; then
+              aws ecr batch-delete-image --registry-id "$AWS_ACCOUNT_ID" --repository-name "$repository" \
+                --image-ids imageTag="$SOURCE_SHA" > "$RUNNER_TEMP/cleanup-result.json"
+              jq -e '.failures | length == 0' "$RUNNER_TEMP/cleanup-result.json" >/dev/null
+            fi
+            aws ecr list-images --registry-id "$AWS_ACCOUNT_ID" --repository-name "$repository" \
+              --filter tagStatus=TAGGED --query "imageIds[?imageTag=='$SOURCE_SHA']" --output json > "$RUNNER_TEMP/cleanup-remaining.json"
+            jq -e 'length == 0' "$RUNNER_TEMP/cleanup-remaining.json" >/dev/null
+          done
+          echo 'deleted=true' >> "$GITHUB_OUTPUT"
+
       - name: Write redacted custody receipt, including partial pushes
         id: custody
         if: always() && (steps.app.outcome != 'skipped' || steps.operator.outcome != 'skipped')
@@ -254,6 +361,9 @@ jobs:
           APP_DOCKERFILE_SHA256: ${{ steps.source.outputs.app_dockerfile_sha256 }}
           OPERATOR_DOCKERFILE_SHA256: ${{ steps.source.outputs.operator_dockerfile_sha256 }}
           OPERATOR_LOCK_SHA256: ${{ steps.source.outputs.operator_lock_sha256 }}
+          IMAGE_SIZE_BYTES: ${{ steps.image-size.outputs.bytes }}
+          IMAGE_WITHIN_CAP: ${{ steps.image-size.outputs.within_cap }}
+          CLEANUP_STATUS: ${{ steps.cleanup.outputs.deleted }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/i2165-ecr-receipt"
@@ -266,8 +376,10 @@ jobs:
             --arg app_dockerfile_sha256 "$APP_DOCKERFILE_SHA256" \
             --arg operator_dockerfile_sha256 "$OPERATOR_DOCKERFILE_SHA256" \
             --arg operator_lock_sha256 "$OPERATOR_LOCK_SHA256" --arg registry "$registry" \
+            --arg image_size_bytes "$IMAGE_SIZE_BYTES" --arg image_within_cap "$IMAGE_WITHIN_CAP" \
+            --arg cleanup_status "$CLEANUP_STATUS" \
             --arg run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-            '{schema:"corelink.issue-2165.ecr-image-build.v1",source_sha:$source_sha,aws_account_id:$account,aws_region:$region,images:[{repository:$app_repository,tag:$source_sha,digest:$app_digest,image_ref:(if $app_digest == "" then "" else ($registry + "/" + $app_repository + "@" + $app_digest) end),dockerfile_sha256:$app_dockerfile_sha256,push_status:$app_status},{repository:$operator_repository,tag:$source_sha,digest:$operator_digest,image_ref:(if $operator_digest == "" then "" else ($registry + "/" + $operator_repository + "@" + $operator_digest) end),dockerfile_sha256:$operator_dockerfile_sha256,requirements_lock_sha256:$operator_lock_sha256,push_status:$operator_status}],run:$run,readback_status:$readback_status}' \
+            '{schema:"corelink.issue-2165.ecr-image-build.v1",source_sha:$source_sha,aws_account_id:$account,aws_region:$region,images:[{repository:$app_repository,tag:$source_sha,digest:$app_digest,image_ref:(if $app_digest == "" then "" else ($registry + "/" + $app_repository + "@" + $app_digest) end),dockerfile_sha256:$app_dockerfile_sha256,push_status:$app_status},{repository:$operator_repository,tag:$source_sha,digest:$operator_digest,image_ref:(if $operator_digest == "" then "" else ($registry + "/" + $operator_repository + "@" + $operator_digest) end),dockerfile_sha256:$operator_dockerfile_sha256,requirements_lock_sha256:$operator_lock_sha256,push_status:$operator_status}],run:$run,readback_status:$readback_status,aggregate_referenced_manifest_size_bytes:(if $image_size_bytes == "" then null else ($image_size_bytes|tonumber) end),size_measurement:"sum_of_each_app_and_operator_index_manifest_reported_size;shared_layers_may_be_counted_more_than_once",within_20_gb_cap:(if $image_within_cap == "" then null else $image_within_cap == "true" end),cleanup_deleted_exact_run_tags:($cleanup_status == "true"),retention:"successful-under-cap-tags-retained-for-authorized-lifecycle"}' \
             > "$RUNNER_TEMP/i2165-ecr-receipt/receipt.json"
 
       - name: Upload redacted custody receipt
@@ -278,6 +390,12 @@ jobs:
           path: ${{ runner.temp }}/i2165-ecr-receipt/receipt.json
           retention-days: 90
           if-no-files-found: error
+
+      - name: Fail the build after cleanup when aggregate image size exceeds 20 GB
+        if: always() && steps.image-size.outputs.within_cap == 'false'
+        run: |
+          echo 'Aggregate application and operator image size exceeds the 20 GB limit; exact run tags were cleaned.' >&2
+          exit 1
 
       - name: Log out of the nonproduction ECR registry
         if: always()

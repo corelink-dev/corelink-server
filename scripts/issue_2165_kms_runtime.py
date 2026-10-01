@@ -26,6 +26,7 @@ from typing import Any, Callable
 import issue_2165_cf5128_readback as cf_readback
 
 SCHEMA = "corelink-issue-2165-kms-runtime-v1"
+MAX_CONCURRENT_TASKS = 2
 ENVIRONMENT = "b083-kms-lifecycle"
 PHASES = ("pregrant-deny", "lifecycle", "cleanup")
 IMAGE_DIGEST = re.compile(r"^.+@sha256:[a-fA-F0-9]{64}$")
@@ -445,7 +446,7 @@ def run_phase(phase: str, m: dict[str, Any], evidence_dir: Path, runner: Callabl
             app_task = _start_task(m, m["aws"]["task_definition_arn"], "app", run_id, runner)
             try:
                 app_origin = _resolve_app_origin(m, app_task, runner)
-                op_task = _start_task(m, m["operator"]["task_definition_arn"], "operator", run_id, runner, app_origin=app_origin)
+                op_task = _start_task(m, m["operator"]["task_definition_arn"], "operator", run_id, runner, app_origin=app_origin, allowed_existing_task_arns=(app_task,))
                 _task_private_ip(m, op_task, m["network"]["operator_security_group_id"], runner)
             except BaseException:
                 _stop_exact_task(m["aws"]["cluster_arn"], app_task, runner)
@@ -499,7 +500,7 @@ def run_phase(phase: str, m: dict[str, Any], evidence_dir: Path, runner: Callabl
     try:
         app_task = _start_task(m, m["aws"]["task_definition_arn"], "app", run_id, runner)
         app_origin = _resolve_app_origin(m, app_task, runner)
-        operator_task = _start_task(m, m["operator"]["task_definition_arn"], "operator", run_id, runner, app_origin=app_origin)
+        operator_task = _start_task(m, m["operator"]["task_definition_arn"], "operator", run_id, runner, app_origin=app_origin, allowed_existing_task_arns=(app_task,))
         operator_tasks.append(operator_task)
         _task_private_ip(m, operator_task, m["network"]["operator_security_group_id"], runner)
         route_results = _exec_operator(
@@ -672,8 +673,9 @@ def _cleanup_handoff(m: dict[str, Any], evidence_dir: Path, runner: Callable[...
         raise ContractError("; ".join(errors))
 
 
-def _start_task(m: dict[str, Any], task_definition: str, kind: str, run_id: str, runner: Callable[..., Any], *, app_origin: str | None = None) -> str:
+def _start_task(m: dict[str, Any], task_definition: str, kind: str, run_id: str, runner: Callable[..., Any], *, app_origin: str | None = None, allowed_existing_task_arns: tuple[str, ...] = ()) -> str:
     aws, net = m["aws"], m["network"]
+    _assert_task_capacity(aws["cluster_arn"], allowed_existing_task_arns, runner)
     group = net["app_security_group_id"] if kind == "app" else net["operator_security_group_id"]
     network = "awsvpcConfiguration={subnets=[" + ",".join(net["routed_subnet_ids"]) + "],securityGroups=[" + group + "],assignPublicIp=ENABLED}"
     overrides: dict[str, Any] = {"containerOverrides": []}
@@ -708,6 +710,46 @@ def _start_task(m: dict[str, Any], task_definition: str, kind: str, run_id: str,
             raise ContractError("bounded ECS task stopped before operator execution")
         time.sleep(5)
     raise ContractError("bounded ECS task did not reach RUNNING within 120 seconds")
+
+
+def _assert_task_capacity(cluster_arn: str, allowed_existing: tuple[str, ...], runner: Callable[..., Any]) -> None:
+    candidates: set[str] = set()
+    for status in ("RUNNING", "PENDING", "STOPPED"):
+        command = ["ecs", "list-tasks", "--cluster", cluster_arn, "--desired-status", status]
+        if status == "STOPPED":
+            # ECS retains stopped tasks briefly. A full page makes the set of
+            # STOPPING tasks ambiguous, so wait and retry the lifecycle safely.
+            command.extend(("--max-results", "100", "--no-paginate"))
+        result = _aws(*command, runner=runner)
+        task_arns = result.get("taskArns", [])
+        if not isinstance(task_arns, list) or any(not isinstance(arn, str) or not arn for arn in task_arns):
+            raise ContractError("ECS active-task inventory is malformed")
+        if status == "STOPPED" and len(task_arns) >= 100:
+            raise ContractError("recent stopped-task inventory is capped; refusing an ambiguous task launch")
+        candidates.update(task_arns)
+    if len(candidates) > 100:
+        raise ContractError("ECS task inventory exceeds the bounded DescribeTasks read")
+    statuses: dict[str, str] = {}
+    if candidates:
+        response = _aws("ecs", "describe-tasks", "--cluster", cluster_arn, "--tasks", *sorted(candidates), runner=runner)
+        tasks = response.get("tasks", [])
+        failures = response.get("failures", [])
+        if failures or not isinstance(tasks, list) or {row.get("taskArn") for row in tasks if isinstance(row, dict)} != candidates:
+            raise ContractError("ECS task status readback is incomplete or mismatched")
+        for task in tasks:
+            if task.get("clusterArn") != cluster_arn or not isinstance(task.get("lastStatus"), str):
+                raise ContractError("ECS task status is not bound to the exact target cluster")
+            statuses[task["taskArn"]] = task["lastStatus"]
+    active = {arn for arn, status in statuses.items() if status != "STOPPED"}
+    unexpected = active.difference(allowed_existing)
+    if unexpected:
+        raise ContractError("dedicated ECS cluster has an unexpected active task; refusing a third or foreign task")
+    if len(active) >= MAX_CONCURRENT_TASKS:
+        raise ContractError("dedicated ECS cluster is already at the two-task concurrency limit")
+    if not set(allowed_existing).issubset(active):
+        raise ContractError("the exact app task is no longer active before its operator partner starts")
+    if any(statuses[arn] != "RUNNING" for arn in allowed_existing):
+        raise ContractError("the exact app task is not RUNNING before its operator partner starts")
 
 
 def _resolve_app_origin(m: dict[str, Any], task_arn: str, runner: Callable[..., Any]) -> str:

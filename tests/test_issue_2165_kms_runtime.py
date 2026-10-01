@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from issue_2165_kms_runtime import ContractError, SCHEMA, _audit_source_receipts, _cleanup_handoff, _exec_operator, _expected_operator_secret_refs, _failure_retry_d1_public, _failure_retry_d1_snapshot, _runtime_lifecycle_rows, _start_task, _validate_operator_result, _validate_security_group_rules, _write_runtime_lifecycle_rows_output, cleanup, run_phase, validate_manifest  # noqa: E402
+from issue_2165_kms_runtime import ContractError, MAX_CONCURRENT_TASKS, SCHEMA, _assert_task_capacity, _audit_source_receipts, _cleanup_handoff, _exec_operator, _expected_operator_secret_refs, _failure_retry_d1_public, _failure_retry_d1_snapshot, _runtime_lifecycle_rows, _start_task, _validate_operator_result, _validate_security_group_rules, _write_runtime_lifecycle_rows_output, cleanup, run_phase, validate_manifest  # noqa: E402
 import issue_2165_r2_audit_archive as audit_archive  # noqa: E402
 
 
@@ -321,20 +321,58 @@ class RuntimeContractTests(unittest.TestCase):
         commands = []
         def runner(command, **kwargs):
             commands.append(command)
-            if command[1:3] == ["ecs", "run-task"]:
+            if command[1:3] == ["ecs", "list-tasks"]:
+                result = {"taskArns": []}
+            elif command[1:3] == ["ecs", "run-task"]:
                 result = {"tasks": [{"taskArn": "arn:aws:ecs:us-east-1:123456789012:task/kms-test/abcdef", "clusterArn": value["aws"]["cluster_arn"], "taskDefinitionArn": value["operator"]["task_definition_arn"]}], "failures": []}
             else:
                 result = {"tasks": [{"taskArn": "arn:aws:ecs:us-east-1:123456789012:task/kms-test/abcdef", "taskDefinitionArn": value["operator"]["task_definition_arn"], "lastStatus": "RUNNING"}]}
             return SimpleNamespace(stdout=json.dumps(result))
         with patch.dict("os.environ", {"GITHUB_RUN_ID": "1234567"}):
             _start_task(value, value["operator"]["task_definition_arn"], "operator", "1234567", runner, app_origin="http://10.0.0.2:50051")
-        overrides = json.loads(commands[0][commands[0].index("--overrides") + 1])
+        run_task = next(command for command in commands if command[1:3] == ["ecs", "run-task"])
+        overrides = json.loads(run_task[run_task.index("--overrides") + 1])
         encoded = json.dumps(overrides)
         for tenant in value["disposable_tenants"]:
             self.assertNotIn(tenant, encoded)
         self.assertNotIn(value["operator"]["pat_a_secret_arn"], encoded)
         self.assertNotIn(value["operator"]["pat_b_secret_arn"], encoded)
         self.assertEqual({item["name"] for item in overrides["containerOverrides"][0]["environment"]}, {"ISSUE_2165_APP_ORIGIN", "ISSUE_2165_RUN_ID"})
+
+    def test_task_capacity_allows_only_the_exact_two_task_pair(self) -> None:
+        cluster = "arn:aws:ecs:us-east-1:123456789012:cluster/kms-test"
+        app = "arn:aws:ecs:us-east-1:123456789012:task/kms-test/app"
+        foreign = "arn:aws:ecs:us-east-1:123456789012:task/kms-test/foreign"
+        def checker(running: list[str], pending: list[str], stopped: list[str] | None = None, actual_statuses: dict[str, str] | None = None):
+            stopped = stopped or []
+            actual_statuses = actual_statuses or {}
+            def runner(command, **kwargs):
+                if "list-tasks" in command:
+                    status = command[command.index("--desired-status") + 1]
+                    rows = {"RUNNING": running, "PENDING": pending, "STOPPED": stopped}[status]
+                    return SimpleNamespace(stdout=json.dumps({"taskArns": rows}))
+                task_arns = command[command.index("--tasks") + 1:command.index("--region")]
+                rows = []
+                defaults = {**{arn: "RUNNING" for arn in running}, **{arn: "PENDING" for arn in pending}, **{arn: "STOPPED" for arn in stopped}}
+                for arn in task_arns:
+                    rows.append({"taskArn": arn, "clusterArn": cluster, "lastStatus": actual_statuses.get(arn, defaults[arn])})
+                return SimpleNamespace(stdout=json.dumps({"tasks": rows, "failures": []}))
+            return runner
+        self.assertEqual(MAX_CONCURRENT_TASKS, 2)
+        _assert_task_capacity(cluster, (), checker([], []))
+        _assert_task_capacity(cluster, (app,), checker([app], []))
+        with self.assertRaisesRegex(ContractError, "exact app task is no longer active"):
+            _assert_task_capacity(cluster, (app,), checker([], []))
+        with self.assertRaisesRegex(ContractError, "unexpected active task"):
+            _assert_task_capacity(cluster, (), checker([], [], [foreign], {foreign: "STOPPING"}))
+        with self.assertRaisesRegex(ContractError, "not RUNNING"):
+            _assert_task_capacity(cluster, (app,), checker([], [], [app], {app: "STOPPING"}))
+        with self.assertRaisesRegex(ContractError, "recent stopped-task inventory is capped"):
+            _assert_task_capacity(cluster, (), checker([], [], [f"arn:stopped:{index}" for index in range(100)]))
+        with self.assertRaisesRegex(ContractError, "unexpected active task"):
+            _assert_task_capacity(cluster, (app,), checker([app, foreign], []))
+        with self.assertRaisesRegex(ContractError, "two-task concurrency limit"):
+            _assert_task_capacity(cluster, (app, foreign), checker([app], [foreign]))
 
     def test_controller_helpers_never_call_kms(self) -> None:
         for helper in (run_phase, cleanup, _cleanup_handoff):
