@@ -343,18 +343,12 @@ export default function PrivacyPage(): ReactElement {
         <section className={styles.section}>
           <h2>8. Consent management</h2>
           <p>
-            Where consent is the legal basis (cookies, optional analytics,
-            opt-in marketing communications), it is recorded in the
-            tamper-evident consent ledger via{" "}
-            <code>corelink_privacy::consent</code>. Each consent entry
-            records the timestamp, version of the notice presented, the
-            specific purposes consented to, and the cryptographic chain
-            link to the preceding entry. Withdrawal is processed with the
-            same friction as granting and produces a corresponding
-            withdrawal entry; downstream systems (Plausible analytics,
-            marketing-list subscription, error-tracking opt-in) are
-            instructed to stop processing within 24 hours of withdrawal
-            receipt.
+            The Admin UI presents choices for optional analytics and
+            marketing. Plausible loads there only when the analytics
+            preference in your browser allows it. The public documentation
+            site uses Plausible separately, as described below. For
+            questions about consent or to request withdrawal, contact{" "}
+            <a href="mailto:privacy@humangr.com">privacy@humangr.com</a>.
           </p>
         </section>
 
@@ -386,12 +380,12 @@ export default function PrivacyPage(): ReactElement {
         <section className={styles.section}>
           <h2>11. Cookies and analytics</h2>
           <p>
-            We use a small set of first-party cookies for session continuity,
-            cookie-consent state, and (when you opt in to the
-            &ldquo;analytics&rdquo; category) privacy-preserving usage
-            measurement via Plausible. We do not run cross-site tracking, ad
-            networks, or browser fingerprinting. The consent banner offers a
-            one-click reject for every non-essential category.
+            The public documentation site loads a Plausible analytics
+            script on its pages. The Admin UI's analytics preference does
+            not control this documentation-site script. In the Admin UI,
+            Plausible loads only when that preference allows it, as
+            described above. We do not run cross-site tracking, ad
+            networks, or browser fingerprinting.
           </p>
         </section>
 
