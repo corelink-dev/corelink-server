@@ -83,10 +83,10 @@ jobs:
             exit 1
           fi
 
-  build-package:
+  build-package-linux:
     name: release target fixture (${{ matrix.target.name }})
     if: github.repository_id == '1232040291' && github.event.pull_request.base.ref == 'main'
-    runs-on: ${{ matrix.target.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -94,15 +94,123 @@ jobs:
         target:
           - name: linux-x86_64
             triple: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
             ext: ""
           - name: linux-aarch64
             triple: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04
             ext: ""
+    steps:
+      - name: Enable Git long paths for Windows checkout
+        if: runner.os == 'Windows'
+        shell: bash
+        run: git config --global core.longpaths true
+      - name: Checkout exact candidate without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Assert exact dispatch identity
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
+      - name: Set up target build environment
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target.triple }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci-assert-pinned-toolchain.sh
+          rustup target add "${TARGET_TRIPLE}"
+          bash scripts/ci-assert-pinned-toolchain.sh "${TARGET_TRIPLE}"
+          CARGO_HOME="${RUNNER_TEMP}/corelink-cargo/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${TARGET_TRIPLE}"
+          CARGO_TARGET_DIR="${RUNNER_TEMP}/corelink-target/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${TARGET_TRIPLE}"
+          mkdir -p "${CARGO_HOME}" "${CARGO_TARGET_DIR}"
+          echo "CARGO_HOME=${CARGO_HOME}" >> "${GITHUB_ENV}"
+          echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR}" >> "${GITHUB_ENV}"
+          REMAP="--remap-path-prefix=${CARGO_HOME}/registry=cargo-registry"
+          REMAP="${REMAP} --remap-path-prefix=${CARGO_HOME}/git=cargo-git"
+          REMAP="${REMAP} --remap-path-prefix=${HOME}/.rustup=rustup"
+          REMAP="${REMAP} --remap-path-prefix=${GITHUB_WORKSPACE}=corelink"
+          echo "RUSTFLAGS=${REMAP}" >> "${GITHUB_ENV}"
+      - name: Install pinned Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+      - name: Verify Zig and install cargo-zigbuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(zig version)" = 0.16.0
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
+        with:
+          tool: cargo-zigbuild@0.19.8
+      - name: Verify cargo-zigbuild and isolate wrapper cache
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target.triple }}
+        run: |
+          set -euo pipefail
+          command -v cargo-zigbuild
+          cargo-zigbuild --help >/dev/null
+          ZIGBUILD_CACHE="${RUNNER_TEMP}/cargo-zigbuild/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/${TARGET_TRIPLE}"
+          mkdir -p "${ZIGBUILD_CACHE}"
+          echo "CARGO_ZIGBUILD_CACHE_DIR=${ZIGBUILD_CACHE}" >> "${GITHUB_ENV}"
+      - name: Build and package exact target
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target.triple }}
+          TARGET_NAME: ${{ matrix.target.name }}
+          TARGET_EXT: ${{ matrix.target.ext }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${CANDIDATE_SHA}")"
+          export SOURCE_DATE_EPOCH
+          cargo zigbuild -p corelink-cli --release --locked --target "${TARGET_TRIPLE}"
+          SOURCE="${CARGO_TARGET_DIR}/${TARGET_TRIPLE}/release/corelink${TARGET_EXT}"
+          mkdir out
+          PACKAGE_DIR="${RUNNER_TEMP}/corelink-package-${TARGET_NAME}"
+          mkdir -p "${PACKAGE_DIR}"
+          ASSET="corelink-${TARGET_NAME}${TARGET_EXT}"
+          cp "${SOURCE}" "out/${ASSET}"
+          cp "${SOURCE}" "${PACKAGE_DIR}/corelink${TARGET_EXT}"
+          if [ "${TARGET_TRIPLE}" = x86_64-pc-windows-gnu ]; then
+            ARCHIVE=corelink-windows-x86_64.zip
+            (cd "${PACKAGE_DIR}" && zip -q -X "${RUNNER_TEMP}/${ARCHIVE}" corelink.exe)
+            mv "${RUNNER_TEMP}/${ARCHIVE}" out/
+          else
+            ARCHIVE="corelink-${TARGET_NAME}.tar.gz"
+            tar -czf "out/${ARCHIVE}" -C "${PACKAGE_DIR}" corelink
+          fi
+          (cd out && for payload in corelink-*; do
+            case "${payload}" in *.sha256|checksums.txt) continue ;; esac
+            shasum -a 256 "${payload}" > "${payload}.sha256"
+            shasum -a 256 -c "${payload}.sha256"
+          done && LC_ALL=C sort ./*.sha256 > checksums.txt)
+          if [ "${TARGET_TRIPLE}" = x86_64-pc-windows-gnu ]; then
+            unzip -t out/corelink-windows-x86_64.zip
+            test "$(unzip -Z1 out/corelink-windows-x86_64.zip)" = corelink.exe
+          else
+            test "$(tar -tzf "out/${ARCHIVE}")" = corelink
+          fi
+
+  build-package-windows:
+    name: release target fixture (${{ matrix.target.name }})
+    if: github.repository_id == '1232040291' && github.event.pull_request.base.ref == 'main'
+    runs-on: windows-2022
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
           - name: windows-x86_64
             triple: x86_64-pc-windows-gnu
-            runner: windows-2022
             ext: .exe
     steps:
       - name: Enable Git long paths for Windows checkout
