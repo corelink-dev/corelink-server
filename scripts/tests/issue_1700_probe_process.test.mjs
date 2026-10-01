@@ -60,7 +60,18 @@ test(`CLI exits ${cleanupFails ? "failure" : "success"} after cleanup settles de
     globalThis.fetch = (url, options) => nativeFetch("http://127.0.0.1:${port}" + new URL(url).pathname, options);
     globalThis.WebSocket = class extends NativeSocket { constructor(_url, protocol) { super("ws://127.0.0.1:${port}", protocol); } };
   `);
-  const child = spawn(process.execPath, ["--import", preload, new URL("../issue_1700_runtime_probe.mjs", import.meta.url).pathname], {
+  const loader = join(directory, "ws-loader.mjs");
+  await writeFile(loader, `
+    export async function resolve(specifier, context, nextResolve) {
+      if (specifier === "ws") return {
+        url: "data:text/javascript,export default globalThis.WebSocket",
+        shortCircuit: true,
+      };
+      return nextResolve(specifier, context);
+    }
+  `);
+  const child = spawn(process.execPath, ["--import", preload, "--experimental-loader", loader,
+    new URL("../issue_1700_runtime_probe.mjs", import.meta.url).pathname], {
     env: { ...process.env, CLOUDFLARE_API_TOKEN: "local-fixture", SENTRY_RELEASE: release, EXPECTED_SHA: release, IMAGE_DIGEST: digest },
     stdio: ["ignore", "pipe", "pipe"],
   });
