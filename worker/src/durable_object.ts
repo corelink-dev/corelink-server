@@ -1,5 +1,7 @@
 import { cleanOldProbeTables, cleanV5ProbeTables, OLD_PROBE_NAME, OLD_PROBE_RELEASE, OLD_PROBE_RETIRED_KEY, V5_PROBE_NAME, V5_PROBE_RELEASE, V5_PROBE_RETIRED_KEY, type OldProbeRetirement } from "./staging_d1_probe_retirement.js";
-import { STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
+import { recordStagingD1ProbePhase, STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
+import { cleanV8ProbeTables, isV8CleanupReceipt, withinV8CleanupDeadline, V8_PROBE_NAME, V8_PROBE_RELEASE, V8_PROBE_NONCE, V8_PROBE_RETIRED_KEY, V8_CLEANUP_RECEIPT_KEY, type V8CleanupReceipt } from "./staging_d1_probe_v8_cleanup.js";
+import cleanupWindow from "./staging_d1_probe_cleanup_window.json";
 /**
  * CoreLinkServer Durable Object — container lifecycle manager + gRPC proxy.
  *
@@ -251,7 +253,8 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     // Restore persisted lifecycle state on DO wakeup
     void this.state.blockConcurrencyWhile(async () => {
       this.probeRetired = (await this.storage.get(OLD_PROBE_RETIRED_KEY)) !== undefined ||
-        (await this.storage.get(V5_PROBE_RETIRED_KEY)) !== undefined;
+        (await this.storage.get(V5_PROBE_RETIRED_KEY)) !== undefined ||
+        (await this.storage.get(V8_PROBE_RETIRED_KEY)) !== undefined;
       const stored = await this.storage.get<LifecycleState>("lifecycle");
       if (stored !== undefined) {
         this.lifecycleState = stored;
@@ -267,7 +270,8 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   private isOldProbeObject(): boolean {
     return typeof this.env.CORELINK_SERVER?.idFromName === "function" &&
       (this.state.id.equals(this.env.CORELINK_SERVER.idFromName(OLD_PROBE_NAME)) ||
-       this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V5_PROBE_NAME)));
+       this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V5_PROBE_NAME)) ||
+       this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V8_PROBE_NAME)));
   }
 
   private async withProbeActivity<T>(operation: () => Promise<T>): Promise<T> {
@@ -347,9 +351,68 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     } finally { this.retirementActive = false; }
   }
 
+  /** Exact failed v8 object only. Retirement never reopens its old admission. */
+  async cleanupV8StagingD1RuntimeProbe(scheduledTime: number, expectedRelease: string): Promise<V8CleanupReceipt> {
+    const release = this.env.SENTRY_RELEASE ?? "";
+    if (this.env.ENVIRONMENT !== "staging" ||
+        this.env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
+        this.env.D1_DATABASE_ID !== "d72a6b39-6a48-4338-bfda-1111dda98604" ||
+        this.env.R2_S3_ENDPOINT !== "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com" ||
+        !/^[0-9a-f]{40}$/.test(release) || release === V8_PROBE_RELEASE || expectedRelease !== release ||
+        !Number.isSafeInteger(scheduledTime) || scheduledTime % 120_000 !== 0 ||
+        scheduledTime < cleanupWindow.starts_ms || scheduledTime >= cleanupWindow.expires_ms ||
+        this.now() < scheduledTime || this.now() >= cleanupWindow.expires_ms ||
+        !this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V8_PROBE_NAME))) {
+      throw new Error("v8 cleanup guard rejected");
+    }
+    // Fence synchronously. A retirement marker is only an entry fence, never
+    // proof that an earlier execution, Container, alarm or table is gone.
+    if (this.probeActiveCalls !== 0 || this.retirementActive) throw new Error("v8 cleanup busy");
+    this.retirementActive = true;
+    this.probeRetired = true;
+    const deadline = Math.min(this.now() + 60_000, cleanupWindow.expires_ms);
+    const bounded = <T>(operation: () => Promise<T>) => withinV8CleanupDeadline(operation, this.now, deadline);
+    try {
+      const previousFence = await bounded(() => this.storage.get<{ old_release: string; destroy_attempted: boolean }>(V8_PROBE_RETIRED_KEY));
+      if (previousFence !== undefined && (previousFence.old_release !== V8_PROBE_RELEASE ||
+          typeof previousFence.destroy_attempted !== "boolean")) throw new Error("v8 cleanup fence rejected");
+      if (previousFence === undefined) await bounded(() => this.storage.put(V8_PROBE_RETIRED_KEY,
+        { old_release: V8_PROBE_RELEASE, destroy_attempted: false }));
+      const container = this.state.container;
+      if (container === undefined) throw new Error("v8 cleanup Container unavailable");
+      if (container.running) {
+        if (previousFence?.destroy_attempted) throw new Error("v8 cleanup prior stop unproven");
+        await bounded(() => this.storage.put(V8_PROBE_RETIRED_KEY,
+          { old_release: V8_PROBE_RELEASE, destroy_attempted: true }));
+        await bounded(() => container.destroy());
+      }
+      if (container.running !== false) throw new Error("v8 cleanup Container stop unproven");
+      await bounded(() => this.storage.deleteAlarm());
+      if (await bounded(() => this.storage.getAlarm()) !== null) throw new Error("v8 cleanup alarm unproven");
+      const admission = await bounded(() => this.storage.get(STAGING_D1_PROBE_ADMISSION_KEY));
+      await cleanV8ProbeTables(this.env.CONFIG_DB, admission, this.now, deadline);
+      const receipt: V8CleanupReceipt = {
+        contract: "corelink-staging-v8-cleanup-v1", old_release: V8_PROBE_RELEASE,
+        old_nonce: V8_PROBE_NONCE, worker_release: release, prior_execution: "unknown",
+        prior_admission_present: admission !== undefined, container_stopped: true,
+        alarm_absent: true, tables_absent: true, completed_at_ms: this.now(),
+      };
+      if (!isV8CleanupReceipt(receipt, release, this.now())) throw new Error("v8 cleanup receipt rejected");
+      // Every invocation revalidates live state and inventory, including when
+      // a previous completion exists. Original admission/state/receipt stay intact.
+      await bounded(() => this.storage.put(V8_CLEANUP_RECEIPT_KEY, receipt));
+      return receipt;
+    } finally { this.retirementActive = false; }
+  }
+
   async runStagingD1RuntimeProbe(admission: StagingD1RuntimeProbeAdmission): Promise<StagingD1RuntimeProbeReceipt> {
     if (this.isOldProbeObject()) throw new Error("old probe cannot be replayed");
-    return this.withProbeActivity(() => this.runStagingD1RuntimeProbeActive(admission));
+    try {
+      return await this.withProbeActivity(() => this.runStagingD1RuntimeProbeActive(admission));
+    } catch (error) {
+      recordStagingD1ProbePhase(this.env, "native_error");
+      throw error;
+    }
   }
 
   async readStagingD1RuntimeProbeReceipt(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt | undefined> {
@@ -398,6 +461,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     if (!Number.isSafeInteger(this.now()) || this.now() >= STAGING_D1_PROBE_EXPIRES_AT_MS) {
       throw new Error("staging D1 runtime probe completion window expired");
     }
+    recordStagingD1ProbePhase(this.env, "native_start");
     const claimed = await this.storage.transaction(async (txn) => {
       const storedAdmission = await txn.get<StagingD1RuntimeProbeAdmission>(STAGING_D1_PROBE_ADMISSION_KEY);
       if (storedAdmission?.contract !== admission.contract || storedAdmission.probe_nonce !== admission.probe_nonce ||
@@ -463,6 +527,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     }
     await this.storage.put(STAGING_D1_PROBE_RECEIPT_KEY, body);
     await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "complete");
+    recordStagingD1ProbePhase(this.env, "native_complete");
     return body;
   }
   private enforcePatIssueRateLimit(requestId: string, tenantId: string | null) {

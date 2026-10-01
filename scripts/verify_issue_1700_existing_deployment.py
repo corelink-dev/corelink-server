@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,210 @@ RUN_ID_RE = re.compile(r"^[1-9][0-9]{0,19}$")
 IMAGE_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 ACCOUNT_ID = "6a1fc1c626fc2628823e60b9db01f5cd"
 WORKER_NAME = "corelink-staging"
+DIAGNOSTICS_CONTRACT = "issue1700-candidate-runtime-diagnostics-v1"
+DIAGNOSTICS_ERROR = "candidate runtime diagnostics input is malformed or exceeds limits"
+DIAGNOSTICS_MAX_BYTES = 262144
+DIAGNOSTICS_MAX_ITEMS = 256
+# Fixed root topology names only; values and unknown binding names never leave capture.
+DIAGNOSTICS_BINDINGS = frozenset("""
+ENVIRONMENT R2_S3_ENDPOINT D1_DATABASE_ID SENTRY_RELEASE
+R2_AC_BUCKET R2_AC_REGION R2_CAS_BUCKET R2_CAS_REGION R2_CHUNK_BUCKET R2_CHUNK_REGION
+EDGE_PUBLIC_READ EDGE_ASYNC_METER EDGE_DO_METER OCI_PUBLIC_DEDUP_ENABLED
+OCI_UPSTREAM_ON_MISS AUDIT_DRAIN_BATCH_LIMIT AUDIT_DRAIN_LEASE_ENABLED EDGE_FIND_MISSING
+SYNTHETIC_DRILL_ENABLED SYNTHETIC_DRILL_PROVIDER_MODE CONFIG_DB CAS_BUCKET AC_BUCKET_IAD
+CHUNK_BUCKET_IAD MANIFEST_BUCKET_IAD METADATA_KV CLERK_JWKS_KV NEGATIVE_CACHE_KV
+CORELINK_SERVER ROLLOUT_DO EVENT_LOG_DO REPLICATION_COORDINATOR_DO
+REQUEST_METER_COORDINATOR_DO REQUEST_METER_SHARD_DO DSR_QUEUE SCHEDULED_DRILL_DELIVERY
+CLERK_ISSUER_URL CLERK_SECRET_KEY CLOUDFLARE_ACCOUNT_ID CORELINK_ADMIN_AUTH_KEY
+CORELINK_ERASE_AUTH_KEY CORELINK_INTERNAL_AUTH_KEY PAT_SIGNING_KEY
+R2_S3_ACCESS_KEY_ID R2_S3_SECRET_ACCESS_KEY
+""".split())
+DIAGNOSTICS_BINDING_TYPES = frozenset((
+    "plain_text", "secret_text", "d1", "durable_object_namespace", "service",
+    "r2_bucket", "kv_namespace", "queue", "other",
+))
+
+
+def _bound_diagnostics_input(payload: Any) -> None:
+    remaining = 4096
+
+    def visit(value: Any, depth: int = 0) -> None:
+        nonlocal remaining
+        remaining -= 1
+        if remaining < 0 or depth > 12:
+            raise DeploymentError(DIAGNOSTICS_ERROR)
+        if isinstance(value, (dict, list)):
+            if len(value) > DIAGNOSTICS_MAX_ITEMS:
+                raise DeploymentError(DIAGNOSTICS_ERROR)
+            if isinstance(value, dict):
+                for key in value:
+                    if not isinstance(key, str) or len(key) > 256:
+                        raise DeploymentError(DIAGNOSTICS_ERROR)
+            for item in value.values() if isinstance(value, dict) else value:
+                visit(item, depth + 1)
+        elif isinstance(value, str):
+            if len(value) > 8192:
+                raise DeploymentError(DIAGNOSTICS_ERROR)
+        elif isinstance(value, float) and not math.isfinite(value):
+            raise DeploymentError(DIAGNOSTICS_ERROR)
+        elif value is not None and not isinstance(value, (bool, int, float)):
+            raise DeploymentError(DIAGNOSTICS_ERROR)
+
+    visit(payload)
+
+
+def capture_candidate_diagnostics(
+    version: Any, settings: Any, *, expected_version_id: str,
+    expected_deployment_id: str, expected_sha: str, marker: str,
+) -> dict[str, Any]:
+    """Sanitize already-read evidence; observations do not grant runtime acceptance.
+
+    Wrangler 4.145 versions view JSON is unwrapped, with resources.bindings an
+    array (secret_text is filtered). Settings supplies a separate API result.
+    False observation booleans imply absence only when their source is available.
+    """
+    if (
+        not isinstance(expected_sha, str) or not SHA_RE.fullmatch(expected_sha)
+        or not isinstance(expected_version_id, str) or not UUID_RE.fullmatch(expected_version_id)
+        or not isinstance(expected_deployment_id, str) or not UUID_RE.fullmatch(expected_deployment_id)
+        or not isinstance(marker, str)
+        or not re.fullmatch(rf"issue-1700-route-free-[1-9][0-9]{{0,19}}-{expected_sha}", marker)
+    ):
+        raise DeploymentError(DIAGNOSTICS_ERROR)
+    _bound_diagnostics_input(version)
+    _bound_diagnostics_input(settings)
+
+    def object_field(parent: dict, key: str) -> dict:
+        value = parent.get(key)
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise DeploymentError(DIAGNOSTICS_ERROR)
+        return value
+
+    def array_field(parent: dict, key: str) -> tuple[str, list]:
+        value = parent.get(key)
+        if value is None:
+            return "unavailable", []
+        if not isinstance(value, list):
+            raise DeploymentError(DIAGNOSTICS_ERROR)
+        return "available", value
+
+    def strings(values: list) -> None:
+        if any(not isinstance(value, str) for value in values):
+            raise DeploymentError(DIAGNOSTICS_ERROR)
+
+    if (
+        not isinstance(version, dict) or not isinstance(version.get("id"), str)
+        or not UUID_RE.fullmatch(version["id"])
+        or not isinstance(settings, dict) or settings.get("success") is not True
+        or settings.get("errors") not in (None, [])
+        or settings.get("messages") not in (None, [])
+        or not isinstance(settings.get("result"), dict)
+    ):
+        raise DeploymentError(DIAGNOSTICS_ERROR)
+    resources = object_field(version, "resources")
+    script = object_field(resources, "script")
+    annotations = object_field(version, "annotations")
+    if "workers/message" in annotations and not isinstance(annotations["workers/message"], str):
+        raise DeploymentError(DIAGNOSTICS_ERROR)
+    marker_status = "available" if "workers/message" in annotations else "unavailable"
+    handlers_status, handlers = array_field(script, "handlers")
+    named_status, named = array_field(script, "named_handlers")
+    strings(handlers)
+    names = set()
+    for entry in named:
+        if not isinstance(entry, dict):
+            raise DeploymentError(DIAGNOSTICS_ERROR)
+        _status, values = array_field(entry, "handlers")
+        strings(values)
+        if "name" not in entry:
+            named_status = "unavailable"
+            continue
+        if not isinstance(entry["name"], str) or entry["name"] in names:
+            raise DeploymentError(DIAGNOSTICS_ERROR)
+        names.add(entry["name"])
+    inventories, binding_sources, bindings_by_source = {}, {}, {}
+    for source, payload in (("version", resources), ("settings", settings["result"])):
+        status, bindings = array_field(payload, "bindings")
+        indexed = {}
+        for binding in bindings:
+            if (
+                not isinstance(binding, dict) or not isinstance(binding.get("name"), str)
+                or not isinstance(binding.get("type"), str) or binding["name"] in indexed
+                or (binding["type"] == "plain_text" and "text" in binding
+                    and not isinstance(binding["text"], str))
+            ):
+                raise DeploymentError(DIAGNOSTICS_ERROR)
+            indexed[binding["name"]] = binding
+        binding_sources[source] = status
+        bindings_by_source[source] = indexed
+        inventories[source] = [
+            {"name": name, "type": indexed[name]["type"]
+             if indexed[name]["type"] in DIAGNOSTICS_BINDING_TYPES else "other"}
+            for name in sorted(indexed.keys() & DIAGNOSTICS_BINDINGS)
+        ]
+    # Prefer version-bound values; settings is the fallback only when that whole
+    # optional version field is unavailable. Never inspect secret values.
+    source = "version" if binding_sources["version"] == "available" else "settings"
+    effective = bindings_by_source[source]
+    expected_values = {
+        "ENVIRONMENT": "staging", "SENTRY_RELEASE": expected_sha,
+        "D1_DATABASE_ID": "d72a6b39-6a48-4338-bfda-1111dda98604",
+        "R2_S3_ENDPOINT": f"https://{ACCOUNT_ID}.r2.cloudflarestorage.com",
+    }
+    values_status = {
+        name: ("unavailable" if name not in effective else
+               "not_plain_text" if effective[name]["type"] != "plain_text" else
+               "available" if "text" in effective[name] else "unavailable")
+        for name in expected_values
+    }
+    return {
+        "contract": DIAGNOSTICS_CONTRACT,
+        "expected_version_id": expected_version_id,
+        "expected_deployment_id": expected_deployment_id,
+        "expected_sha": expected_sha,
+        "identity_matches": version["id"] == expected_version_id,
+        "exact_run_marker": annotations.get("workers/message") == marker,
+        "sources": {
+            "version": "unwrapped", "settings": "api_result",
+            "run_marker": marker_status,
+            "default_handlers": handlers_status, "named_exports": named_status,
+            "bindings": binding_sources,
+            "effective_variables": source if binding_sources[source] == "available" else "unavailable",
+        },
+        "default_handlers": {name: name in handlers for name in ("fetch", "scheduled", "queue")},
+        "named_exports": {name: name in names for name in ("CoreLinkServer", "ContainerProxy", "StagingD1BindingProxy")},
+        "bindings": inventories,
+        "effective_variables_status": values_status,
+        "effective_variables_match": {
+            name: values_status[name] == "available" and effective[name].get("text") == value
+            for name, value in expected_values.items()
+        },
+    }
+
+
+def _read_diagnostics_json(path: Path) -> Any:
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(DIAGNOSTICS_MAX_BYTES + 1)
+        if len(raw) > DIAGNOSTICS_MAX_BYTES:
+            raise DeploymentError(DIAGNOSTICS_ERROR)
+        return json.loads(raw)
+    except (OSError, ValueError, UnicodeError, RecursionError) as error:
+        raise DeploymentError(DIAGNOSTICS_ERROR) from error
+
+
+def _write_diagnostics_receipt(path: Path, receipt: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".candidate-diagnostics-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(json.dumps(receipt, sort_keys=True) + "\n")
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def _require_uuid(value: Any, label: str) -> str:
@@ -406,6 +612,14 @@ def _read_json(path: Path) -> Any:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    diagnostics = commands.add_parser("capture-candidate-diagnostics")
+    diagnostics.add_argument("--version", type=Path, required=True)
+    diagnostics.add_argument("--settings", type=Path, required=True)
+    diagnostics.add_argument("--expected-version-id", required=True)
+    diagnostics.add_argument("--expected-deployment-id", required=True)
+    diagnostics.add_argument("--expected-sha", required=True)
+    diagnostics.add_argument("--marker", required=True)
+    diagnostics.add_argument("--receipt", type=Path, required=True)
     select = commands.add_parser("select-candidate")
     select.add_argument("--deployments", type=Path, required=True)
     select.add_argument("--preimage", type=Path, required=True)
@@ -447,7 +661,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        if args.command == "select-candidate":
+        if args.command == "capture-candidate-diagnostics":
+            receipt = capture_candidate_diagnostics(
+                _read_diagnostics_json(args.version),
+                _read_diagnostics_json(args.settings),
+                expected_version_id=args.expected_version_id,
+                expected_deployment_id=args.expected_deployment_id,
+                expected_sha=args.expected_sha,
+                marker=args.marker,
+            )
+            _write_diagnostics_receipt(args.receipt, receipt)
+        elif args.command == "select-candidate":
             result = select_candidate(
                 _read_json(args.deployments), _read_json(args.preimage)
             )
@@ -530,6 +754,9 @@ def main(argv: list[str] | None = None) -> int:
             args.receipt.parent.mkdir(parents=True, exist_ok=True)
             args.receipt.write_text(json.dumps(receipt, sort_keys=True) + "\n")
     except (DeploymentError, InventoryError, OSError) as error:
+        if args.command == "capture-candidate-diagnostics":
+            print(f"::error::{DIAGNOSTICS_ERROR}", file=sys.stderr)
+            return 1
         print(
             f"::error::existing staging deployment verification rejected: {error}",
             file=sys.stderr,
