@@ -298,7 +298,8 @@ pub(super) fn assert_release_contract(workflow: &str) {
         "--pattern 'corelink-*'",
         "(cd \"$PUBLISHED\" && shasum -a 256 -c checksums.txt)",
         "CORELINK_CLI_RELEASE_TOKEN is required only to publish",
-        "--notes-file /tmp/release-notes.md --draft",
+        "--create-or-reuse-empty-draft",
+        "--notes-file /tmp/release-notes.md --format id",
         "Bind staged artifacts to the immutable source manifest",
         "staging-manifest.json",
         "cli_release_draft_manifest.py write-checksums",
@@ -311,7 +312,7 @@ pub(super) fn assert_release_contract(workflow: &str) {
         "gh api --method DELETE \"repos/HuGR-Labs/corelink-cli/releases/assets/${STAGING_ASSET_ID}\"",
         "--release-id \"${RELEASE_ID}\" --expected-state draft",
         "release-slsa3:",
-        "release-slsa3:\n    needs: [final-manifest, release-readiness, release]\n    # Called workflows cannot elevate the caller's token permissions. Grant\n    # OIDC only to this provenance call; all other release jobs retain the\n    # workflow-level contents:read default.\n    permissions:\n      attestations: write\n      contents: read\n      id-token: write\n    uses: ./.github/workflows/release-slsa3.yml\n    with:\n      release_tag: ${{ inputs.release_tag }}\n      source_sha: ${{ needs.release.outputs.source_sha }}\n      manifest_sha256: ${{ needs.final-manifest.outputs.sha256 }}\n      release_mode: ${{ needs.final-manifest.outputs.release_mode }}\n      release_id: ${{ needs.release.outputs.release_id }}",
+        "release-slsa3:\n    needs: [final-manifest, release-readiness, release]\n    if: >-\n      always() &&\n      needs.final-manifest.result == 'success' &&\n      needs.release-readiness.result == 'success' &&\n      needs.release.result == 'success'\n    # Called workflows cannot elevate the caller's token permissions. Grant\n    # OIDC only to this provenance call; all other release jobs retain the\n    # workflow-level contents:read default.\n    permissions:\n      attestations: write\n      contents: read\n      id-token: write\n    uses: ./.github/workflows/release-slsa3.yml\n    with:\n      release_tag: ${{ inputs.release_tag }}\n      source_sha: ${{ needs.release.outputs.source_sha }}\n      manifest_sha256: ${{ needs.final-manifest.outputs.sha256 }}\n      release_mode: ${{ needs.final-manifest.outputs.release_mode }}\n      release_id: ${{ needs.release.outputs.release_id }}",
         "publish-release:\n    name: publish verified signed release\n    needs: [release-slsa3, release-readiness, final-manifest, release, sign-windows]\n    if: >-\n      always() && inputs.release_mode == 'signed-public'",
         "Verify complete authenticated inventory before publication",
         "gh release download \"${TAG}\" --repo HuGR-Labs/corelink-cli --dir \"${PUBLISHED}\" --clobber",
@@ -361,8 +362,8 @@ pub(super) fn assert_release_contract(workflow: &str) {
 pub(super) fn assert_stable_release_id_contract(workflow: &str, slsa: &str, helper: &str) {
     for required in [
         "release_id: ${{ steps.create-release.outputs.release_id }}",
-        "--expected-state draft --allow-absent --format state",
-        "--expected-state draft --format id",
+        "--expected-state draft --allow-absent --create-or-reuse-empty-draft",
+        "--notes-file /tmp/release-notes.md --format id",
         "RELEASE_ID: ${{ needs.release.outputs.release_id }}",
         "release_id: ${{ needs.release.outputs.release_id }}",
         "--method PATCH \"repos/HuGR-Labs/corelink-cli/releases/${RELEASE_ID}\"",
@@ -401,6 +402,18 @@ pub(super) fn assert_stable_release_id_contract(workflow: &str, slsa: &str, help
         "len(matches) != 1",
         "release ID changed during resolution",
         "allow_absent and (release_id is not None or expected_state != \"draft\")",
+        "def create_or_reuse_empty_draft(",
+        "def gh_json_input(",
+        "\"--method\", \"POST\", \"--input\", \"-\"",
+        "release collection contains duplicate matching tags",
+        "existing draft is non-empty; refusing overwrite or resume",
+        "created release title does not match the request",
+        "new draft unexpectedly contains assets",
+        "if release.get(\"tag_name\") != tag:",
+        "if release.get(\"prerelease\") is not False:",
+        "if draft is not True or published_at is not None:",
+        "release = validate_release(\n        created,\n        repository=repository,\n        tag=tag,\n        expected_state=\"draft\",",
+        "if release[\"assets\"]:\n            raise ReleaseApiError(\"existing draft is non-empty; refusing overwrite or resume\")",
     ] {
         assert!(
             helper.contains(required),
@@ -419,7 +432,7 @@ pub(super) fn assert_release_tag_shell_boundary(workflow: &str) {
         r#"[[ "${INPUT_TAG}" =~ ^cli-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]"#,
         r#"printf 'tag=%s\n' "${INPUT_TAG}" >> "${GITHUB_OUTPUT}""#,
         "TAG: ${{ steps.validate-release-tag.outputs.tag }}",
-        "gh release create \"${TAG}\"",
+        "--create-or-reuse-empty-draft",
         "gh release upload \"${TAG}\"",
         "gh release download \"${TAG}\"",
     ] {
@@ -432,7 +445,7 @@ pub(super) fn assert_release_tag_shell_boundary(workflow: &str) {
         .find("- name: Validate release tag before shell use")
         .unwrap();
     for command in [
-        "gh release create \"${TAG}\"",
+        "--create-or-reuse-empty-draft",
         "gh release upload \"${TAG}\"",
         "gh release download \"${TAG}\"",
     ] {
@@ -454,7 +467,7 @@ pub(super) fn assert_draft_only_release_contract(workflow: &str) {
         "options:\n          - draft-only\n          - signed-public",
         "if: inputs.release_mode == 'signed-public'\n    needs: [sign-linux, release]",
         "Linux artifacts have detached GPG signatures. The Windows artifact is unsigned and deferred; no Authenticode or RFC 3161 timestamp is claimed.",
-        "draft-only mode refuses to overwrite or resume a non-empty draft",
+        "--create-or-reuse-empty-draft",
         "draft-only mode requires exactly one staging manifest and refuses retry/replacement",
         "scripts/cli_release_draft_manifest.py create",
         "scripts/cli_release_draft_manifest.py verify-manifest",

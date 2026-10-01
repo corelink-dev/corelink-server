@@ -590,7 +590,7 @@ def _backlog_block(backlog: str, item_id: str) -> str | None:
     return None
 
 
-def verify_texts(release: str, cosign: str, backlog: str) -> list[str]:
+def verify_texts(release: str, cosign: str, backlog: str, release_api: str) -> list[str]:
     """Return all violations for supplied bytes; never return green on absence."""
     errors: list[str] = []
     release_code = "\n".join(_active_lines(release))
@@ -732,84 +732,31 @@ def verify_texts(release: str, cosign: str, backlog: str) -> list[str]:
             errors.append(f"release-cli must not delete packages from shared $HOME/.cargo (line {line})")
     if re.search(r"(?m)^\s*[^#\n]*--repo\s+HumanGuardrail/corelink-cli", release_code):
         errors.append("release-cli contains the forbidden stale release repository")
-    expected_state_assignment = (
-        '$(python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli '
-        '--tag ${TAG} --expected-state draft --allow-absent --format state)'
+    create_step = "--create-or-reuse-empty-draft"
+    if release.count(create_step) != 1 or "--expected-state draft --allow-absent" not in release:
+        errors.append("release-cli must use the stable-ID helper to create or reuse a draft")
+    if any(args[:2] == ["release", "create"] for _line, args in _active_commands(release, "gh")):
+        errors.append("release-cli must not use the legacy gh release create command")
+    helper_requirements = (
+        'if release.get("tag_name") != tag:',
+        'if release.get("prerelease") is not False:',
+        'if draft is not True or published_at is not None:',
+        '"--method", "POST"', "create_or_reuse_empty_draft", "len(matches) > 1",
+        'if release["assets"]:\n            raise ReleaseApiError("existing draft is non-empty; refusing overwrite or resume")',
     )
-    active_assignments = _active_assignments(release)
-    state_assignments = [
-        line
-        for line, name, value in active_assignments
-        if name == "RELEASE_STATE" and value == expected_state_assignment
-    ]
-    shell_lines = _logical_shell_lines(release)
-    def next_case_marker(marker: str, after: int) -> int:
-        return next(
-            (line for line, raw in shell_lines if line > after and raw.strip() == marker),
-            -1,
-        )
-
-    state_line = state_assignments[0] if len(state_assignments) == 1 else -1
-    case_line = next_case_marker('case "${RELEASE_STATE}" in', state_line)
-    draft_line = next_case_marker("draft)", case_line)
-    absent_line = next_case_marker("absent)", draft_line)
-    default_line = next_case_marker("*)", absent_line)
-    esac_line = next_case_marker("esac", default_line)
-    create_commands = [
-        line
-        for line, args in _active_commands(release, "gh")
-        if args[:2] == ["release", "create"]
-        and "--draft" in args
-        and "HuGR-Labs/corelink-cli" in args
-    ]
-    if len(state_assignments) != 1:
-        errors.append(
-            "release-cli must actively classify the exact tag through the stable-ID helper before create/retry"
-        )
-    if min(case_line, draft_line, absent_line, default_line, esac_line) < 0:
-        errors.append("release-cli must classify draft, absent, and unknown states in one explicit case")
-    elif len(create_commands) != 1 or not (
-        state_line
-        < case_line
-        < draft_line
-        < absent_line
-        < create_commands[0]
-        < default_line
-        < esac_line
-    ):
-        errors.append("release-cli may create a draft only in the classified absent branch")
-    if default_line >= 0 and esac_line >= 0:
-        if not any(
-            default_line < line < esac_line and args == ["1"]
-            for line, args in _active_commands(release, "exit")
-        ):
-            errors.append("release-cli must fail closed for an unknown release state")
-    draft_guards = (
-        'release.get("tag_name") != sys.argv[2] or release.get("draft") is not True',
-        'release.get("published_at") is not None',
-        'if mode == "draft-only" and release.get("assets"):',
-        'raise SystemExit("draft-only mode refuses to overwrite or resume a non-empty draft")',
-    )
-    if draft_line >= 0 and absent_line >= 0:
-        active_source_lines = release.splitlines()
-        if any(
-            not any(
-                draft_line < index + 1 < absent_line and marker in line
-                for index, line in enumerate(active_source_lines)
-            )
-            for marker in draft_guards
-        ):
-            errors.append(
-                "release-cli must validate the exact empty draft and refuse published or non-empty retries"
-            )
+    for marker in helper_requirements:
+        if marker not in release_api:
+            errors.append(f"stable draft API helper is missing required validation: {marker}")
+    if "if len(matches) != 1" not in release_api or 'existing draft is non-empty; refusing overwrite or resume' not in release_api:
+        errors.append("stable draft API helper must reject ambiguous and non-empty draft states")
     require(
         release_code,
-        'release.get("tag_name") != sys.argv[2] or release.get("draft") is not True',
-        "idempotent exact-draft validation",
+        "--create-or-reuse-empty-draft",
+        "idempotent exact-draft creation or reuse",
     )
     require(
-        release_code,
-        'release.get("published_at") is not None',
+        release_api,
+        '"published_at"',
         "published-release retry refusal",
     )
 
@@ -891,7 +838,7 @@ def _inject_run_command(release: str, command: str) -> str:
     return release.replace(needle, needle + f"          {command}\n", 1)
 
 
-def mutation_self_test(release: str, cosign: str, backlog: str) -> None:
+def mutation_self_test(release: str, cosign: str, backlog: str, release_api: str) -> None:
     """Prove each critical positive is load-bearing, not decorative text."""
     mutations = {
         "cache export": (release.replace("CARGO_ZIGBUILD_CACHE_DIR=${ZIGBUILD_CACHE}", "CARGO_ZIGBUILD_CACHE_MUTATED=${ZIGBUILD_CACHE}", 1), cosign, backlog),
@@ -925,22 +872,10 @@ def mutation_self_test(release: str, cosign: str, backlog: str) -> None:
         "shared registry deletion": (_inject_run_command(release, 'rm -rf "$HOME/.cargo"'), cosign, backlog),
         "manual Cargo fetch": (_inject_run_command(release, 'cargo fetch --target "${TARGET_TRIPLE}"'), cosign, backlog),
         "missing stable draft-state classification": (release.replace(
-            "--expected-state draft --allow-absent --format state",
-            "--expected-state draft --format state",
+            "--expected-state draft --allow-absent --create-or-reuse-empty-draft",
+            "--expected-state draft --create-or-reuse-empty-draft",
             1,
         ), cosign, backlog),
-        "missing exact absent branch": (release.replace("  absent)", "  unknown)", 1), cosign, backlog),
-        "draft create moved to retry branch": (release.replace(
-            "absent)\n              gh release create",
-            "draft)\n              gh release create",
-            1,
-        ), cosign, backlog),
-        "draft-only overwrite allowed": (release.replace(
-            'if mode == "draft-only" and release.get("assets"):',
-            "if False:",
-            1,
-        ), cosign, backlog),
-        "published release refusal": (release.replace('release.get("published_at") is not None', 'False', 1), cosign, backlog),
         "wrapped Cargo fetch": (_inject_run_command(release, 'sudo -n cargo fetch --target "${TARGET_TRIPLE}"'), cosign, backlog),
         "wrapped Cargo install": (_inject_run_command(release, "env CARGO_NET_OFFLINE=false cargo install cargo-zigbuild"), cosign, backlog),
         "env separator Cargo fetch": (_inject_run_command(release, "env -- CARGO_NET_OFFLINE=false cargo fetch --locked"), cosign, backlog),
@@ -1006,9 +941,25 @@ def mutation_self_test(release: str, cosign: str, backlog: str) -> None:
             "          echo 'tool: cargo-zigbuild@0.19.8'\n"
             "          cargo-zigbuild --help >/dev/null\n", 1), cosign, backlog),
     }
-    for name, (mutated_release, mutated_cosign, mutated_backlog) in mutations.items():
+    # These mutations exercise the active helper contract rather than stale
+    # inline shell snippets from the retired create flow.
+    helper_mutations = {
+        "published response accepted": release_api.replace('"published_at"', '"published_time"', 1),
+        "wrong tag accepted": release_api.replace('"tag_name"', '"tag"', 1),
+        "non-empty draft overwrite allowed": release_api.replace('if release["assets"]:', "if False:", 1),
+        "duplicate tag accepted": release_api.replace("if len(matches) > 1:", "if False:", 1),
+    }
+    expanded = {
+        name: (mutated_release, mutated_cosign, mutated_backlog, release_api)
+        for name, (mutated_release, mutated_cosign, mutated_backlog) in mutations.items()
+    }
+    expanded.update({
+        name: (release, cosign, backlog, mutated_helper)
+        for name, mutated_helper in helper_mutations.items()
+    })
+    for name, (mutated_release, mutated_cosign, mutated_backlog, mutated_helper) in expanded.items():
         try:
-            mutation_errors = verify_texts(mutated_release, mutated_cosign, mutated_backlog)
+            mutation_errors = verify_texts(mutated_release, mutated_cosign, mutated_backlog, mutated_helper)
         except RuntimeError:
             continue
         if not mutation_errors:
@@ -1022,18 +973,19 @@ def main(argv: list[str] | None = None) -> int:
     root = args.root.resolve()
     try:
         release = _read_regular(root / RELEASE, RELEASE)
+        release_api = _read_regular(root / "scripts/cli_release_api.py", "scripts/cli_release_api.py")
         cosign_path = root / COSIGN
         # Missing is the expected B-118 state.  A regular file or symlink is
         # still read so the negative control can reject a reintroduced lane;
         # a broken symlink must not be mistaken for a clean retirement.
         cosign = _read_regular(cosign_path, COSIGN) if cosign_path.exists() or cosign_path.is_symlink() else ""
         backlog = _read_regular(root / BACKLOG, BACKLOG)
-        errors = verify_texts(release, cosign, backlog)
+        errors = verify_texts(release, cosign, backlog, release_api)
         if errors:
             for error in errors:
                 print(f"B112 RED: {error}", file=sys.stderr)
             return 1
-        mutation_self_test(release, cosign, backlog)
+        mutation_self_test(release, cosign, backlog, release_api)
     except RuntimeError as error:
         print(f"B112 RED: {error}", file=sys.stderr)
         return 1

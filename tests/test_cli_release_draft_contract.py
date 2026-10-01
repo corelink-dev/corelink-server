@@ -32,6 +32,34 @@ TAG = f"cli-v{cli_package_version()}"
 SOURCE = "a" * 40
 
 
+def _workflow_ancestors(jobs: dict, name: str) -> set[str]:
+    result: set[str] = set()
+    needs = jobs[name].get("needs", [])
+    pending = [needs] if isinstance(needs, str) else list(needs)
+    while pending:
+        item = pending.pop()
+        if item not in result:
+            result.add(item)
+            needs = jobs[item].get("needs", [])
+            pending.extend([needs] if isinstance(needs, str) else needs)
+    return result
+
+
+def _implicit_success(jobs: dict, name: str, results: dict[str, str]) -> bool:
+    return all(results.get(ancestor) == "success" for ancestor in _workflow_ancestors(jobs, name))
+
+
+def _slsa_condition(condition: str, results: dict[str, str]) -> bool:
+    direct = ("final-manifest", "release-readiness", "release")
+    # The expression is intentionally parsed by checking its actual job
+    # condition and each named GitHub result predicate, rather than simulating
+    # an unrelated workflow description.
+    return "always()" in condition and all(
+        f"needs.{job}.result == 'success'" in condition and results.get(job) == "success"
+        for job in direct
+    )
+
+
 def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -328,6 +356,143 @@ class StableReleaseIdContractTests(unittest.TestCase):
                     )
                 request.assert_not_called()
 
+    def test_create_captures_and_validates_the_official_post_response_without_relisting(self) -> None:
+        created = self.draft | {"tag_name": TAG, "name": "CoreLink CLI 0.1.7"}
+        with patch.object(release_api, "gh_json", return_value=[[]]) as listing, \
+                patch.object(release_api, "gh_json_input", return_value=created) as post:
+            result = release_api.create_or_reuse_empty_draft(
+                repository="HuGR-Labs/corelink-cli", tag=TAG,
+                title="CoreLink CLI 0.1.7", body="release notes\n",
+            )
+        self.assertEqual(result["id"], 400918946)
+        listing.assert_called_once_with(
+            "--paginate", "--slurp", "repos/HuGR-Labs/corelink-cli/releases?per_page=100",
+        )
+        post.assert_called_once_with(
+            "--method", "POST", "--input", "-", "repos/HuGR-Labs/corelink-cli/releases",
+            payload={
+                "tag_name": TAG,
+                "name": "CoreLink CLI 0.1.7",
+                "body": "release notes\n",
+                "draft": True,
+                "prerelease": False,
+            },
+        )
+
+    def test_existing_empty_draft_reuses_its_id_and_never_posts(self) -> None:
+        existing = self.draft | {"tag_name": TAG, "name": "CoreLink CLI 0.1.7"}
+        with patch.object(release_api, "gh_json", side_effect=[[[existing]], existing]) as request, \
+                patch.object(release_api, "gh_json_input") as post:
+            result = release_api.create_or_reuse_empty_draft(
+                repository="HuGR-Labs/corelink-cli", tag=TAG,
+                title="CoreLink CLI 0.1.7", body="release notes\n",
+            )
+        self.assertEqual(result["id"], existing["id"])
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args_list[1].args, ("repos/HuGR-Labs/corelink-cli/releases/400918946",))
+        post.assert_not_called()
+
+    def test_nonempty_existing_draft_and_duplicate_tag_are_rejected_without_post(self) -> None:
+        nonempty = self.draft | {"tag_name": TAG, "assets": [{"name": "corelink"}]}
+        for pages, second, message in (
+            ([[nonempty]], nonempty, "non-empty"),
+            ([[self.draft | {"tag_name": TAG}, self.draft | {"tag_name": TAG}]], None,
+             "duplicate matching tags"),
+        ):
+            with self.subTest(message=message), \
+                    patch.object(release_api, "gh_json", side_effect=[pages, second] if second else [pages]), \
+                    patch.object(release_api, "gh_json_input") as post:
+                with self.assertRaisesRegex(release_api.ReleaseApiError, message):
+                    release_api.create_or_reuse_empty_draft(
+                        repository="HuGR-Labs/corelink-cli", tag=TAG,
+                        title="CoreLink CLI 0.1.7", body="release notes\n",
+                    )
+                post.assert_not_called()
+
+    def test_malformed_or_unexpected_create_responses_fail_closed(self) -> None:
+        good = self.draft | {"tag_name": TAG, "name": "CoreLink CLI 0.1.7"}
+        mutants = (
+            good | {"id": True},
+            good | {"id": 0},
+            good | {"tag_name": "cli-v0.1.8"},
+            good | {"draft": False, "published_at": "2026-10-01T12:00:00Z"},
+            good | {"published_at": "2026-10-01T12:00:00Z"},
+            good | {"prerelease": True},
+            good | {"assets": [{"name": "unexpected"}]},
+            good | {"name": "wrong title"},
+            {key: value for key, value in good.items() if key != "upload_url"},
+        )
+        for mutant in mutants:
+            with self.subTest(mutant=mutant), \
+                    patch.object(release_api, "gh_json", return_value=[[]]), \
+                    patch.object(release_api, "gh_json_input", return_value=mutant):
+                with self.assertRaises(release_api.ReleaseApiError):
+                    release_api.create_or_reuse_empty_draft(
+                        repository="HuGR-Labs/corelink-cli", tag=TAG,
+                        title="CoreLink CLI 0.1.7", body="release notes\n",
+                    )
+
+    def test_cli_create_command_posts_once_reads_notes_and_emits_the_validated_id(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="corelink-release-create-gh-") as temporary:
+            root = Path(temporary)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            calls = root / "calls.jsonl"
+            payloads = root / "post-bodies.jsonl"
+            notes = root / "notes.md"
+            notes.write_text("release notes with newline\n", encoding="utf-8")
+            fake_gh = fake_bin / "gh"
+            fake_gh.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "args = sys.argv[1:]\n"
+                "with open(os.environ['GH_CALL_LOG'], 'a', encoding='utf-8') as f: f.write(json.dumps(args) + '\\n')\n"
+                "if '--paginate' in args:\n"
+                "    json.dump([[]], sys.stdout); print(); raise SystemExit(0)\n"
+                "body = json.load(sys.stdin)\n"
+                "with open(os.environ['GH_POST_LOG'], 'a', encoding='utf-8') as f: f.write(json.dumps(body) + '\\n')\n"
+                "release = {'id': 400918946, 'tag_name': body['tag_name'], 'name': body['name'],\n"
+                " 'draft': True, 'published_at': None, 'prerelease': False, 'html_url': 'https://github.com/HuGR-Labs/corelink-cli/releases/tag/x',\n"
+                " 'upload_url': 'https://uploads.github.com/repos/HuGR-Labs/corelink-cli/releases/400918946/assets{?name,label}', 'assets': []}\n"
+                "json.dump(release, sys.stdout); print()\n",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            environment = dict(__import__("os").environ)
+            environment.update({
+                "PATH": f"{fake_bin}:{environment['PATH']}",
+                "GH_CALL_LOG": str(calls),
+                "GH_POST_LOG": str(payloads),
+                "GH_TOKEN": "",
+                "GH_ENTERPRISE_TOKEN": "",
+                "GITHUB_ENTERPRISE_TOKEN": "",
+            })
+            result = subprocess.run(
+                [
+                    "python3", "scripts/cli_release_api.py", "--repo", "HuGR-Labs/corelink-cli",
+                    "--tag", TAG, "--expected-state", "draft", "--allow-absent",
+                    "--create-or-reuse-empty-draft", "--title", "CoreLink CLI 0.1.7",
+                    "--notes-file", str(notes), "--format", "id",
+                ],
+                cwd=Path(__file__).resolve().parents[1], env=environment,
+                text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "400918946\n")
+            self.assertEqual(json.loads(payloads.read_text(encoding="utf-8")), {
+                "tag_name": TAG,
+                "name": "CoreLink CLI 0.1.7",
+                "body": "release notes with newline\n",
+                "draft": True,
+                "prerelease": False,
+            })
+            recorded_calls = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(recorded_calls), 2)
+            self.assertIn("--paginate", recorded_calls[0])
+            self.assertEqual(recorded_calls[1], [
+                "api", "--method", "POST", "--input", "-", "repos/HuGR-Labs/corelink-cli/releases",
+            ])
+
     def test_cli_integration_uses_authenticated_gh_api_shape_without_reading_credentials(self) -> None:
         with tempfile.TemporaryDirectory(prefix="corelink-release-id-gh-") as temporary:
             root = Path(temporary)
@@ -385,10 +550,69 @@ class StableReleaseIdContractTests(unittest.TestCase):
         self.assertIn("RELEASE_ID: ${{ inputs.release_id }}", slsa)
         self.assertIn("--expected-state draft", caller)
         self.assertIn("--expected-state published", caller)
+        self.assertIn("--create-or-reuse-empty-draft", caller)
+        self.assertNotIn('gh release create "${TAG}"', caller)
+        slsa_job = re.search(r"(?ms)^  release-slsa3:\n(.*?)(?=^  [a-z0-9_-]+:\n|\Z)", caller)
+        self.assertIsNotNone(slsa_job)
+        self.assertIn("always()", slsa_job.group(1))
+        for job in ("final-manifest", "release-readiness", "release"):
+            self.assertIn(f"needs.{job}.result == 'success'", slsa_job.group(1))
         self.assertIn('test "${GITHUB_REF}" = "refs/tags/${TAG}"', slsa)
         self.assertIn('test "${GITHUB_SHA}" = "${SOURCE_SHA}"', slsa)
         self.assertIn('--source-ref "refs/tags/${TAG}" --source-digest "${SOURCE_SHA}"', caller)
         self.assertIn('gh api --method PATCH "repos/HuGR-Labs/corelink-cli/releases/${RELEASE_ID}"', caller)
+
+    def test_actual_workflow_dag_runs_slsa_for_draft_with_skipped_windows_and_rejects_bad_prerequisites(self) -> None:
+        jobs = yaml.safe_load(Path(".github/workflows/release-cli.yml").read_text(encoding="utf-8"))["jobs"]
+        slsa = jobs["release-slsa3"]
+        condition = slsa["if"]
+        self.assertEqual(slsa["needs"], ["final-manifest", "release-readiness", "release"])
+        self.assertIn("always()", condition)
+        draft = {"build": "success", "release-readiness": "success", "release": "success",
+                 "sign-linux": "success", "sign-windows": "skipped", "final-manifest": "success"}
+        self.assertIn("sign-windows", _workflow_ancestors(jobs, "release-slsa3"))
+        self.assertFalse(_implicit_success(jobs, "release-slsa3", draft))
+        self.assertTrue(_slsa_condition(condition, draft))
+        public = dict(draft, **{"sign-windows": "success"})
+        self.assertTrue(_slsa_condition(condition, public))
+        for required in slsa["needs"]:
+            for state in ("failure", "cancelled", "skipped", "missing"):
+                states = dict(draft)
+                if state == "missing":
+                    states.pop(required, None)
+                else:
+                    states[required] = state
+                self.assertFalse(_slsa_condition(condition, states), (required, state))
+        for ancestor in _workflow_ancestors(jobs, "release-slsa3"):
+            for state in ("failure", "cancelled", "skipped", "missing"):
+                if ancestor == "sign-windows" and state == "skipped":
+                    continue  # the one intentional draft-only skipped prerequisite
+                states = dict(draft)
+                if state == "missing":
+                    states.pop(ancestor, None)
+                else:
+                    states[ancestor] = state
+                # A failed/missing upstream job prevents its affected direct
+                # SLSA needs from succeeding; the production DAG must not
+                # convert that prerequisite failure into an attestation.
+                if ancestor in {"build", "sign-linux", "sign-windows"}:
+                    states["final-manifest"] = "skipped"
+                elif ancestor == "release-readiness":
+                    states["release-readiness"] = state
+                elif ancestor == "release":
+                    states["release"] = state
+                elif ancestor == "final-manifest":
+                    states["final-manifest"] = state
+                self.assertFalse(_slsa_condition(condition, states), (ancestor, state))
+
+        verify_if = jobs["verify-draft-release"]["if"]
+        self.assertIn("needs.release-slsa3.result == 'success'", verify_if)
+        publish_if = jobs["publish-release"]["if"]
+        self.assertIn("inputs.release_mode == 'signed-public'", publish_if)
+        self.assertIn("needs.sign-windows.result == 'success'", publish_if)
+        self.assertIn("needs.release-slsa3.result == 'success'", publish_if)
+        self.assertFalse("draft-only" in publish_if)
+        self.assertFalse(_slsa_condition(condition.replace("always() &&", "", 1), draft))
 
 
 class CanonicalChecksumWorkflowTests(unittest.TestCase):
