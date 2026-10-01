@@ -1,4 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   RouteError,
@@ -32,6 +35,11 @@ import {
   validateReceiptSchema,
   validateRollbackReadback,
   validateTrackedInputs,
+  validateInitialPrivateDeployment,
+  validateInitialPrivateVersion,
+  prepareInitialPrivateReceiverConfig,
+  prepareFinalReceiverConfig,
+  summarizeCustomRoutes,
   queryBootstrapDatabase,
 } from "../scripts/deploy-route.mjs";
 
@@ -138,7 +146,254 @@ function bootstrapHarness({ migration, sha, failDeploy = false, preexistingWorke
   return { state, fetchImpl, command, sourceId, sourceTag, finalId, finalTag };
 }
 
+function routeHarness({ migration, sha, existing = false, wrongInitialDatabase = false, failInitialDeploy = false, malformedRoutes = false, failFinalDeploymentReadback = false, failFinalSubdomainReadback = false } = {}) {
+  const initialId = "323e4567-e89b-42d3-a456-426614174000";
+  const sourceId = "423e4567-e89b-42d3-a456-426614174000";
+  const finalId = "523e4567-e89b-42d3-a456-426614174000";
+  const originalId = "623e4567-e89b-42d3-a456-426614174000";
+  const sourceTag = `b216-source-${sha}`;
+  const finalTag = `b216-${sha}`;
+  const targetDb = wrongInitialDatabase ? "723e4567-e89b-42d3-a456-426614174000" : TARGET.databaseId;
+  const state = {
+    script: existing,
+    workersDev: false,
+    previewsEnabled: false,
+    versions: existing ? [{ id: originalId, metadata: { annotations: { "workers/tag": "b216-existing" } } }] : [],
+    details: new Map(),
+    deployments: existing ? [{ id: "823e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: originalId, percentage: 100 }] }] : [],
+    commands: [],
+    requests: [],
+    secretPut: false,
+    routeFixture: malformedRoutes === true
+      ? [{ id: "bad" }]
+      : malformedRoutes === "present"
+        ? [{ id: "route-1", pattern: "alerts.example/*", script: TARGET.workerName }]
+        : null,
+    failFinalDeploymentReadback,
+    failFinalSubdomainReadback,
+  };
+  if (existing) state.details.set(originalId, { id: originalId, metadata: { annotations: { "workers/tag": "b216-existing" } }, resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: TARGET.databaseId }] } });
+  const receiptSql = migration.trim().replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE");
+  const tables = [
+    { name: "_cf_KV", sql: "CREATE TABLE _cf_KV (key TEXT PRIMARY KEY, value BLOB)" },
+    { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)" },
+    { name: "dsr_alert_receipts", sql: receiptSql },
+  ];
+  const scriptRows = () => state.script
+    ? [{ id: TARGET.workerName, ...(state.routeFixture ? { routes: state.routeFixture } : {}) }]
+    : [];
+  const json = (result, status = 200) => Response.json({ success: status < 400, result }, { status });
+  const fetchImpl = async (url, options = {}) => {
+    const parsed = new URL(url);
+    const path = parsed.pathname.replace(/^\/client\/v4(?=\/)/, "");
+    const method = options.method ?? "GET";
+    state.requests.push({ path, method });
+    if (path === `/accounts/${TARGET.accountId}`) return json({ id: TARGET.accountId });
+    if (path === `/accounts/${TARGET.accountId}/d1/database`) return json([{ name: TARGET.databaseName, uuid: TARGET.databaseId, account_id: TARGET.accountId }]);
+    if (path.endsWith(`/d1/database/${TARGET.databaseId}/query`)) {
+      const sql = JSON.parse(options.body).sql;
+      return json([{ success: true, results: sql.includes("sqlite_master") ? tables : [{ name: TARGET.migration }] }]);
+    }
+    if (path === `/accounts/${TARGET.accountId}/workers/scripts`) return json(scriptRows());
+    const workerPath = `/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`;
+    if (path === `${workerPath}/versions` || path.startsWith(`${workerPath}/versions/`)) {
+      if (!state.script) return json({}, 404);
+      if (path === `${workerPath}/versions` || parsed.searchParams.has("page") || parsed.searchParams.has("per_page")) return json({ items: state.versions });
+      const id = path.slice(`${workerPath}/versions/`.length);
+      const detail = state.details.get(id);
+      return detail ? json(detail) : json({}, 404);
+    }
+    if ((path === `${workerPath}/deployments` || path === `${workerPath}/deployments?page=1&per_page=100`)
+      && state.failFinalDeploymentReadback && state.finalDeployed) {
+      state.failFinalDeploymentReadback = false;
+      return json({}, 500);
+    }
+    if (path === `${workerPath}/deployments` || path === `${workerPath}/deployments?page=1&per_page=100`) return state.script ? json({ deployments: state.deployments }) : json({}, 404);
+    if (path === `${workerPath}/secrets`) return json(state.secretPut ? [{ name: TARGET.workerSecret }] : []);
+    if (path === `${workerPath}/subdomain` && method === "POST") {
+      const body = typeof options.body === "string" ? JSON.parse(options.body) : options.body;
+      state.workersDev = body.enabled;
+      state.previewsEnabled = body.previews_enabled;
+      return json({ enabled: state.workersDev, previews_enabled: state.previewsEnabled });
+    }
+    if (path === `${workerPath}/subdomain` && state.failFinalSubdomainReadback && state.workersDev) {
+      state.failFinalSubdomainReadback = false;
+      return json({}, 500);
+    }
+    if (path === `${workerPath}/subdomain`) return state.script ? json({ enabled: state.workersDev, previews_enabled: state.previewsEnabled }) : json({}, 404);
+    throw new Error(`unexpected provider request ${method} ${path}`);
+  };
+  const command = (args, options = {}) => {
+    state.commands.push({ args, options });
+    if (args[0] === "deploy") {
+      if (failInitialDeploy) throw new RouteError("provider_command_failed", { provider_failure_class: "process_exit", process_exit_code: 1, provider_error_category: "permission_denied" });
+      const config = readFileSync(args[args.indexOf("--config") + 1], "utf8");
+      if (!config.includes("workers_dev = false\npreview_urls = false") || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/m.test(config)) throw new Error("initial deployment config was not private");
+      state.script = true;
+      state.versions = [{ id: initialId, metadata: { annotations: {} } }];
+      state.details.set(initialId, { id: initialId, resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: targetDb }] } });
+      state.deployments = [{ id: "923e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: initialId, percentage: 100 }] }];
+      state.workersDev = false;
+      state.previewsEnabled = false;
+      return "";
+    }
+    if (args[0] === "versions" && args[1] === "upload") {
+      state.versions.push({ id: sourceId, metadata: { annotations: { "workers/tag": sourceTag } } });
+      state.details.set(sourceId, { id: sourceId, metadata: { annotations: { "workers/tag": sourceTag } }, resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: TARGET.databaseId }] } });
+      return "";
+    }
+    if (args[0] === "versions" && args[1] === "secret" && args[2] === "put") {
+      expect(options.input).toBe(goodContext.receiverToken);
+      state.secretPut = true;
+      state.versions.push({ id: finalId, metadata: { annotations: { "workers/tag": finalTag } } });
+      state.details.set(finalId, { id: finalId, metadata: { annotations: { "workers/tag": finalTag } }, resources: { bindings: [
+        { type: "d1", name: TARGET.databaseBinding, database_id: TARGET.databaseId },
+        { type: "secret_text", name: TARGET.workerSecret },
+      ] } });
+      return "";
+    }
+    if (args[0] === "versions" && args[1] === "deploy") {
+      state.finalDeployed = true;
+      state.deployments = [{ id: "a23e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: finalId, percentage: 100 }] }];
+      return "";
+    }
+    if (args[0] === "rollback") {
+      state.deployments = [{ id: "b23e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: originalId, percentage: 100 }] }];
+      return "";
+    }
+    throw new Error(`unexpected mocked command ${args.join(" ")}`);
+  };
+  return { state, fetchImpl, command, initialId, sourceId, finalId };
+}
+
 describe("B-216 protected receiver route admission", () => {
+  it.each([false, true])("runs the complete receiver route protocol with worker preimage existing=%s", async (existing) => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha, existing });
+    const receipt = await runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" });
+    expect(receipt.status).toBe("deployed");
+    expect(receipt.issue).toBe(1678);
+    expect(receipt.database_id).toBe(TARGET.databaseId);
+    expect(receipt.final_workers_dev).toBe(existing ? "preexisting_state_unchanged" : "enabled_verified");
+    expect(receipt.final_preview_urls).toBe(existing ? "preexisting_state_unchanged" : "disabled_verified");
+    expect(receipt.custom_routes_status).toBe("unknown");
+    if (existing) {
+      expect(receipt.worker_preimage).toBe("623e4567-e89b-42d3-a456-426614174000");
+      expect(harness.state.commands.some(({ args }) => args[0] === "deploy")).toBe(false);
+    } else {
+      expect(receipt.worker_preimage).toBe("absent");
+      expect(receipt.initial_private_revision).toBe(harness.initialId);
+      expect(receipt.initial_private_workers_dev).toBe("disabled_verified");
+      expect(receipt.initial_private_preview_urls).toBe("disabled_verified");
+      expect(harness.state.commands[0].args[0]).toBe("deploy");
+      expect(harness.state.commands[0].args).not.toContain("--yes");
+    }
+    expect(harness.state.workersDev).toBe(!existing);
+    expect(harness.state.previewsEnabled).toBe(false);
+    expect(harness.state.commands.some(({ args }) => args.includes("rollback"))).toBe(false);
+    expect(harness.state.requests.some(({ path, method }) => path.endsWith("/subdomain") && method === "POST")).toBe(!existing);
+  });
+
+  it("does not change existing private ingress when final Worker readback fails", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha, existing: true, failFinalDeploymentReadback: true });
+    await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "provider_response_rejected" });
+    expect(harness.state.commands.map(({ args }) => args[1])).toEqual(["upload", "secret", "deploy", "623e4567-e89b-42d3-a456-426614174000"]);
+    expect(harness.state.requests.some(({ path, method }) => path.endsWith("/subdomain") && method === "POST")).toBe(false);
+    expect(harness.state.workersDev).toBe(false);
+    expect(harness.state.deployments[0].versions).toEqual([{ version_id: "623e4567-e89b-42d3-a456-426614174000", percentage: 100 }]);
+  });
+
+  it("disables first-create ingress after its enable readback fails", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha, failFinalSubdomainReadback: true });
+    await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "provider_response_rejected" });
+    expect(harness.state.requests.filter(({ path, method }) => path.endsWith("/subdomain") && method === "POST")).toHaveLength(2);
+    expect(harness.state.workersDev).toBe(false);
+    expect(harness.state.previewsEnabled).toBe(false);
+  });
+
+  it("stops on wrong first-deploy D1 binding before receiver secret or final deployment", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha, wrongInitialDatabase: true });
+    await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "worker_database_binding_mismatch" });
+    expect(harness.state.commands.map(({ args }) => args[0])).toEqual(["deploy"]);
+    expect(harness.state.secretPut).toBe(false);
+    expect(harness.state.workersDev).toBe(false);
+  });
+
+  it("rejects malformed or present preexisting routes before invoking Wrangler", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    for (const malformedRoutes of [true, "present"]) {
+      const harness = routeHarness({ migration, sha: goodContext.sha, existing: true, malformedRoutes });
+      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" })).rejects.toBeInstanceOf(RouteError);
+      expect(harness.state.commands).toHaveLength(0);
+    }
+  });
+
+  it("keeps route facts unknown and safely compensates a failed first-create attempt", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha, failInitialDeploy: true });
+    const receiptDir = await mkdtemp(join(tmpdir(), "b216-route-test-"));
+    const receiptPath = join(receiptDir, "receipt.json");
+    try {
+      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, receiptPath, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "provider_command_failed" });
+      const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+      expect(receipt.issue).toBe(1678);
+      expect(receipt.provider_error_category).toBe("permission_denied");
+      expect(receipt.rollback_status).toBe("absent_preimage_verified");
+      expect(receipt.rollback_custom_routes_status).toBeUndefined();
+      expect(harness.state.commands.map(({ args }) => args[0])).toEqual(["deploy"]);
+      expect(harness.state.secretPut).toBe(false);
+    } finally {
+      await rm(receiptDir, { recursive: true, force: true });
+    }
+  });
+
+  it("builds an exact private first-deploy config and rejects route or preview exposure", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const privateConfig = prepareInitialPrivateReceiverConfig(config, migration, TARGET.databaseId, "/repo/apps/dsr-alert-receiver");
+    expect(privateConfig).toContain('database_id = "dce5e90a-2c3d-43d2-8037-a6d15d74e1cb"');
+    expect(privateConfig).toContain("workers_dev = false\npreview_urls = false");
+    expect(privateConfig).not.toMatch(/^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/m);
+    const finalConfig = prepareFinalReceiverConfig(config, migration, TARGET.databaseId, "/repo/apps/dsr-alert-receiver");
+    expect(finalConfig).toContain("workers_dev = true\npreview_urls = false");
+    expect(finalConfig).not.toMatch(/^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/m);
+    errorCode(() => prepareInitialPrivateReceiverConfig(`${config}\nroute = \"example.test/*\"\n`, migration, TARGET.databaseId, "/repo/apps/dsr-alert-receiver"), "wrangler_config_drift");
+    errorCode(() => prepareFinalReceiverConfig(config, migration, "123e4567-e89b-42d3-a456-426614174000", "/repo/apps/dsr-alert-receiver"), "database_identity_mismatch");
+  });
+
+  it("validates the actual first private deployment shape and rejects wrong DB, secret, revision, routes, or preview state", () => {
+    const revision = "123e4567-e89b-42d3-a456-426614174000";
+    const inventory = {
+      status: "complete",
+      worker: { exists: true, inventory_count: 4 },
+      routes: { status: "unknown" },
+      versions: { status: "known", count: 1, items: [{ id: revision, tag: null }] },
+      deployments: { status: "known", count: 1, active: { id: "223e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: revision, percentage: 100 }] } },
+      subdomain: { status: "known", enabled: false, previews_enabled: false },
+    };
+    expect(validateInitialPrivateDeployment(inventory, 4)).toBe(revision);
+    expect(validateInitialPrivateVersion({ id: revision, resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: TARGET.databaseId }] } }, TARGET.databaseId)).toBe(true);
+    errorCode(() => validateInitialPrivateDeployment({ ...inventory, worker: { ...inventory.worker, inventory_count: 3 } }, 4), "worker_initial_deployment_ambiguous");
+    errorCode(() => validateInitialPrivateDeployment({ ...inventory, subdomain: { status: "known", enabled: false, previews_enabled: true } }, 4), "worker_initial_deployment_ambiguous");
+    errorCode(() => validateInitialPrivateDeployment({ ...inventory, routes: { status: "known", count: 1 } }, 4), "worker_custom_route_present");
+    errorCode(() => validateInitialPrivateDeployment({ ...inventory, deployments: { ...inventory.deployments, active: { ...inventory.deployments.active, versions: [{ version_id: "323e4567-e89b-42d3-a456-426614174000", percentage: 100 }] } } }, 4), "worker_initial_deployment_ambiguous");
+    errorCode(() => validateInitialPrivateVersion({ id: revision, resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: "323e4567-e89b-42d3-a456-426614174000" }] } }, TARGET.databaseId), "worker_database_binding_mismatch");
+    errorCode(() => validateInitialPrivateVersion({ id: revision, resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: TARGET.databaseId }, { type: "secret_text", name: TARGET.workerSecret }] } }, TARGET.databaseId), "worker_initial_secret_present");
+    expect(summarizeCustomRoutes(undefined)).toBe("unknown");
+    expect(summarizeCustomRoutes({ id: TARGET.workerName, routes: [] })).toBe("absent");
+    errorCode(() => summarizeCustomRoutes({ id: TARGET.workerName, routes: [{ id: "bad" }] }), "worker_routes_ambiguous");
+    errorCode(() => summarizeCustomRoutes({ id: TARGET.workerName, routes: [{ id: "r1", pattern: "*.example/*", script: TARGET.workerName }] }), "worker_custom_route_present");
+  });
+
   it("classifies Wrangler failures into bounded numeric-only receipt fields", () => {
     const sensitive = `${goodContext.apiToken} ${goodContext.receiverToken}`;
     const providerFailure = classifyWranglerFailure({
@@ -150,6 +405,7 @@ describe("B-216 protected receiver route admission", () => {
       provider_failure_class: "provider_error_code",
       provider_error_code: 10021,
       process_exit_code: 1,
+      provider_error_category: "unknown_cli_failure",
     });
     expect(JSON.stringify(providerFailure)).not.toContain(sensitive);
 
@@ -157,6 +413,7 @@ describe("B-216 protected receiver route admission", () => {
       provider_failure_class: "process_exit",
       provider_error_code: null,
       process_exit_code: 17,
+      provider_error_category: "unknown_cli_failure",
     });
     for (const output of [
       "[code: nope]",
@@ -169,6 +426,7 @@ describe("B-216 protected receiver route admission", () => {
         provider_failure_class: "ambiguous_provider_error_code",
         provider_error_code: null,
         process_exit_code: 1,
+        provider_error_category: "unknown_cli_failure",
       });
     }
     const spawnFailure = classifyWranglerFailure({
@@ -181,6 +439,7 @@ describe("B-216 protected receiver route admission", () => {
       provider_failure_class: "spawn_failure",
       provider_error_code: null,
       process_exit_code: null,
+      provider_error_category: null,
     });
     expect(JSON.stringify(spawnFailure)).not.toContain(sensitive);
 
@@ -195,9 +454,27 @@ describe("B-216 protected receiver route admission", () => {
       provider_failure_class: "process_exit",
       provider_error_code: null,
       process_exit_code: 1,
+      provider_error_category: null,
     });
     expect(JSON.stringify(untrustedFailure.providerFailure)).not.toContain(sensitive);
     expect(JSON.stringify(untrustedFailure)).not.toContain(sensitive);
+
+    const firstCreate = classifyWranglerFailure({
+      status: 1,
+      stdout: `Using wrangler versions upload the first time you upload a Worker will fail ${sensitive}`,
+      stderr: sensitive,
+    });
+    expect(firstCreate).toEqual({
+      provider_failure_class: "process_exit",
+      provider_error_code: null,
+      process_exit_code: 1,
+      provider_error_category: "first_deploy_required",
+    });
+    expect(JSON.stringify(firstCreate)).not.toContain(sensitive);
+
+    const permission = classifyWranglerFailure({ status: 1, stdout: `Permission denied ${sensitive}`, stderr: "" });
+    expect(permission.provider_error_category).toBe("permission_denied");
+    expect(JSON.stringify(permission)).not.toContain(sensitive);
   });
 
   it("accepts only canonical repository, main ref, exact checkout SHA, and named protected secrets", () => {

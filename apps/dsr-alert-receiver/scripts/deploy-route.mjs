@@ -42,6 +42,15 @@ const PROVIDER_FAILURE_CLASSES = new Set([
   "process_exit",
   "spawn_failure",
 ]);
+const WRANGLER_ERROR_CATEGORIES = new Set([
+  "first_deploy_required",
+  "authentication_failed",
+  "permission_denied",
+  "resource_not_found",
+  "rate_limited",
+  "invalid_configuration",
+  "unknown_cli_failure",
+]);
 
 function boundedExitCode(value) {
   return Number.isInteger(value) && value >= 0 && value <= 255 ? value : null;
@@ -61,6 +70,9 @@ function sanitizeProviderFailure(value) {
     provider_failure_class: failureClass,
     provider_error_code: providerCode,
     process_exit_code: boundedExitCode(value?.process_exit_code),
+    provider_error_category: WRANGLER_ERROR_CATEGORIES.has(value?.provider_error_category)
+      ? value.provider_error_category
+      : null,
   });
 }
 
@@ -70,6 +82,13 @@ export function classifyWranglerFailure(result) {
     return sanitizeProviderFailure({ provider_failure_class: "spawn_failure", process_exit_code: processExitCode });
   }
   const output = [result?.stdout, result?.stderr].filter((part) => typeof part === "string").join("\n");
+  let providerErrorCategory = "unknown_cli_failure";
+  if (/first time[^\n]*(?:upload|worker)|(?:upload|worker)[^\n]*first time[^\n]*(?:fail|must use)/i.test(output)) providerErrorCategory = "first_deploy_required";
+  else if (/invalid api token|authentication (?:failed|error)|unauthorized/i.test(output)) providerErrorCategory = "authentication_failed";
+  else if (/permission denied|missing permission|not authorized|not permitted/i.test(output)) providerErrorCategory = "permission_denied";
+  else if (/\b(?:worker|script|resource)\b[^\n]*\bnot found\b|\bnot found\b[^\n]*\b(?:worker|script|resource)\b/i.test(output)) providerErrorCategory = "resource_not_found";
+  else if (/rate limit|too many requests|\b429\b/i.test(output)) providerErrorCategory = "rate_limited";
+  else if (/invalid (?:wrangler )?config|configuration (?:is )?invalid|unknown configuration/i.test(output)) providerErrorCategory = "invalid_configuration";
   const markerPattern = /\[code:\s*([^\]\r\n]*)\]/gi;
   const markers = [...output.matchAll(markerPattern)];
   const markerPrefixes = [...output.matchAll(/\[code:/gi)];
@@ -78,15 +97,17 @@ export function classifyWranglerFailure(result) {
       provider_failure_class: "provider_error_code",
       provider_error_code: Number(markers[0][1]),
       process_exit_code: processExitCode,
+      provider_error_category: providerErrorCategory,
     });
   }
   if (markerPrefixes.length > 0) {
     return sanitizeProviderFailure({
       provider_failure_class: "ambiguous_provider_error_code",
       process_exit_code: processExitCode,
+      provider_error_category: providerErrorCategory,
     });
   }
-  return sanitizeProviderFailure({ provider_failure_class: "process_exit", process_exit_code: processExitCode });
+  return sanitizeProviderFailure({ provider_failure_class: "process_exit", process_exit_code: processExitCode, provider_error_category: providerErrorCategory });
 }
 
 export function validateDispatch(context) {
@@ -172,6 +193,30 @@ export function prepareWorkersDevBootstrapConfig(config, migration, databaseId, 
     .replace('migrations_dir = "migrations"', `migrations_dir = "${resolve(appDir, "migrations")}"`);
   if (!publicConfig.includes('workers_dev = true') || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(publicConfig)) fail("bootstrap_config_drift");
   return publicConfig;
+}
+
+export function prepareInitialPrivateReceiverConfig(config, migration, databaseId, appDir) {
+  const privateConfig = preparePrivateBootstrapConfig(config, migration, databaseId, appDir);
+  if (/^\s*preview_urls\s*=/im.test(privateConfig)) fail("bootstrap_config_drift");
+  const guardedConfig = privateConfig.replace(/^workers_dev\s*=\s*false\s*$/m, "workers_dev = false\npreview_urls = false");
+  if (!guardedConfig.includes("workers_dev = false\npreview_urls = false")
+    || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(guardedConfig)) fail("bootstrap_config_drift");
+  return guardedConfig;
+}
+
+export function prepareFinalReceiverConfig(config, migration, databaseId, appDir) {
+  validateTrackedInputs(config, migration);
+  if (databaseId !== TARGET.databaseId) fail("database_identity_mismatch");
+  if (/^\s*preview_urls\s*=/im.test(config)
+    || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(config)) fail("bootstrap_config_drift");
+  const finalConfig = config
+    .replace(`database_id = "${TARGET.placeholderId}"`, `database_id = "${databaseId}"`)
+    .replace('main = "src/index.ts"', `main = "${resolve(appDir, "src/index.ts")}"`)
+    .replace('migrations_dir = "migrations"', `migrations_dir = "${resolve(appDir, "migrations")}"`)
+    .replace(/^workers_dev\s*=\s*true\s*$/m, "workers_dev = true\npreview_urls = false");
+  if (!finalConfig.includes("workers_dev = true\npreview_urls = false")
+    || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(finalConfig)) fail("bootstrap_config_drift");
+  return finalConfig;
 }
 
 export function validateBootstrapWorkerScriptInventory(rows, { allowTarget = false } = {}) {
@@ -337,6 +382,14 @@ export function validateInventoryPage(rows, kind, { requireTotalCount = false } 
   return rows;
 }
 
+export function summarizeCustomRoutes(script) {
+  if (!script || !Object.hasOwn(script, "routes")) return "unknown";
+  if (!Array.isArray(script.routes)
+    || script.routes.some((route) => !route || typeof route.id !== "string" || typeof route.pattern !== "string" || route.script !== TARGET.workerName)) fail("worker_routes_ambiguous");
+  if (script.routes.length > 0) fail("worker_custom_route_present");
+  return "absent";
+}
+
 export function validateD1InventoryPage(rows, { page, perPage }) {
   if (!Array.isArray(rows) || rows.length > perPage) fail("database_inventory_ambiguous");
   const info = rows.result_info;
@@ -372,6 +425,39 @@ export function validatePostflight({ versionId, deployment, bindings, secrets },
   if (bindings?.some((binding) => binding?.type === "d1" && binding.name === TARGET.databaseBinding && (binding.database_id ?? binding.id) === expectedDatabaseId) !== true) fail("worker_database_binding_mismatch");
   if (secrets?.some((secret) => secret?.name === TARGET.workerSecret) !== true) fail("worker_secret_readback_missing");
   if (!/^b216-[0-9a-f]{40}$/i.test(expectedTag)) fail("worker_revision_tag_invalid");
+  return true;
+}
+
+export function validateInitialPrivateDeployment(inventory, expectedWorkerCount) {
+  if (!inventory || inventory.status !== "complete"
+    || inventory.worker?.exists !== true
+    || !Number.isInteger(expectedWorkerCount)
+    || inventory.worker.inventory_count !== expectedWorkerCount
+    || inventory.versions?.status !== "known"
+    || inventory.versions.count !== 1
+    || !Array.isArray(inventory.versions.items)
+    || inventory.versions.items.length !== 1
+    || inventory.deployments?.status !== "known"
+    || inventory.deployments.count !== 1
+    || !inventory.deployments.active
+    || inventory.subdomain?.status !== "known"
+    || inventory.subdomain.enabled !== false
+    || inventory.subdomain.previews_enabled !== false) fail("worker_initial_deployment_ambiguous");
+  if (inventory.routes?.status === "known" && inventory.routes.count !== 0) fail("worker_custom_route_present");
+  if (!new Set(["known", "unknown"]).has(inventory.routes?.status)) fail("worker_routes_ambiguous");
+  const deploymentVersions = inventory.deployments.active.versions;
+  if (!Array.isArray(deploymentVersions) || deploymentVersions.length !== 1
+    || deploymentVersions[0]?.percentage !== 100
+    || deploymentVersions[0]?.version_id !== inventory.versions.items[0]?.id
+    || !isUuid(deploymentVersions[0]?.version_id)) fail("worker_initial_deployment_ambiguous");
+  return deploymentVersions[0].version_id;
+}
+
+export function validateInitialPrivateVersion(version, expectedDatabaseId) {
+  const bindings = version?.resources?.bindings;
+  if (!isUuid(version?.id)
+    || bindings?.some((binding) => binding?.type === "d1" && binding.name === TARGET.databaseBinding && (binding.database_id ?? binding.id) === expectedDatabaseId) !== true) fail("worker_database_binding_mismatch");
+  if (bindings.some((binding) => binding?.type === "secret_text" && binding.name === TARGET.workerSecret)) fail("worker_initial_secret_present");
   return true;
 }
 
@@ -431,7 +517,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
   const api = makeCloudflareApi(context.apiToken, fetchImpl);
   const receipt = {
     schema_version: 1,
-    issue: 2741,
+    issue: 1678,
     repository: TARGET.repository,
     reviewed_main_sha: sha,
     account_id: TARGET.accountId,
@@ -447,8 +533,11 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
   let stage = "account_readback";
   let workerMutationStarted = false;
   let priorWorkerVersion = null;
+  let privateInitialVersion = null;
   let tempConfig = null;
+  let initialPrivateConfig = null;
   let wranglerHome = null;
+  let tempConfigDir = null;
   try {
     const account = await api(`/accounts/${TARGET.accountId}`);
     if (account?.id !== TARGET.accountId) fail("account_identity_mismatch");
@@ -459,6 +548,8 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     validateInventoryPage(workerPage, "worker");
     const priorDatabase = selectNamedResource(databaseRows, TARGET.databaseName, "database");
     const priorWorker = selectNamedResource(workerPage, TARGET.workerName, "worker");
+    let customRoutesStatus = summarizeCustomRoutes(priorWorker);
+    receipt.custom_routes_status = customRoutesStatus;
     if (priorWorker) {
       const deployments = normalizeDeploymentList(await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`));
       priorWorkerVersion = selectPriorRevision(deployments);
@@ -480,16 +571,13 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     }
 
     const runDir = process.env.RUNNER_TEMP || tmpdir();
-    const configDir = join(runDir, `b216-${randomUUID()}`);
-    await mkdir(configDir, { recursive: true, mode: 0o700 });
-    wranglerHome = join(configDir, "home");
+    tempConfigDir = join(runDir, `b216-${randomUUID()}`);
+    await mkdir(tempConfigDir, { recursive: true, mode: 0o700 });
+    wranglerHome = join(tempConfigDir, "home");
     await mkdir(wranglerHome, { mode: 0o700 });
-    tempConfig = join(configDir, "wrangler.toml");
-    const configured = config.replace(`database_id = "${TARGET.placeholderId}"`, `database_id = "${receipt.database_id}"`);
+    tempConfig = join(tempConfigDir, "wrangler.toml");
     const appDir = resolve(worktree, "apps/dsr-alert-receiver");
-    const runnableConfig = configured
-      .replace('main = "src/index.ts"', `main = "${resolve(appDir, "src/index.ts")}"`)
-      .replace('migrations_dir = "migrations"', `migrations_dir = "${resolve(appDir, "migrations")}"`);
+    const runnableConfig = prepareFinalReceiverConfig(config, migration, receipt.database_id, appDir);
     await writeFile(tempConfig, runnableConfig, { mode: 0o600, flag: "wx" });
 
     stage = "migration_apply";
@@ -515,6 +603,40 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       currentWorkerVersion = selectPriorRevision(currentDeployments);
     }
     if (currentWorkerVersion !== priorWorkerVersion) fail("worker_preimage_changed");
+
+    if (!priorWorker) {
+      stage = "worker_initial_private_config";
+      initialPrivateConfig = join(tempConfigDir, "wrangler-initial-private.toml");
+      await writeFile(initialPrivateConfig, prepareInitialPrivateReceiverConfig(config, migration, receipt.database_id, appDir), { mode: 0o600, flag: "wx" });
+      stage = "worker_initial_private_deploy";
+      workerMutationStarted = true;
+      command(["deploy", resolve(appDir, "src/index.ts"), "--config", initialPrivateConfig, "--message", `B-216 private initial revision ${sha}`], {
+        cwd: appDir,
+        home: wranglerHome,
+        apiToken: context.apiToken,
+      });
+
+      stage = "worker_initial_private_readback";
+      const privateInventory = await readWorkerInventory({
+        context: {
+          repository: context.repository,
+          ref: context.ref,
+          sha: context.sha,
+          checkoutSha: context.checkoutSha,
+          readbackOnly: "true",
+          apiToken: context.apiToken,
+        },
+        fetchImpl,
+      });
+      privateInitialVersion = validateInitialPrivateDeployment(privateInventory, workerPage.length + 1);
+      const privateRevision = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${privateInitialVersion}`);
+      validateInitialPrivateVersion(privateRevision, receipt.database_id);
+      receipt.initial_private_revision = privateInitialVersion;
+      receipt.initial_private_workers_dev = "disabled_verified";
+      receipt.initial_private_preview_urls = "disabled_verified";
+      receipt.initial_private_custom_routes = privateInventory.routes.status === "known" ? "absent" : "unknown";
+      customRoutesStatus = receipt.initial_private_custom_routes;
+    }
 
     const versionTag = `b216-${sha}`;
     workerMutationStarted = true;
@@ -551,10 +673,23 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     if (activeVersion !== tagged[0].id) fail("worker_revision_readback_mismatch");
     const bindings = version?.resources?.bindings ?? [];
     validatePostflight({ versionId: activeVersion, deployment: deployments[0], bindings, secrets, expectedTag: versionTag }, receipt.database_id, versionTag);
+    if (!priorWorker) {
+      stage = "worker_public_ingress_enable";
+      await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`, {
+        method: "POST",
+        body: { enabled: true, previews_enabled: false },
+      });
+      const subdomain = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`);
+      validateWorkersDevEnabled(subdomain);
+    }
     receipt.worker_preimage = priorWorkerVersion ?? "absent";
+    if (privateInitialVersion) receipt.initial_private_revision = privateInitialVersion;
     receipt.worker_revision = activeVersion;
     receipt.worker_binding_uuid = receipt.database_id;
     receipt.worker_secret_name_present = true;
+    receipt.final_workers_dev = priorWorker ? "preexisting_state_unchanged" : "enabled_verified";
+    receipt.final_preview_urls = priorWorker ? "preexisting_state_unchanged" : "disabled_verified";
+    receipt.custom_routes_status = customRoutesStatus;
     receipt.status = "deployed";
     receipt.completed_at = new Date().toISOString();
     if (receiptPath) await writeReceipt(receiptPath, receipt);
@@ -563,11 +698,9 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     receipt.status = "failed";
     receipt.failed_stage = stage;
     receipt.failure_code = error instanceof RouteError ? error.code : "route_failed_closed";
-    if (stage === "worker_version_upload" && error instanceof RouteError && error.providerFailure) {
-      Object.assign(receipt, error.providerFailure);
-    }
+    if (error instanceof RouteError && error.providerFailure) Object.assign(receipt, error.providerFailure);
     if (workerMutationStarted && tempConfig) {
-      receipt.rollback_target = priorWorkerVersion ?? "absent";
+      receipt.rollback_target = priorWorkerVersion ?? privateInitialVersion ?? "absent_preimage";
       try {
         const appDir = resolve(worktree, "apps/dsr-alert-receiver");
         if (priorWorkerVersion) {
@@ -576,13 +709,37 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
           validateRollbackReadback(deployments, priorWorkerVersion);
           receipt.rollback_status = "restored_exact_revision";
         } else {
-          await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`, {
-            method: "POST",
-            body: { enabled: false, previews_enabled: false },
-          });
-          const subdomain = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`);
-          validateIntakeDisabled(subdomain);
-          receipt.rollback_status = "intake_disabled_preimage_absent";
+          let inventory;
+          try {
+            inventory = await readWorkerInventory({
+              context: {
+                repository: context.repository,
+                ref: context.ref,
+                sha: context.sha,
+                checkoutSha: context.checkoutSha,
+                readbackOnly: "true",
+                apiToken: context.apiToken,
+              },
+              fetchImpl,
+            });
+          } catch {
+            inventory = null;
+          }
+          if (inventory?.worker?.exists === false && inventory.inventory_consistency === "worker_absent") {
+            receipt.rollback_status = "absent_preimage_verified";
+          } else {
+            const currentScripts = await api(`/accounts/${TARGET.accountId}/workers/scripts`);
+            validateInventoryPage(currentScripts, "worker");
+            if (!selectNamedResource(currentScripts, TARGET.workerName, "worker")) fail("worker_rollback_target_ambiguous");
+            await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`, {
+              method: "POST",
+              body: { enabled: false, previews_enabled: false },
+            });
+            const subdomain = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`);
+            validateIntakeDisabled(subdomain);
+            receipt.rollback_status = "workers_dev_disabled_worker_retained";
+            receipt.rollback_custom_routes_status = inventory?.routes?.status === "known" ? (inventory.routes.count === 0 ? "absent" : "present") : "unknown";
+          }
         }
       } catch {
         receipt.rollback_status = "ambiguous_do_not_retry";
@@ -590,6 +747,8 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     }
     if (receiptPath) await writeReceipt(receiptPath, receipt);
     throw error instanceof RouteError ? error : new RouteError("route_failed_closed");
+  } finally {
+    if (tempConfigDir) await rm(tempConfigDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
