@@ -12,14 +12,18 @@ Run:  python3 -m unittest tests/test_rust_affected_packages.py -v
 """
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
+import os
 import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Iterable
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "rust_affected_packages.py"
@@ -323,7 +327,13 @@ class CommandLine(Fixture):
         metadata_path.write_text(json.dumps(self.metadata), encoding="utf-8")
         outputs = self.root / "outputs.txt"
         outputs.write_text("", encoding="utf-8")
-        code = rap.main(["--metadata", str(metadata_path), "--step-outputs", str(outputs), *argv])
+        self.stdout, self.stderr = io.StringIO(), io.StringIO()
+        # Keep fixture reports out of the REAL job: no step-summary append, and
+        # no `::error` line reaching the runner log as a live annotation.
+        environment = {k: v for k, v in os.environ.items() if k != "GITHUB_STEP_SUMMARY"}
+        with mock.patch.dict(os.environ, environment, clear=True), \
+                contextlib.redirect_stdout(self.stdout), contextlib.redirect_stderr(self.stderr):
+            code = rap.main(["--metadata", str(metadata_path), "--step-outputs", str(outputs), *argv])
         values = dict(line.split("=", 1) for line in outputs.read_text(encoding="utf-8").splitlines())
         return code, values
 
@@ -344,6 +354,7 @@ class CommandLine(Fixture):
         changed.write_bytes(b"")
         code, values = self.run_main("--changed", str(changed))
         self.assertEqual((code, values), (1, {}))
+        self.assertIn("the change list is EMPTY", self.stderr.getvalue())
 
 
 WORKFLOW = ROOT / ".github" / "workflows" / "rust-affected-tests.yml"
