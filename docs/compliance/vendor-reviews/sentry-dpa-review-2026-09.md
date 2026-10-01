@@ -13,7 +13,7 @@
 | SCC / transfer mechanism | `TBD` |
 | Schrems II TIA | `TBD` |
 | Data categories processed | telemetry |
-| Data residency / region | United States |
+| Data residency / region | `TBD (verify account-selected Sentry region)` |
 | Sub-processor flow-down | `TBD (confirm flow-down per GDPR Art. 28(4))` |
 | Certifications verified | `TBD (SOC 2 Type II report not yet pulled into Drata — VR-7)` |
 | Review outcome | `TBD (approved / approved-with-conditions / rejected)` |
@@ -22,18 +22,27 @@
 
 ## Repository-verified technical and data-flow scope
 
-- **Role:** application error monitoring for the admin UI and docs-site build.
-- **Runtime flow:** `apps/admin-ui/sentry.server.config.ts` and
-  `sentry.edge.config.ts` initialise Sentry only when `SENTRY_DSN` (or its
-  public fallback) is present. Events use `sendDefaultPii: false` and pass
-  through `beforeSend`, `beforeSendTransaction`, and `beforeBreadcrumb`; the
-  shared scrubber removes secret/PII-shaped values before transmission.
+- **Code-wired role:** conditional application error/transaction monitoring for
+  the admin UI browser/server/edge, public docs browser, main Cloudflare Worker,
+  and get-corelink/analytics/signup Workers. This does not establish which
+  Sentry projects or environments are enabled in the account or deployment.
+- **Conditional runtime flow:** admin browser initialisation requires
+  `NEXT_PUBLIC_SENTRY_DSN`; admin server/edge require `SENTRY_DSN` or the public
+  fallback. The docs build emits a browser Sentry loader only when
+  `SENTRY_DSN_DOCS` is set. The four Workers use `Sentry.withSentry` with an
+  optional `SENTRY_DSN` binding and an empty-string fallback. Admin and Worker
+  configs set `sendDefaultPii: false` and use local `beforeSend` /
+  `beforeSendTransaction` scrubbers; the docs loader sets `sendDefaultPii: false`
+  and filters selected breadcrumb header keys. These enumerated controls do
+  not establish the absence of personal data or customer content in live events.
 - **Data boundary:** the repository classifies the resulting exception,
   breadcrumb, and diagnostic event stream as `telemetry`; no customer content
   flow is asserted by this packet.
-- **Repository sources:** `apps/admin-ui/sentry.server.config.ts`,
-  `apps/admin-ui/sentry.edge.config.ts`, `apps/admin-ui/src/lib/sentry-scrub.ts`,
-  and registry row 20 in `specs/_compliance/VENDOR-RISK-REGISTER.md`.
+- **Repository sources:** `apps/admin-ui/instrumentation-client.ts`,
+  `apps/admin-ui/sentry.server.config.ts`, `apps/admin-ui/sentry.edge.config.ts`,
+  `apps/docs/docusaurus.config.ts`, `worker/src/index.ts`,
+  `apps/get-corelink-worker/src/index.ts`, `apps/analytics-worker/src/index.ts`,
+  `apps/signup-worker/src/index.ts`, and their local Sentry scrubbers.
 
 ## Notes
 
