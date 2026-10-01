@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from b125_readonly_diagnostics import (  # noqa: E402
     MAX_PROVIDER_OUTPUT_BYTES,
     make_provider_diagnostic,
+    mark_query_started,
     record_provider_failure,
     validate_provider_diagnostic,
 )
@@ -167,6 +168,10 @@ def test_workflow_keeps_all_required_query_ids_and_remote_only_execution() -> No
     assert "environment: production" in source
     assert '[[ "$GITHUB_REF" == "refs/heads/main" ]]' in source
     assert "deployment_receipt_ref:" in source
+    assert "capture_mode:" in source
+    assert "hourly_diagnostic" in source
+    assert 'hourly_diagnostic) [[ "$CONFIRM" == "diagnose-b125-hourly" ]]' in source
+    assert 'if [[ "$CAPTURE_MODE" == "hourly_diagnostic" ]]; then\n            run_query hourly\n            fail_closed "diagnostic_only_capture_not_closure_evidence"' in source
     assert "deployment_receipt_reference_invalid" in source
     assert "deployment_receipt_comment_unavailable" in source
     assert "deployment_receipt_comment_mismatch" in source
@@ -416,6 +421,7 @@ def test_failure_receipt_is_bounded_data_free_and_keeps_provider_shape(tmp_path:
     validate_provider_diagnostic(diagnostic)
     assert (diagnostic["query_stage"], diagnostic["query_id"]) == ("wrangler_d1_execute", "hourly")
     assert (diagnostic["error_class"], diagnostic["provider_code"]) == ("D1_ERROR", "7500")
+    assert diagnostic["semantic_error_category"] == "unknown"
     assert diagnostic["schema_shape"]["root_keys"] == ["errors", "results", "success"]
     assert diagnostic["schema_shape"]["error_entry_keys"] == ["code", "message"]
     assert "private" not in json.dumps(diagnostic)
@@ -436,6 +442,29 @@ def test_failure_receipt_is_bounded_data_free_and_keeps_provider_shape(tmp_path:
     assert recorded["schema_shape"]["stderr_truncated"] is True
     assert "private-value" not in json.dumps(recorded)
     assert len(json.dumps(recorded)) < 2000
+
+
+def test_provider_query_start_clears_stale_preflight_failure_marker(tmp_path: Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(
+        json.dumps({"failure_reasons": ["read_not_started"], "queries": []}),
+        encoding="utf-8",
+    )
+
+    mark_query_started(receipt, "population")
+
+    recorded = json.loads(receipt.read_text(encoding="utf-8"))
+    assert recorded["failure_reasons"] == []
+    assert recorded["provider_queries_started"] == ["population"]
+
+
+def test_workflow_clears_preflight_marker_after_allowlist_checks_before_provider_call() -> None:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    query = source[source.index("run_query() {"):source.index("for query_id in population")]
+    marker = 'python3 scripts/b125_readonly_diagnostics.py mark-started "$receipt" "$id"'
+    provider = 'CI=1 pnpm --silent dlx wrangler@4.111.0 d1 execute'
+    assert marker in query
+    assert query.index('[[ ! "$sql" =~') < query.index(marker) < query.index(provider)
 
 
 def test_singular_wrangler_error_is_classified_without_retaining_message() -> None:
@@ -463,6 +492,31 @@ def test_singular_string_error_keeps_only_its_shape() -> None:
     assert diagnostic["schema_shape"]["error_entry_kind"] == "string"
     assert diagnostic["schema_shape"]["error_entry_keys"] == []
     assert "private column name" not in json.dumps(diagnostic)
+
+
+def test_provider_error_categories_are_allowlisted_and_never_retain_messages() -> None:
+    cases = {
+        "syntax": 'SQLITE_ERROR: near "tenant_secret": syntax error',
+        "missing_table": "no such table: audit_private",
+        "missing_column": "no such column: tenant_private.secret",
+        "bind_mismatch": "Incorrect number of bindings supplied; private=token-secret",
+        "unsupported_function": "no such function: secret_function",
+        "memory_limit": "SQLITE_NOMEM: out of memory for private tenant",
+        "query_timeout": "D1 query execution timed out for private tenant",
+        "unknown": "provider failed for tenant=private token=secret",
+    }
+    for expected, message in cases.items():
+        diagnostic = make_provider_diagnostic(
+            "hourly", 1, json.dumps({"error": {"code": 7500, "message": message}}), ""
+        )
+        validate_provider_diagnostic(diagnostic)
+        assert diagnostic["semantic_error_category"] == expected
+        serialized = json.dumps(diagnostic)
+        assert "tenant_secret" not in serialized
+        assert "audit_private" not in serialized
+        assert "token-secret" not in serialized
+        assert "secret_function" not in serialized
+        assert "private tenant" not in serialized
 
 
 def test_diagnostic_mutations_that_add_values_or_identifiers_are_rejected() -> None:
