@@ -198,7 +198,8 @@ class CustodianTests(unittest.TestCase):
         self.assertFalse(any(cmd[1:3] == ["kms", "schedule-key-deletion"] for cmd in self.aws.calls))
 
     def test_cancel_enables_key_and_verifies_enabled_state(self):
-        self.manifest["key_deletion"] = {"disposable_key_ownership_approved": True, "ownership_approval_ref": "restricted://root/i2165/key", "pending_window_days": 7, "cancel_by": "2026-09-30T23:00:00Z"}
+        cancel_by = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        self.manifest["key_deletion"] = {"disposable_key_ownership_approved": True, "ownership_approval_ref": "restricted://root/i2165/key", "pending_window_days": 7, "cancel_by": cancel_by}
         self.aws.key_state = "PendingDeletion"
         run_stage("cancel", self.manifest, Path(self.temp.name), self.aws)
         self.assertEqual(self.aws.key_state, "Enabled")
@@ -209,7 +210,8 @@ class CustodianTests(unittest.TestCase):
         self.assertFalse(any(cmd[1:3] == ["kms", "delete-key"] for cmd in self.aws.calls))
 
     def test_cleanup_cancels_pending_deletion_then_enables_exact_key(self):
-        self.manifest["key_deletion"] = {"disposable_key_ownership_approved": True, "ownership_approval_ref": "restricted://root/i2165/key", "pending_window_days": 7, "cancel_by": "2026-09-30T23:00:00Z"}
+        cancel_by = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+        self.manifest["key_deletion"] = {"disposable_key_ownership_approved": True, "ownership_approval_ref": "restricted://root/i2165/key", "pending_window_days": 7, "cancel_by": cancel_by}
         self.aws.key_state = "PendingDeletion"
         run_stage("cleanup", self.manifest, Path(self.temp.name), self.aws)
         self.assertEqual(self.aws.key_state, "Enabled")
