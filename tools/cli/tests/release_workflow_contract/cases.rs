@@ -1,10 +1,36 @@
 use super::*;
 
+fn replace_nth(text: &str, needle: &str, replacement: &str, occurrence: usize) -> String {
+    let index = text
+        .match_indices(needle)
+        .nth(occurrence)
+        .map(|(index, _)| index)
+        .expect("requested test mutation occurrence must exist");
+    format!(
+        "{}{}{}",
+        &text[..index],
+        replacement,
+        &text[index + needle.len()..]
+    )
+}
+
 #[test]
 fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_mutations(
 ) -> Result<(), String> {
     let workflow = release_workflow()?;
     assert_release_contract(&workflow);
+    assert_windows_build_steps_use_bash(&workflow);
+    let linux_signer = load_workflow("sign-linux.yml")?;
+    let slsa = load_workflow("release-slsa3.yml")?;
+    let installer = load_script("install_pinned_gh.py")?;
+    let checksum_manifest = load_repo_file("scripts/gh_2.79.0_checksums.json")?;
+    assert_pinned_gh_contract(
+        &workflow,
+        &linux_signer,
+        &slsa,
+        &installer,
+        &checksum_manifest,
+    );
     assert_draft_only_release_contract(&workflow);
     assert_release_tag_shell_boundary(&workflow);
     assert_publication_inventory_contract(&workflow);
@@ -36,6 +62,124 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
             "draft-only release contract accepted {label}"
         );
     }
+
+    for (mutant, label) in [
+        (
+            workflow.replace(
+                "- name: Validate matrix target values before shell use\n        shell: bash",
+                "- name: Validate matrix target values before shell use\n        shell: pwsh",
+            ),
+            "matrix validator forced through PowerShell",
+        ),
+        (
+            workflow.replace(
+                "- name: Set SOURCE_DATE_EPOCH\n        shell: bash",
+                "- name: Set SOURCE_DATE_EPOCH\n        shell: pwsh",
+            ),
+            "source epoch Bash omitted",
+        ),
+        (
+            workflow.replace(
+                "- name: Set RUSTFLAGS path-remap\n        shell: bash",
+                "- name: Set RUSTFLAGS path-remap\n        shell: pwsh",
+            ),
+            "path-remap Bash omitted",
+        ),
+        (
+            workflow.replace(
+                "          RUSTFLAGS: ${{ env.RUSTFLAGS }}\n        shell: bash\n        run:",
+                "          RUSTFLAGS: ${{ env.RUSTFLAGS }}\n        shell: pwsh\n        run:",
+            ),
+            "cross-platform build shell changed",
+        ),
+    ] {
+        assert_ne!(mutant, workflow, "{label} mutation must take effect");
+        assert!(
+            std::panic::catch_unwind(|| assert_windows_build_steps_use_bash(&mutant)).is_err(),
+            "build shell contract accepted {label}"
+        );
+    }
+
+    let install_command = "python3 scripts/install_pinned_gh.py --output \"${GH_BIN}\"";
+    let missing_command = "python3 scripts/missing-pinned-gh.py --output \"${GH_BIN}\"";
+    for occurrence in 0..4 {
+        let no_caller_install =
+            replace_nth(&workflow, install_command, missing_command, occurrence);
+        assert!(
+            std::panic::catch_unwind(|| assert_pinned_gh_contract(
+                &no_caller_install,
+                &linux_signer,
+                &slsa,
+                &installer,
+                &checksum_manifest
+            ))
+            .is_err(),
+            "each GH-using caller job must reject missing pinned gh provisioning"
+        );
+    }
+    let no_linux_install = linux_signer.replace(install_command, missing_command);
+    assert!(
+        std::panic::catch_unwind(|| assert_pinned_gh_contract(
+            &workflow,
+            &no_linux_install,
+            &slsa,
+            &installer,
+            &checksum_manifest
+        ))
+        .is_err(),
+        "the Linux signing job must reject missing pinned gh provisioning"
+    );
+    let no_slsa_install = slsa.replace(install_command, missing_command);
+    assert!(
+        std::panic::catch_unwind(|| assert_pinned_gh_contract(
+            &workflow,
+            &linux_signer,
+            &no_slsa_install,
+            &installer,
+            &checksum_manifest
+        ))
+        .is_err(),
+        "the SLSA job must reject missing pinned gh provisioning"
+    );
+    let no_slsa_guard = slsa.replace(
+        "      - name: Verify pinned GitHub CLI\n        shell: bash\n        run: test \"$(gh --version | awk 'NR == 1 {print $3}')\" = \"2.79.0\"\n",
+        "      - name: SLSA CLI version guard removed\n",
+    );
+    assert_ne!(
+        no_slsa_guard, slsa,
+        "SLSA version guard mutation must take effect"
+    );
+    assert!(
+        std::panic::catch_unwind(|| assert_pinned_gh_contract(
+            &workflow,
+            &linux_signer,
+            &no_slsa_guard,
+            &installer,
+            &checksum_manifest
+        ))
+        .is_err(),
+        "the SLSA job must reject a missing pinned gh version guard"
+    );
+
+    let bad_digest = checksum_manifest.replace(
+        "e7af0c72a607c0528fda1989f7c8e3be85e67d321889002af0e2938ad9c8fb68",
+        &"0".repeat(64),
+    );
+    assert_ne!(
+        bad_digest, checksum_manifest,
+        "gh checksum mutation must take effect"
+    );
+    assert!(
+        std::panic::catch_unwind(|| assert_pinned_gh_contract(
+            &workflow,
+            &linux_signer,
+            &slsa,
+            &installer,
+            &bad_digest
+        ))
+        .is_err(),
+        "the gh download digest must be frozen"
+    );
 
     for target in [
         "x86_64-unknown-linux-gnu",

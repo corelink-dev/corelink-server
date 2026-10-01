@@ -45,6 +45,18 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Install checksum-pinned GitHub CLI 2.79.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          GH_BIN="${RUNNER_TEMP}/corelink-pinned-gh/gh"
+          python3 scripts/install_pinned_gh.py --output "${GH_BIN}"
+          echo "${RUNNER_TEMP}/corelink-pinned-gh" >> "${GITHUB_PATH}"
+
+      - name: Verify pinned GitHub CLI
+        shell: bash
+        run: test "$(gh --version | awk 'NR == 1 {print $3}')" = "2.79.0"
+
       - name: Download and verify the final release inventory
         env:
           GH_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
