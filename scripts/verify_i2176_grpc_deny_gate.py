@@ -841,7 +841,7 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('infra/staging/topology.json'): (0o0644, "a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14"),
     Path('scripts/staging_bootstrap_provider.py'): (0o0644, "8a77837893f2bd094f1fd834042361e69375e1453ec1d4dde9c20c605d00ccdb"),
     Path('scripts/verify_i2183_reapi_composition.py'): (0o0644, "532408187817e4ff508e9b2f5776e1646f7f304235ab697cf2e28fbab49a1b6c"),
-    Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "58c85ba647de0023e647d17bbc5345f80011e4b7a310e8eaec71c21ae900487d"),
+    Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "28023901b65dd1046af666fb26c8d862a389b94cafc11e3870a2794d869a6743"),
     Path('scripts/verify_staging_provider_preflight.py'): (0o0644, "ddc9d57aa31cbee273dabc923b23a3ef33fb11b40bbd3b746ad7dcaca0633b62"),
     Path('scripts/verify_staging_topology_contract.py'): (0o0644, "48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9"),
     Path('specs/03_architecture/issue-2176-grpc-transport-contract.md'): (0o0644, "351aa666c129c7dbc87db4f69f476f8bcdf522d0ba35223dca7eb507c8a926b3"),
