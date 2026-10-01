@@ -1903,7 +1903,7 @@
       "apps/docs/tests/navbar.test.ts": "845503eb154c94e714cedd97048e7a3997511477b1b6dee9cbf63c9047c4b15c",
       "apps/docs/tests/pilot-signup-wire-contract.test.ts": "0fa836666cd655da558d23b513a784b442426c3984f1193e41117c55c7fc1cb6",
       "apps/docs/tests/raw-curl-directory-upload.test.ts": "47a4820c422704c1dfacbeeef23229681a4e31de4fd0cca5d3663e321db7237e",
-      "apps/docs/tests/reapi-gen.test.ts": "661e276b8fd56bc363d41b3590e24e1abd2687cbb01d0c71a926033bbaf2e923",
+      "apps/docs/tests/reapi-gen.test.ts": "d8b9e54a24c71c44c82b9f83bc6ae3dbba893c6843fb3462002dd4e625d17909",
       "apps/docs/tests/sccache-cargo-contract.test.ts": "427a178df462864af4822d4c61c7050bf7e877a113bd84975b5b0c073d567a4d",
       "apps/docs/tests/sdk-guides.test.ts": "c7ede68a896c4c43e752bb02a68a51bf50f408d1a4e89270ede1594035b1c8ec",
       "apps/docs/tests/search-local.test.ts": "162aa9743ea223b50fcd89403567333648cad4bc7db81d84edf8ab686c8e2e9a",
