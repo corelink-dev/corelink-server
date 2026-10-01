@@ -19,8 +19,25 @@ on:
       - "evidence/owner-actions/B-054/keyed-audit-epoch-rollout.json"
       - "docs/handoff/2026-09-05-owner-action-packets-b008-b154.json"
       - "tests/test_owner_action_packets.py"
+      - "scripts/issue_1648_historical_query.py"
+      - "tests/test_issue_1648_historical_query.py"
       - ".github/workflows/audit-keyed-epoch.yml"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Run the contract pack or the approved bounded historical read"
+        required: true
+        type: choice
+        default: contract
+        options: [contract, historical_query]
+      expected_sha:
+        description: "Exact protected main SHA for historical_query"
+        required: false
+        type: string
+      confirm:
+        description: "Must equal historical-query-production-1648"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -31,6 +48,7 @@ concurrency:
 
 jobs:
   contract:
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'contract')
     name: B-054 keyed epoch contract
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -60,6 +78,9 @@ jobs:
           tests.test_owner_action_packets.OwnerActionPacketTests.test_identifier_focus_skips_unrelated_owner_receipts
           tests.test_owner_action_packets.OwnerActionPacketTests.test_b054_receipt_mutations_fail_closed
 
+      - name: Exercise the bounded #1648 historical-query contract
+        run: python3 -m unittest tests.test_issue_1648_historical_query
+
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable toolchain action
         with:
@@ -78,3 +99,65 @@ jobs:
           cargo test --locked -p corelink-audit-chain --lib sealed_archive -- --nocapture
           cargo test --locked -p corelink-audit-chain --lib object_lock_archive -- --nocapture
           cargo test --locked -p corelink-audit-chain --bin verifier -- --nocapture
+
+  historical-query-invalid-request:
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' &&
+      ((inputs.operation != 'contract' && inputs.operation != 'historical_query') ||
+       (inputs.operation == 'historical_query' &&
+        (github.ref != 'refs/heads/main' || !github.ref_protected ||
+         inputs.expected_sha != github.sha ||
+         inputs.confirm != 'historical-query-production-1648')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Reject an invalid historical query request
+        run: |
+          echo "Historical query requires protected main, exact expected SHA, and fixed confirmation." >&2
+          exit 1
+
+  historical-query:
+    needs: historical-query-invalid-request
+    if: >-
+      always() &&
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' && github.ref_protected &&
+      inputs.operation == 'historical_query' &&
+      inputs.expected_sha == github.sha &&
+      inputs.confirm == 'historical-query-production-1648'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+    steps:
+      - name: Checkout the exact protected main SHA
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.expected_sha }}
+          persist-credentials: false
+
+      - name: Verify exact-SHA read-only query contract
+        shell: bash
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" == "$EXPECTED_SHA" ]]
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          : "${CF_API_TOKEN:?CF_API_TOKEN is required}"
+          echo "::add-mask::${CF_API_TOKEN}"
+          python3 scripts/issue_1648_historical_query.py
+
+      - name: Preserve fixed-counter receipt only
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: issue-1648-historical-query-${{ github.run_id }}
+          path: ${{ runner.temp }}/issue-1648-historical-query.json
+          retention-days: 3
+          if-no-files-found: warn
