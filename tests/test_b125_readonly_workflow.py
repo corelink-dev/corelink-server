@@ -83,9 +83,9 @@ def _rows(document: object) -> list[dict[str, object]]:
 
 def _hourly_sql() -> str:
     source = WORKFLOW.read_text(encoding="utf-8")
-    match = re.search(r"^\s*SQL\[hourly\]='([^']+)'$", source, re.MULTILINE)
+    match = re.search(r"^\s*SQL\[hourly\]=(['\"])(.*?)\1$", source, re.MULTILINE)
     assert match, "hourly SQL must remain an explicit shell allowlist entry"
-    return match.group(1)
+    return match.group(2)
 
 
 def _latency_sql() -> str:
@@ -497,9 +497,9 @@ def test_all_production_control_queries_are_single_read_only_selects() -> None:
     query_ids = ("population", "partition", "hourly", "latency", "heads", "burst", "integrity", "replay", "head_tail")
     queries: dict[str, str] = {}
     for query_id in query_ids:
-        match = re.search(rf"^\s*SQL\[{query_id}\]='([^']+)'$", source, re.MULTILINE)
+        match = re.search(rf"^\s*SQL\[{query_id}\]=(['\"])(.*?)\1$", source, re.MULTILINE)
         assert match, f"missing explicit {query_id} SELECT allowlist entry"
-        sql = match.group(1)
+        sql = match.group(2)
         assert sql.startswith(("SELECT ", "WITH "))
         assert ";" not in sql
         assert not re.search(r"\b(?:INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|PRAGMA|ATTACH|DETACH)\b", sql)
@@ -536,7 +536,8 @@ def test_all_production_control_queries_are_single_read_only_selects() -> None:
             assert ends[-1] <= datetime.now(timezone.utc)
 
     hourly_sql = queries["hourly"]
-    assert 'CAST(strftime("%s", "now") AS INTEGER) / 3600 * 3600 AS anchor_s' in hourly_sql
+    assert "CAST(strftime('%s', 'now') AS INTEGER) / 3600 * 3600 AS anchor_s" in hourly_sql
+    assert '"' not in hourly_sql, "SQL string literals must not rely on SQLite DQS compatibility"
     for offset in range(6):
         upper = "c.anchor_s" if offset == 0 else f"(c.anchor_s - {offset * 3600})"
         lower = f"(c.anchor_s - {(offset + 1) * 3600})"
