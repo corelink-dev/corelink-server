@@ -562,6 +562,46 @@ class StableReleaseIdContractTests(unittest.TestCase):
         self.assertIn('--source-ref "refs/tags/${TAG}" --source-digest "${SOURCE_SHA}"', caller)
         self.assertIn('gh api --method PATCH "repos/HuGR-Labs/corelink-cli/releases/${RELEASE_ID}"', caller)
 
+    def test_every_real_attestation_call_uses_private_normalized_bundle(self) -> None:
+        caller = Path(".github/workflows/release-cli.yml").read_text(encoding="utf-8")
+        slsa = Path(".github/workflows/release-slsa3.yml").read_text(encoding="utf-8")
+        helper = "scripts/normalize_cli_attestation_bundle.py"
+        self.assertEqual(caller.count("gh attestation verify"), 2)
+        self.assertEqual(caller.count('--bundle "${NORMALIZED_BUNDLE}"'), 2)
+        self.assertEqual(slsa.count("gh attestation verify"), 1)
+        self.assertEqual(slsa.count('--bundle "${NORMALIZED_BUNDLE}"'), 1)
+        self.assertIn(f'{helper} \\\n            "${{FINAL_ASSETS}}/provenance.intoto.jsonl.bundle" "${{NORMALIZED_BUNDLE}}"', caller)
+        self.assertIn(f'{helper} \\\n            "${{ASSETS}}/provenance.intoto.jsonl.bundle" "${{NORMALIZED_BUNDLE}}"', caller)
+        self.assertIn(f'{helper} \\\n            provenance.intoto.jsonl.bundle "${{NORMALIZED_BUNDLE}}"', slsa)
+        self.assertIn('gh release upload "${TAG}" --repo HuGR-Labs/corelink-cli \\\n                provenance.intoto.jsonl provenance.intoto.jsonl.bundle', slsa)
+        self.assertIn('--bundle "${ASSETS}/provenance.intoto.jsonl.bundle"', caller)
+        self.assertIn('--bundle "${FINAL_ASSETS}/provenance.intoto.jsonl.bundle"', caller)
+
+    def test_manual_existing_draft_acceptance_is_trusted_main_read_only_and_source_bound(self) -> None:
+        workflow = yaml.safe_load(Path(".github/workflows/issue-2572-draft-contract.yml").read_text(encoding="utf-8"))
+        job = workflow["jobs"]["verify-preserved-cli-017-draft"]
+        source = "d36cb1639ecd406e304d612da4143e9b28fba6a7"
+        self.assertIn("workflow_dispatch", Path(".github/workflows/issue-2572-draft-contract.yml").read_text(encoding="utf-8"))
+        self.assertIn("github.ref == 'refs/heads/main'", job["if"])
+        self.assertEqual(job["permissions"], {"contents": "read", "attestations": "read"})
+        commands = "\n".join(step.get("run", "") for step in job["steps"])
+        download_step = next(step for step in job["steps"] if step.get("name") == "Verify exact draft assets and original SLSA signatures without mutation")
+        attestation_step = next(step for step in job["steps"] if step.get("name") == "Verify original SLSA attestations with source-repository read permission")
+        self.assertEqual(download_step["env"]["GH_TOKEN"], "${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}")
+        self.assertEqual(attestation_step["env"]["GH_TOKEN"], "${{ github.token }}")
+        self.assertNotIn("CORELINK_CLI_RELEASE_TOKEN", "\n".join(attestation_step["env"].values()))
+        self.assertIn("401070424", commands)
+        tag_step = next(step for step in job["steps"] if step.get("name") == "Verify the original annotated source tag")
+        self.assertEqual(tag_step["env"]["TAG_OBJECT"], "ff20044f73ec116ba118ef6d8a35e85c959e244e")
+        self.assertIn(source, commands)
+        self.assertIn("verify_cli_release_draft.py", commands)
+        self.assertIn("cli_release_api.py", commands)
+        self.assertIn("gh attestation verify", commands)
+        self.assertIn('--repo "${SOURCE_REPOSITORY}"', commands)
+        self.assertIn("--source-ref \"refs/tags/${TAG}\" --source-digest \"${SOURCE_SHA}\"", commands)
+        for forbidden in ("gh release create", "gh release upload", "gh release edit", "--method POST", "--method PATCH", "--method DELETE", "id-token: write", "attestations: write"):
+            self.assertNotIn(forbidden, commands)
+
     def test_actual_workflow_dag_runs_slsa_for_draft_with_skipped_windows_and_rejects_bad_prerequisites(self) -> None:
         jobs = yaml.safe_load(Path(".github/workflows/release-cli.yml").read_text(encoding="utf-8"))["jobs"]
         slsa = jobs["release-slsa3"]
