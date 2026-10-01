@@ -527,9 +527,14 @@ def test_provider_error_classifier_reads_unknown_nested_message_fields_only_in_m
             {
                 "error": {
                     "code": 7500,
-                    "provider_internal_context_9": {
-                        "private_result_42": "no such column: tenant-private.secret-token"
-                    },
+                    # The observed Wrangler shape exposed `code` plus five
+                    # undocumented error keys, so classify values without
+                    # relying on their names or retaining their identifiers.
+                    "provider_internal_context_9": "no such column: tenant-private.secret-token",
+                    "private_result_42": {"context": "token=adversarial-secret"},
+                    "diagnostic": {"region": "private-region"},
+                    "cause_data": ["opaque-private-value"],
+                    "trace": ["tenant=private-tenant"],
                 }
             }
         ),
@@ -537,10 +542,27 @@ def test_provider_error_classifier_reads_unknown_nested_message_fields_only_in_m
     )
     validate_provider_diagnostic(diagnostic)
     assert diagnostic["semantic_error_category"] == "missing_column"
+    assert diagnostic["schema_shape"]["error_entry_unknown_key_count"] == 5
     serialized = json.dumps(diagnostic)
     assert "provider_internal_context_9" not in serialized
     assert "private_result_42" not in serialized
     assert "tenant-private.secret-token" not in serialized
+    assert "adversarial-secret" not in serialized
+    assert "private-region" not in serialized
+    assert "opaque-private-value" not in serialized
+    assert "private-tenant" not in serialized
+
+
+def test_provider_error_classifier_bounds_nested_traversal() -> None:
+    nested: object = "no such column: private-column"
+    for _ in range(20):
+        nested = {"undocumented": nested}
+    diagnostic = make_provider_diagnostic(
+        "hourly", 1, json.dumps({"error": {"code": 7500, "provider_detail": nested}}), ""
+    )
+    validate_provider_diagnostic(diagnostic)
+    assert diagnostic["semantic_error_category"] == "unknown"
+    assert "private-column" not in json.dumps(diagnostic)
 
 
 def test_diagnostic_mutations_that_add_values_or_identifiers_are_rejected() -> None:

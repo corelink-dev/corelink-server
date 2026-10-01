@@ -22,6 +22,8 @@ SCHEMA_KEYS = {
     "result", "results", "success", "status",
 }
 MAX_PROVIDER_OUTPUT_BYTES = 65536
+MAX_ERROR_SCAN_NODES = 512
+MAX_ERROR_SCAN_DEPTH = 16
 PROVIDER_CODE = re.compile(r"^[0-9]{1,6}$")
 
 
@@ -74,18 +76,26 @@ def _semantic_error_category(stdout: str, stderr: str) -> str:
         document = json.loads(stdout)
     except (json.JSONDecodeError, UnicodeError):
         document = None
-    pending = [_error_entry(document)]
-    while pending:
-        value = pending.pop()
+    pending = [(_error_entry(document), 0)]
+    visited = 0
+    while pending and visited < MAX_ERROR_SCAN_NODES:
+        value, depth = pending.pop()
+        visited += 1
         if isinstance(value, str):
             message_text.append(value)
-        elif isinstance(value, dict):
+        elif depth < MAX_ERROR_SCAN_DEPTH and isinstance(value, dict):
             # Provider versions may put their message under an undocumented
             # field. Inspect nested values in memory, but emit only the fixed
             # category below; never retain field names or text.
-            pending.extend(value.values())
-        elif isinstance(value, list):
-            pending.extend(value)
+            for child in value.values():
+                if len(pending) + visited >= MAX_ERROR_SCAN_NODES:
+                    break
+                pending.append((child, depth + 1))
+        elif depth < MAX_ERROR_SCAN_DEPTH and isinstance(value, list):
+            for child in value:
+                if len(pending) + visited >= MAX_ERROR_SCAN_NODES:
+                    break
+                pending.append((child, depth + 1))
     text = "\n".join(message_text).casefold()
     categories = (
         ("syntax", r"\bsyntax error\b|\bnear\s+.+?:\s+syntax error\b"),
