@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""One bounded, dry Workers Telemetry query for the exact failed v8 runtime run."""
+"""One bounded, dry aggregate query for the exact failed i1700 v8 run."""
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import urllib.error
@@ -10,43 +11,42 @@ import urllib.request
 ACCOUNT = '6a1fc1c626fc2628823e60b9db01f5cd'
 BASE = 'https://api.cloudflare.com/client/v4'
 QUERY_PATH = f'/accounts/{ACCOUNT}/workers/observability/telemetry/query'
-SOURCE_SHA = '14792a9eb416a3b9426f569d7d1f77079805c13f'
-VERSION = '725b8a68-523e-42fb-a8b9-b7e1a720fdd0'
-RELEASE = SOURCE_SHA
-START = 1790827810000  # 2026-10-01T04:10:10Z, exact hosted probe start
-END = 1790829312000    # 2026-10-01T04:35:12Z, exact receipt timeout
-NONCE = 'issue-1700-recovery-20261001-v8'
-OLD_RELEASE = '0f785fb9b096afe01247f1057d46377b9f604f13'
-V5_RELEASE = 'cc32b3d819181bf9175e795868f66212aa5456c1'
-PREFIX = '[staging_d1_runtime_probe]'
-RECEIPT_PREFIX = PREFIX + ' receipt='
+SOURCE_SHA = '7d18bcfc450db97b1b987923050b92971da530a8'
+VERSION = '002e974d-4271-4630-9745-96ffbfc83af6'
+RUN_ID = '36829094848'
+START = 1790839493000  # 2026-10-01T07:24:53Z
+END = 1790840995000    # 2026-10-01T07:49:55Z
 LIMIT = 100
-NATIVE_KEYS = (
-    'parameterized_select', 'failed_batch_observed', 'rollback_absence_verified',
-    'probe_table_dropped', 'd1_binding_intercepted', 'authorization_absent',
-    'cf_api_token_absent',
-)
-RETIREMENT_KEYS = (
-    'old_probe_retired', 'old_probe_tables_absent', 'v5_probe_retired',
-    'v5_probe_tables_absent', 'v4_probe_catalog_absent',
-)
-RECEIPT_KEYS = frozenset((
-    'contract', 'probe_nonce', 'outcome', 'worker_release', 'scheduled_time_ms',
-    *NATIVE_KEYS, 'old_probe_release', 'old_probe_retired', 'old_probe_tables_absent',
-    'v5_probe_release', 'v5_probe_retired', 'v5_probe_tables_absent',
-    'v5_prior_execution', 'v4_probe_catalog_absent',
+GROUP_KEYS = ('$metadata.type', '$workers.eventType', '$workers.outcome')
+METADATA_TYPES = frozenset(('cf-worker-event', 'cf-worker-log'))
+EVENT_TYPES = frozenset((
+    'fetch', 'scheduled', 'alarm', 'cron', 'queue', 'email', 'tail',
+    'rpc', 'jsrpc', 'websocket', 'workflow', 'unknown',
+))
+OUTCOMES = frozenset((
+    'ok', 'exception', 'exceededCpu', 'exceededMemory', 'scriptNotFound',
+    'canceled', 'responseStreamDisconnected', 'unknown',
 ))
 QUERY = {
-    'queryId': 'issue1700-run36812790564-v8-readonly',
+    'queryId': 'issue1700-run36829094848-v8-outcome-counts',
     'dry': True,
-    'view': 'events',
+    'view': 'calculations',
+    'chartType': 'aggregate',
+    'ignoreSeries': True,
     'limit': LIMIT,
     'timeframe': {'from': START, 'to': END},
-    'parameters': {'filterCombination': 'and', 'filters': [
-        {'key': '$metadata.service', 'operation': 'eq', 'type': 'string', 'value': 'corelink-staging'},
-        {'key': '$metadata.message', 'operation': 'includes', 'type': 'string', 'value': PREFIX},
-    ]},
+    'parameters': {
+        'filterCombination': 'and',
+        'filters': [
+            {'key': '$metadata.service', 'operation': 'eq', 'type': 'string', 'value': 'corelink-staging'},
+            {'key': '$workers.scriptVersion.id', 'operation': 'eq', 'type': 'string',
+             'value': VERSION},
+        ],
+        'calculations': [{'operator': 'count', 'alias': 'event_count'}],
+        'groupBys': [{'type': 'string', 'value': key} for key in GROUP_KEYS],
+    },
 }
+EXPECTED_QUERY_SHA256 = '5a11a2113fdc085b497bbe943bf5e2a8c6bf9722d132b6ebe9bb3f3706ff1150'
 
 
 def digest(value):
@@ -54,6 +54,7 @@ def digest(value):
 
 
 def request(path, body):
+    """Perform exactly one fixed POST; never follow redirects or retry."""
     if path != QUERY_PATH or body != QUERY:
         raise ValueError('request_not_allowlisted')
     token = os.environ.get('CLOUDFLARE_API_TOKEN', '')
@@ -78,175 +79,178 @@ def request(path, body):
         raw = response.read(2_000_001)
         if len(raw) > 2_000_000:
             raise ValueError('response_bound')
-        return response.status, json.loads(raw)
+        if response.status != 200:
+            return response.status, None
+        try:
+            return response.status, json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError('response_invalid') from None
 
 
-def _is_exact_receipt(receipt):
-    return (
-        isinstance(receipt, dict) and set(receipt) == RECEIPT_KEYS and
-        receipt.get('contract') == 'corelink-staging-d1-binding-runtime-v1' and
-        receipt.get('probe_nonce') == NONCE and receipt.get('outcome') == 'pass' and
-        receipt.get('worker_release') == RELEASE and
-        type(receipt.get('scheduled_time_ms')) is int and START <= receipt['scheduled_time_ms'] <= END and
-        receipt.get('old_probe_release') == OLD_RELEASE and
-        receipt.get('v5_probe_release') == V5_RELEASE and
-        receipt.get('v5_prior_execution') == 'unknown' and
-        all(receipt.get(key) is True for key in (*NATIVE_KEYS, *RETIREMENT_KEYS))
-    )
+def _bucket(value, allowed):
+    if not isinstance(value, str):
+        return 'unknown'
+    return value if value in allowed else 'other'
+
+
+def _group_key(aggregate):
+    groups = aggregate.get('groups')
+    if not isinstance(groups, list):
+        raise ValueError('aggregate_groups')
+    values = {}
+    for item in groups:
+        if not isinstance(item, dict) or not isinstance(item.get('key'), str):
+            raise ValueError('aggregate_group_entry')
+        key = item['key']
+        if key not in GROUP_KEYS or key in values:
+            raise ValueError('aggregate_group_key')
+        values[key] = item.get('value')
+    return '|'.join((
+        _bucket(values.get('$metadata.type'), METADATA_TYPES),
+        _bucket(values.get('$workers.eventType'), EVENT_TYPES),
+        _bucket(values.get('$workers.outcome'), OUTCOMES),
+    ))
 
 
 def classify(body):
-    result = body.get('result') if isinstance(body, dict) else None
-    run = result.get('run') if isinstance(result, dict) else None
-    events_envelope = result.get('events') if isinstance(result, dict) else None
-    events = events_envelope.get('events') if isinstance(events_envelope, dict) else None
-    if not isinstance(events, list) or len(events) > LIMIT:
-        raise ValueError('event_envelope')
-    total = events_envelope.get('count')
-    if type(total) is not int or total < len(events):
-        raise ValueError('event_count')
-    counts = {
-        'events_returned': len(events), 'events_matching_query': total,
-        'service_match': 0, 'version_match': 0, 'scheduled_event': 0,
-        'timestamp_in_window': 0, 'probe_prefix': 0, 'eligible_candidate_event': 0,
-        'receipt_prefix': 0, 'valid_20_key_receipt': 0, 'malformed_receipt': 0,
-        'rejected_receipt': 0, 'failure_probe_failed': 0,
-        'rejected_staging_guard': 0,
-    }
-    receipt_predicates = dict.fromkeys((
-        'exact_20_keys', 'contract', 'nonce', 'outcome', 'worker_release',
-        'scheduled_time_in_window', 'old_probe_release', 'old_probe_retired',
-        'old_probe_tables_absent', 'v5_probe_release', 'v5_probe_retired',
-        'v5_probe_tables_absent', 'v5_prior_execution_unknown', 'v4_probe_catalog_absent',
-        *NATIVE_KEYS,
-    ), 0)
-    for event in events:
-        if not isinstance(event, dict):
-            continue
-        metadata = event.get('$metadata')
-        workers = event.get('$workers')
-        metadata = metadata if isinstance(metadata, dict) else {}
-        workers = workers if isinstance(workers, dict) else {}
-        service_match = (workers.get('scriptName') == 'corelink-staging' or
-                         metadata.get('service') == 'corelink-staging')
-        script_version = workers.get('scriptVersion')
-        version_match = isinstance(script_version, dict) and script_version.get('id') == VERSION
-        event_type = workers.get('eventType')
-        scheduled_event = event_type in ('scheduled', 'cron')
-        timestamp = event.get('timestamp')
-        timestamp_in_window = type(timestamp) is int and START <= timestamp <= END
-        message = metadata.get('message')
-        probe_prefix = isinstance(message, str) and message.startswith(PREFIX)
-        for key, matched in (
-            ('service_match', service_match), ('version_match', version_match),
-            ('scheduled_event', scheduled_event), ('timestamp_in_window', timestamp_in_window),
-            ('probe_prefix', probe_prefix),
-        ):
-            counts[key] += int(matched)
-        eligible = all((service_match, version_match, scheduled_event, timestamp_in_window, probe_prefix))
-        if not eligible:
-            continue
-        counts['eligible_candidate_event'] += 1
-        if message == PREFIX + ' failed reason=probe_failed':
-            counts['failure_probe_failed'] += 1
-            continue
-        if message == PREFIX + ' rejected reason=staging_guard':
-            counts['rejected_staging_guard'] += 1
-            continue
-        if not message.startswith(RECEIPT_PREFIX):
-            continue
-        counts['receipt_prefix'] += 1
-        try:
-            receipt = json.loads(message[len(RECEIPT_PREFIX):])
-        except (TypeError, ValueError):
-            counts['malformed_receipt'] += 1
-            continue
-        if not isinstance(receipt, dict):
-            counts['malformed_receipt'] += 1
-            continue
-        checks = {
-            'exact_20_keys': set(receipt) == RECEIPT_KEYS,
-            'contract': receipt.get('contract') == 'corelink-staging-d1-binding-runtime-v1',
-            'nonce': receipt.get('probe_nonce') == NONCE,
-            'outcome': receipt.get('outcome') == 'pass',
-            'worker_release': receipt.get('worker_release') == RELEASE,
-            'scheduled_time_in_window': type(receipt.get('scheduled_time_ms')) is int and START <= receipt['scheduled_time_ms'] <= END,
-            'old_probe_release': receipt.get('old_probe_release') == OLD_RELEASE,
-            'old_probe_retired': receipt.get('old_probe_retired') is True,
-            'old_probe_tables_absent': receipt.get('old_probe_tables_absent') is True,
-            'v5_probe_release': receipt.get('v5_probe_release') == V5_RELEASE,
-            'v5_probe_retired': receipt.get('v5_probe_retired') is True,
-            'v5_probe_tables_absent': receipt.get('v5_probe_tables_absent') is True,
-            'v5_prior_execution_unknown': receipt.get('v5_prior_execution') == 'unknown',
-            'v4_probe_catalog_absent': receipt.get('v4_probe_catalog_absent') is True,
-            **{key: receipt.get(key) is True for key in NATIVE_KEYS},
-        }
-        for key, matched in checks.items():
-            receipt_predicates[key] += int(matched)
-        if _is_exact_receipt(receipt):
-            counts['valid_20_key_receipt'] += 1
-        else:
-            counts['rejected_receipt'] += 1
-
-    saturated = len(events) == LIMIT
-    truncated = total > len(events)
-    dry_confirmed = isinstance(run, dict) and run.get('dry') is True
-    account_confirmed = isinstance(run, dict) and run.get('accountId') == ACCOUNT
-    if truncated:
-        classification = 'incomplete_limit_reached'
-    elif not account_confirmed:
-        classification = 'incomplete_account_not_confirmed'
+    if not isinstance(body, dict) or body.get('success') is not True:
+        raise ValueError('response_envelope')
+    result = body.get('result')
+    if not isinstance(result, dict):
+        raise ValueError('response_result')
+    run = result.get('run')
+    if not isinstance(run, dict):
+        raise ValueError('response_run')
+    account_confirmed = run.get('accountId') == ACCOUNT
+    dry_confirmed = run.get('dry') is True
+    status = run.get('status')
+    if status not in ('STARTED', 'COMPLETED'):
+        raise ValueError('run_status')
+    if not account_confirmed:
+        classification = 'account_mismatch'
     elif not dry_confirmed:
-        classification = 'incomplete_dry_not_confirmed'
-    elif counts['valid_20_key_receipt']:
-        classification = 'candidate_receipt_observed'
-    elif counts['failure_probe_failed']:
-        classification = 'candidate_probe_failed_marker_observed'
-    elif counts['rejected_staging_guard']:
-        classification = 'candidate_staging_guard_marker_observed'
-    elif counts['eligible_candidate_event']:
-        classification = 'candidate_probe_marker_without_valid_receipt'
-    elif counts['version_match']:
-        classification = 'candidate_version_events_without_probe_marker'
-    elif counts['events_returned']:
-        classification = 'events_observed_no_candidate_receipt'
+        classification = 'dry_not_confirmed'
+    elif status != 'COMPLETED':
+        classification = 'query_run_incomplete'
     else:
-        classification = 'no_matching_events'
+        calculations = result.get('calculations')
+        if not isinstance(calculations, list):
+            raise ValueError('calculations_envelope')
+        matches = [row for row in calculations if isinstance(row, dict) and row.get('alias') == 'event_count']
+        if len(matches) != 1 or not isinstance(matches[0].get('aggregates'), list):
+            raise ValueError('aggregate_envelope')
+        aggregates = matches[0]['aggregates']
+        if len(aggregates) > LIMIT:
+            raise ValueError('aggregate_limit')
+        statistics = result.get('statistics', {})
+        if not isinstance(statistics, dict):
+            raise ValueError('statistics_envelope')
+        abr_level = statistics.get('abr_level', 1)
+        if type(abr_level) not in (int, float) or not math.isfinite(abr_level) or abr_level <= 0:
+            raise ValueError('abr_level')
+        sampling_uncertain = abr_level != 1
+        counts = {}
+        for aggregate in aggregates:
+            if not isinstance(aggregate, dict):
+                raise ValueError('aggregate_entry')
+            count = aggregate.get('count')
+            sample_interval = aggregate.get('sampleInterval')
+            if (type(count) not in (int, float) or not math.isfinite(count) or count < 0 or
+                    type(sample_interval) not in (int, float) or not math.isfinite(sample_interval) or
+                    sample_interval <= 0):
+                raise ValueError('aggregate_count')
+            if sample_interval != 1:
+                sampling_uncertain = True
+            key = _group_key(aggregate)
+            total = counts.get(key, 0) + count
+            if not math.isfinite(total):
+                raise ValueError('aggregate_count')
+            counts[key] = total
+        scheduled_invocations = sum(
+            count for key, count in counts.items()
+            if key.split('|')[0] == 'cf-worker-event' and key.split('|')[1] in ('scheduled', 'cron')
+        )
+        log_records = sum(count for key, count in counts.items() if key.split('|')[0] == 'cf-worker-log')
+        if len(aggregates) == LIMIT:
+            classification = 'aggregate_limit_reached'
+        elif sampling_uncertain:
+            classification = 'sampling_uncertain'
+        elif scheduled_invocations > 0:
+            classification = 'scheduled_invocations_observed'
+        elif log_records > 0:
+            classification = 'logs_observed_no_scheduled_group'
+        elif aggregates:
+            classification = 'candidate_groups_without_scheduled_invocation'
+        else:
+            classification = 'no_groups_returned'
+        return {
+            'classification': classification,
+            'account_confirmed': account_confirmed,
+            'dry_confirmed': dry_confirmed,
+            'query_status': status,
+            'sampling': 'uncertain' if sampling_uncertain else 'exact',
+            'abr_level': abr_level,
+            'groups_returned': len(aggregates),
+            'group_limit_reached': len(aggregates) == LIMIT,
+            'counts': counts,
+            'scheduled_invocation_count': scheduled_invocations,
+            'log_record_count': log_records,
+            'new_runtime_proof': False,
+        }
     return {
         'classification': classification,
-        'candidate_receipt_observed': counts['valid_20_key_receipt'] > 0,
-        'new_runtime_proof': False,
         'account_confirmed': account_confirmed,
         'dry_confirmed': dry_confirmed,
-        'limit': LIMIT,
-        'limit_saturated': saturated,
-        'limit_truncated': truncated,
-        'counts': counts,
-        'receipt_predicate_true_counts': receipt_predicates,
+        'query_status': status,
+        'sampling': 'unknown',
+        'groups_returned': 0,
+        'group_limit_reached': False,
+        'counts': {},
+        'scheduled_invocation_count': 0,
+        'log_record_count': 0,
+        'new_runtime_proof': False,
     }
 
 
 def collect(call=request):
     receipt = {
-        'contract': 'issue1700-v8-runtime-diagnostic-v1', 'run_id': '36812790564',
-        'candidate_source_sha': SOURCE_SHA, 'candidate_version_id': VERSION,
-        'timeframe': QUERY['timeframe'], 'query_sha256': digest(QUERY),
-        'classification': 'unknown', 'new_runtime_proof': False,
+        'contract': 'issue1700-v8-aggregate-diagnostic-v1',
+        'run_id': RUN_ID,
+        'candidate_source_sha': SOURCE_SHA,
+        'candidate_version_id': VERSION,
+        'timeframe': QUERY['timeframe'],
+        'query_sha256': digest(QUERY),
+        'classification': 'unknown',
+        'new_runtime_proof': False,
     }
     try:
+        if receipt['query_sha256'] != EXPECTED_QUERY_SHA256:
+            raise ValueError('request_hash_mismatch')
         status, body = call(QUERY_PATH, QUERY)
-        if status in (401, 403):
-            receipt.update(classification='query_unauthorized' if status == 401 else 'query_forbidden',
-                           query_http=status)
-        elif status != 200 or not isinstance(body, dict) or body.get('success') is not True:
-            receipt.update(classification='query_rejected', query_http=status)
+        receipt['query_http'] = status
+        if status == 401:
+            receipt['classification'] = 'query_unauthorized'
+        elif status == 403:
+            receipt['classification'] = 'query_forbidden'
+        elif status == 400:
+            receipt['classification'] = 'query_bad_request'
+        elif status == 429:
+            receipt['classification'] = 'query_rate_limited'
+        elif 300 <= status < 400:
+            receipt['classification'] = 'query_redirect_rejected'
+        elif 500 <= status < 600:
+            receipt['classification'] = 'query_server_error'
+        elif status != 200:
+            receipt['classification'] = 'query_rejected'
         else:
-            receipt.update(query_http=status, **classify(body))
+            receipt.update(classify(body))
     except Exception as error:
-        # Never expose response text, provider details, or exception content.
         code = str(error) if str(error) in {
-            'request_not_allowlisted', 'token_unavailable', 'response_bound',
-            'event_envelope', 'event_count',
+            'request_not_allowlisted', 'token_unavailable', 'response_bound', 'response_invalid',
+            'request_hash_mismatch', 'response_envelope', 'response_result', 'response_run',
+            'run_status', 'calculations_envelope', 'aggregate_envelope', 'aggregate_limit',
+            'statistics_envelope', 'abr_level', 'aggregate_entry', 'aggregate_count',
+            'aggregate_groups', 'aggregate_group_entry', 'aggregate_group_key',
         } else 'bounded_query_error'
         receipt['classification'] = code
     return receipt
@@ -262,11 +266,19 @@ def main():
     output.write_text(json.dumps(receipt, sort_keys=True, indent=2) + '\n')
     output.chmod(0o600)
     print(json.dumps({key: receipt[key] for key in (
-        'classification', 'new_runtime_proof', 'candidate_receipt_observed',
-        'limit_saturated', 'limit_truncated', 'counts', 'receipt_predicate_true_counts',
+        'classification', 'query_http', 'sampling', 'groups_returned',
+        'group_limit_reached', 'counts', 'scheduled_invocation_count',
+        'log_record_count', 'new_runtime_proof',
     ) if key in receipt}, sort_keys=True))
-    return 0 if (receipt.get('query_http') == 200 and receipt.get('dry_confirmed') and
-                 receipt.get('account_confirmed')) else 1
+    complete_classes = {
+        'scheduled_invocations_observed', 'logs_observed_no_scheduled_group',
+        'candidate_groups_without_scheduled_invocation', 'no_groups_returned',
+    }
+    return 0 if (receipt.get('query_http') == 200 and receipt.get('account_confirmed') and
+                 receipt.get('dry_confirmed') and receipt.get('query_status') == 'COMPLETED' and
+                 receipt.get('sampling') == 'exact' and
+                 not receipt.get('group_limit_reached') and
+                 receipt.get('classification') in complete_classes) else 1
 
 
 if __name__ == '__main__':
