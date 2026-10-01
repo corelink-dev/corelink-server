@@ -158,6 +158,9 @@ pub(super) fn assert_pinned_gh_contract(
         "stale_date_result.returncode != 0",
         "actual Bash guard must reject an unpinned PATH executable",
         "wrong_result.returncode != 0",
+        "def assert_bundle_suffix_behavior(binary: Path, runner_temp: Path) -> None:",
+        "bundle file extension not supported",
+        "pinned gh must accept `.json` and proceed to parse the bundle without network credentials",
         "target_counts == TARGET_STEP_COUNTS",
         "missing destination read credential mutation must be rejected",
     ] {
@@ -627,7 +630,11 @@ pub(super) fn assert_slsa_contract(workflow: &str) {
         "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8",
         "subject-checksums: provenance-subjects.sha256",
         "provenance.intoto.jsonl.bundle",
+        "gh release upload \"${TAG}\" --repo HuGR-Labs/corelink-cli \\\n                provenance.intoto.jsonl provenance.intoto.jsonl.bundle",
+        "scripts/normalize_cli_attestation_bundle.py",
+        "NORMALIZED_BUNDLE=\"${RUNNER_TEMP}/corelink-slsa-bundle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json\"",
         "gh attestation verify",
+        "--bundle \"${NORMALIZED_BUNDLE}\" --repo \"${REPO}\"",
         "--signer-workflow \"${REPO}/.github/workflows/release-slsa3.yml\"",
         "--source-ref",
         "--source-digest",
@@ -650,7 +657,10 @@ pub(super) fn assert_publication_inventory_contract(workflow: &str) {
         "gh release download \"${TAG}\" --repo HuGR-Labs/corelink-cli \\",
         "--dir \"${PUBLISHED}\" --clobber",
         "scripts/verify_cli_release_inventory.py",
+        "scripts/normalize_cli_attestation_bundle.py",
+        "NORMALIZED_BUNDLE=\"${RUNNER_TEMP}/corelink-publish-bundle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json\"",
         "gh attestation verify",
+        "--bundle \"${NORMALIZED_BUNDLE}\"",
         "--signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/release-slsa3.yml\"",
         "--cert-oidc-issuer \"https://token.actions.githubusercontent.com\"",
         "gh api --method PATCH \"repos/HuGR-Labs/corelink-cli/releases/${RELEASE_ID}\"",
@@ -661,6 +671,16 @@ pub(super) fn assert_publication_inventory_contract(workflow: &str) {
             "publication inventory control missing: {required}"
         );
     }
+    assert_eq!(
+        workflow.matches("gh attestation verify").count(),
+        2,
+        "signed-public and draft verifier must remain the only release-cli attestation loops"
+    );
+    assert_eq!(
+        workflow.matches("--bundle \"${NORMALIZED_BUNDLE}\"").count(),
+        2,
+        "both release-cli attestation loops must use a normalized private bundle"
+    );
 }
 
 pub(super) fn assert_retry_manifest_contract(workflow: &str) {

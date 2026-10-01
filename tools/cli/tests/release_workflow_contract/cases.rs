@@ -44,6 +44,18 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
     assert_retry_manifest_contract(&workflow);
     assert_stable_release_id_contract(&workflow, &slsa, &release_api);
 
+    let unnormalized_public_bundle = workflow.replacen(
+        "--bundle \"${NORMALIZED_BUNDLE}\"",
+        "--bundle \"${FINAL_ASSETS}/provenance.intoto.jsonl.bundle\"",
+        1,
+    );
+    assert_ne!(unnormalized_public_bundle, workflow, "bundle mutation must take effect");
+    assert!(
+        std::panic::catch_unwind(|| assert_publication_inventory_contract(&unnormalized_public_bundle))
+            .is_err(),
+        "both real release-cli GH attestation calls must use normalized private bundle paths"
+    );
+
     let missing_release_id = workflow.replace(
         "release_id: ${{ needs.release.outputs.release_id }}",
         "release_id input removed",
@@ -705,6 +717,15 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
     assert!(
         std::panic::catch_unwind(|| assert_slsa_contract(&unbound_signer)).is_err(),
         "the GitHub attestation signer identity must remain exact"
+    );
+    let unnormalized_slsa_bundle = slsa.replace(
+        "--bundle \"${NORMALIZED_BUNDLE}\" --repo \"${REPO}\"",
+        "--bundle provenance.intoto.jsonl.bundle --repo \"${REPO}\"",
+    );
+    assert_ne!(unnormalized_slsa_bundle, slsa, "bundle mutation must take effect");
+    assert!(
+        std::panic::catch_unwind(|| assert_slsa_contract(&unnormalized_slsa_bundle)).is_err(),
+        "SLSA GH attestation must use the normalized local bundle path"
     );
     let reintroduced_staging_manifest = slsa.replace(
         "test \"${STAGING_ASSET_COUNT}\" = \"0\"",

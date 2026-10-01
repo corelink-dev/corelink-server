@@ -944,6 +944,9 @@ jobs:
             --bundle "${FINAL_ASSETS}/provenance.intoto.jsonl.bundle" \
             --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
             --manifest-sha256 "${FINAL_MANIFEST_SHA256}"
+          NORMALIZED_BUNDLE="${RUNNER_TEMP}/corelink-publish-bundle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          python3 -B scripts/normalize_cli_attestation_bundle.py \
+            "${FINAL_ASSETS}/provenance.intoto.jsonl.bundle" "${NORMALIZED_BUNDLE}"
           python3 - "${FINAL_ASSETS}/release-manifest.json" <<'PY' | while IFS= read -r name; do
           import json
           import sys
@@ -951,7 +954,7 @@ jobs:
               print(artifact["name"])
           PY
           gh attestation verify "${FINAL_ASSETS}/${name}" \
-              --bundle "${FINAL_ASSETS}/provenance.intoto.jsonl.bundle" \
+              --bundle "${NORMALIZED_BUNDLE}" \
               --repo "${GITHUB_REPOSITORY}" \
               --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release-slsa3.yml" \
               --source-ref "refs/tags/${TAG}" --source-digest "${SOURCE_SHA}" \
@@ -1015,13 +1018,16 @@ jobs:
             --public-key docs/internal/gpg-release-pubkey.asc \
             --tag "${TAG}" --source-sha "${SOURCE_SHA}" \
             --manifest-sha256 "${MANIFEST_SHA256}"
+          NORMALIZED_BUNDLE="${RUNNER_TEMP}/corelink-draft-bundle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          python3 -B scripts/normalize_cli_attestation_bundle.py \
+            "${ASSETS}/provenance.intoto.jsonl.bundle" "${NORMALIZED_BUNDLE}"
           python3 - "${ASSETS}/release-manifest.json" <<'PY' | while IFS= read -r name; do
           import json, sys
           for entry in json.load(open(sys.argv[1], encoding="utf-8"))["artifacts"]:
               print(entry["name"])
           PY
             gh attestation verify "${ASSETS}/${name}" \
-              --bundle "${ASSETS}/provenance.intoto.jsonl.bundle" \
+              --bundle "${NORMALIZED_BUNDLE}" \
               --repo "${GITHUB_REPOSITORY}" \
               --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release-slsa3.yml" \
               --source-ref "refs/tags/${TAG}" --source-digest "${SOURCE_SHA}" \
