@@ -807,6 +807,49 @@ def apply_existing_secret_updates(
     return receipt
 
 
+def plan_existing_secret_names(
+    topology: renderer.StagingTopologyAdapter,
+    secret_names: dict[str, set[str]],
+) -> dict[str, dict[str, list[str]]]:
+    """Name-only update-existing-secrets delta; never reads or emits values.
+
+    Every state the protected apply path could not reconcile without guessing
+    is refused here as well, so a passing plan never hides an ambiguity.
+    """
+    workers = tuple(topology.workers)
+    if workers != (
+        "corelink-staging",
+        "corelink-signup-staging",
+        "corelink-synthetic-pager-staging",
+    ):
+        raise RuntimeError("staging Worker target set differs from the frozen three-Worker set")
+    if set(secret_names) != set(workers):
+        raise RuntimeError("existing Worker secret inventory is incomplete")
+    b216_names = {"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"}
+    plan: dict[str, dict[str, list[str]]] = {}
+    for worker in workers:
+        names = secret_names[worker]
+        if not isinstance(names, set) or any(not isinstance(name, str) for name in names):
+            raise RuntimeError("existing Worker secret inventory is malformed")
+        required = set(topology.required_secret_names.get(worker, []))
+        allowed = required | (b216_names if worker == "corelink-signup-staging" else set())
+        if names - allowed:
+            raise RuntimeError(f"existing Worker {worker} has an unapproved staging secret name")
+        plan[worker] = {
+            "secret_names": sorted(names),
+            "missing_secret_names": sorted(required - names),
+        }
+    alert_pair = secret_names["corelink-signup-staging"] & b216_names
+    if alert_pair and alert_pair != b216_names:
+        raise RuntimeError("existing B-216 alert secret-name pair is incomplete")
+    for shared in ("CORELINK_INTERNAL_AUTH_KEY", "CORELINK_ERASE_AUTH_KEY"):
+        if (shared in secret_names["corelink-staging"]) != (
+            shared in secret_names["corelink-signup-staging"]
+        ):
+            raise RuntimeError("shared staging secret is present on only one Worker")
+    return plan
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -830,7 +873,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="explicitly bind the approved fixed B-216 alert receiver to staging signup",
     )
+    parser.add_argument(
+        "--existing-worker-plan",
+        action="store_true",
+        help=(
+            "read-only preflight only: when every canonical staging Worker already "
+            "exists, emit a name-only update-existing-secrets plan instead of refusing"
+        ),
+    )
     args = parser.parse_args(argv)
+    if args.existing_worker_plan and args.phase != "preflight":
+        parser.error("--existing-worker-plan is valid only with --phase preflight")
 
     if args.phase == "update-existing-apply":
         if not all((args.config_dir, args.receipt, args.run_id, args.sha)):
@@ -883,6 +936,7 @@ def main(argv: list[str] | None = None) -> int:
             inventory = custom_domain._inventory(token, account, zone)
             validate_postflight_custom_domain(inventory, account, zone)
 
+        existing_plan: dict[str, dict[str, list[str]]] | None = None
         if update_existing:
             validate_existing_worker_inventory(topology, worker_token, account)
             deployed_staging = set(workers)
@@ -891,22 +945,33 @@ def main(argv: list[str] | None = None) -> int:
                 token,
                 f"accounts/{urllib.parse.quote(account, safe='')}/workers/scripts",
             ).get("result")
-            script_items = script_result if isinstance(script_result, list) else []
-            deployed = {
-                item.get("id") or item.get("name")
-                for item in script_items
-                if isinstance(item, dict)
-            }
+            # A malformed listing is not proof that no Worker exists.
+            if not isinstance(script_result, list) or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("id") or item.get("name"), str)
+                for item in script_result
+            ):
+                raise RuntimeError("Worker script inventory is malformed")
+            deployed = {item.get("id") or item.get("name") for item in script_result}
             deployed_staging = deployed.intersection(workers)
             if args.phase == "preflight" and deployed_staging:
-                raise RuntimeError("staging Worker names already exist; refusing to overwrite them")
+                if not args.existing_worker_plan:
+                    raise RuntimeError("staging Worker names already exist; refusing to overwrite them")
+                if deployed_staging != set(workers):
+                    raise RuntimeError(
+                        "staging Worker set is only partially present; refusing an ambiguous existing-Worker plan"
+                    )
+                existing_plan = plan_existing_secret_names(
+                    topology,
+                    {worker: _secret_names(token, account, worker) for worker in workers},
+                )
             if args.phase in {"quarantine", "postflight"} and deployed_staging != set(workers):
                 raise RuntimeError("provider Worker readback is missing a canonical staging Worker")
             if args.phase in {"quarantine", "postflight"}:
                 for worker in workers:
                     read_worker_bindings(topology, token, account, worker)
 
-        print(json.dumps({
+        receipt: dict[str, Any] = {
             "schema_version": 1,
             "phase": args.phase,
             "target": topology.canonical_origin,
@@ -916,7 +981,16 @@ def main(argv: list[str] | None = None) -> int:
             "route_set": "empty" if not actual else "canonical-staging-conflict",
             "custom_domain_count": len(inventory[2]["result"]) if args.phase == "postflight" else 0,
             "provider_mutation_performed": False,
-        }, sort_keys=True))
+        }
+        if args.existing_worker_plan:
+            receipt["existing_workers"] = "all-present" if existing_plan is not None else "absent"
+            receipt["next_operation"] = (
+                "update-existing-secrets" if existing_plan is not None else "quarantine-apply"
+            )
+            receipt["secret_values_read"] = False
+            if existing_plan is not None:
+                receipt["update_existing_secrets_plan"] = existing_plan
+        print(json.dumps(receipt, sort_keys=True))
     except (OSError, TypeError, ValueError, RuntimeError, renderer.ContractError) as error:
         print(f"staging provider boundary rejected: {error}", file=sys.stderr)
         return 1
