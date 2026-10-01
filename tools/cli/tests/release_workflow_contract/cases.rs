@@ -93,6 +93,42 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
         .is_err(),
         "the resolver must reject zero/multiple ambiguous release matches"
     );
+    for (mutated, label) in [
+        (
+            release_api.replace("if release.get(\"tag_name\") != tag:", "if False:"),
+            "create response must bind exact tag",
+        ),
+        (
+            release_api.replace(
+                "if draft is not True or published_at is not None:",
+                "if False:",
+            ),
+            "create response must remain unpublished draft",
+        ),
+        (
+            release_api.replace(
+                "if release.get(\"prerelease\") is not False:",
+                "if False:",
+            ),
+            "create response must reject prerelease",
+        ),
+        (
+            release_api.replace(
+                "if release[\"assets\"]:\n            raise ReleaseApiError(\"existing draft is non-empty; refusing overwrite or resume\")",
+                "if False:\n            raise ReleaseApiError(\"existing draft is non-empty; refusing overwrite or resume\")",
+            ),
+            "existing non-empty draft must not be reused",
+        ),
+    ] {
+        assert_ne!(mutated, release_api, "{label} mutation must take effect");
+        assert!(
+            std::panic::catch_unwind(|| assert_stable_release_id_contract(
+                &workflow, &slsa, &mutated
+            ))
+            .is_err(),
+            "{label} mutation must be rejected"
+        );
+    }
 
     let no_credentialless_smoke = pack.replace(
         "python3 -B scripts/test_pinned_gh_consumers.py",
@@ -343,8 +379,12 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
         "readback removed",
     );
     let public_before_signing = workflow.replace(
-        "--notes-file /tmp/release-notes.md --draft",
-        "--notes-file /tmp/release-notes.md",
+        "--expected-state draft --allow-absent --create-or-reuse-empty-draft",
+        "--expected-state draft --allow-absent",
+    );
+    assert_ne!(
+        public_before_signing, workflow,
+        "draft creation mutation must take effect"
     );
     assert!(
         std::panic::catch_unwind(|| assert_release_contract(&public_before_signing)).is_err(),
@@ -363,6 +403,30 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
         std::panic::catch_unwind(|| assert_release_contract(&slsa_without_release)).is_err(),
         "provenance must directly depend on the staged release"
     );
+    for mutation in [
+        workflow.replace(
+            "      always() &&\n      needs.final-manifest.result",
+            "      needs.final-manifest.result",
+        ),
+        workflow.replace(
+            "needs.final-manifest.result == 'success'",
+            "needs.final-manifest.result != 'success'",
+        ),
+        workflow.replace(
+            "needs.release-readiness.result == 'success'",
+            "needs.release-readiness.result != 'success'",
+        ),
+        workflow.replace(
+            "needs.release.result == 'success'",
+            "needs.release.result != 'success'",
+        ),
+    ] {
+        assert_ne!(mutation, workflow, "SLSA gate mutation must take effect");
+        assert!(
+            std::panic::catch_unwind(|| assert_release_contract(&mutation)).is_err(),
+            "draft-only skipped Windows ancestry must not bypass the exact successful SLSA prerequisites"
+        );
+    }
     let publish_without_release = workflow.replace(
         "needs: [release-slsa3, release-readiness, final-manifest, release, sign-windows]",
         "needs: [release-slsa3, release-readiness, final-manifest]",

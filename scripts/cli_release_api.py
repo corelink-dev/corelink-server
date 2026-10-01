@@ -45,6 +45,23 @@ def gh_json(*args: str) -> Any:
         raise ReleaseApiError("GitHub release API returned malformed JSON") from error
 
 
+def gh_json_input(*args: str, payload: dict[str, Any]) -> Any:
+    result = subprocess.run(
+        ["gh", "api", *args],
+        input=json.dumps(payload),
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if result.returncode != 0:
+        raise ReleaseApiError(f"GitHub release API request failed (gh exit {result.returncode})")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ReleaseApiError("GitHub release API returned malformed JSON") from error
+
+
 def list_releases(repository: str) -> list[dict[str, Any]]:
     pages = gh_json(
         "--paginate",
@@ -142,6 +159,68 @@ def resolve_release(
     )
 
 
+def create_or_reuse_empty_draft(
+    *,
+    repository: str,
+    tag: str,
+    title: str,
+    body: str,
+) -> dict[str, Any]:
+    """Create a draft by REST, retaining the ID in the create response.
+
+    A previously created exact empty draft is reusable after a failed run. A
+    populated draft is never overwritten or treated as a fresh candidate.
+    """
+    if not REPOSITORY_RE.fullmatch(repository):
+        raise ReleaseApiError("repository must be a plain owner/name value")
+    if not TAG_RE.fullmatch(tag):
+        raise ReleaseApiError("tag is outside the canonical CLI release format")
+    if not title:
+        raise ReleaseApiError("release title must not be empty")
+
+    matches = [item for item in list_releases(repository) if item.get("tag_name") == tag]
+    if len(matches) > 1:
+        raise ReleaseApiError("release collection contains duplicate matching tags")
+    if matches:
+        candidate = matches[0]
+        identifier = candidate.get("id")
+        if isinstance(identifier, bool) or not isinstance(identifier, int) or identifier < 1:
+            raise ReleaseApiError("matching release collection item has no valid numeric ID")
+        release = resolve_release(
+            repository=repository,
+            tag=tag,
+            expected_state="draft",
+            release_id=str(identifier),
+            allow_absent=False,
+        )
+        assert release is not None
+        if release["assets"]:
+            raise ReleaseApiError("existing draft is non-empty; refusing overwrite or resume")
+        return release
+
+    created = gh_json_input(
+        "--method", "POST", "--input", "-", f"repos/{repository}/releases",
+        payload={
+            "tag_name": tag,
+            "name": title,
+            "body": body,
+            "draft": True,
+            "prerelease": False,
+        },
+    )
+    release = validate_release(
+        created,
+        repository=repository,
+        tag=tag,
+        expected_state="draft",
+    )
+    if release.get("name") != title:
+        raise ReleaseApiError("created release title does not match the request")
+    if release["assets"]:
+        raise ReleaseApiError("new draft unexpectedly contains assets")
+    return release
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
@@ -149,17 +228,39 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-state", required=True, choices=("draft", "published"))
     parser.add_argument("--release-id")
     parser.add_argument("--allow-absent", action="store_true")
+    parser.add_argument("--create-or-reuse-empty-draft", action="store_true")
+    parser.add_argument("--title")
+    parser.add_argument("--notes-file")
     parser.add_argument("--format", choices=("json", "id", "state"), default="json")
     args = parser.parse_args(argv)
 
     try:
-        release = resolve_release(
-            repository=args.repo,
-            tag=args.tag,
-            expected_state=args.expected_state,
-            release_id=args.release_id,
-            allow_absent=args.allow_absent,
-        )
+        if args.create_or_reuse_empty_draft:
+            if (args.expected_state != "draft" or args.release_id is not None
+                    or not args.allow_absent or not args.title or not args.notes_file):
+                raise ReleaseApiError(
+                    "create-or-reuse requires draft state, allowed pre-create inspection, title, and notes"
+                )
+            try:
+                body = open(args.notes_file, encoding="utf-8").read()
+            except OSError as error:
+                raise ReleaseApiError("release notes file could not be read") from error
+            release = create_or_reuse_empty_draft(
+                repository=args.repo,
+                tag=args.tag,
+                title=args.title,
+                body=body,
+            )
+        else:
+            if args.title is not None or args.notes_file is not None:
+                raise ReleaseApiError("title and notes are only valid when creating or reusing a draft")
+            release = resolve_release(
+                repository=args.repo,
+                tag=args.tag,
+                expected_state=args.expected_state,
+                release_id=args.release_id,
+                allow_absent=args.allow_absent,
+            )
     except ReleaseApiError as error:
         print(f"release resolution failed: {error}", file=sys.stderr)
         return 2

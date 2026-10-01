@@ -325,8 +325,8 @@ jobs:
   # customer can install is v0.1.1 — not the cli-v0.1.0 in this repo.
   #
   # REPOINTED 2026-08-31 (WP-E): the five `HumanGuardrail/corelink-cli` strings in
-  # this file — including the two `gh release create` / `gh release upload`
-  # `--repo` flags below — named a repo that returns 404. `gh api
+  # this file — including the release creation and upload `--repo` flags below —
+  # named a repo that returns 404. `gh api
   # repos/HumanGuardrail/corelink-cli` → `404 Not Found`, while the control
   # `gh api repos/HuGR-Labs/corelink-cli` resolves. So the `release` job could
   # not have succeeded even with a fully green build matrix, and the comment
@@ -540,43 +540,11 @@ jobs:
           TAG: ${{ steps.validate-release-tag.outputs.tag }}
         run: |
           set -euo pipefail
-          RELEASE_JSON="${RUNNER_TEMP}/corelink-cli-existing-release.json"
-          RELEASE_STATE="$(python3 scripts/cli_release_api.py \
-            --repo HuGR-Labs/corelink-cli --tag "${TAG}" \
-            --expected-state draft --allow-absent --format state)"
-          case "${RELEASE_STATE}" in
-            draft)
-              python3 scripts/cli_release_api.py \
-                --repo HuGR-Labs/corelink-cli --tag "${TAG}" \
-                --expected-state draft > "${RELEASE_JSON}"
-              python3 - "${RELEASE_JSON}" "${TAG}" "${{ inputs.release_mode }}" <<'PY'
-          import json, sys
-          release = json.load(open(sys.argv[1], encoding="utf-8"))
-          if release.get("tag_name") != sys.argv[2] or release.get("draft") is not True:
-              raise SystemExit("existing release is not the exact retryable draft")
-          if release.get("published_at") is not None:
-              raise SystemExit("existing release was already published; refusing staged overwrite")
-          mode = sys.argv[3]
-          if mode not in {"draft-only", "signed-public"}:
-              raise SystemExit("unknown release mode")
-          if mode == "draft-only" and release.get("assets"):
-              raise SystemExit("draft-only mode refuses to overwrite or resume a non-empty draft")
-          PY
-              echo "Exact empty draft exists; no existing asset will be overwritten."
-              ;;
-            absent)
-              gh release create "${TAG}" --repo HuGR-Labs/corelink-cli \
-                --title "CoreLink CLI ${TAG#cli-}" \
-                --notes-file /tmp/release-notes.md --draft
-              ;;
-            *)
-              echo "::error::cannot classify existing release state" >&2
-              exit 1
-              ;;
-          esac
           RELEASE_ID="$(python3 scripts/cli_release_api.py \
             --repo HuGR-Labs/corelink-cli --tag "${TAG}" \
-            --expected-state draft --format id)"
+            --expected-state draft --allow-absent --create-or-reuse-empty-draft \
+            --title "CoreLink CLI ${TAG#cli-}" \
+            --notes-file /tmp/release-notes.md --format id)"
           [[ "${RELEASE_ID}" =~ ^[1-9][0-9]*$ ]]
           printf 'release_id=%s\n' "${RELEASE_ID}" >> "${GITHUB_OUTPUT}"
 
@@ -876,6 +844,11 @@ jobs:
 
   release-slsa3:
     needs: [final-manifest, release-readiness, release]
+    if: >-
+      always() &&
+      needs.final-manifest.result == 'success' &&
+      needs.release-readiness.result == 'success' &&
+      needs.release.result == 'success'
     # Called workflows cannot elevate the caller's token permissions. Grant
     # OIDC only to this provenance call; all other release jobs retain the
     # workflow-level contents:read default.

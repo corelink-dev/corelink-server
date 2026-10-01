@@ -19,6 +19,7 @@ on:
       - scripts/verify_pinned_gh.py
       - tests/test_cli_release_b112_behavior.py
       - tests/test_cli_release_draft_contract.py
+      - scripts/verify_b112_release_root_cause.py
       - tools/cli/Cargo.toml
       - tools/cli/tests/release_workflow_contract/assertions.rs
       - tools/cli/tests/release_workflow_contract/cases.rs
@@ -75,6 +76,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -B -m unittest tests.test_cli_release_draft_contract -v
+          python3 -B -m pytest tests/test_cli_release_b112_behavior.py -q
           python3 -B scripts/verify_b112_release_root_cause.py
           python3 scripts/verify_i2050_release_dryrun_contract.py contract --base-sha "${BASE_SHA}"
           CARGO_MANIFEST_DIR="${GITHUB_WORKSPACE}/tools/cli" rustc --edition=2021 --test \
@@ -102,12 +104,8 @@ jobs:
           cat > "${RUNNER_TEMP}/allowed-paths.txt" <<'EOF'
           .github/workflows/issue-2572-draft-contract.yml
           .github/workflows/release-cli.yml
-          .github/workflows/release-slsa3.yml
-          .github/workflows/sign-linux.yml
           Cargo.lock
           scripts/cli_release_api.py
-          scripts/cli_release_draft_manifest.py
-          scripts/test_pinned_gh_consumers.py
           scripts/verify_b112_release_root_cause.py
           tests/test_cli_release_b112_behavior.py
           tests/test_cli_release_draft_contract.py
