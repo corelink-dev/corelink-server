@@ -18,10 +18,10 @@
  * UX contract:
  *   - One input (email), one button, one status line.
  *   - Submit disabled during fetch.
- *   - On success: form replaced by a "thanks, you're in" confirmation
- *     so the visitor knows the request was accepted. Resend handles
- *     the confirmation email if double-opt-in is configured on the
- *     audience (recommended in the Resend dashboard).
+ *   - On success: form acknowledges receipt of the request. The API also
+ *     returns success for some upstream 4xx responses, and a confirmation
+ *     email depends on the audience's double-opt-in configuration, so the
+ *     page must not claim a subscription or confirmation email occurred.
  *   - On HTTP error: inline error message, form re-armed.
  *   - On network failure: same — never a thrown promise, never a
  *     blank screen.
@@ -93,7 +93,7 @@ export default function NewsletterSignup(props: NewsletterSignupProps): ReactEle
     subtitle = "Release notes, design essays, and post-mortems. About one email a month. Unsubscribe anytime.",
     placeholder = "you@company.com",
     cta = "Subscribe",
-    successMessage = "Thanks, you're in. Check your inbox to confirm.",
+    successMessage = "Thanks. We received your request.",
     errorMessage = "Something went wrong. Please try again in a moment.",
     invalidEmailMessage = "Please enter a valid email address.",
     privacyNote,

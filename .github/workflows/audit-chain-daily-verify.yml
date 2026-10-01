@@ -78,6 +78,17 @@ on:
     - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Run the normal verifier or build a credentialless, main-only offline verifier artifact"
+        type: choice
+        options: [full, build_only]
+        required: true
+        default: full
+      expected_sha:
+        description: "Required for build_only; must equal the protected main commit SHA"
+        type: string
+        required: false
+        default: ""
       window_days:
         description: "Verify window in days (default 7)"
         required: false
@@ -121,6 +132,7 @@ jobs:
   # tick regardless of secret availability.
   smoke-verify:
     name: smoke-verify
+    if: github.event_name != 'workflow_dispatch' || inputs.mode != 'build_only'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -169,6 +181,102 @@ jobs:
           path: verifier-out.log
           retention-days: 30
 
+  # The bounded artifact path is a separate statically hosted job so the
+  # existing smoke-verify remains pinned to Ubuntu (and shared-HOME
+  # toolchain guards never classify a dynamic runner expression as
+  # self-hosted-capable). It receives no production secrets or environment.
+  build-only-verifier:
+    name: build-only-verifier
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'build_only'
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Validate closed build-only dispatch
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "build_only requires refs/heads/main" >&2; exit 1; }
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ && "$EXPECTED_SHA" == "$GITHUB_SHA" ]] || { echo "expected_sha must be the exact dispatched main SHA" >&2; exit 1; }
+
+      - name: Install pinned workspace Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable toolchain action
+        with:
+          toolchain: 1.91.1
+
+      - name: Assert native macOS arm64 Rust target
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "arm64" ]] || { echo "build_only requires native macOS arm64" >&2; exit 1; }
+          rustc -vV | grep -q '^host: aarch64-apple-darwin$'
+
+      - name: Build verifier binary
+        run: cargo build -p corelink-audit-chain --bin verifier --release
+
+      - name: Smoke-test verifier on empty input
+        run: |
+          set -euo pipefail
+          cargo run -p corelink-audit-chain --bin verifier --release -- 2>&1 | tee verifier-out.log
+          grep -q "AUDIT_CHAIN_VERIFY_OK" verifier-out.log
+          ! grep -q "AUDIT_CHAIN_BREAK_DETECTED" verifier-out.log
+
+      - name: Create build-only provenance
+        run: |
+          set -euo pipefail
+          mkdir -p verifier-artifact
+          cp target/release/verifier verifier-artifact/verifier
+          chmod 500 verifier-artifact/verifier
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path.cwd()
+          def sha(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+          source = root / "crates/corelink-audit-chain/src/bin/verifier.rs"
+          lock = root / "Cargo.lock"
+          binary = root / "verifier-artifact/verifier"
+          crate_sources = sorted(
+              path for path in (root / "crates/corelink-audit-chain").rglob("*")
+              if path.is_file() and (path.suffix == ".rs" or path.name in {"Cargo.toml", "build.rs"})
+          )
+          source_tree = hashlib.sha256()
+          for path in crate_sources:
+              source_tree.update(path.relative_to(root).as_posix().encode() + b"\0")
+              source_tree.update(path.read_bytes())
+          provenance = {
+              "schema": "corelink.audit.verifier-build.v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "commit": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_url": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "source_blob": subprocess.check_output(["git", "rev-parse", "HEAD:crates/corelink-audit-chain/src/bin/verifier.rs"], text=True).strip(),
+              "source_sha256": sha(source),
+              "crate_source_tree_sha256": source_tree.hexdigest(),
+              "cargo_lock_sha256": sha(lock),
+              "binary_sha256": sha(binary),
+              "runner_os": os.environ["RUNNER_OS"],
+              "runner_arch": os.environ["RUNNER_ARCH"],
+              "rust_host": subprocess.check_output(["rustc", "-vV"], text=True).split("host: ", 1)[1].splitlines()[0],
+              "build_command": "cargo build -p corelink-audit-chain --bin verifier --release",
+          }
+          (root / "verifier-artifact/provenance.json").write_text(json.dumps(provenance, sort_keys=True, indent=2) + "\n")
+          PY
+
+      - name: Upload native arm64 verifier artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verifier-${{ github.sha }}-${{ github.run_id }}-macos-arm64
+          path: verifier-artifact/
+          if-no-files-found: error
+          retention-days: 7
+
   # Job 2 (Wave 17 7-day matrix + Wave 18 paginated CF API v4 R2 list
   # lift): 7-day rolling window walk. Iterates today, today-1, ...,
   # today-(N-1) and verifies each day's R2 chunks. The production path
@@ -179,6 +287,7 @@ jobs:
   # workflow stays green on PR runs without secrets.
   seven-day-verify:
     name: seven-day-verify
+    if: github.event_name != 'workflow_dispatch' || inputs.mode != 'build_only'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     needs: smoke-verify

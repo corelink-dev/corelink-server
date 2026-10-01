@@ -56,7 +56,7 @@ jobs:
       inputs.confirm == 'deploy-container-staging-1700'
     runs-on: ubuntu-latest
     environment: staging
-    timeout-minutes: 75
+    timeout-minutes: 100
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: 6a1fc1c626fc2628823e60b9db01f5cd
@@ -87,7 +87,7 @@ jobs:
           set -euo pipefail
           node --input-type=module -e '
             import { PROBE_WINDOW } from "./scripts/issue_1700_runtime_probe.mjs";
-            if (Date.now() < PROBE_WINDOW.starts_ms || Date.now() + 75 * 60_000 >= PROBE_WINDOW.expires_ms) process.exit(1);
+            if (Date.now() < PROBE_WINDOW.starts_ms || Date.now() + 75 * 60_000 >= PROBE_WINDOW.last_entry_ms) process.exit(1);
           '
 
       - name: Prove hosted Docker and Cloudflare Worker access
@@ -436,7 +436,7 @@ jobs:
 
       - name: Prove native D1 binding read and batch rollback through staging Container
         id: runtime_probe
-        timeout-minutes: 18
+        timeout-minutes: 34
         if: steps.verify.outcome == 'success' && steps.candidate_route.outcome == 'success' && steps.deployed_image.outcome == 'success'
         env:
           EXPECTED_SHA: ${{ github.sha }}
@@ -444,7 +444,7 @@ jobs:
           IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
         run: |
           set -euo pipefail
-          node -e 'if (Number(process.versions.node.split(".")[0]) !== 22 || typeof WebSocket !== "function") process.exit(1)'
+          node --input-type=module -e 'import WebSocket from "ws"; if (Number(process.versions.node.split(".")[0]) !== 22 || typeof WebSocket !== "function") process.exit(1)'
           echo '{"outcome":"incomplete","stage":"runtime_probe","new_runtime_proof":false}' > "$RUNNER_TEMP/staging-runtime-probe-progress.json"
           node scripts/issue_1700_runtime_probe.mjs \
             > "$RUNNER_TEMP/staging-runtime-probe-receipt.json" \

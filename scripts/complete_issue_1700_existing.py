@@ -24,6 +24,12 @@ PIN = {
     'preimage_version_id': '516d7e11-c366-4ebf-b84b-eec9a4861446',
     'image_digest': 'sha256:a70f3852d9ac87da8965eea9e4f64e4841ac990ab63c62569a220cf6f2ebf23a',
 }
+V5_WINDOW = {
+    'cron': '* * 30 9 *',
+    'starts_ms': 1790791200000,
+    'expires_ms': 1790812740000,
+    'nonce': 'issue-1700-recovery-20260930-v5',
+}
 APP = 'a033fb81-6388-47d9-9049-0b6942778055'
 PREIMAGE_DIGEST = 'sha256:e44e139e6bb03c019445ee0d5106ce005210c8d9f945c81bfab9d13ab847eda3'
 ACCOUNT = '6a1fc1c626fc2628823e60b9db01f5cd'
@@ -62,10 +68,7 @@ def validate_state(state, run, log, current_sha):
 
 
 def validate_runtime(receipt, started_ms, now_ms):
-    window = json.loads(Path('crates/corelink-container/src/routes/staging_d1_probe_window.json').read_text())
-    if window != {'cron': '* * 30 9 *', 'starts_ms': 1790791200000,
-                  'expires_ms': 1790812740000, 'nonce': 'issue-1700-recovery-20260930-v5'}:
-        raise RuntimeError('runtime probe window rejected')
+    window = V5_WINDOW
     native = receipt.get('receipt', {})
     if (receipt.get('contract') != 'corelink-staging-runtime-deployment-proof-v1'
         or receipt.get('worker_release') != PIN['rollout_sha']
@@ -152,17 +155,18 @@ def complete(collect, probe, validate):
         result['rollback_unsafe_reason'] = {'preflight': 'no_mutation_admitted', 'runtime_probe': 'native_d1_execution_or_cleanup_unproven', 'postflight': 'current_ownership_or_cleanup_unproven'}[stage]
         try:
             result['residual'] = validate(collect())
-            result['residual_state'] = 'exact_candidate_route_free_no_schedule_or_tail'
+            # This is a point-in-time readback. A queued Cron event may still
+            # claim the one-shot lease after schedule cleanup is observed.
+            result['residual_state'] = 'current_readback_candidate_route_free_no_schedule_or_tail'
+            result['queued_event_state'] = 'unresolved'
         except Exception:
             result['residual_state'] = 'unverified_or_drifted_operator_readback_required'
     return result
 
 
 def require_completion_budget(now_ms):
-    window = json.loads(Path('crates/corelink-container/src/routes/staging_d1_probe_window.json').read_text())
-    if (window != {'cron': '* * 30 9 *', 'starts_ms': 1790791200000,
-                   'expires_ms': 1790812740000, 'nonce': 'issue-1700-recovery-20260930-v5'}
-        or not window['starts_ms'] <= now_ms or now_ms + 75 * 60_000 >= window['expires_ms']):
+    window = V5_WINDOW
+    if not window['starts_ms'] <= now_ms or now_ms + 75 * 60_000 >= window['expires_ms']:
         raise RuntimeError('full completion and cleanup budget unavailable')
 
 

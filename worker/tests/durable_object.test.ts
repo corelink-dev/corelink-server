@@ -40,7 +40,11 @@ function makeMockState(idStr = "test-do-id"): DurableObjectState {
       getAlarm: async () => alarmTime,
       setAlarm: async (_time: number) => {},
       deleteAlarm: async () => {},
-      transaction: async (fn: (txn: DurableObjectTransaction) => Promise<void>) => fn({} as DurableObjectTransaction),
+      transaction: async (fn: (txn: DurableObjectTransaction) => Promise<unknown>) => fn({
+        get: async (key: string) => storage.get(key),
+        put: async (key: string, value: unknown) => { storage.set(key, value); },
+        delete: async (key: string) => storage.delete(key),
+      } as unknown as DurableObjectTransaction),
       deleteAll: async () => { storage.clear(); },
     } as unknown as DurableObjectStorage,
     container: undefined, // No container in Node.js test environment
@@ -200,15 +204,49 @@ describe("CoreLinkServer constructor", () => {
 });
 
 describe("staging D1 runtime probe exposure", () => {
+  it("reads only an immutable receipt after the v6 entry cutoff without touching lifecycle state", async () => {
+    const window = STAGING_D1_PROBE_WINDOW;
+    const release = "c".repeat(40);
+    const name = `_staging_d1_binding_probe_v2:${window.nonce}:${release}`;
+    const state = makeMockState(name);
+    const namespace = {
+      idFromName: vi.fn((id: string) => ({ toString: () => id })),
+      get: vi.fn(() => { throw new Error("receipt read must not fetch or start a Container"); }),
+    };
+    const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: release,
+      CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd",
+      D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
+      CORELINK_SERVER: namespace,
+    } as unknown as Env;
+    const receipt = { contract: "corelink-staging-d1-binding-runtime-v1", outcome: "pass",
+      probe_nonce: window.nonce, worker_release: release, scheduled_time_ms: window.starts_ms + 120_000,
+      parameterized_select: true, failed_batch_observed: true, rollback_absence_verified: true,
+      probe_table_dropped: true, d1_binding_intercepted: true, authorization_absent: true, cf_api_token_absent: true };
+    await state.storage.put("staging-d1-binding-probe-receipt-v1", receipt);
+    const do_ = new CoreLinkServer(state, env, () => window.last_entry_ms + 60_000);
+    const before = await state.storage.list();
+    await expect(do_.readStagingD1RuntimeProbeReceipt(window.last_entry_ms + 60_000)).resolves.toEqual(receipt);
+    expect(await state.storage.list()).toEqual(before);
+    expect(namespace.idFromName).toHaveBeenCalledWith(name);
+    expect(namespace.get).not.toHaveBeenCalled();
+  });
+
   it("accepts only fresh stored receipts and rejects expiry before accessing a Container", async () => {
     const window = STAGING_D1_PROBE_WINDOW;
     const release = "a".repeat(40);
-    const scheduledTime = window.starts_ms + 60_000;
+    const scheduledTime = window.starts_ms + 120_000;
+    const probeName = `_staging_d1_binding_probe_v2:${window.nonce}:${release}`;
+    const namespace = {
+      idFromName: vi.fn((name: string) => ({ toString: () => name })),
+      get: vi.fn(() => { throw new Error("receipt read must not fetch or start a Container"); }),
+    };
+    const state = makeMockState(probeName);
     const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: release,
       CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd",
       D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
       R2_S3_ENDPOINT: "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com",
-    } as Env;
+      CORELINK_SERVER: namespace,
+    } as unknown as Env;
     const receipt = { contract: "corelink-staging-d1-binding-runtime-v1", outcome: "pass",
       probe_nonce: window.nonce, worker_release: release, scheduled_time_ms: scheduledTime,
       parameterized_select: true, failed_batch_observed: true, rollback_absence_verified: true,
@@ -216,14 +254,14 @@ describe("staging D1 runtime probe exposure", () => {
     };
     for (const stored of [receipt, { ...receipt, probe_nonce: "old" },
       { ...receipt, worker_release: "b".repeat(40) }, { ...receipt, scheduled_time_ms: window.starts_ms - 60000 }]) {
-      const state = makeMockState();
       await state.storage.put("staging-d1-binding-probe-receipt-v1", stored);
       const do_ = new CoreLinkServer(state, env, () => scheduledTime + 5000);
-      if (stored === receipt) await expect(do_.runStagingD1RuntimeProbe(scheduledTime)).resolves.toEqual(receipt);
-      else await expect(do_.runStagingD1RuntimeProbe(scheduledTime)).rejects.toThrow("stored receipt rejected");
+      if (stored === receipt) await expect(do_.readStagingD1RuntimeProbeReceipt(scheduledTime)).resolves.toEqual(receipt);
+      else await expect(do_.readStagingD1RuntimeProbeReceipt(scheduledTime)).rejects.toThrow("stored receipt rejected");
       const expired = new CoreLinkServer(state, env, () => window.expires_ms);
-      await expect(expired.runStagingD1RuntimeProbe(scheduledTime)).rejects.toThrow("guard rejected");
+      await expect(expired.readStagingD1RuntimeProbeReceipt(scheduledTime)).rejects.toThrow("guard rejected");
     }
+    expect(namespace.get).not.toHaveBeenCalled();
   });
 
   it("rejects the native probe path through ordinary Durable Object fetch", async () => {
@@ -235,6 +273,51 @@ describe("staging D1 runtime probe exposure", () => {
     ));
     expect(response.status).toBe(404);
     expect(await response.text()).toBe("not_found");
+  });
+
+  it("persists one admitted scheduled timestamp and consumes it after cutoff", async () => {
+    const window = STAGING_D1_PROBE_WINDOW;
+    const release = "d".repeat(40);
+    const name = `_staging_d1_binding_probe_v2:${window.nonce}:${release}`;
+    const state = makeMockState(name);
+    const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: release,
+      CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd",
+      D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
+      R2_S3_ENDPOINT: "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com",
+      CORELINK_SERVER: { idFromName: (id: string) => ({ toString: () => id }) },
+    } as unknown as Env;
+    let now = window.last_entry_ms;
+    const do_ = new CoreLinkServer(state, env, () => now);
+    const first = await do_.admitStagingD1RuntimeProbe(window.last_entry_ms);
+    expect(first.status).toBe("admitted");
+    expect(await do_.admitStagingD1RuntimeProbe(window.last_entry_ms)).toEqual({ status: "already_admitted" });
+    if (first.status !== "admitted") throw new Error("fixture admission rejected");
+    now += 1000;
+    const start = vi.spyOn(do_ as unknown as { ensureContainerRunning: (...args: unknown[]) => Promise<unknown> }, "ensureContainerRunning")
+      .mockRejectedValue(new Error("container-start-stop"));
+    await expect(do_.runStagingD1RuntimeProbe(first.admission)).rejects.toThrow("container-start-stop");
+    expect(start).toHaveBeenCalledOnce();
+  });
+
+  it("rejects first admission after latest entry and rejects a foreign admission", async () => {
+    const window = STAGING_D1_PROBE_WINDOW;
+    const release = "e".repeat(40);
+    const name = `_staging_d1_binding_probe_v2:${window.nonce}:${release}`;
+    const state = makeMockState(name);
+    const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: release,
+      CLOUDFLARE_API_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd",
+      CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd",
+      D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
+      R2_S3_ENDPOINT: "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com",
+      CORELINK_SERVER: { idFromName: (id: string) => ({ toString: () => id }) },
+    } as unknown as Env;
+    const afterCutoff = new CoreLinkServer(state, env, () => window.last_entry_ms + 1);
+    await expect(afterCutoff.admitStagingD1RuntimeProbe(window.last_entry_ms)).rejects.toThrow("admission guard");
+    const admitted = await new CoreLinkServer(state, env, () => window.last_entry_ms).admitStagingD1RuntimeProbe(window.last_entry_ms);
+    if (admitted.status !== "admitted") throw new Error("fixture admission rejected");
+    const otherRelease = { ...admitted.admission, worker_release: "f".repeat(40) };
+    const candidate = new CoreLinkServer(state, env, () => window.last_entry_ms + 1000);
+    await expect(candidate.runStagingD1RuntimeProbe(otherRelease)).rejects.toThrow("guard rejected");
   });
 });
 
@@ -872,7 +955,11 @@ describe("DO PagerDuty telemetry emit", () => {
 describe("exact old probe retirement fence", () => {
   const oldName = "_staging_d1_binding_probe_v2:issue-1700-recovery-20260929:0f785fb9b096afe01247f1057d46377b9f604f13";
   const retiredKey = "staging-d1-binding-probe-retired-v1";
+  const v5Name = "_staging_d1_binding_probe_v2:issue-1700-recovery-20260930-v5:cc32b3d819181bf9175e795868f66212aa5456c1";
+  const v5RetiredKey = "staging-d1-binding-probe-retired-v5";
   const time = STAGING_D1_PROBE_WINDOW.starts_ms + 60000;
+  const oldProbeAdmission = { contract: "corelink-staging-d1-probe-admission-v1" as const,
+    probe_nonce: STAGING_D1_PROBE_WINDOW.nonce, worker_release: "a".repeat(40), scheduled_time_ms: time };
   function fixture(id = oldName) {
     const state = makeMockState(id);
     Object.assign(state, { container: { running: false, destroy: vi.fn().mockResolvedValue(undefined) } });
@@ -894,11 +981,24 @@ describe("exact old probe retirement fence", () => {
     expect(await state.storage.get("staging-d1-binding-probe-receipt-v1")).toEqual({ preserved: true });
     expect(await state.storage.get(retiredKey)).toBeDefined();
     expect((await do_.fetch(new Request("https://test/"))).status).toBe(410);
-    await expect(do_.runStagingD1RuntimeProbe(time)).rejects.toThrow();
+    await expect(do_.runStagingD1RuntimeProbe(oldProbeAdmission)).rejects.toThrow();
     const calls = sql.mock.calls.length;
     await do_.alarm();
     expect(sql.mock.calls.length).toBe(calls); // no generic tenant cleanup
     await expect(do_.retireStagingD1RuntimeProbe(time)).resolves.toEqual(result);
+  });
+  it("retires the exact v5 DO independently while preserving its unknown claim and receipt", async () => {
+    const { do_, state, sql } = fixture(v5Name);
+    await state.storage.put("staging-d1-binding-probe-state-v1", "unknown");
+    await state.storage.put("staging-d1-binding-probe-receipt-v1", { execution: "unknown" });
+    const result = await do_.retireStagingD1RuntimeProbe(time);
+    expect(result).toEqual({ v5_probe_release: "cc32b3d819181bf9175e795868f66212aa5456c1",
+      v5_probe_retired: true, v5_probe_tables_absent: true });
+    expect(await state.storage.get("staging-d1-binding-probe-state-v1")).toBe("unknown");
+    expect(await state.storage.get("staging-d1-binding-probe-receipt-v1")).toEqual({ execution: "unknown" });
+    expect(await state.storage.get(v5RetiredKey)).toBeDefined();
+    expect((await do_.fetch(new Request("https://test/"))).status).toBe(410);
+    expect(sql).toHaveBeenCalled();
   });
   it.each(["wrong-id", "production", "account", "database", "expired"])("rejects %s before marker/SQL", async kind => {
     const { do_, state, env, sql } = fixture(kind === "wrong-id" ? "tenant" : oldName);
@@ -934,14 +1034,14 @@ describe("exact old probe retirement fence", () => {
     const pending = do_.retireStagingD1RuntimeProbe(time);
     while (!container.destroy.mock.calls.length) await Promise.resolve();
     expect((await do_.fetch(new Request("https://test/"))).status).toBe(410);
-    await expect(do_.runStagingD1RuntimeProbe(time)).rejects.toThrow();
+    await expect(do_.runStagingD1RuntimeProbe(oldProbeAdmission)).rejects.toThrow();
     await do_.alarm();
     expect(sql).not.toHaveBeenCalled();
     stopped(); await pending;
     const restored = new CoreLinkServer(state, env, () => time);
     await Promise.resolve(); await Promise.resolve();
     expect((await restored.fetch(new Request("https://test/"))).status).toBe(410);
-    await expect(restored.runStagingD1RuntimeProbe(time)).rejects.toThrow();
+    await expect(restored.runStagingD1RuntimeProbe(oldProbeAdmission)).rejects.toThrow();
     const calls = sql.mock.calls.length;
     await restored.alarm();
     expect(sql.mock.calls.length).toBe(calls);
