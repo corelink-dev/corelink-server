@@ -86,8 +86,8 @@ jobs:
         run: |
           set -euo pipefail
           node --input-type=module -e '
-            import { PROBE_WINDOW } from "./scripts/issue_1700_runtime_probe.mjs";
-            if (Date.now() < PROBE_WINDOW.starts_ms || Date.now() + 75 * 60_000 >= PROBE_WINDOW.last_entry_ms) process.exit(1);
+            import { deploymentWindowAllows } from "./scripts/issue_1700_probe_window.mjs";
+            if (!deploymentWindowAllows()) process.exit(1);
           '
 
       - name: Prove hosted Docker and Cloudflare Worker access
