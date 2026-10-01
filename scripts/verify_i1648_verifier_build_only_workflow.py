@@ -62,6 +62,12 @@ def verify(source: str) -> None:
     if workflow.get("permissions") != {"contents": "read"}:
         raise AssertionError("workflow token permissions must stay contents:read only")
 
+    walk = next(step for step in jobs["seven-day-verify"]["steps"] if step.get("id") == "walk")
+    if walk.get("env", {}).get("DATES") != "${{ steps.window.outputs.dates }}":
+        raise AssertionError("window dates must be bound through the step environment")
+    if "${{" in walk.get("run", "") or "steps.window.outputs.dates" in walk.get("run", ""):
+        raise AssertionError("the long production shell body must not contain GitHub template expressions")
+
 
 def main() -> int:
     verify((Path(__file__).resolve().parents[1] / WORKFLOW).read_text())

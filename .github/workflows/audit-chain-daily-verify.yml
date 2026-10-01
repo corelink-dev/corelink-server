@@ -361,6 +361,7 @@ jobs:
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
           PAGERDUTY_ROUTING_KEY: ${{ secrets.PAGERDUTY_ROUTING_KEY }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DATES: ${{ steps.window.outputs.dates }}
         # Wave 18 cutover: paginated CF API v4 R2 list INSIDE each
         # matrix day. Per-day contract:
         #   - List `audit/<YYYY>/<MM>/<DD>/` via paginated GET
@@ -404,7 +405,6 @@ jobs:
             VERIFIER_ARGS=(--chain-keyring "${KEYRING_PATH}")
           fi
 
-          DATES="${{ steps.window.outputs.dates }}"
           BUCKET="${R2_BUCKET:-${AUDIT_R2_BUCKET_DEFAULT}}"
           mkdir -p ./.audit-verify-staging
           BREAK_FOUND=0
