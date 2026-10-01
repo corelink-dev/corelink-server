@@ -1,0 +1,305 @@
+# rust-affected-tests — clippy -D warnings + cargo test for the packages a
+# change can break, on GitHub-hosted runners.
+#
+# WHY THIS EXISTS: on 2026-10-01 no general Rust build/lint/test lane ran on a
+# pull request. `corelink-server.yml` runs three named DSR tests,
+# `workspace-lint.yml` runs only after merge, and every per-crate lane is
+# `disabled_manually`. A PR could break any of the 95 workspace packages and
+# merge with every enabled check green.
+#
+# WHERE IT RUNS: `ubuntu-24.04`, the standard hosted runner (free for this
+# public repository). Never the self-hosted fleet — that is the founder's Mac,
+# and the earlier self-hosted draft of this lane died there of ENOSPC.
+#
+# WHAT IT SELECTS: `scripts/rust_affected_packages.py` decides, from
+# `cargo metadata` (never from a listing of `crates/`): the package owning each
+# changed path, plus every package that depends on it (normal/build edges,
+# transitively) and every package whose TESTS dev-depend on that closure.
+# `Cargo.lock` is diffed entry by entry, so a dependency bump selects exactly
+# the members that resolve it. The root `Cargo.toml` is diffed as parsed TOML.
+# Toolchain/cargo configuration and this lane's own files select the whole
+# workspace. The selector's docstring lists what it does NOT see — read it
+# before trusting a green run for a change outside every package directory.
+#
+# WHAT IT DOES NOT RUN: doctests (`--all-targets` excludes them; they compile
+# one binary per example and would dominate the budget), feature combinations
+# beyond the defaults, and `PROPTEST_CASES` above 32 — the full-intensity
+# property runs are not this lane's job; only the iteration count changes, no
+# property leaves the suite.
+#
+# THE VERDICT JOB is the single check to depend on. It fails unless the
+# selection succeeded AND either both clippy and test succeeded, or the
+# selection was empty with a named reason for every changed path and both were
+# skipped for exactly that reason. A skipped job never reads as a pass.
+name: rust-affected-tests
+
+on:
+  pull_request:
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - 'rust-toolchain'  # path-filter-allow: legacy toolchain file; the selector treats it as workspace-wide
+      - '.cargo/config'  # path-filter-allow: legacy cargo config; the selector treats it as workspace-wide
+      - '**/clippy.toml'  # path-filter-allow: no clippy.toml today; a future one changes what clippy reports
+      - '**/.clippy.toml'  # path-filter-allow: no .clippy.toml today; a future one changes what clippy reports
+      - '.github/workflows/rust-affected-tests.yml'
+      - 'scripts/rust_affected_packages.py'
+      - 'tests/test_rust_affected_packages.py'
+  # Post-merge: catches what two individually-green PRs break together inside
+  # the closure, and is the only event whose caches every PR can restore.
+  push:
+    branches: [main]
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - 'rust-toolchain'  # path-filter-allow: mirrors the pull_request filter above
+      - '.cargo/config'  # path-filter-allow: mirrors the pull_request filter above
+      - '**/clippy.toml'  # path-filter-allow: mirrors the pull_request filter above
+      - '**/.clippy.toml'  # path-filter-allow: mirrors the pull_request filter above
+      - '.github/workflows/rust-affected-tests.yml'
+      - 'scripts/rust_affected_packages.py'
+      - 'tests/test_rust_affected_packages.py'
+  # Manual run = the whole workspace, for inputs the path mapping cannot see.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-affected-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  # Debuginfo is most of a debug target dir; panic locations come from
+  # `#[track_caller]`, not from debuginfo, so failures still name file:line.
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  RUST_BACKTRACE: '1'
+
+jobs:
+  select:
+    name: select affected packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      mode: ${{ steps.select.outputs.mode }}
+      count: ${{ steps.select.outputs.count }}
+      cargo_args: ${{ steps.select.outputs.cargo_args }}
+    steps:
+      # For pull_request this is the merge commit; depth 2 brings its first
+      # parent, the exact base the PR was merged onto.
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Selector teeth (synthetic workspaces)
+        run: python3 -m unittest tests/test_rust_affected_packages.py
+
+      - name: Resolve the pinned toolchain from rust-toolchain.toml
+        run: bash scripts/ci-assert-pinned-toolchain.sh
+
+      - name: Select
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/select"
+          mkdir -p "$work"
+          cargo metadata --format-version 1 --locked > "$work/metadata.json"
+          selector=(python3 scripts/rust_affected_packages.py --metadata "$work/metadata.json" --step-outputs "$GITHUB_OUTPUT")
+
+          case "$EVENT" in
+            workflow_dispatch)
+              "${selector[@]}" --all "manual dispatch checks every package"
+              exit 0
+              ;;
+            pull_request)
+              parents="$(git rev-list --parents -n 1 HEAD | wc -w)"
+              if [ "$parents" -ne 3 ]; then
+                echo "::error::expected the pull_request merge commit (2 parents), got $((parents - 1)) — cannot name the base"
+                exit 1
+              fi
+              base="$(git rev-parse HEAD^1)"
+              ;;
+            push)
+              if [[ ! "$BEFORE" =~ ^[0-9a-f]{40}$ || "$BEFORE" =~ ^0{40}$ ]]; then
+                "${selector[@]}" --all "push without a previous commit to diff against"
+                exit 0
+              fi
+              if ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+                git fetch --no-tags --depth=1 origin "$BEFORE"
+              fi
+              base="$BEFORE"
+              ;;
+            *)
+              echo "::error::unexpected event '$EVENT'"
+              exit 1
+              ;;
+          esac
+
+          echo "diffing $base..$(git rev-parse HEAD)"
+          # --no-renames: a moved file must count against BOTH packages.
+          git diff --name-only --no-renames -z "$base" HEAD > "$work/changed.bin"
+          if git cat-file -e "$base:Cargo.lock" 2>/dev/null; then
+            git show "$base:Cargo.lock" > "$work/base.lock"
+            selector+=(--base-lock "$work/base.lock")
+          fi
+          if git cat-file -e "$base:Cargo.toml" 2>/dev/null; then
+            git show "$base:Cargo.toml" > "$work/base.toml"
+            selector+=(--base-manifest "$work/base.toml")
+          fi
+          "${selector[@]}" --changed "$work/changed.bin"
+
+  clippy:
+    name: clippy -D warnings (affected)
+    needs: select
+    if: needs.select.outputs.mode != 'none'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Resolve the pinned toolchain from rust-toolchain.toml
+        run: bash scripts/ci-assert-pinned-toolchain.sh
+
+      # corelink-reapi and corelink-server compile .proto files in build.rs.
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # arduino/setup-protoc@v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Saved only from main: a PR-scoped cache is restorable by that PR alone
+      # and would evict main's from the shared 10 GB budget.
+      - name: Cache cargo registry and dependency builds
+        if: runner.environment == 'github-hosted'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: rust-affected-clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo clippy --all-targets -D warnings
+        env:
+          CARGO_SCOPE: ${{ needs.select.outputs.cargo_args }}
+          SELECTED: ${{ needs.select.outputs.count }}
+        run: |
+          set -euo pipefail
+          read -ra scope <<< "$CARGO_SCOPE"
+          if [ "${#scope[@]}" -eq 0 ]; then
+            echo "::error::the select job reported mode != none but no cargo scope — refusing to lint nothing"
+            exit 1
+          fi
+          df -h /
+          echo "linting $SELECTED package(s): ${scope[*]}"
+          cargo clippy --locked --keep-going --all-targets "${scope[@]}" -- -D warnings
+          df -h /
+
+  test:
+    name: cargo test (affected)
+    needs: select
+    if: needs.select.outputs.mode != 'none'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # Most suites read PROPTEST_CASES (default 10 000; corelink-auth alone
+      # took 58 min at that count when measured on 2026-08-30).
+      PROPTEST_CASES: '32'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      # A debug target dir for the larger closures does not fit the image's
+      # free space next to the preinstalled SDKs this job never uses.
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Resolve the pinned toolchain from rust-toolchain.toml
+        run: bash scripts/ci-assert-pinned-toolchain.sh
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # arduino/setup-protoc@v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache cargo registry and dependency builds
+        if: runner.environment == 'github-hosted'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: rust-affected-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo test --all-targets
+        env:
+          CARGO_SCOPE: ${{ needs.select.outputs.cargo_args }}
+          SELECTED: ${{ needs.select.outputs.count }}
+        run: |
+          set -euo pipefail
+          read -ra scope <<< "$CARGO_SCOPE"
+          if [ "${#scope[@]}" -eq 0 ]; then
+            echo "::error::the select job reported mode != none but no cargo scope — refusing to test nothing"
+            exit 1
+          fi
+          echo "testing $SELECTED package(s): ${scope[*]}"
+          cargo test --locked --no-fail-fast --all-targets "${scope[@]}"
+          df -h /
+
+  verdict:
+    name: rust-affected-tests
+    needs: [select, clippy, test]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Combine the results
+        env:
+          SELECT: ${{ needs.select.result }}
+          MODE: ${{ needs.select.outputs.mode }}
+          CLIPPY: ${{ needs.clippy.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          set -euo pipefail
+          echo "select=$SELECT mode=${MODE:-<unset>} clippy=$CLIPPY test=$TEST"
+          if [ "$SELECT" != "success" ]; then
+            echo "::error::package selection did not succeed ($SELECT)"
+            exit 1
+          fi
+          case "$MODE" in
+            none)
+              if [ "$CLIPPY" != "skipped" ] || [ "$TEST" != "skipped" ]; then
+                echo "::error::selection was empty but clippy=$CLIPPY test=$TEST"
+                exit 1
+              fi
+              echo "No package selected; the select job's summary names the reason for every changed path."
+              ;;
+            packages|workspace)
+              if [ "$CLIPPY" != "success" ] || [ "$TEST" != "success" ]; then
+                echo "::error::clippy=$CLIPPY test=$TEST"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::unknown selection mode '${MODE:-<unset>}'"
+              exit 1
+              ;;
+          esac
