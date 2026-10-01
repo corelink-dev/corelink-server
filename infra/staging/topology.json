@@ -309,7 +309,7 @@
     }
   },
   "validated_inputs": {
-    "runner_label": "corelink",
+    "runner_label": "ubuntu-24.04",
     "target_host": "https://staging.corelink.humangr.com",
     "target_host_normalization": "one trailing slash is allowed",
     "load_scenarios": [

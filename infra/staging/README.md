@@ -11,10 +11,11 @@ unbound; it does not prove deployed Workers, DNS, routes, TLS, or readiness.
 
 The SRE Lead owns provisioning. The SRE Lead and Security Lead approve the
 boundary and any teardown. Use only the protected GitHub `staging` environment
-for staging operations. The topology contract names `corelink` as the intended
-readiness runner, while the current load and endurance workflows declare
-`ubuntu-24.04`; reconcile that runner mismatch in a reviewed change before
-claiming readiness from the intended fleet. The target is
+for staging operations. The intended readiness, load and endurance fleet is
+GitHub-hosted `ubuntu-24.04`, matching their existing workflow jobs. The topology
+and target verifier enforce that fixed label for every job in those workflows.
+This reconciles the obsolete `corelink` label; it does not claim that a
+self-hosted readiness probe ran. The target is
 `https://staging.corelink.humangr.com` in the `humangr.com` zone. Its limit is
 USD 25 per load run, USD 50 per endurance run, and USD 250 per month, with a
 24-hour lease, teardown after two idle hours, and 24-hour R2 object TTL. Data
@@ -103,9 +104,10 @@ workflow configuration or a green PR check as provider readiness.
 
 After bootstrap, capture current provider identity and Custom Domain/DNS/TLS readback,
 then run the bounded authenticated readiness probe through its protected
-workflow. The current `i1675-live-probe.yml` runner is `ubuntu-24.04`; this does
-not satisfy the topology's declared `corelink` runner until owners reconcile
-that contract. Retain `evidence/staging/readiness.json` with DNS/TLS, HTTP and
+workflow on the declared GitHub-hosted `ubuntu-24.04` fleet. Configuration and
+credentialless CI do not prove authenticated readiness: retain the actual
+protected probe's runner, run ID and exact release alongside
+`evidence/staging/readiness.json` with DNS/TLS, HTTP and
 Worker/container health, migration head, deployment identity, binding
 isolation, owner, timestamp, and run ID. Do not mark the topology provisioned
 unless the exact Workers, Custom Domain, resources, and isolated bindings match
