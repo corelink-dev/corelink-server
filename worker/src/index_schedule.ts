@@ -2,7 +2,7 @@
 import type { ScheduledController } from "@cloudflare/workers-types";
 import type { Env } from "./index_common.js";
 import { scheduledDrillForCron, scheduledWeekNumber, syntheticRegionForWeek, syntheticEmitAtMs, SYNTHETIC_PAGE_CONTRACT } from "./index_common.js";
-import { readStagingD1BindingRuntimeProbeReceipt, recordStagingD1ProbePhase, runStagingD1BindingRuntimeProbe, STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
+import { readStagingD1BindingRuntimeProbeReceipt, recordStagingD1ProbePhase, STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
 import { B072_ONE_SHOT_CRON, runB072OneShot } from "./b072_one_shot.js";
 
 export const STAGING_D1_RUNTIME_PROBE_CRON = STAGING_D1_PROBE_WINDOW.cron;
@@ -28,37 +28,15 @@ export async function runScheduled(controller: ScheduledController, env: Env): P
         controller.noRetry();
         throw new Error("staging D1 runtime probe guard rejected");
       }
-      // The host's entry lease is fixed. After it closes, a queued or delayed
-      // Cron may only read the existing immutable receipt; it cannot retire
-      // the old probe, touch D1, or start a Container.
-      if (controller.scheduledTime > STAGING_D1_RUNTIME_PROBE_LAST_ENTRY_MS ||
-          Date.now() > STAGING_D1_RUNTIME_PROBE_LAST_ENTRY_MS) {
-        const receipt = await readStagingD1BindingRuntimeProbeReceipt(env, controller.scheduledTime);
-        if (receipt !== undefined) {
-          console.info(`[staging_d1_runtime_probe] receipt=${JSON.stringify(receipt)}`);
-          return;
-        }
-        controller.noRetry();
-        return;
-      }
-      if (
-        controller.scheduledTime < STAGING_D1_PROBE_WINDOW.starts_ms ||
-        controller.scheduledTime >= STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS ||
-        Date.now() < STAGING_D1_PROBE_WINDOW.starts_ms ||
-        Date.now() >= STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS
-      ) {
-        console.error("[staging_d1_runtime_probe] rejected reason=staging_guard");
-        controller.noRetry();
-        throw new Error("staging D1 runtime probe guard rejected");
-      }
-      try {
-        const receipt = await runStagingD1BindingRuntimeProbe(env, controller.scheduledTime);
+      // Native execution now requires the dedicated authenticated HTTP carrier.
+      // Cron may recover an existing immutable receipt, but cannot retire an
+      // old namespace, create an admission, or start a Container.
+      const receipt = await readStagingD1BindingRuntimeProbeReceipt(env, controller.scheduledTime);
+      if (receipt !== undefined) {
         console.info(`[staging_d1_runtime_probe] receipt=${JSON.stringify(receipt)}`);
-        return;
-      } catch {
-        console.error("[staging_d1_runtime_probe] failed reason=probe_failed");
-        throw new Error("staging D1 runtime probe failed");
       }
+      controller.noRetry();
+      return;
     }
 
     const drill = scheduledDrillForCron(controller.cron);

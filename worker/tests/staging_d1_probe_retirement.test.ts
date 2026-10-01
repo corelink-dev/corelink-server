@@ -3,6 +3,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { STAGING_D1_PROBE_WINDOW } from "../src/staging_runtime_d1_probe.js";
 import { assertV4FailedProbeCatalogAbsent, cleanOldProbeTables, cleanV5ProbeTables, OLD_PROBE_TABLES, OLD_TABLE_PREFIX, OLD_PROBE_RUN_BOUNDS, V4_FAILED_PROBE_TABLE_PREFIX, V5_PROBE_RELEASE, V5_PROBE_RUN_BOUNDS, V5_PROBE_TABLES, V5_TABLE_PREFIX } from "../src/staging_d1_probe_retirement.js";
 import { PROBE_FOREIGN_KEY_CHECK_SQL } from "../src/staging_d1_probe_v8_cleanup.js";
+import { StagingD1HttpLifecycle } from "../src/staging_d1_http_lifecycle.js";
 
 const table = [...OLD_PROBE_TABLES.keys()][0]!;
 const schema = { type: "table", name: table, tbl_name: table,
@@ -30,6 +31,34 @@ function database(options: { objects?: object[]; foreign?: object[]; incoming?: 
 }
 
 describe("exact old staging probe SQL retirement", () => {
+  it.each([cleanOldProbeTables, cleanV5ProbeTables])("stops every later SQL statement after a bounded catalog call times out", async clean => {
+    await atProbeTime(STAGING_D1_PROBE_WINDOW.starts_ms, async () => {
+      let finish!: (value: { success: true; results: object[] }) => void;
+      const prepare = vi.fn(() => ({ bind() { return this; }, all: () => new Promise(resolve => { finish = resolve; }) }));
+      const life = new StagingD1HttpLifecycle(Date.now, STAGING_D1_PROBE_WINDOW.expires_ms);
+      const pending = clean({ prepare } as unknown as D1Database, Date.now, operation => life.run(operation));
+      const failed = expect(pending).rejects.toThrow("execution stopped");
+      await vi.advanceTimersByTimeAsync(600_000); await failed;
+      finish({ success: true, results: [] });
+      await Promise.resolve(); await Promise.resolve();
+      expect(prepare).toHaveBeenCalledOnce();
+    });
+  });
+
+  it.each([cleanOldProbeTables, cleanV5ProbeTables])("rechecks the cumulative budget before DROP", async clean => {
+    await atProbeTime(STAGING_D1_PROBE_WINDOW.starts_ms, async () => {
+      const owned = clean === cleanOldProbeTables ? table : [...V5_PROBE_TABLES.keys()][0]!;
+      const h = database({}, owned);
+      const life = new StagingD1HttpLifecycle(Date.now, STAGING_D1_PROBE_WINDOW.expires_ms);
+      let calls = 0;
+      await expect(clean(h.db, Date.now, operation => {
+        if (++calls === 4) vi.setSystemTime(life.executeDeadline);
+        return life.run(operation);
+      })).rejects.toThrow("execution stopped");
+      expect(h.drops).toEqual([]);
+      expect(h.prepare.mock.calls).toHaveLength(3);
+    });
+  });
   it("bounds v5 retirement to the historical release and its minute schedule", async () => {
     const times = [...V5_PROBE_TABLES.values()];
     expect(V5_PROBE_RELEASE).toBe("cc32b3d819181bf9175e795868f66212aa5456c1");

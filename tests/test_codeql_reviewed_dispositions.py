@@ -119,7 +119,9 @@ class ReviewedDispositionGateTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.sarif_path = Path(self.temp.name) / "python.sarif"
-        self.current_sha = "63adad693d0ca21992b71cbf9a8d6872bd58269b"
+        self.current_sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
         self.sarif_id = "fixture-sarif-id"
 
     def _args(self) -> Namespace:
@@ -284,6 +286,11 @@ class ReviewedDispositionGateTests(unittest.TestCase):
                 gate._manifest_cases(self.manifest, self.current_sha)
 
     def test_untrusted_branch_or_event_cannot_use_review_manifest(self) -> None:
+        args = self._args()
+        args.sha = "0" * 40
+        with self.assertRaises(gate.ReviewedGateError):
+            gate._validate_context(args)
+
         args = self._args()
         args.ref = "refs/heads/feature"
         with self.assertRaises(gate.ReviewedGateError):

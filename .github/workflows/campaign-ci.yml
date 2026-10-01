@@ -198,6 +198,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          fetch-depth: ${{ inputs.suite == 'i1674' && '0' || '1' }}
 
       - name: Install the workspace Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable toolchain action
@@ -593,9 +594,9 @@ jobs:
             python3 scripts/verify_staging_target.py
             python3 scripts/verify_staging_topology_contract.py --expect ready
             python3 -m unittest -q tests/test_verify_staging_target.py tests/test_verify_staging_topology_contract.py
-            python3 -m pytest -q tests/test_staging_deployment_guard.py tests/test_issue_1700_route_inventory.py tests/test_issue_1700_completion.py tests/test_issue_1700_historical_query.py tests/test_issue_1700_rollback_quiescence.py
-            node --test scripts/tests/issue_1700_probe_window.test.mjs scripts/tests/issue_1700_runtime_probe.test.mjs scripts/tests/issue_1700_probe_process.test.mjs
-            pnpm --dir worker exec vitest run tests/staging_runtime_d1_probe.test.ts tests/staging_d1_probe_retirement.test.ts tests/staging_d1_probe_v8_cleanup.test.ts tests/durable_object.test.ts tests/durable_object_part2.test.ts tests/grpc_transport_gate.test.ts tests/grpc_staging_transport.test.ts
+            python3 -m pytest -q tests/test_staging_deployment_guard.py tests/test_issue_1700_route_inventory.py tests/test_issue_1700_completion.py tests/test_issue_1700_historical_query.py tests/test_issue_1700_rollback_quiescence.py tests/test_verify_i2575_readiness.py
+            node --test scripts/tests/issue_1700_probe_window.test.mjs scripts/tests/issue_1700_runtime_probe.test.mjs scripts/tests/issue_1700_probe_process.test.mjs scripts/tests/issue_1700_http_probe.test.mjs scripts/tests/issue_1700_http_bootstrap.test.mjs
+            pnpm --dir worker exec vitest run tests/staging_runtime_d1_probe.test.ts tests/staging_d1_probe_retirement.test.ts tests/staging_d1_probe_v8_cleanup.test.ts tests/staging_d1_probe_v9_cleanup.test.ts tests/staging_d1_http.test.ts tests/staging_d1_http_lifecycle.test.ts tests/staging_d1_binding_start_gate.test.ts tests/durable_object.test.ts tests/durable_object_part2.test.ts tests/grpc_transport_gate.test.ts tests/grpc_staging_transport.test.ts
             pnpm --dir worker exec tsc --noEmit
             rustfmt --edition 2021 --check crates/corelink-container/src/routes/staging_d1_binding_probe.rs
             cargo test --locked -p corelink-server --lib staging_d1_binding_probe -- --nocapture

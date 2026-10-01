@@ -5,6 +5,9 @@ export const STAGING_D1_PROBE_LAST_ENTRY_MS = window.last_entry_ms;
 import type { Env } from "./index_common.js";
 import { isV8CleanupReceipt, withinV8CleanupDeadline, V8_PROBE_NAME, type V8CleanupReceipt } from "./staging_d1_probe_v8_cleanup.js";
 import cleanupWindow from "./staging_d1_probe_cleanup_window.json";
+import { isV9CleanupReceipt, V9_PROBE_NAME, type V9CleanupReceipt } from "./staging_d1_probe_v9_cleanup.js";
+import { isStagingD1HttpNativeReceipt } from "./staging_d1_http_contract.js";
+import type { StagingD1HttpLifecycle } from "./staging_d1_http_lifecycle.js";
 
 export const STAGING_D1_RUNTIME_PROBE_DO_PREFIX = `_staging_d1_binding_probe_v2:${window.nonce}:`;
 export const STAGING_D1_RUNTIME_PROBE_PATH = "/_internal/staging/d1-binding-runtime-probe";
@@ -47,11 +50,59 @@ export type StagingD1RuntimeProbeAdmissionResult =
   | { readonly status: "complete"; readonly receipt: StagingD1RuntimeProbeReceipt };
 
 interface StagingD1RuntimeProbeStub {
+  cleanupV9StagingD1RuntimeProbe(scheduledTime: number, expectedRelease: string): Promise<V9CleanupReceipt>;
   cleanupV8StagingD1RuntimeProbe(scheduledTime: number, expectedRelease: string): Promise<V8CleanupReceipt>;
   admitStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeAdmissionResult>;
-  retireStagingD1RuntimeProbe(scheduledTime: number): Promise<OldProbeRetirement>;
+  retireStagingD1RuntimeProbe(scheduledTime: number, deadlineMs?: number): Promise<OldProbeRetirement>;
   readStagingD1RuntimeProbeReceipt(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt | undefined>;
   runStagingD1RuntimeProbe(admission: StagingD1RuntimeProbeAdmission): Promise<StagingD1RuntimeProbeReceipt>;
+}
+
+const NATIVE_KEYS = ["contract", "probe_nonce", "outcome", "worker_release", "scheduled_time_ms",
+  "parameterized_select", "failed_batch_observed", "rollback_absence_verified", "probe_table_dropped",
+  "d1_binding_intercepted", "authorization_absent", "cf_api_token_absent"] as const;
+
+function exactNativeReceipt(value: unknown, release: string, scheduledTime: number): value is StagingD1RuntimeProbeReceipt {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const r = value as Record<string, unknown>;
+  return Object.keys(r).length === NATIVE_KEYS.length && NATIVE_KEYS.every(key => Object.hasOwn(r, key)) &&
+    /^[0-9a-f]{40}$/.test(release) && r["contract"] === "corelink-staging-d1-binding-runtime-v1" &&
+    r["probe_nonce"] === window.nonce && r["outcome"] === "pass" && r["worker_release"] === release &&
+    r["scheduled_time_ms"] === scheduledTime && Number.isSafeInteger(scheduledTime) &&
+    scheduledTime % 120_000 === 0 && scheduledTime >= window.starts_ms && scheduledTime <= window.last_entry_ms &&
+    NATIVE_KEYS.slice(5).every(key => r[key] === true);
+}
+
+/** The HTTP coordinator has durably claimed before this function is entered. */
+export async function runStagingD1HttpSequence(env: Env, scheduledTime: number, life: StagingD1HttpLifecycle,
+  local: {
+    admit(): Promise<StagingD1RuntimeProbeAdmissionResult>;
+    run(admission: StagingD1RuntimeProbeAdmission): Promise<StagingD1RuntimeProbeReceipt>;
+  }): Promise<{ native: ReturnType<typeof withRetirementProof>; v8: V8CleanupReceipt; v9: V9CleanupReceipt }> {
+  const release = env.SENTRY_RELEASE ?? "";
+  const stub = (name: string) => env.CORELINK_SERVER.get(env.CORELINK_SERVER.idFromName(name)) as unknown as StagingD1RuntimeProbeStub;
+  const v8 = await life.run(() => stub(V8_PROBE_NAME).cleanupV8StagingD1RuntimeProbe(scheduledTime, release));
+  if (!isV8CleanupReceipt(v8, release, Date.now())) throw new Error("http proof v8 rejected");
+  const v9 = await life.run(() => stub(V9_PROBE_NAME).cleanupV9StagingD1RuntimeProbe(scheduledTime, release));
+  if (!isV9CleanupReceipt(v9, release, Date.now())) throw new Error("http proof v9 rejected");
+  const admission = await life.run(() => local.admit());
+  if (admission.status !== "admitted") throw new Error("http proof admission rejected");
+  await life.run(() => assertV4FailedProbeCatalogAbsent(env.CONFIG_DB));
+  const old = await life.run(() => stub(OLD_PROBE_NAME).retireStagingD1RuntimeProbe(scheduledTime, life.executeDeadline));
+  if (old.old_probe_release !== OLD_PROBE_RELEASE || old.old_probe_retired !== true || old.old_probe_tables_absent !== true) {
+    throw new Error("http proof retirement rejected");
+  }
+  const v5 = await life.run(() => stub(V5_PROBE_NAME).retireStagingD1RuntimeProbe(scheduledTime, life.executeDeadline));
+  if (v5.v5_probe_release !== V5_PROBE_RELEASE || v5.v5_probe_retired !== true || v5.v5_probe_tables_absent !== true) {
+    throw new Error("http proof retirement rejected");
+  }
+  life.check();
+  const receipt = await local.run(admission.admission);
+  life.check();
+  if (!exactNativeReceipt(receipt, release, scheduledTime)) throw new Error("http proof native rejected");
+  const native = withRetirementProof(receipt);
+  if (!isStagingD1HttpNativeReceipt(native, release, Date.now())) throw new Error("http proof native rejected");
+  return { native, v8, v9 };
 }
 
 type RetirementProof = {

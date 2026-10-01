@@ -48,21 +48,24 @@ export interface OldProbeRetirement {
   v5_probe_tables_absent?: true;
 }
 
+export type ProbeRetirementBound = <T>(operation: () => Promise<T>) => Promise<T>;
+
 /** Only called after the exact old DO's Container is stopped and entry is fenced. */
-export async function cleanOldProbeTables(db: D1Database, now: () => number = Date.now): Promise<void> {
-  return cleanProbeTables(db, OLD_PROBE_RELEASE, OLD_TABLE_PREFIX, OLD_PROBE_TABLES, now);
+export async function cleanOldProbeTables(db: D1Database, now: () => number = Date.now, bounded?: ProbeRetirementBound): Promise<void> {
+  return cleanProbeTables(db, OLD_PROBE_RELEASE, OLD_TABLE_PREFIX, OLD_PROBE_TABLES, now, bounded);
 }
 
 /** Exact v5 namespace cleanup; unknown prior execution is not an absence claim. */
-export async function cleanV5ProbeTables(db: D1Database, now: () => number = Date.now): Promise<void> {
-  return cleanProbeTables(db, V5_PROBE_RELEASE, V5_TABLE_PREFIX, V5_PROBE_TABLES, now);
+export async function cleanV5ProbeTables(db: D1Database, now: () => number = Date.now, bounded?: ProbeRetirementBound): Promise<void> {
+  return cleanProbeTables(db, V5_PROBE_RELEASE, V5_TABLE_PREFIX, V5_PROBE_TABLES, now, bounded);
 }
 
 async function cleanProbeTables(db: D1Database, release: string, prefix: string,
-  allowedTables: ReadonlyMap<string, number>, now: () => number): Promise<void> {
+  allowedTables: ReadonlyMap<string, number>, now: () => number,
+  bounded: ProbeRetirementBound = operation => operation()): Promise<void> {
   const inventory = async () => {
-    const result = await db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name GLOB ?1 OR tbl_name GLOB ?1 LIMIT 129")
-      .bind(`${prefix}*`).all<{ type: string; name: string; tbl_name: string; sql: string | null }>();
+    const result = await bounded(() => db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name GLOB ?1 OR tbl_name GLOB ?1 LIMIT 129")
+      .bind(`${prefix}*`).all<{ type: string; name: string; tbl_name: string; sql: string | null }>());
     if (!result.success || !Array.isArray(result.results) || result.results.length > 128) throw new Error("old probe catalog rejected");
     return result.results;
   };
@@ -80,17 +83,17 @@ async function cleanProbeTables(db: D1Database, release: string, prefix: string,
   }
   // Validate every object and row before the first DROP. Never return row data.
   for (const { name } of tables) {
-    const foreign = await db.prepare(PROBE_FOREIGN_KEY_CHECK_SQL).bind(name).first();
+    const foreign = await bounded(() => db.prepare(PROBE_FOREIGN_KEY_CHECK_SQL).bind(name).first());
     if (!probeForeignKeysClear(foreign)) throw new Error("old probe foreign key rejected");
-    const rows = await db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN probe_id = ?1 AND value IN (?2, ?3) THEN 0 ELSE 1 END), 0) AS invalid FROM "${name}"`)
-      .bind(`${release}:${allowedTables.get(name)}`, "probe", "intentional-failure").first<{ total: number; invalid: number }>();
+    const rows = await bounded(() => db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN probe_id = ?1 AND value IN (?2, ?3) THEN 0 ELSE 1 END), 0) AS invalid FROM "${name}"`)
+      .bind(`${release}:${allowedTables.get(name)}`, "probe", "intentional-failure").first<{ total: number; invalid: number }>());
     if (!rows || !Number.isInteger(rows.total) || rows.total < 0 || rows.total > 1 || rows.invalid !== 0) {
       throw new Error("old probe rows rejected");
     }
   }
   for (const { name } of tables) {
     if (now() < window.starts_ms || now() >= window.expires_ms) throw new Error("old probe cleanup window rejected");
-    const result = await db.prepare(`DROP TABLE "${name}"`).run();
+    const result = await bounded(() => db.prepare(`DROP TABLE "${name}"`).run());
     if (!result.success) throw new Error("old probe cleanup failed");
   }
   if ((await inventory()).length !== 0) throw new Error("old probe cleanup readback failed");
