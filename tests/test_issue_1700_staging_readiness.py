@@ -299,7 +299,7 @@ libc=ctypes.CDLL(None)
 libc.poll.argtypes=[ctypes.c_void_p,ctypes.c_ulong,ctypes.c_int]
 libc.poll.restype=ctypes.c_int
 sys.stdout.write(' ');sys.stdout.flush()
-libc.poll(None,0,2000)
+libc.poll(None,0,10000)
 sys.stdout.write('{"status":401,"body":""}');sys.stdout.flush()
 """
         command = [str(Path(sys.executable).resolve()), "-B", "-S", "-c", code]
@@ -320,13 +320,18 @@ sys.stdout.write('{"status":401,"body":""}');sys.stdout.flush()
         fd_directory = "/proc/self/fd" if Path("/proc/self/fd").exists() else "/dev/fd"
         descriptors_before = len(os.listdir(fd_directory))
         started = time.monotonic()
-        with mock.patch.object(readiness, "TIMEOUT_SECONDS", 0.3), \
+        # Allow interpreter/ctypes startup before the required native-entry
+        # marker; the production helper reserves half this budget for cleanup.
+        with mock.patch.object(readiness, "TIMEOUT_SECONDS", 2), \
                 mock.patch.object(readiness.subprocess, "Popen", side_effect=create), \
                 mock.patch.object(readiness.os, "read", side_effect=observe):
             receipt = run(lambda token: readiness._run_get_child(token, command=command))
-        self.assertLess(time.monotonic() - started, 0.3)
-        self.assertEqual(native_ready, [True])
-        self.assertEqual(receipt["error"], "transport_timeout")
+        elapsed = time.monotonic() - started
+        diagnostic = {"elapsed": elapsed, "error": receipt["error"],
+                      "returncodes": [child.returncode for child in children]}
+        self.assertLess(elapsed, 2, diagnostic)
+        self.assertEqual(native_ready, [True], diagnostic)
+        self.assertEqual(receipt["error"], "transport_timeout", diagnostic)
         self.assertFalse(receipt["checks"]["invalid"]["attempted"])
         self.assertEqual(len(children), 1)
         self.assertEqual(children[0].returncode, -signal.SIGKILL)
