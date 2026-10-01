@@ -35,14 +35,14 @@ def validate(workflow: str, runtime: str, cleanup_tasks: str = "") -> None:
         "Fail the build after cleanup when aggregate image size exceeds 20 GB",
         "inputs.operation == 'build-both-images'",
         "inputs.operation == 'cleanup-successful-images'",
-        "from issue_2165_image_budget import validate_budget, validate_cleanup_deadline",
+        "from issue_2165_image_budget import BudgetError, admit_budget, validate_cleanup_deadline",
         'lease["cleanup_operation_ref"] == "cleanup-successful-images"',
         'lease["cleanup_deadline_at"]',
         '"cleanup_deadline_at"], now)',
-        'dt.timedelta(hours=2)',
         'dt.timedelta(hours=24)',
-        'lease["commitments_receipt_ref"]',
-        'lease["campaign_commitments_usd"]',
+        'assert lease["proposed_operation"]["cleanup"]["deadline_at"] == lease["cleanup_deadline_at"]',
+        'admit_budget(lease["budget"], lease["proposed_operation"], now)',
+        "except BudgetError as exc:",
         'git merge-base --is-ancestor "$SOURCE_SHA" "$GITHUB_SHA"',
         'lease["operation"] == "cleanup-successful-images"',
         'lease["owner"] == os.environ["GITHUB_ACTOR"]',
@@ -81,7 +81,9 @@ def validate(workflow: str, runtime: str, cleanup_tasks: str = "") -> None:
     cleanup_condition = "steps.app.outcome != 'success' || steps.operator.outcome != 'success' || steps.readback.outcome != 'success' || steps.image-size.outcome != 'success' || steps.image-size.outputs.within_cap == 'false'"
     if cleanup_condition not in workflow or "(steps.app.outcome != 'skipped' || steps.operator.outcome != 'skipped')" not in workflow:
         raise ContractError("cleanup must run for partial builds, failed readback, or aggregate size above the cap")
-    if workflow.index("validate_budget(lease[") > workflow.index("Build and push the exact-main application image"):
+    if workflow.count("admit_budget(") != 1 or "validate_budget(" in workflow:
+        raise ContractError("spend admission must go through exactly one admit_budget call, with no parallel scalar budget path")
+    if workflow.index("admit_budget(lease[") > workflow.index("Build and push the exact-main application image"):
         raise ContractError("protected reserve admission must complete before either image build dispatch")
     cleanup_job = workflow.split("  cleanup-successful-images:\n", 1)[1]
     if "docker build" in cleanup_job or "docker push" in cleanup_job:
