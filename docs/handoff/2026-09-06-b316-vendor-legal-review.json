@@ -6,9 +6,9 @@
   "effective_legal_text": {
     "artifact": "legal/dpa/SUB-PROCESSOR-COMMITMENTS.md",
     "current_active_ids": ["cloudflare", "clerk", "stripe", "neon"],
-    "required_active_ids": ["cloudflare", "clerk", "resend", "stripe", "github", "pagerduty", "sentry", "plausible", "betterstack"],
+    "required_active_ids": ["cloudflare", "clerk", "resend", "stripe", "github", "sentry", "plausible", "betterstack"],
     "stale_extra_ids": ["neon"],
-    "missing_ids": ["resend", "github", "pagerduty", "sentry", "plausible", "betterstack"],
+    "missing_ids": ["resend", "github", "sentry", "plausible", "betterstack"],
     "decision": "Legal must approve and version the effective commitments text; this remediation does not edit it.",
     "status": "pending_external"
   },

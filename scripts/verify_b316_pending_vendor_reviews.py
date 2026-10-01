@@ -9,6 +9,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -55,8 +56,8 @@ COMMITMENT_NAMES = {
 }
 CURRENT_COMMITMENT_IDS = ("cloudflare", "clerk", "stripe", "neon")
 REQUIRED_COMMITMENT_IDS = (
-    "cloudflare", "clerk", "resend", "stripe", "github", "pagerduty",
-    "sentry", "plausible", "betterstack",
+    "cloudflare", "clerk", "resend", "stripe", "github", "sentry",
+    "plausible", "betterstack",
 )
 EXPECTED_AUTHORITY = "Legal"
 EXPECTED_NON_CLAIMS = (
@@ -69,6 +70,11 @@ EXPECTED_NON_CLAIMS = (
 
 class ReviewError(ValueError):
     pass
+
+
+def _require_approved_population(ids: list[str], source: str) -> None:
+    if set(ids) != set(REQUIRED_COMMITMENT_IDS) or len(ids) != len(REQUIRED_COMMITMENT_IDS):
+        raise ReviewError(f"{source} population is not the exact approved eight")
 
 
 def _json_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -101,6 +107,37 @@ def _packet(text: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ReviewError("B-316 action packet is not an object")
     return parsed
+
+
+def _processor_ids(processors: Any) -> list[str]:
+    if not isinstance(processors, list):
+        raise ReviewError("sub_processors is not a list")
+    ids: list[str] = []
+    for index, item in enumerate(processors):
+        if not isinstance(item, dict):
+            raise ReviewError(f"sub-processor entry {index} is not a mapping")
+        vendor_id = item.get("id")
+        if not isinstance(vendor_id, str) or not vendor_id.strip():
+            raise ReviewError(f"sub-processor entry {index} has no valid id")
+        ids.append(vendor_id)
+    if len(ids) != len(set(ids)):
+        raise ReviewError("legal disclosure has duplicate sub-processor ids")
+    return ids
+
+
+def _is_calendar_date(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip()
+    if normalized.startswith("`") and normalized.endswith("`"):
+        normalized = normalized[1:-1]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized):
+        return False
+    try:
+        date.fromisoformat(normalized)
+    except ValueError:
+        return False
+    return True
 
 
 def _table_fields(text: str, artifact: str) -> dict[str, str]:
@@ -159,9 +196,8 @@ def _commitment_ids(text: str) -> tuple[str, ...]:
 def assess(texts: dict[str, str]) -> str:
     legal = _frontmatter(texts[LEGAL])
     processors = legal.get("sub_processors")
-    if not isinstance(processors, list):
-        raise ReviewError("sub_processors is not a list")
-    by_id = {item.get("id"): item for item in processors if isinstance(item, dict)}
+    processor_ids = _processor_ids(processors)
+    by_id = {item["id"]: item for item in processors}
     if not EXPECTED_IDS.issubset(by_id):
         raise ReviewError("one or more B-316 vendors are absent from legal register")
 
@@ -223,7 +259,9 @@ def assess(texts: dict[str, str]) -> str:
 
         completed_markers = (
             TEMPLATE_BANNER not in document,
-            bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(disclosure.get("contract_signed_at", "")))),
+            _is_calendar_date(disclosure.get("contract_signed_at")),
+            _is_calendar_date(fields["Review date"]),
+            _is_calendar_date(fields["Next review due"]),
             all("TBD" not in value for value in fields.values()),
             risk_status == "Closed",
         )
@@ -239,7 +277,7 @@ def assess(texts: dict[str, str]) -> str:
             "current_active_ids": list(CURRENT_COMMITMENT_IDS),
             "required_active_ids": list(REQUIRED_COMMITMENT_IDS),
             "stale_extra_ids": ["neon"],
-            "missing_ids": ["resend", "github", "pagerduty", "sentry", "plausible", "betterstack"],
+            "missing_ids": ["resend", "github", "sentry", "plausible", "betterstack"],
             "decision": "Legal must approve and version the effective commitments text; this remediation does not edit it.",
             "status": "pending_external",
         }
@@ -260,11 +298,19 @@ def assess(texts: dict[str, str]) -> str:
             raise ReviewError("B-316 approved effective-legal-text packet is incomplete")
     else:
         raise ReviewError("effective commitments are neither the recorded residue nor the approved target")
+    any_completed = any(value == "done" for value in vendor_states)
+    all_completed = all(value == "done" for value in vendor_states)
+    if any_completed and (not all_completed or commitments_state != "done"):
+        raise ReviewError("B-316 cannot mix completed vendor reviews with pending reviews or commitments")
+    if commitments_state == "done" and not all_completed:
+        raise ReviewError("B-316 cannot approve commitments before all four vendor reviews are complete")
     state = (
         "done"
         if all(value == "done" for value in vendor_states) and commitments_state == "done"
         else "open"
     )
+    if state == "done":
+        _require_approved_population(processor_ids, "completed legal disclosure")
     if packet.get("status") != ("complete" if state == "done" else "pending_external"):
         raise ReviewError(f"B-316 action packet status disagrees with derived {state} state")
     return state
@@ -306,6 +352,11 @@ def mutation_self_test(texts: dict[str, str]) -> None:
     mutations.append(changed)
     changed = copy.deepcopy(texts)
     changed[COMMITMENTS] = changed[COMMITMENTS].replace("### 1.4 Neon, Inc.", "### 1.4 Unknown Vendor", 1)
+    mutations.append(changed)
+    changed = copy.deepcopy(texts)
+    changed[COMMITMENTS] = changed[COMMITMENTS].replace(
+        "### 1.4 Neon, Inc.", "### 1.4 PagerDuty, Inc.", 1
+    )
     mutations.append(changed)
     changed = copy.deepcopy(texts)
     packet = _packet(changed[ACTION_PACKET])
