@@ -1220,16 +1220,6 @@ impl WebhookDispatcher {
 
     /// Emit one audit row + one SLI observation. Returns
     /// `Some(audit_err)` iff the audit emit failed (caller maps to 500).
-    fn emit_audit_and_sli(
-        &self,
-        record: AuditRecord,
-        event_type: CanonicalWebhookEventType,
-        outcome: AuditOutcome,
-        start_marker: u64,
-    ) -> Option<String> {
-        self.emit_audit_and_sli_with_context(record, event_type, outcome, start_marker, None)
-    }
-
     fn emit_audit_and_sli_with_context(
         &self,
         record: AuditRecord,
