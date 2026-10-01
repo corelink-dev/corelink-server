@@ -708,6 +708,55 @@ def _write_receipt(path: Path, receipt: dict[str, Any]) -> None:
     )
 
 
+_SAFE_STDOUT_ACTIONS = frozenset(
+    {
+        "already-exact",
+        "already-exact-health-verified",
+        "already-exact-health-pending",
+        "attach-custom-domain",
+        "attach-outcome-unknown",
+        "attach-response-unexpected",
+        "await-provider-dns",
+        "publication-failed",
+        "published-and-health-verified",
+    }
+)
+_SAFE_STDOUT_COUNTS = (
+    "canonical_route_count",
+    "custom_domain_count",
+    "dns_record_count",
+    "route_count",
+)
+_SAFE_STDOUT_BOOLEANS = (
+    "created_by_run",
+    "provider_mutation_performed",
+    "runtime_secret_bindings_ready",
+)
+_HEALTH_VERIFIED_ACTIONS = frozenset(
+    {"already-exact-health-verified", "published-and-health-verified"}
+)
+
+
+def _safe_stdout_summary(receipt: dict[str, Any], mode: str) -> dict[str, Any]:
+    action = receipt.get("action")
+    status = action if isinstance(action, str) and action in _SAFE_STDOUT_ACTIONS else "unknown"
+    summary: dict[str, Any] = {
+        "operation": "staging_custom_domain",
+        "mode": mode,
+        "status": status,
+        "health_verified": status in _HEALTH_VERIFIED_ACTIONS,
+    }
+    for key in _SAFE_STDOUT_COUNTS:
+        value = receipt.get(key)
+        if type(value) is int and value >= 0:
+            summary[key] = value
+    for key in _SAFE_STDOUT_BOOLEANS:
+        value = receipt.get(key)
+        if type(value) is bool:
+            summary[key] = value
+    return summary
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("preview", "publish"), required=True)
@@ -723,7 +772,7 @@ def main(argv: list[str] | None = None) -> int:
             f"::error::issue-1700 Custom Domain gate rejected: {error}", file=sys.stderr
         )
         return 1
-    print(json.dumps(receipt, sort_keys=True))
+    print(json.dumps(_safe_stdout_summary(receipt, args.mode), sort_keys=True))
     return 0
 
 
