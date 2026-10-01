@@ -38,8 +38,16 @@ class BuildOnlyWorkflowTests(unittest.TestCase):
     def test_rejects_pipefail_sensitive_rust_host_probe(self) -> None:
         with self.assertRaises(AssertionError):
             verify(self.source.replace(
-                'RUSTC_DETAILS="$(rustc -vV)"\n          grep -q \'^host: aarch64-apple-darwin$\' <<<"$RUSTC_DETAILS"',
-                "rustc -vV | grep -q '^host: aarch64-apple-darwin$'",
+                'RUSTC_DETAILS="$(rustc -vV)"\n          grep -q \'^host: x86_64-apple-darwin$\' <<<"$RUSTC_DETAILS"',
+                "rustc -vV | grep -q '^host: x86_64-apple-darwin$'",
+                1,
+            ))
+
+    def test_rejects_build_without_locked_dependencies(self) -> None:
+        with self.assertRaises(AssertionError):
+            verify(self.source.replace(
+                "cargo build --locked -p corelink-audit-chain --bin verifier --release",
+                "cargo build -p corelink-audit-chain --bin verifier --release",
                 1,
             ))
 
@@ -48,15 +56,15 @@ class BuildOnlyWorkflowTests(unittest.TestCase):
         native = next(
             step["run"]
             for step in workflow["jobs"]["build-only-verifier"]["steps"]
-            if step.get("name") == "Assert native macOS arm64 Rust target"
+            if step.get("name") == "Assert native macOS x86_64 Rust target"
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             tools = Path(temp_dir)
             uname = tools / "uname"
-            uname.write_text("#!/bin/sh\nprintf 'arm64\\n'\n")
+            uname.write_text("#!/bin/sh\nprintf 'x86_64\\n'\n")
             uname.chmod(0o755)
             rustc = tools / "rustc"
-            script = "#!/bin/sh\nprintf 'host: %s\\n' \"${RUST_HOST_TEST:-aarch64-apple-darwin}\"\n"
+            script = "#!/bin/sh\nprintf 'host: %s\\n' \"${RUST_HOST_TEST:-x86_64-apple-darwin}\"\n"
             script += "i=0; while [ $i -lt 10000 ]; do printf 'build detail\\n'; i=$((i + 1)); done\n"
             rustc.write_text(script)
             rustc.chmod(0o755)
@@ -65,7 +73,7 @@ class BuildOnlyWorkflowTests(unittest.TestCase):
             matching = subprocess.run(["bash", "-c", native], env=env, capture_output=True, text=True)
             self.assertEqual(matching.returncode, 0, matching.stderr)
 
-            mismatch_env = {**env, "RUST_HOST_TEST": "x86_64-apple-darwin"}
+            mismatch_env = {**env, "RUST_HOST_TEST": "aarch64-apple-darwin"}
             mismatching = subprocess.run(["bash", "-c", native], env=mismatch_env, capture_output=True, text=True)
             self.assertNotEqual(mismatching.returncode, 0)
 

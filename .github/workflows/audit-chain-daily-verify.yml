@@ -188,7 +188,7 @@ jobs:
   build-only-verifier:
     name: build-only-verifier
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'build_only'
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 15
     permissions:
       contents: read
@@ -211,15 +211,15 @@ jobs:
         with:
           toolchain: 1.91.1
 
-      - name: Assert native macOS arm64 Rust target
+      - name: Assert native macOS x86_64 Rust target
         run: |
           set -euo pipefail
-          [[ "$(uname -m)" == "arm64" ]] || { echo "build_only requires native macOS arm64" >&2; exit 1; }
+          [[ "$(uname -m)" == "x86_64" ]] || { echo "build_only requires native macOS x86_64" >&2; exit 1; }
           RUSTC_DETAILS="$(rustc -vV)"
-          grep -q '^host: aarch64-apple-darwin$' <<<"$RUSTC_DETAILS"
+          grep -q '^host: x86_64-apple-darwin$' <<<"$RUSTC_DETAILS"
 
       - name: Build verifier binary
-        run: cargo build -p corelink-audit-chain --bin verifier --release
+        run: cargo build --locked -p corelink-audit-chain --bin verifier --release
 
       - name: Smoke-test verifier on empty input
         run: |
@@ -240,7 +240,7 @@ jobs:
           def sha(path):
               return hashlib.sha256(path.read_bytes()).hexdigest()
           source = root / "crates/corelink-audit-chain/src/bin/verifier.rs"
-          lock = root / "Cargo.lock"
+          lock = subprocess.check_output(["git", "show", "HEAD:Cargo.lock"])
           binary = root / "verifier-artifact/verifier"
           crate_sources = sorted(
               path for path in (root / "crates/corelink-audit-chain").rglob("*")
@@ -260,20 +260,20 @@ jobs:
               "source_blob": subprocess.check_output(["git", "rev-parse", "HEAD:crates/corelink-audit-chain/src/bin/verifier.rs"], text=True).strip(),
               "source_sha256": sha(source),
               "crate_source_tree_sha256": source_tree.hexdigest(),
-              "cargo_lock_sha256": sha(lock),
+              "cargo_lock_sha256": hashlib.sha256(lock).hexdigest(),
               "binary_sha256": sha(binary),
               "runner_os": os.environ["RUNNER_OS"],
               "runner_arch": os.environ["RUNNER_ARCH"],
               "rust_host": subprocess.check_output(["rustc", "-vV"], text=True).split("host: ", 1)[1].splitlines()[0],
-              "build_command": "cargo build -p corelink-audit-chain --bin verifier --release",
+              "build_command": "cargo build --locked -p corelink-audit-chain --bin verifier --release",
           }
           (root / "verifier-artifact/provenance.json").write_text(json.dumps(provenance, sort_keys=True, indent=2) + "\n")
           PY
 
-      - name: Upload native arm64 verifier artifact
+      - name: Upload native x86_64 verifier artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: verifier-${{ github.sha }}-${{ github.run_id }}-macos-arm64
+          name: verifier-${{ github.sha }}-${{ github.run_id }}-macos-x86_64
           path: verifier-artifact/
           if-no-files-found: error
           retention-days: 7

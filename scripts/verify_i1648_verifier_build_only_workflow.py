@@ -28,8 +28,8 @@ def verify(source: str) -> None:
         raise AssertionError("normal smoke job must skip build_only")
 
     build = jobs["build-only-verifier"]
-    if build.get("runs-on") != "macos-15":
-        raise AssertionError("build_only must use the standard statically declared macOS arm64 runner")
+    if build.get("runs-on") != "macos-15-intel":
+        raise AssertionError("build_only must use the standard statically declared macOS Intel runner")
     if build.get("if") != "github.event_name == 'workflow_dispatch' && inputs.mode == 'build_only'":
         raise AssertionError("native artifact job must run only for explicit build_only dispatch")
     if build.get("permissions") != {"contents": "read"}:
@@ -47,21 +47,24 @@ def verify(source: str) -> None:
         or "^[0-9a-f]{40}$" not in validate["run"]
     ):
         raise AssertionError("build_only must be bound to the exact main commit")
-    native = build_steps["Assert native macOS arm64 Rust target"]["run"]
+    native = build_steps["Assert native macOS x86_64 Rust target"]["run"]
     if (
         "uname -m" not in native
-        or "arm64" not in native
-        or "aarch64-apple-darwin" not in native
+        or "x86_64" not in native
+        or "x86_64-apple-darwin" not in native
         or 'RUSTC_DETAILS="$(rustc -vV)"' not in native
         or '<<<"$RUSTC_DETAILS"' not in native
         or "rustc -vV |" in native
     ):
-        raise AssertionError("build_only must prove native Apple Silicon execution")
-    for name in ("Create build-only provenance", "Upload native arm64 verifier artifact"):
+        raise AssertionError("build_only must prove native Intel macOS execution")
+    build_command = build_steps["Build verifier binary"]["run"]
+    if "cargo build --locked -p corelink-audit-chain --bin verifier --release" not in build_command:
+        raise AssertionError("build_only must build from the committed lockfile without updating it")
+    for name in ("Create build-only provenance", "Upload native x86_64 verifier artifact"):
         if name not in build_steps:
             raise AssertionError(f"build_only job missing {name}")
     provenance = build_steps["Create build-only provenance"]["run"]
-    for claim in ("source_blob", "crate_source_tree_sha256", "cargo_lock_sha256", "binary_sha256", "runner_arch", "rust_host"):
+    for claim in ("source_blob", "crate_source_tree_sha256", "cargo_lock_sha256", "binary_sha256", "runner_arch", "rust_host", 'git", "show", "HEAD:Cargo.lock'):
         if claim not in provenance:
             raise AssertionError(f"provenance missing {claim}")
     if "github.event_name != 'workflow_dispatch' || inputs.mode != 'build_only'" != jobs["seven-day-verify"].get("if"):
