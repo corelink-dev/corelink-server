@@ -602,6 +602,35 @@ class StableReleaseIdContractTests(unittest.TestCase):
         for forbidden in ("gh release create", "gh release upload", "gh release edit", "--method POST", "--method PATCH", "--method DELETE", "id-token: write", "attestations: write"):
             self.assertNotIn(forbidden, commands)
 
+    def test_manual_pinned_cli_setup_exports_its_path_before_guard(self) -> None:
+        workflow = yaml.safe_load(Path(".github/workflows/issue-2572-draft-contract.yml").read_text(encoding="utf-8"))
+        job = workflow["jobs"]["verify-preserved-cli-017-draft"]
+        step = next(step for step in job["steps"] if step.get("name") == "Install checksum-pinned GitHub CLI 2.79.0")
+        run = step["run"]
+        install = 'python3 -B scripts/install_pinned_gh.py --output "${GH_BIN}"'
+        path_setup = 'export PATH="${RUNNER_TEMP}/corelink-pinned-gh:${PATH}"'
+        verify = 'python3 -B scripts/verify_pinned_gh.py --binary "${GH_BIN}"'
+        self.assertLess(run.index(install), run.index(path_setup))
+        self.assertLess(run.index(path_setup), run.index(verify))
+        self.assertIn('>> "${GITHUB_PATH}"', run)
+
+    def test_manual_draft_pack_boundary_accepts_only_the_specific_followup_subset(self) -> None:
+        workflow = Path(".github/workflows/issue-2572-draft-contract.yml").read_text(encoding="utf-8")
+        match = re.search(
+            r"(?ms)^[ \t]*cat > \"\$\{RUNNER_TEMP\}/allowed-paths\.txt\" <<'EOF'\n(?P<body>.*?)^[ \t]*EOF$",
+            workflow,
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual({line.strip() for line in match.group("body").splitlines() if line.strip()}, {
+            ".github/workflows/issue-2572-draft-contract.yml",
+            "scripts/test_pinned_gh_consumers.py",
+            "tests/test_cli_release_draft_contract.py",
+            "tools/cli/tests/release_workflow_contract/assertions.rs",
+            "tools/cli/tests/release_workflow_contract/cases.rs",
+        })
+        self.assertIn("if ! grep -Fxq '.github/workflows/issue-2572-draft-contract.yml'", workflow)
+        self.assertIn('comm -23 "${RUNNER_TEMP}/changed-paths.txt" "${RUNNER_TEMP}/allowed-paths.txt"', workflow)
+
     def test_actual_workflow_dag_runs_slsa_for_draft_with_skipped_windows_and_rejects_bad_prerequisites(self) -> None:
         jobs = yaml.safe_load(Path(".github/workflows/release-cli.yml").read_text(encoding="utf-8"))["jobs"]
         slsa = jobs["release-slsa3"]
