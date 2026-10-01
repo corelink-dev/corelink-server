@@ -12,7 +12,7 @@ export const WORKER_NAME = "corelink-staging";
 export const CONTAINER_APP_ID = "a033fb81-6388-47d9-9049-0b6942778055";
 export const CONTAINER_APP_NAME = "corelink-staging-corelinkserver";
 export const PROBE_WINDOW = JSON.parse(readFileSync(new URL("../crates/corelink-container/src/routes/staging_d1_probe_window.json", import.meta.url), "utf8"));
-const APPROVED_PROBE_WINDOW = Object.freeze({ cron: "* * * * *", starts_ms: 1790805600000,
+const APPROVED_PROBE_WINDOW = Object.freeze({ cron: "*/2 * * * *", starts_ms: 1790805600000,
   last_entry_ms: 1790820900000, expires_ms: 1790825400000, nonce: "issue-1700-recovery-20260930-v6" });
 export function approvedProbeWindow(value = PROBE_WINDOW) {
   return value !== null && typeof value === "object" && value.cron === APPROVED_PROBE_WINDOW.cron &&

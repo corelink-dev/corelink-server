@@ -6,14 +6,14 @@ import { readFile } from "node:fs/promises";
 import { ACCOUNT_ID, normalizeContainerDetail, readContainerDetail, runRuntimeProbe, failureDiagnostic, decodeTailFrame, waitForContainerState, captureDeployImageDigest, captureContainerPreimage, verifyContainerPreimage, verifyContainerImageDigest, verifyContainerState, verifyContainerRollback, CONTAINER_APP_ID, CONTAINER_APP_NAME, PROBE_CRON, PROBE_EXPIRY, PROBE_WINDOW, approvedProbeWindow } from "../issue_1700_runtime_probe.mjs";
 
 const release = "0123456789abcdef0123456789abcdef01234567";
-const now = Date.parse("2026-09-30T22:01:00Z");
+const now = Date.parse("2026-09-30T22:02:00Z");
 const imageDigest = `sha256:${"a".repeat(64)}`;
 const receipt = {
   contract: "corelink-staging-d1-binding-runtime-v1",
   outcome: "pass",
   probe_nonce: PROBE_WINDOW.nonce,
   worker_release: release,
-  scheduled_time_ms: Date.parse("2026-09-30T22:01:00Z"),
+  scheduled_time_ms: Date.parse("2026-09-30T22:02:00Z"),
   parameterized_select: true,
   failed_batch_observed: true,
   rollback_absence_verified: true,

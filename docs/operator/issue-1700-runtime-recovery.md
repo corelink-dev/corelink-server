@@ -89,9 +89,9 @@ reported as unresolved and requires admission/receipt reconciliation.
 
 ## v6 source candidate
 
-The compiled tuple is Cron `* * * * *`, start **2026-09-30 22:00 UTC**,
-latest new entry **2026-10-01 02:15 UTC**, and exclusive expiry **03:30 UTC**;
-nonce `issue-1700-recovery-20260930-v6`. The 75-minute reserve applies after
+The compiled tuple is Cron `*/2 * * * *`, start **2026-09-30 22:00 UTC**,
+entry cutoff **2026-10-01 02:15 UTC** (the final `*/2` Cron tick before it
+is **02:14 UTC**), and exclusive expiry **03:30 UTC**; nonce `issue-1700-recovery-20260930-v6`. The 75-minute reserve applies after
 the final permitted entry. The host permits at most 25 minutes for tail
 observation and installs Cron once. It renews short-lived tails only when the
 provider reports at least four minutes of remaining TTL, connects the next

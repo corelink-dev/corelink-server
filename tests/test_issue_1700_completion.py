@@ -48,7 +48,7 @@ class CompletionTests(unittest.TestCase):
             lambda d: d['version']['annotations'].update({'workers/message': 'wrong'}),
             lambda d: d['workflow_run'].update({'head_sha': 'b' * 40}),
             lambda d: d['routes'].update({'canonical_staging_route_count': 1}),
-            lambda d: d.update({'schedules': [{'cron': '* * * * *'}]}),
+            lambda d: d.update({'schedules': [{'cron': '*/2 * * * *'}]}),
             lambda d: d.update({'tails': [{'id': 'other'}]}),
         ]:
             bad = copy.deepcopy(data)

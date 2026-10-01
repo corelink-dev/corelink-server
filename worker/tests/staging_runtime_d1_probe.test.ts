@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScheduledController } from "@cloudflare/workers-types";
 import { runScheduled, STAGING_D1_RUNTIME_PROBE_CRON, STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS } from "../src/index_schedule.js";
 import { STAGING_D1_PROBE_WINDOW } from "../src/staging_runtime_d1_probe.js";
+import { B072_ONE_SHOT_CRON } from "../src/b072_one_shot.js";
 import { V5_PROBE_RELEASE } from "../src/staging_d1_probe_retirement.js";
 import type { Env } from "../src/index_common.js";
 
 const RELEASE = "0123456789abcdef0123456789abcdef01234567";
-const SCHEDULED_TIME = Date.parse("2026-09-30T22:01:00Z");
+const SCHEDULED_TIME = Date.parse("2026-09-30T22:02:00Z");
 const RECEIPT = {
   contract: "corelink-staging-d1-binding-runtime-v1",
   outcome: "pass",
@@ -44,7 +45,7 @@ function env(stub: { runStagingD1RuntimeProbe: ReturnType<typeof vi.fn>; readSta
       all: vi.fn().mockResolvedValue({ success: true, results: [] }) })) },
     R2_S3_ENDPOINT: "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com",
     CORELINK_SERVER: {
-      idFromName: vi.fn((name: string) => ({ name })),
+      idFromName: vi.fn((name: string) => ({ name, toString: () => name })),
       get: vi.fn((id: { name: string }) => id.name.includes("recovery-20260929:") ? retired :
         id.name.includes("issue-1700-recovery-20260930-v5:") ? retiredV5 : {
         ...stub,
@@ -61,9 +62,26 @@ function env(stub: { runStagingD1RuntimeProbe: ReturnType<typeof vi.fn>; readSta
 afterEach(() => vi.useRealTimers());
 
 describe("temporary staging native D1 runtime Cron", () => {
+  it("uses a distinct cadence and never treats an unauthorized B-072 tick as a v6 probe", async () => {
+    expect(B072_ONE_SHOT_CRON).toBe("* * * * *");
+    expect(STAGING_D1_RUNTIME_PROBE_CRON).toBe("*/2 * * * *");
+    expect(STAGING_D1_RUNTIME_PROBE_CRON).not.toBe(B072_ONE_SHOT_CRON);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-30T22:02:05Z"));
+    const probe = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
+    const target = { ...env(probe), SYNTHETIC_DRILL_PROVIDER_MODE: "provider_deferred",
+      SCHEDULED_DRILL_DELIVERY: { fetch: vi.fn() },
+      CONFIG_DB: { prepare: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })) },
+    } as unknown as Env;
+    const tick = controller(B072_ONE_SHOT_CRON);
+    await expect(runScheduled(tick, target)).rejects.toThrow("B-072 one-shot rejected");
+    expect(tick.noRetry).toHaveBeenCalledOnce();
+    expect(probe.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
+  });
+
   it("calls only the fixed release-specific DO RPC and emits no synthetic drill", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-30T22:01:05Z"));
+    vi.setSystemTime(new Date("2026-09-30T22:02:05Z"));
     const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
     const target = env(stub);
     const controllerValue = controller();
@@ -90,7 +108,7 @@ describe("temporary staging native D1 runtime Cron", () => {
 
   it("accepts a post-midnight Cron tick inside the immutable v6 entry window", async () => {
     vi.useFakeTimers();
-    const scheduledTime = Date.parse("2026-10-01T00:01:00Z");
+    const scheduledTime = Date.parse("2026-10-01T00:02:00Z");
     vi.setSystemTime(scheduledTime + 5000);
     const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
     await expect(runScheduled(controllerAt(scheduledTime), env(stub))).resolves.toBeUndefined();
@@ -123,7 +141,7 @@ describe("temporary staging native D1 runtime Cron", () => {
     stub.runStagingD1RuntimeProbe.mockClear();
     const badTarget = { ...target, ENVIRONMENT: "production" } as Env;
     const before = controller();
-    vi.setSystemTime(new Date("2026-09-30T22:01:05Z"));
+    vi.setSystemTime(new Date("2026-09-30T22:02:05Z"));
     await expect(runScheduled(before, badTarget)).rejects.toThrow("staging D1 runtime probe guard rejected");
     expect(before.noRetry).toHaveBeenCalledOnce();
     expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
@@ -137,7 +155,7 @@ describe("temporary staging native D1 runtime Cron", () => {
 
   it("rejects malformed or incomplete receipts without logging their body", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-30T22:01:05Z"));
+    vi.setSystemTime(new Date("2026-09-30T22:02:05Z"));
     const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue({ ...RECEIPT, rollback_absence_verified: false }) };
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     await expect(runScheduled(controller(), env(stub))).rejects.toThrow("staging D1 runtime probe failed");

@@ -11,7 +11,7 @@ import { PROBE_WINDOW, PROBE_CRON } from "../issue_1700_runtime_probe.mjs";
 for (const cleanupFails of [false, true]) {
 test(`CLI exits ${cleanupFails ? "failure" : "success"} after cleanup settles despite an unacknowledged tail close`, { timeout: 5000 }, async (t) => {
   const release = "a".repeat(40), digest = `sha256:${"b".repeat(64)}`;
-  const now = PROBE_WINDOW.starts_ms + 60_000;
+  const now = PROBE_WINDOW.starts_ms + 120_000;
   const receipt = { contract: "corelink-staging-d1-binding-runtime-v1", outcome: "pass",
     worker_release: release, probe_nonce: PROBE_WINDOW.nonce, scheduled_time_ms: now,
     parameterized_select: true, failed_batch_observed: true, rollback_absence_verified: true,

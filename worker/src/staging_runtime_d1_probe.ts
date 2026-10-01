@@ -113,7 +113,7 @@ export async function runStagingD1BindingRuntimeProbe(
   if (v5Retired.v5_probe_release !== V5_PROBE_RELEASE || v5Retired.v5_probe_retired !== true ||
       v5Retired.v5_probe_tables_absent !== true) throw new Error("v5 probe retirement rejected");
   const receipt = await stub.runStagingD1RuntimeProbe(admission.admission);
-  // Cloudflare runs this cron every minute. Once the dedicated DO has emitted
+  // Cloudflare runs this cron every two minutes. Once the dedicated DO has emitted
   // its release-bound receipt, later ticks return that same receipt so a tail
   // can recover it; the first scheduled timestamp remains the proof timestamp.
   if (

@@ -209,13 +209,17 @@ describe("staging D1 runtime probe exposure", () => {
     const release = "c".repeat(40);
     const name = `_staging_d1_binding_probe_v2:${window.nonce}:${release}`;
     const state = makeMockState(name);
+    const namespace = {
+      idFromName: vi.fn((id: string) => ({ toString: () => id })),
+      get: vi.fn(() => { throw new Error("receipt read must not fetch or start a Container"); }),
+    };
     const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: release,
       CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd",
       D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
-      CORELINK_SERVER: { idFromName: (id: string) => ({ toString: () => id }) },
+      CORELINK_SERVER: namespace,
     } as unknown as Env;
     const receipt = { contract: "corelink-staging-d1-binding-runtime-v1", outcome: "pass",
-      probe_nonce: window.nonce, worker_release: release, scheduled_time_ms: window.starts_ms + 60_000,
+      probe_nonce: window.nonce, worker_release: release, scheduled_time_ms: window.starts_ms + 120_000,
       parameterized_select: true, failed_batch_observed: true, rollback_absence_verified: true,
       probe_table_dropped: true, d1_binding_intercepted: true, authorization_absent: true, cf_api_token_absent: true };
     await state.storage.put("staging-d1-binding-probe-receipt-v1", receipt);
@@ -223,17 +227,26 @@ describe("staging D1 runtime probe exposure", () => {
     const before = await state.storage.list();
     await expect(do_.readStagingD1RuntimeProbeReceipt(window.last_entry_ms + 60_000)).resolves.toEqual(receipt);
     expect(await state.storage.list()).toEqual(before);
+    expect(namespace.idFromName).toHaveBeenCalledWith(name);
+    expect(namespace.get).not.toHaveBeenCalled();
   });
 
   it("accepts only fresh stored receipts and rejects expiry before accessing a Container", async () => {
     const window = STAGING_D1_PROBE_WINDOW;
     const release = "a".repeat(40);
-    const scheduledTime = window.starts_ms + 60_000;
+    const scheduledTime = window.starts_ms + 120_000;
+    const probeName = `_staging_d1_binding_probe_v2:${window.nonce}:${release}`;
+    const namespace = {
+      idFromName: vi.fn((name: string) => ({ toString: () => name })),
+      get: vi.fn(() => { throw new Error("receipt read must not fetch or start a Container"); }),
+    };
+    const state = makeMockState(probeName);
     const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: release,
       CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd",
       D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
       R2_S3_ENDPOINT: "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com",
-    } as Env;
+      CORELINK_SERVER: namespace,
+    } as unknown as Env;
     const receipt = { contract: "corelink-staging-d1-binding-runtime-v1", outcome: "pass",
       probe_nonce: window.nonce, worker_release: release, scheduled_time_ms: scheduledTime,
       parameterized_select: true, failed_batch_observed: true, rollback_absence_verified: true,
@@ -241,7 +254,6 @@ describe("staging D1 runtime probe exposure", () => {
     };
     for (const stored of [receipt, { ...receipt, probe_nonce: "old" },
       { ...receipt, worker_release: "b".repeat(40) }, { ...receipt, scheduled_time_ms: window.starts_ms - 60000 }]) {
-      const state = makeMockState();
       await state.storage.put("staging-d1-binding-probe-receipt-v1", stored);
       const do_ = new CoreLinkServer(state, env, () => scheduledTime + 5000);
       if (stored === receipt) await expect(do_.readStagingD1RuntimeProbeReceipt(scheduledTime)).resolves.toEqual(receipt);
@@ -249,6 +261,7 @@ describe("staging D1 runtime probe exposure", () => {
       const expired = new CoreLinkServer(state, env, () => window.expires_ms);
       await expect(expired.readStagingD1RuntimeProbeReceipt(scheduledTime)).rejects.toThrow("guard rejected");
     }
+    expect(namespace.get).not.toHaveBeenCalled();
   });
 
   it("rejects the native probe path through ordinary Durable Object fetch", async () => {
