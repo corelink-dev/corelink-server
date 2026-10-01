@@ -681,23 +681,33 @@ test("rejects a missing, duplicated, substituted, or mutable staging image preim
   assert.throws(() => captureContainerPreimage(JSON.stringify([{ ...app, image: image.replace("@sha256:", ":") }])), /malformed/);
 });
 
-test("runtime rollback is exclusive with early rollback and never retries a failed restore", async () => {
+test("finite runtime restoration is mandatory after success or failure and exclusive with early rollback", async () => {
   const workflow = await readFile(new URL("../../.github/workflows/issue-1700-container-staging-deploy.yml", import.meta.url), "utf8");
-  const runtimeStep = workflow.match(/- name: Roll back only this run after runtime acceptance failure\n(?<step>[\s\S]*?)(?=\n      - name:|\n  verify_existing:)/)?.groups?.step;
-  assert.ok(runtimeStep, "runtime rollback step is present");
+  const runtimeSteps = [...workflow.matchAll(/      - name: [^\n]+\n(?<step>[\s\S]*?)(?=\n      - (?:name|uses):|\n  [a-z_]+:|$)/g)]
+    .map(match => match.groups.step).filter(step => /^        id: runtime_rollback$/m.test(step));
+  assert.equal(runtimeSteps.length, 1, "one actual runtime rollback step is present");
+  const runtimeStep = runtimeSteps[0];
   const condition = runtimeStep.match(/^\s+if:\s+(.+)$/m)?.[1];
-  assert.ok(condition, "runtime rollback has a condition");
+  assert.equal(condition, "always() && steps.verify_candidate.outcome == 'success' && steps.verify.outcome == 'success' && steps.early_rollback.outcome == 'skipped'");
   assert.match(runtimeStep, /ROLLBACK_MARKER: issue-1700-route-free-rollback-/);
   assert.ok(runtimeStep.indexOf('CLOUDFLARE_API_TOKEN="$ROUTE_READ_TOKEN" python3 scripts/verify_issue_1700_route_inventory.py') < runtimeStep.indexOf("pnpm exec wrangler deploy"));
   assert.match(condition, /steps\.early_rollback\.outcome == 'skipped'/);
 
-  const shouldRollbackRuntime = ({ failed, candidateVerified, deployVerified, earlyRollback }) =>
-    failed && candidateVerified && deployVerified && earlyRollback === "skipped";
+  // Evaluate only the closed outcome-comparison grammar in the actual YAML.
+  // The runtime outcome intentionally does not suppress mandatory restoration.
+  const shouldRollbackRuntime = outcomes => condition.split(" && ").every(term => {
+    if (term === "always()") return true;
+    const match = /^steps\.([a-z_]+)\.outcome == '(success|skipped)'$/.exec(term);
+    assert.ok(match, "condition contains only fixed outcome comparisons");
+    return outcomes[match[1]] === match[2];
+  });
   const cases = [
-    ["early rollback succeeded", { failed: true, candidateVerified: true, deployVerified: false, earlyRollback: "success" }, false],
-    ["early rollback partially failed", { failed: true, candidateVerified: true, deployVerified: false, earlyRollback: "failure" }, false],
-    ["route passed and runtime acceptance failed", { failed: true, candidateVerified: true, deployVerified: true, earlyRollback: "skipped" }, true],
-    ["all acceptance passed", { failed: false, candidateVerified: true, deployVerified: true, earlyRollback: "skipped" }, false],
+    ["early rollback succeeded", { verify_candidate: "success", verify: "success", early_rollback: "success" }, false],
+    ["early rollback partially failed", { verify_candidate: "success", verify: "success", early_rollback: "failure" }, false],
+    ["candidate identity failed", { verify_candidate: "failure", verify: "success", early_rollback: "skipped" }, false],
+    ["deployment verification failed", { verify_candidate: "success", verify: "failure", early_rollback: "skipped" }, false],
+    ["runtime acceptance failed", { verify_candidate: "success", verify: "success", early_rollback: "skipped", runtime_probe: "failure" }, true],
+    ["native acceptance passed", { verify_candidate: "success", verify: "success", early_rollback: "skipped", runtime_probe: "success" }, true],
   ];
   for (const [name, input, expected] of cases) {
     assert.equal(shouldRollbackRuntime(input), expected, name);
