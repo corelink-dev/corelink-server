@@ -282,10 +282,9 @@ def fail(message: str) -> None:
     raise AssertionError(message)
 
 
-def verify_d1_proxy_manifest_entry(manifest: dict[str, str] | None = None) -> None:
+def verify_d1_proxy_manifest_entry() -> None:
     """Keep the D1 proxy source manifest entry equal to the reviewed target."""
-    entries = SOURCE_SHA256 if manifest is None else manifest
-    if entries.get(STAGING_D1_PROXY_SOURCE_PATH) != STAGING_D1_PROXY_SOURCE_TARGET_SHA256:
+    if SOURCE_SHA256.get(STAGING_D1_PROXY_SOURCE_PATH) != STAGING_D1_PROXY_SOURCE_TARGET_SHA256:
         fail("D1 proxy source manifest entry drifted from the reviewed transition target")
 
 
@@ -1149,15 +1148,22 @@ def mutation_checks(workflow: str, runner: str, contract_workflow: str) -> None:
                 fail(f"{label} was rejected for the wrong reason: {exc}")
         else:
             fail(f"{label} was accepted")
+    # Drive the drift guard through verify_source_digests, so dropping its call
+    # is caught here and not only deleting the helper. The entry is restored.
+    reviewed_entry = SOURCE_SHA256[STAGING_D1_PROXY_SOURCE_PATH]
+    SOURCE_SHA256[STAGING_D1_PROXY_SOURCE_PATH] = STAGING_D1_PROXY_SOURCE_PREIMAGE_SHA256
     try:
-        verify_d1_proxy_manifest_entry(
-            {**SOURCE_SHA256, STAGING_D1_PROXY_SOURCE_PATH: STAGING_D1_PROXY_SOURCE_PREIMAGE_SHA256}
-        )
+        verify_source_digests()
     except AssertionError as exc:
-        if str(exc) != "D1 proxy source manifest entry drifted from the reviewed transition target":
-            fail(f"drifted D1 proxy manifest entry was rejected for the wrong reason: {exc}")
+        drift_refusal: str | None = str(exc)
     else:
+        drift_refusal = None
+    finally:
+        SOURCE_SHA256[STAGING_D1_PROXY_SOURCE_PATH] = reviewed_entry
+    if drift_refusal is None:
         fail("drifted D1 proxy manifest entry was accepted")
+    if drift_refusal != "D1 proxy source manifest entry drifted from the reviewed transition target":
+        fail(f"drifted D1 proxy manifest entry was rejected for the wrong reason: {drift_refusal}")
     cfg_attr_mutation = source_bytes.replace(b"#[ignore", b"#[cfg_attr(any(), ignore)]\n#[ignore", 1)
     try:
         verify_source_digests(overrides={REQUIRED_TARGET_SOURCES[source_target]: cfg_attr_mutation})
