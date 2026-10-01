@@ -21,7 +21,7 @@ on:
         default: full_capture
         options:
           - full_capture
-          - hourly_diagnostic
+          - diagnostic_only
 
 permissions:
   contents: read
@@ -120,7 +120,7 @@ jobs:
 
           case "$CAPTURE_MODE" in
             full_capture) [[ "$CONFIRM" == "run-b125-read-only" ]] || fail_closed "confirmation_mismatch" ;;
-            hourly_diagnostic) [[ "$CONFIRM" == "diagnose-b125-hourly" ]] || fail_closed "confirmation_mismatch" ;;
+            diagnostic_only) [[ "$CONFIRM" == "diagnose-b125-hourly" ]] || fail_closed "confirmation_mismatch" ;;
             *) fail_closed "capture_mode_invalid" ;;
           esac
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || fail_closed "protected_main_ref_required"
@@ -387,8 +387,9 @@ jobs:
             fi
           }
 
-          if [[ "$CAPTURE_MODE" == "hourly_diagnostic" ]]; then
-            run_query hourly
+          if [[ "$CAPTURE_MODE" == "diagnostic_only" ]]; then
+            python3 scripts/b125_d1_api_diagnostic.py \
+              "$receipt" "$CF_ACCOUNT_ID" "$D1_DATABASE_ID" "${SQL[hourly]}"
             fail_closed "diagnostic_only_capture_not_closure_evidence"
           else
             for query_id in population partition hourly latency heads burst integrity replay head_tail; do

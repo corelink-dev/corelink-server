@@ -1,0 +1,15 @@
+{
+  "success": false,
+  "errors": [
+    {
+      "code": 7500,
+      "message": "D1_EXEC_ERROR: Error in line 1: SELECT FROM audit_outbox: sql error: near \"FROM\": syntax error",
+      "documentation_url": "https://developers.cloudflare.com/d1/observability/debug-d1/",
+      "source": {
+        "pointer": ""
+      }
+    }
+  ],
+  "messages": [],
+  "result": []
+}

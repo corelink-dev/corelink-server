@@ -9,9 +9,12 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
+from io import BytesIO
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +25,13 @@ from b125_readonly_diagnostics import (  # noqa: E402
     mark_query_started,
     record_provider_failure,
     validate_provider_diagnostic,
+)
+from b125_d1_api_diagnostic import (  # noqa: E402
+    EXPECTED_DATABASE_ID,
+    QUERY_SHA256,
+    classify_response,
+    record_diagnostic,
+    request_once,
 )
 
 
@@ -169,9 +179,11 @@ def test_workflow_keeps_all_required_query_ids_and_remote_only_execution() -> No
     assert '[[ "$GITHUB_REF" == "refs/heads/main" ]]' in source
     assert "deployment_receipt_ref:" in source
     assert "capture_mode:" in source
-    assert "hourly_diagnostic" in source
-    assert 'hourly_diagnostic) [[ "$CONFIRM" == "diagnose-b125-hourly" ]]' in source
-    assert 'if [[ "$CAPTURE_MODE" == "hourly_diagnostic" ]]; then\n            run_query hourly\n            fail_closed "diagnostic_only_capture_not_closure_evidence"' in source
+    assert "diagnostic_only" in source
+    assert 'diagnostic_only) [[ "$CONFIRM" == "diagnose-b125-hourly" ]]' in source
+    assert 'if [[ "$CAPTURE_MODE" == "diagnostic_only" ]]; then\n            python3 scripts/b125_d1_api_diagnostic.py' in source
+    assert 'fail_closed "diagnostic_only_capture_not_closure_evidence"' in source
+    assert "QUERY_SHA256" in (ROOT / "scripts/b125_d1_api_diagnostic.py").read_text(encoding="utf-8")
     assert "deployment_receipt_reference_invalid" in source
     assert "deployment_receipt_comment_unavailable" in source
     assert "deployment_receipt_comment_mismatch" in source
@@ -208,6 +220,132 @@ def test_workflow_keeps_all_required_query_ids_and_remote_only_execution() -> No
     assert "issuecomment-5861728482" in source
 
 
+def test_official_d1_query_api_envelope_classifies_and_discards_provider_text() -> None:
+    fixture = ROOT / "tests/fixtures/b125-d1-api-sql-error.json"
+    raw = fixture.read_bytes()
+    result = classify_response(400, raw)
+    assert result["provider_code"] == "7500"
+    assert result["semantic_error_category"] == "syntax"
+    assert result["schema_shape"]["root_keys"] == ["errors", "messages", "result", "success"]
+    assert result["schema_shape"]["error_entry_keys"] == ["code", "documentation_url", "message", "source"]
+    assert "D1_EXEC_ERROR" not in json.dumps(result)
+    assert "SELECT FROM" not in json.dumps(result)
+    assert "audit_outbox" not in json.dumps(result)
+
+
+def test_d1_query_api_timeout_auth_unknown_and_success_controls_are_fixed_enums() -> None:
+    timeout = classify_response(599, b"", transport_timeout=True)
+    assert timeout["semantic_error_category"] == "transport_timeout"
+
+    auth = classify_response(
+        403,
+        json.dumps({"success": False, "errors": [{"code": 10000, "message": "token=private"}]}).encode(),
+    )
+    assert auth["semantic_error_category"] == "auth_error"
+    assert "token=private" not in json.dumps(auth)
+
+    query_timeout = classify_response(
+        400,
+        json.dumps({"success": False, "errors": [{"code": 7500, "message": "query execution timed out"}]}).encode(),
+    )
+    assert query_timeout["semantic_error_category"] == "query_timeout"
+
+    unsupported = classify_response(
+        400,
+        json.dumps({"success": False, "errors": [{"code": 7500, "message": "no such function: private_name"}]}).encode(),
+    )
+    assert unsupported["semantic_error_category"] == "unsupported_function"
+    assert "private_name" not in json.dumps(unsupported)
+
+    unknown = classify_response(
+        200,
+        json.dumps({"success": False, "errors": [{"code": 7500, "opaque_tenant_key": "private", "message": "token=secret value"}]}).encode(),
+    )
+    assert unknown["semantic_error_category"] == "unknown"
+    assert "opaque_tenant_key" not in json.dumps(unknown)
+    assert "token=secret" not in json.dumps(unknown)
+
+    server_error = classify_response(500, b"upstream failure")
+    assert server_error["semantic_error_category"] == "http_error"
+    redirect = classify_response(302, b"redirect")
+    assert redirect["http_status_class"] == "3xx"
+    assert redirect["semantic_error_category"] == "http_error"
+
+    success = classify_response(200, b'{"success":true,"result":[{"results":[{"private_row":"x"}]}]}')
+    assert success["semantic_error_category"] == "query_succeeded"
+    assert "private_row" not in json.dumps(success)
+
+
+def test_d1_query_api_uses_exact_allowlisted_sql_once_without_redirects_or_retry() -> None:
+    sql = _hourly_sql()
+    assert hashlib.sha256(sql.encode()).hexdigest() == QUERY_SHA256
+    http_error = HTTPError(
+        "https://api.cloudflare.com/", 400, "bad request", {},
+        BytesIO(b'{"success":false,"errors":[{"code":7500,"message":"no such column: private"}]}'),
+    )
+    opener = Mock()
+    opener.open.side_effect = http_error
+    with patch("b125_d1_api_diagnostic.build_opener", return_value=opener) as build:
+        status, body, timed_out = request_once(
+            "6a1fc1c626fc2628823e60b9db01f5cd",
+            "d64742ea-e102-40b2-a844-ff02e3f94562",
+            sql,
+            "ephemeral-test-token",
+        )
+    assert status == 400 and not timed_out
+    assert b"private" in body
+    assert opener.open.call_count == 1
+    assert opener.open.call_args.kwargs["timeout"] == 45
+    redirect_handler = build.call_args.args[0]
+    assert redirect_handler.redirect_request(None, None, 302, "redirect", {}, "https://example.invalid") is None
+    request = opener.open.call_args.args[0]
+    assert request.get_method() == "POST"
+    assert request.full_url.endswith("/d1/database/d64742ea-e102-40b2-a844-ff02e3f94562/query")
+    assert request.get_header("Authorization") == "Bearer ephemeral-test-token"
+    assert "ephemeral-test-token" not in request.full_url
+    assert json.loads(request.data) == {"sql": sql}
+
+
+def test_d1_api_diagnostic_marks_one_read_before_call_and_retains_only_safe_receipt(tmp_path: Path) -> None:
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(
+        '{"valid":true,"failure_reasons":["read_not_started"],"queries":[]}\n',
+        encoding="utf-8",
+    )
+    payload = json.dumps({
+        "success": False,
+        "errors": [{"code": 7500, "message": "no such column: tenant.private token=secret"}],
+        "messages": [],
+        "result": [],
+    }).encode()
+
+    def one_request(*args: object) -> tuple[int, bytes, bool]:
+        before = json.loads(receipt_path.read_text(encoding="utf-8"))
+        assert before["provider_queries_started"] == ["hourly"]
+        assert before["failure_reasons"] == ["diagnostic_only_capture_not_closure_evidence"]
+        assert before["diagnostic_only"] is True
+        assert before["valid"] is False
+        return 400, payload, False
+
+    with patch("b125_d1_api_diagnostic.request_once", side_effect=one_request) as request:
+        record_diagnostic(
+            receipt_path,
+            "6a1fc1c626fc2628823e60b9db01f5cd",
+            "d64742ea-e102-40b2-a844-ff02e3f94562",
+            _hourly_sql(),
+            "ephemeral-test-token",
+        )
+    request.assert_called_once()
+    rendered = receipt_path.read_text(encoding="utf-8")
+    recorded = json.loads(rendered)
+    assert recorded["provider_diagnostic"]["semantic_error_category"] == "missing_column"
+    assert recorded["provider_diagnostic"]["provider_code"] == "7500"
+    assert "tenant.private" not in rendered
+    assert "token=secret" not in rendered
+    assert "ephemeral-test-token" not in rendered
+    assert recorded["failure_reasons"] == ["diagnostic_only_capture_not_closure_evidence"]
+
+
 def test_workflow_database_target_matches_canonical_signup_worker_uuid() -> None:
     source = WORKFLOW.read_text(encoding="utf-8")
     config = (ROOT / "apps/signup-worker/wrangler.toml").read_text(encoding="utf-8")
@@ -216,6 +354,7 @@ def test_workflow_database_target_matches_canonical_signup_worker_uuid() -> None
     )
     assert len(canonical_ids) == 1
     canonical_id = next(iter(canonical_ids))
+    assert EXPECTED_DATABASE_ID == canonical_id
 
     def matches_canonical_target(workflow_source: str) -> bool:
         expected_ids = re.findall(
