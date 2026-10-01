@@ -215,7 +215,8 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$(uname -m)" == "arm64" ]] || { echo "build_only requires native macOS arm64" >&2; exit 1; }
-          rustc -vV | grep -q '^host: aarch64-apple-darwin$'
+          RUSTC_DETAILS="$(rustc -vV)"
+          grep -q '^host: aarch64-apple-darwin$' <<<"$RUSTC_DETAILS"
 
       - name: Build verifier binary
         run: cargo build -p corelink-audit-chain --bin verifier --release
