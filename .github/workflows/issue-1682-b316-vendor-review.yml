@@ -17,6 +17,7 @@ on:
       - "legal/dpa/SUB-PROCESSOR-COMMITMENTS.md"
       - "legal/sub-processors.md"
       - "scripts/verify_b316_pending_vendor_reviews.py"
+      - "tests/test_verify_b316_pending_vendor_reviews.py"
       - "specs/_compliance/VENDOR-RISK-REGISTER.md"
   workflow_dispatch:
 
@@ -27,7 +28,7 @@ jobs:
   verify:
     name: verify B-316 pending vendor packets
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout without write credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -36,3 +37,7 @@ jobs:
           persist-credentials: false
       - name: Verify pending packets and adversarial mutations
         run: python3 scripts/verify_b316_pending_vendor_reviews.py --expect open --self-test
+      - name: Install pytest for the B-316 adversarial suite
+        run: python3 -m pip install --disable-pip-version-check --no-input pytest==9.0.2
+      - name: Run the complete B-316 pending-state suite
+        run: python3 -m pytest -q tests/test_verify_b316_pending_vendor_reviews.py

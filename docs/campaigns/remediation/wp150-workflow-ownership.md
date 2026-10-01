@@ -145,7 +145,7 @@ workflow-paths-sha256: 5a4fa6c9315c4df862e037b88af775a6d29192d9c87917bfd370ebc92
 .github/workflows/issue-1679-classification.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1679-identity-regression.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1681-b314-exact-head.yml | LEAD-BLOCKED | blocked
-.github/workflows/issue-1682-b316-vendor-review.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1682-b316-vendor-review.yml | WP-154 | owned
 .github/workflows/issue-1690-p12-p14-verifier.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1699-ownership-preparation.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1700-container-staging-deploy.yml | LEAD-BLOCKED | blocked
