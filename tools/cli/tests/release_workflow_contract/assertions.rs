@@ -87,7 +87,7 @@ pub(super) fn assert_release_contract(workflow: &str) {
         "Get-FileHash -LiteralPath $file -Algorithm SHA256",
         "signer_name: corelink-linux-arm64",
         "${TARGET_SIGNER_NAME}.tar.gz",
-        "${TARGET_SIGNER_NAME}.zip",
+        "$archive = Join-Path $PWD \"out\\${env:TARGET_SIGNER_NAME}.zip\"",
         "(cd dist && shasum -a 256 -c \"$(basename \"$CHECKSUM\")\")",
         "Read back published artifacts and verify release-root digests",
         "--pattern 'corelink-*'",
