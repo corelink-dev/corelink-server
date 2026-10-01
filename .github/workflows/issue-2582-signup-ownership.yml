@@ -20,6 +20,7 @@ on:
       - crates/corelink-container/src/storage/staging_load_test_ownership.rs
       - migrations/d1/0147_staging_load_test_run_ownership.sql
       - scripts/verify_issue_2582_signup_ownership.py
+      - tests/test_verify_issue_2582_signup_ownership.py
 
 permissions:
   contents: read
@@ -51,6 +52,11 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           test "$(git merge-base "$EXPECTED_BASE" "$EXPECTED_HEAD")" = "$EXPECTED_BASE"
+
+      # Before the candidate scope check, so a red scope verdict cannot mask
+      # whether the gate's own teeth still hold.
+      - name: Run change-scope gate teeth tests
+        run: python3 -B -S -m unittest -v tests/test_verify_issue_2582_signup_ownership.py
 
       - name: Verify signup writer census and change scope
         env:

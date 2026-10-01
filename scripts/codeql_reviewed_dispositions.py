@@ -53,6 +53,7 @@ LANGUAGE_CATEGORIES = {
     "python": "/language:python",
 }
 API_VERSION = "2022-11-28"
+SARIF_DEFAULT_START_COLUMN = 1
 
 
 class ReviewedGateError(ValueError):
@@ -299,11 +300,21 @@ def _sarif_records(payload: dict[str, Any], *, language: str, uploaded: bool) ->
             raise ReviewedGateError("HIGH+ SARIF path or region is missing")
         path = artifact.get("uri")
         line = region.get("startLine")
-        start_column = region.get("startColumn")
         if not isinstance(path, str) or not path or not isinstance(line, int) or isinstance(line, bool):
             raise ReviewedGateError("HIGH+ SARIF path or line is invalid")
-        if not isinstance(start_column, int) or isinstance(start_column, bool) or start_column < 1:
-            raise ReviewedGateError("HIGH+ SARIF start column is invalid")
+        # SARIF 2.1.0 (region object, startColumn property): an ABSENT
+        # startColumn defaults to 1. CodeQL omits it there: trusted run
+        # 36920507526 dropped it for alert 447, and none of that run's results
+        # carries an explicit startColumn of 1. Only absence takes the
+        # default: a present null, bool, non-integer, zero or negative value
+        # is still malformed evidence and fails closed. The defaulted column
+        # must then still equal the reviewed case and the live alert column.
+        if "startColumn" not in region:
+            start_column = SARIF_DEFAULT_START_COLUMN
+        else:
+            start_column = region["startColumn"]
+            if not isinstance(start_column, int) or isinstance(start_column, bool) or start_column < 1:
+                raise ReviewedGateError("HIGH+ SARIF start column is invalid")
         if path.startswith("/") or ".." in Path(path).parts:
             raise ReviewedGateError("HIGH+ SARIF source path is unsafe")
         fingerprints = result.get("partialFingerprints")
