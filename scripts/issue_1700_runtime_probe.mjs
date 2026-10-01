@@ -4,7 +4,6 @@
 
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync, writeSync } from "node:fs";
-import { createHash } from "node:crypto";
 import WebSocket from "ws";
 import { isApprovedProbeWindow } from "./issue_1700_probe_window.mjs";
 
@@ -202,6 +201,61 @@ function extractReceipt(event, release, startedAt, deadline) {
   return undefined;
 }
 
+function observeTailEvent(event, counters, release, startedAt, deadline) {
+  if (event === null || typeof event !== "object" || Array.isArray(event)) {
+    incrementDiagnostic(counters, "malformed_frames");
+    return;
+  }
+  incrementDiagnostic(counters, "frames_decoded");
+  const eventDetails = event.event;
+  if (typeof event.scriptName !== "string" || !eventDetails || typeof eventDetails !== "object" ||
+      Array.isArray(eventDetails) || typeof eventDetails.cron !== "string" ||
+      !Number.isSafeInteger(eventDetails.scheduledTime)) {
+    incrementDiagnostic(counters, "unknown_event_metadata");
+  } else if (event.scriptName === WORKER_NAME && eventDetails.cron === PROBE_CRON &&
+      startedAt <= eventDetails.scheduledTime && eventDetails.scheduledTime <= deadline) {
+    incrementDiagnostic(counters, "scheduled_probe_events");
+  } else {
+    incrementDiagnostic(counters, "known_unmatched_events");
+  }
+
+  const logs = Array.isArray(event.logs) ? event.logs : [];
+  if (logs.length === 0) incrementDiagnostic(counters, "empty_events");
+  for (const entry of logs) {
+    incrementDiagnostic(counters, "log_entries");
+    const messages = Array.isArray(entry?.message) ? entry.message : [entry?.message];
+    for (const message of messages) {
+      if (typeof message !== "string" || !message.startsWith("[staging_d1_runtime_probe]")) continue;
+      incrementDiagnostic(counters, "probe_markers");
+      if (message === "[staging_d1_runtime_probe] failed reason=probe_failed") {
+        incrementDiagnostic(counters, "failed_markers");
+        continue;
+      }
+      if (message === "[staging_d1_runtime_probe] rejected reason=staging_guard") {
+        incrementDiagnostic(counters, "rejected_markers");
+        continue;
+      }
+      if (!message.startsWith(RECEIPT_PREFIX)) continue;
+      incrementDiagnostic(counters, "receipt_markers");
+      let receipt;
+      try { receipt = JSON.parse(message.slice(RECEIPT_PREFIX.length)); }
+      catch { incrementDiagnostic(counters, "malformed_receipts"); continue; }
+      if (receipt === null || typeof receipt !== "object" || Array.isArray(receipt)) {
+        incrementDiagnostic(counters, "malformed_receipts");
+        continue;
+      }
+      if (receipt.probe_nonce !== PROBE_WINDOW.nonce) incrementDiagnostic(counters, "wrong_nonce_receipts");
+      if (receipt.worker_release !== release) incrementDiagnostic(counters, "wrong_release_receipts");
+      if (!Number.isSafeInteger(receipt.scheduled_time_ms) || receipt.scheduled_time_ms < startedAt ||
+          receipt.scheduled_time_ms >= deadline) incrementDiagnostic(counters, "out_of_window_receipts");
+      if (receipt.outcome !== "pass") incrementDiagnostic(counters, "nonpass_receipts");
+      if (!exactReceipt(receipt, release, startedAt, deadline)) {
+        incrementDiagnostic(counters, "schema_rejected_receipts");
+      }
+    }
+  }
+}
+
 function requireScheduleEnvelope(value) {
   if (value?.success !== true || !Array.isArray(value?.result?.schedules)) {
     throw new Error("schedule API response rejected");
@@ -219,6 +273,31 @@ function exactSchedules(schedules, crons) {
 // WeakMap provenance prevents callers from injecting diagnostic payloads.
 const scheduleReadbacks = new WeakMap();
 const tailCleanupEvidence = new WeakMap();
+const runtimeFailureEvidence = new WeakMap();
+
+const diagnosticCounterNames = [
+  "frames_received", "frames_decoded", "malformed_frames", "empty_events", "unknown_event_metadata",
+  "scheduled_probe_events", "known_unmatched_events", "log_entries", "probe_markers", "receipt_markers",
+  "failed_markers", "rejected_markers", "malformed_receipts", "wrong_nonce_receipts",
+  "wrong_release_receipts", "out_of_window_receipts", "schema_rejected_receipts",
+  "nonpass_receipts", "accepted_receipts", "control_pings", "control_pongs", "reconnects",
+];
+const MAX_DIAGNOSTIC_COUNT = 1_000_000;
+
+function incrementDiagnostic(counters, name) {
+  if (Object.hasOwn(counters, name)) counters[name] = Math.min(MAX_DIAGNOSTIC_COUNT, counters[name] + 1);
+}
+
+function diagnosticSnapshot(counters, closeEvidence) {
+  return {
+    counters: Object.fromEntries(diagnosticCounterNames.map(name => [name, counters[name]])),
+    close: closeEvidence === undefined ? null : {
+      code: Number.isInteger(closeEvidence.code) ? closeEvidence.code : null,
+      was_clean: typeof closeEvidence.was_clean === "boolean" ? closeEvidence.was_clean : null,
+    },
+  };
+}
+
 function scheduleReadbackSummary(schedules) {
   const cronField = /^(?:[0-9*/?,LW#-]+|(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|SUN|MON|TUE|WED|THU|FRI|SAT)(?:[-/,](?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|SUN|MON|TUE|WED|THU|FRI|SAT))*)$/;
   return {
@@ -254,6 +333,9 @@ const probeErrors = new Map([
   ["Worker tail protocol rejected", "tail_protocol"],
   ["Worker tail stream failed", "tail_stream"],
   ["Worker tail stream closed before receipt", "tail_closed"],
+  ["Worker tail reconnect timed out", "tail_reconnect_timeout"],
+  ["Worker tail control ping failed", "tail_control_ping"],
+  ["Worker tail pong deadline exceeded", "tail_pong_timeout"],
   ["Worker tail renewal failed", "tail_renewal"],
   ["Worker tail renewal window missed", "tail_renewal_window"],
   ["Worker tail renewal limit exceeded", "tail_renewal_limit"],
@@ -268,6 +350,7 @@ const probeErrors = new Map([
 
 // Never include provider bodies, exception messages, tokens or tail URLs.
 export function failureDiagnostic(error) {
+  const runtime = runtimeFailureEvidence.get(error);
   return {
     stage: probeStages.has(error?.stage) ? error.stage : "local_validation",
     code: probeErrors.get(error?.message) ?? "unexpected_error",
@@ -275,6 +358,7 @@ export function failureDiagnostic(error) {
       ? { http_status: error.httpStatus } : {}),
     ...(scheduleReadbacks.has(error) ? { schedule_readback: scheduleReadbacks.get(error) } : {}),
     ...(tailCleanupEvidence.has(error) ? { tail_cleanup: tailCleanupEvidence.get(error) } : {}),
+    ...(runtime !== undefined ? { tail_evidence: runtime } : {}),
   };
 }
 
@@ -362,6 +446,7 @@ export async function runRuntimeProbe({
   let pendingPongAt;
   let tailFrameCount = 0;
   let tailReconnects = 0;
+  const diagnosticCounters = Object.fromEntries(diagnosticCounterNames.map(name => [name, 0]));
   let receiptAccepted = false;
   let terminalFailure = false;
   let stopRequested = false;
@@ -443,27 +528,36 @@ export async function runRuntimeProbe({
       receiptTimer = setTimeoutFn(() => reject(new Error("runtime probe receipt timed out")), Math.max(0, deadline - now()));
       const onMessage = async (message) => {
         tailFrameCount = Math.min(1_000_000, tailFrameCount + 1);
+        incrementDiagnostic(diagnosticCounters, "frames_received");
+        let event;
         try {
-          const event = JSON.parse(await decodeTailFrame(message.data));
-          const found = extractReceipt(event, release, startedAt, deadline);
-          if (found !== undefined && now() < deadline && found.scheduled_time_ms <= now()) {
-            receiptAccepted = true;
-            clearTimeoutFn(renewalTimer);
-            clearTimeoutFn(tailExpiryTimer);
-            resolveCandidateOpen?.();
-            resolveCandidatePong?.();
-            clearTimeoutFn(receiptTimer);
-            resolve(found);
+          const decoded = await decodeTailFrame(message.data);
+          if (decoded === undefined) {
+            incrementDiagnostic(diagnosticCounters, "malformed_frames");
+            return;
           }
+          event = JSON.parse(decoded);
         } catch {
-          // Ignore malformed tail frames without logging their contents.
+          incrementDiagnostic(diagnosticCounters, "malformed_frames");
+          return;
+        }
+        observeTailEvent(event, diagnosticCounters, release, startedAt, deadline);
+        const found = extractReceipt(event, release, startedAt, deadline);
+        if (found !== undefined && now() < deadline && found.scheduled_time_ms <= now()) {
+          incrementDiagnostic(diagnosticCounters, "accepted_receipts");
+          receiptAccepted = true;
+          clearTimeoutFn(renewalTimer);
+          clearTimeoutFn(tailExpiryTimer);
+          resolveCandidateOpen?.();
+          resolveCandidatePong?.();
+          clearTimeoutFn(receiptTimer);
+          resolve(found);
         }
       };
       const closeEvidenceFor = (event) => {
         const code = Number.isInteger(event?.code) ? event.code : null;
-        const reason = event?.reason instanceof Buffer ? event.reason : Buffer.from(String(event?.reason ?? ""));
-        closeEvidence = { code, was_clean: typeof event?.wasClean === "boolean" ? event.wasClean : null,
-          reason_sha256: createHash("sha256").update(reason).digest("hex") };
+      closeEvidence = { code: code !== null && code >= 1000 && code <= 4999 ? code : null,
+        was_clean: typeof event?.wasClean === "boolean" ? event.wasClean : null };
       };
       const fail = (reason) => {
         terminalFailure = true;
@@ -480,6 +574,7 @@ export async function runRuntimeProbe({
         if (target !== socket) return;
         lastPongAt = now();
         pendingPongAt = undefined;
+        incrementDiagnostic(diagnosticCounters, "control_pongs");
         clearTimeoutFn(pongTimer);
         pongTimer = undefined;
         resolveCandidatePong?.();
@@ -497,6 +592,7 @@ export async function runRuntimeProbe({
       const recover = () => {
         if (receiptAccepted || tailReconnects >= 1 || now() >= deadline) return false;
         tailReconnects += 1;
+        incrementDiagnostic(diagnosticCounters, "reconnects");
         clearTimeoutFn(pongTimer);
         pongTimer = undefined;
         pendingPongAt = undefined;
@@ -617,6 +713,7 @@ export async function runRuntimeProbe({
       if (pongTimer !== undefined) return;
       try {
         pingCount = Math.min(1_000_000, pingCount + 1);
+        incrementDiagnostic(diagnosticCounters, "control_pings");
         pendingPongAt = now();
         pongTimer = setTimeoutFn(() => {
           failTail("Worker tail pong deadline exceeded");
@@ -692,6 +789,7 @@ export async function runRuntimeProbe({
 
   if (primaryError !== undefined) {
     if (tailCleanupReceipts.length !== 0) tailCleanupEvidence.set(primaryError, tailCleanupReceipts.slice(0, MAX_OWNED_TAILS));
+    if (tails.length !== 0) runtimeFailureEvidence.set(primaryError, diagnosticSnapshot(diagnosticCounters, closeEvidence));
     throw primaryError;
   }
   if (!exactReceipt(receipt, release, startedAt, deadline)) throw new Error("runtime probe receipt rejected");
@@ -709,10 +807,11 @@ export async function runRuntimeProbe({
     schedule_restored_empty: true,
     tail_deleted: true,
     tail_cleanup_receipts: tailCleanupReceipts,
-    tail_close: closeEvidence ?? { code: null, was_clean: null, reason_sha256: null },
+    tail_close: closeEvidence ?? { code: null, was_clean: null },
     tail_frames: tailFrameCount,
     tail_reconnects: tailReconnects,
     control_pings: pingCount,
+    control_pongs: diagnosticCounters.control_pongs,
   };
 }
 

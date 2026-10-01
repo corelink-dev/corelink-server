@@ -41,7 +41,7 @@ function scheduledFrame(value = receipt, timestamp = now) {
   };
 }
 
-function harness({ schedules: initial = [], installReadback, sendReceipt = true, driftAfterReceipt = false, emittedReceipt = receipt, frameKind = "text", openMode = "open", stallReplacementOpen = false, pingDuringInstall = false, acknowledgePong = true, receiptAfterMs = 0, reconnectOnce = false, tailTtlMs = 30 * 60_000, failTailRenewal = false, failTailDelete = false, deferTailRenewal = false, duplicateReceipt = false } = {}) {
+function harness({ schedules: initial = [], installReadback, sendReceipt = true, driftAfterReceipt = false, emittedReceipt = receipt, emittedEvent, emittedRawFrame, frameKind = "text", openMode = "open", stallReplacementOpen = false, pingDuringInstall = false, acknowledgePong = true, receiptAfterMs = 0, reconnectOnce = false, tailTtlMs = 30 * 60_000, failTailRenewal = false, failTailDelete = false, deferTailRenewal = false, duplicateReceipt = false } = {}) {
   let schedules = initial;
   let socket;
   let tailDeleted = false;
@@ -97,7 +97,7 @@ function harness({ schedules: initial = [], installReadback, sendReceipt = true,
         if (reconnectOnce) return response({ success: true, result: { schedules } });
         clock.value += receiptAfterMs;
         const value = receiptAfterMs === 0 ? emittedReceipt : { ...emittedReceipt, scheduled_time_ms: clock.value };
-        const text = JSON.stringify(scheduledFrame(value, clock.value));
+        const text = emittedRawFrame ?? JSON.stringify(emittedEvent ?? scheduledFrame(value, clock.value));
         const data = frameKind === "arraybuffer" ? new TextEncoder().encode(text).buffer
           : frameKind === "blob" ? new Blob([text]) : text;
         queueMicrotask(() => socket.onmessage({ data }));
@@ -178,6 +178,7 @@ test("installs one exact cron, accepts the release-bound receipt, and restores e
   assert.equal(proof.tail_cleanup_receipts[0].http_status, 200);
   assert.equal(proof.tail_cleanup_receipts[0].success, true);
   assert.equal(proof.control_pings, 1);
+  assert.equal(proof.control_pongs, 1);
   assert.equal(h.pongs, 1);
 });
 
@@ -190,7 +191,15 @@ test("missing control pong fails closed and cleans the exact schedule and tail",
     setIntervalFn(callback) { h.setHeartbeat(callback); return callback; }, clearIntervalFn() {},
     setTimeoutFn(callback, delay) { if (delay === 10_000) queueMicrotask(callback); return { callback, delay }; },
     clearTimeoutFn() {},
-  }), /Worker tail pong deadline exceeded/);
+  }), error => {
+    assert.match(error.message, /Worker tail pong deadline exceeded/);
+    const diagnostic = failureDiagnostic(error);
+    assert.equal(diagnostic.code, "tail_pong_timeout");
+    const tail = diagnostic.tail_evidence.counters;
+    assert.equal(tail.control_pings, 1);
+    assert.equal(tail.control_pongs, 0);
+    return true;
+  });
   assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
   assert.deepEqual(h.schedules, []);
   assert.equal(h.tailDeleted, true);
@@ -645,6 +654,40 @@ test("host ignores wrong nonce, release, expired and pre-invocation receipts and
     }), /timed out/);
     assert.deepEqual(h.schedules, []);
     assert.equal(h.tailDeleted, true);
+  }
+});
+
+test("failed probe diagnostics distinguish no frames, empty events, malformed frames and fixed markers", async () => {
+  const cases = [
+    { name: "no frame", options: { sendReceipt: false }, expect: { frames_received: 0 } },
+    { name: "empty event", options: { emittedEvent: { outcome: "ok", event: {}, logs: [] } }, expect: { frames_received: 1, frames_decoded: 1, empty_events: 1, unknown_event_metadata: 1 } },
+    { name: "malformed frame", options: { emittedRawFrame: "not-json" }, expect: { frames_received: 1, frames_decoded: 0, malformed_frames: 1 } },
+    { name: "failed marker", options: { emittedEvent: { ...scheduledFrame(), logs: [{ message: ["[staging_d1_runtime_probe] failed reason=probe_failed"] }] } }, expect: { failed_markers: 1, rejected_markers: 0 } },
+    { name: "rejected marker", options: { emittedEvent: { ...scheduledFrame(), logs: [{ message: ["[staging_d1_runtime_probe] rejected reason=staging_guard"] }] } }, expect: { failed_markers: 0, rejected_markers: 1 } },
+    { name: "malformed receipt", options: { emittedEvent: { ...scheduledFrame(), logs: [{ message: ["[staging_d1_runtime_probe] receipt=malformed-private-payload"] }] } }, expect: { receipt_markers: 1, malformed_receipts: 1 } },
+    { name: "wrong nonce receipt", options: { emittedEvent: scheduledFrame({ ...receipt, probe_nonce: "wrong-window", private_event_sentinel: "must-not-be-retained" }) }, expect: { receipt_markers: 1, wrong_nonce_receipts: 1, accepted_receipts: 0 } },
+    { name: "wrong release receipt", options: { emittedEvent: scheduledFrame({ ...receipt, worker_release: "f".repeat(40) }) }, expect: { wrong_release_receipts: 1, schema_rejected_receipts: 1 } },
+    { name: "out-of-window receipt", options: { emittedEvent: scheduledFrame({ ...receipt, scheduled_time_ms: now - 1 }) }, expect: { out_of_window_receipts: 1, schema_rejected_receipts: 1 } },
+    { name: "failed receipt flags", options: { emittedEvent: scheduledFrame({ ...receipt, failed_batch_observed: false }) }, expect: { schema_rejected_receipts: 1 } },
+  ];
+  for (const item of cases) {
+    const h = harness(item.options);
+    await assert.rejects(runRuntimeProbe({ token: "token", release, expectedSha: release,
+      imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now, timeoutMs: 5,
+    }), error => {
+      const diagnostic = failureDiagnostic(error);
+      assert.equal(diagnostic.code, "receipt_timeout", item.name);
+      for (const [key, expected] of Object.entries(item.expect)) {
+        assert.equal(diagnostic.tail_evidence.counters[key], expected, `${item.name}: ${key}`);
+      }
+      assert.equal(diagnostic.tail_evidence.counters.accepted_receipts, 0);
+      assert.equal(JSON.stringify(diagnostic).includes("private_event_sentinel"), false);
+      assert.equal(JSON.stringify(diagnostic).includes("must-not-be-retained"), false);
+      assert.equal(h.tailDeleted, true, `${item.name}: tail cleanup`);
+      assert.deepEqual(h.schedules, [], `${item.name}: schedule cleanup`);
+      assert.equal(JSON.stringify(diagnostic).includes("wrong-window"), false);
+      return true;
+    });
   }
 });
 

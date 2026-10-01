@@ -99,11 +99,12 @@ def host_diagnostics(stderr):
     if isinstance(stderr, bytes):
         stderr = stderr.decode('utf-8', errors='replace')
     stages = set('probe_preflight schedule_preflight tail_create tail_connect schedule_install receipt_wait schedule_cleanup tail_cleanup local_validation'.split())
-    codes = set('probe_preflight preexisting_schedule api_envelope api_failure api_transport tail_envelope tail_open_timeout tail_initialization tail_protocol tail_stream tail_closed receipt_timeout schedule_envelope schedule_readback schedule_cleanup schedule_drift unexpected_error'.split())
+    codes = set('probe_preflight preexisting_schedule api_envelope api_failure api_transport tail_envelope tail_open_timeout tail_initialization tail_protocol tail_stream tail_closed tail_reconnect_timeout tail_control_ping tail_pong_timeout tail_renewal tail_renewal_window tail_renewal_limit tail_renewal_pong_timeout tail_expired receipt_timeout schedule_envelope schedule_readback schedule_cleanup schedule_drift unexpected_error'.split())
+    counters = set('frames_received frames_decoded malformed_frames empty_events unknown_event_metadata scheduled_probe_events known_unmatched_events log_entries probe_markers receipt_markers failed_markers rejected_markers malformed_receipts wrong_nonce_receipts wrong_release_receipts out_of_window_receipts schema_rejected_receipts nonpass_receipts accepted_receipts control_pings control_pongs reconnects'.split())
     found = []
     for line in (stderr or '')[-8192:].splitlines():
         prefix = 'issue-1700 runtime probe failed '
-        if not line.startswith(prefix) or len(line) > 512:
+        if not line.startswith(prefix) or len(line) > 4096:
             continue
         try:
             value = json.loads(line[len(prefix):])
@@ -112,6 +113,17 @@ def host_diagnostics(stderr):
             clean = {'stage': value['stage'], 'code': value['code']}
             if type(value.get('http_status')) is int and 100 <= value['http_status'] <= 599:
                 clean['http_status'] = value['http_status']
+            tail = value.get('tail_evidence')
+            if isinstance(tail, dict) and set(tail) == {'counters', 'close'}:
+                raw_counters = tail.get('counters')
+                raw_close = tail.get('close')
+                if (isinstance(raw_counters, dict) and set(raw_counters) == counters
+                    and all(type(count) is int and 0 <= count <= 1_000_000 for count in raw_counters.values())
+                    and (raw_close is None or (isinstance(raw_close, dict)
+                        and set(raw_close) == {'code', 'was_clean'}
+                        and (raw_close['code'] is None or type(raw_close['code']) is int and 1000 <= raw_close['code'] <= 4999)
+                        and (raw_close['was_clean'] is None or type(raw_close['was_clean']) is bool)))):
+                    clean['tail_evidence'] = {'counters': raw_counters, 'close': raw_close}
             found.append(clean)
         except (ValueError, TypeError):
             continue
