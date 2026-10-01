@@ -57,9 +57,17 @@ export function assertReadbackPath(path) {
   fail("provider_path_rejected");
 }
 
-function assertTokenDiagnosticPath(path) {
+// Cloudflare verifies user-owned tokens under /user/tokens and account-owned
+// tokens under /accounts/{account_id}/tokens. An account-owned token gets 401
+// from /user/tokens/verify, so the account pair is allowed for the fixed target
+// account only; every other account ID is rejected.
+const ACCOUNT_TOKENS_PATH = `/accounts/${READBACK_TARGET.accountId}/tokens`;
+
+export function assertTokenDiagnosticPath(path) {
   if (path === "/user/tokens/verify") return true;
   if (/^\/user\/tokens\/[0-9a-f]{32}$/i.test(path)) return true;
+  if (path === `${ACCOUNT_TOKENS_PATH}/verify`) return true;
+  if (path.startsWith(`${ACCOUNT_TOKENS_PATH}/`) && TOKEN_ID.test(path.slice(ACCOUNT_TOKENS_PATH.length + 1))) return true;
   fail("token_diagnostic_path_rejected");
 }
 
@@ -190,12 +198,34 @@ export async function readWorkerInventory({ context, fetchImpl = fetch, now = ()
   return receipt;
 }
 
-function tokenVerificationDiagnostic({ httpStatus = null, errorClass = "not_attempted", activeStatus = "unknown", tokenIdShape = "not_checked" } = {}) {
+const TOKEN_KINDS = Object.freeze(["user", "account", "unknown"]);
+
+function allowlistedHttpStatus(httpStatus) {
+  return Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? httpStatus : null;
+}
+
+// One verify exchange: the numeric status and an error class, never the body.
+function verifyExchangeDiagnostic({ httpStatus = null, errorClass = "not_attempted" } = {}) {
+  return Object.freeze({ http_status: allowlistedHttpStatus(httpStatus), error_class: errorClass });
+}
+
+function tokenVerificationDiagnostic({
+  httpStatus = null,
+  errorClass = "not_attempted",
+  activeStatus = "unknown",
+  tokenIdShape = "not_checked",
+  tokenKind = "unknown",
+  userVerify = verifyExchangeDiagnostic(),
+  accountVerify = verifyExchangeDiagnostic(),
+} = {}) {
   return Object.freeze({
-    http_status: Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? httpStatus : null,
+    http_status: allowlistedHttpStatus(httpStatus),
     error_class: errorClass,
     active_status: activeStatus,
     token_id_shape: tokenIdShape,
+    token_kind: TOKEN_KINDS.includes(tokenKind) ? tokenKind : "unknown",
+    user_verify: userVerify,
+    account_verify: accountVerify,
   });
 }
 
@@ -209,6 +239,9 @@ function unknownTokenPolicyDiagnostic(status = "unknown_response", tokenActive =
   });
 }
 
+// User- and account-owned token details share one policy shape: account-level
+// resources are keyed `com.cloudflare.api.account.<account_id>`, so the same
+// summary applies to both token kinds.
 function summarizeTokenPolicies(policies) {
   if (!Array.isArray(policies)) return unknownTokenPolicyDiagnostic("policy_unknown", true);
   let accountScoped = false;
@@ -261,7 +294,7 @@ export async function readTokenPolicyDiagnostic({ apiToken, fetchImpl = fetch, n
   const request = async (path) => {
     assertTokenDiagnosticPath(path);
     const remaining = deadline - now();
-    if (remaining <= 0) return { kind: "timeout", diagnostic: tokenVerificationDiagnostic({ errorClass: "timeout" }) };
+    if (remaining <= 0) return { kind: "timeout", exchange: verifyExchangeDiagnostic({ errorClass: "timeout" }) };
     let response;
     try {
       response = await fetchImpl(`${API}${path}`, {
@@ -272,43 +305,64 @@ export async function readTokenPolicyDiagnostic({ apiToken, fetchImpl = fetch, n
       });
     } catch (error) {
       const timedOut = error instanceof Error && error.name === "TimeoutError";
-      return { kind: timedOut ? "timeout" : "transport_unknown", diagnostic: tokenVerificationDiagnostic({ errorClass: timedOut ? "timeout" : "transport_error" }) };
+      return { kind: timedOut ? "timeout" : "transport_unknown", exchange: verifyExchangeDiagnostic({ errorClass: timedOut ? "timeout" : "transport_error" }) };
     }
     if (response.status !== 200) {
       return {
         kind: response.status === 403 ? "unknown_access" : "http_unknown",
-        diagnostic: tokenVerificationDiagnostic({ httpStatus: response.status, errorClass: "http_response" }),
+        exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "http_response" }),
       };
     }
     let payload;
     try { payload = await response.json(); } catch {
-      return { kind: "response_unknown", diagnostic: tokenVerificationDiagnostic({ httpStatus: response.status, errorClass: "malformed_json" }) };
+      return { kind: "response_unknown", exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "malformed_json" }) };
     }
     return payload?.success === true && payload.result && typeof payload.result === "object" && !Array.isArray(payload.result)
-      ? { kind: "ok", result: payload.result, diagnostic: tokenVerificationDiagnostic({ httpStatus: response.status, errorClass: "none" }) }
-      : { kind: "response_unknown", diagnostic: tokenVerificationDiagnostic({ httpStatus: response.status, errorClass: "malformed_payload" }) };
+      ? { kind: "ok", result: payload.result, exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "none" }) }
+      : { kind: "response_unknown", exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "malformed_payload" }) };
   };
 
-  const verification = await request("/user/tokens/verify");
+  // A user-owned token verifies at /user/tokens/verify. An account-owned token
+  // is rejected there with 401, so only a 401 or 403 earns one retry at the
+  // fixed account's verify endpoint. Whichever endpoint succeeds decides the
+  // token kind and therefore which details path is read.
+  const userVerification = await request("/user/tokens/verify");
+  const accountVerification = userVerification.kind !== "ok" && [401, 403].includes(userVerification.exchange.http_status)
+    ? await request(`${ACCOUNT_TOKENS_PATH}/verify`)
+    : null;
+  const verification = accountVerification ?? userVerification;
+  const tokenKind = verification.kind !== "ok" ? "unknown" : verification === accountVerification ? "account" : "user";
+  const exchanges = {
+    tokenKind,
+    userVerify: userVerification.exchange,
+    accountVerify: accountVerification?.exchange ?? verifyExchangeDiagnostic(),
+  };
   if (verification.kind !== "ok") {
-    return unknownTokenPolicyDiagnostic(verification.kind === "unknown_access" ? "unknown_access" : "verify_unknown", null, verification.diagnostic);
+    const denied = [userVerification, accountVerification].some((attempt) => attempt?.kind === "unknown_access");
+    return unknownTokenPolicyDiagnostic(denied ? "unknown_access" : "verify_unknown", null, tokenVerificationDiagnostic({
+      httpStatus: verification.exchange.http_status,
+      errorClass: verification.exchange.error_class,
+      ...exchanges,
+    }));
   }
   const tokenStatus = verification.result.status;
   const activeStatus = tokenStatus === "active" ? "active" : ["disabled", "expired"].includes(tokenStatus) ? "inactive" : "other";
   const tokenIdShape = typeof verification.result.id !== "string" ? "missing" : TOKEN_ID.test(verification.result.id) ? "valid_32_hex" : "malformed";
   const verificationDiagnostic = tokenVerificationDiagnostic({
-    httpStatus: verification.diagnostic.http_status,
+    httpStatus: verification.exchange.http_status,
     errorClass: ["active", "disabled", "expired"].includes(tokenStatus) && (activeStatus !== "active" || tokenIdShape === "valid_32_hex")
       ? "none"
       : "malformed_verification_fields",
     activeStatus,
     tokenIdShape,
+    ...exchanges,
   });
   if (["disabled", "expired"].includes(tokenStatus)) return unknownTokenPolicyDiagnostic("inactive", false, verificationDiagnostic);
   if (tokenStatus !== "active" || tokenIdShape !== "valid_32_hex") {
     return unknownTokenPolicyDiagnostic("verify_unknown", null, verificationDiagnostic);
   }
-  const details = await request(`/user/tokens/${encodeURIComponent(verification.result.id)}`);
+  const tokensPath = tokenKind === "account" ? ACCOUNT_TOKENS_PATH : "/user/tokens";
+  const details = await request(`${tokensPath}/${encodeURIComponent(verification.result.id)}`);
   if (details.kind === "unknown_access") return unknownTokenPolicyDiagnostic("unknown_access", true, verificationDiagnostic);
   if (details.kind !== "ok") return unknownTokenPolicyDiagnostic("details_unknown", true, verificationDiagnostic);
   return Object.freeze({ ...summarizeTokenPolicies(details.result.policies), verification: verificationDiagnostic });
