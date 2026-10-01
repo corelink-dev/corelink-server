@@ -677,7 +677,9 @@ pub(super) fn assert_publication_inventory_contract(workflow: &str) {
         "signed-public and draft verifier must remain the only release-cli attestation loops"
     );
     assert_eq!(
-        workflow.matches("--bundle \"${NORMALIZED_BUNDLE}\"").count(),
+        workflow
+            .matches("--bundle \"${NORMALIZED_BUNDLE}\"")
+            .count(),
         2,
         "both release-cli attestation loops must use a normalized private bundle"
     );
