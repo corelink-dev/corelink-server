@@ -6,14 +6,14 @@ import { readFile } from "node:fs/promises";
 import { ACCOUNT_ID, normalizeContainerDetail, readContainerDetail, runRuntimeProbe, failureDiagnostic, decodeTailFrame, waitForContainerState, captureDeployImageDigest, captureContainerPreimage, verifyContainerPreimage, verifyContainerImageDigest, verifyContainerState, verifyContainerRollback, CONTAINER_APP_ID, CONTAINER_APP_NAME, PROBE_CRON, PROBE_EXPIRY, PROBE_WINDOW, approvedProbeWindow } from "../issue_1700_runtime_probe.mjs";
 
 const release = "0123456789abcdef0123456789abcdef01234567";
-const now = Date.parse("2026-09-30T18:01:00Z");
+const now = Date.parse("2026-09-30T22:01:00Z");
 const imageDigest = `sha256:${"a".repeat(64)}`;
 const receipt = {
   contract: "corelink-staging-d1-binding-runtime-v1",
   outcome: "pass",
   probe_nonce: PROBE_WINDOW.nonce,
   worker_release: release,
-  scheduled_time_ms: Date.parse("2026-09-30T18:01:00Z"),
+  scheduled_time_ms: Date.parse("2026-09-30T22:01:00Z"),
   parameterized_select: true,
   failed_batch_observed: true,
   rollback_absence_verified: true,
@@ -21,31 +21,42 @@ const receipt = {
   d1_binding_intercepted: true,
   authorization_absent: true,
   cf_api_token_absent: true, old_probe_release: "0f785fb9b096afe01247f1057d46377b9f604f13", old_probe_retired: true, old_probe_tables_absent: true,
+  v5_probe_release: "cc32b3d819181bf9175e795868f66212aa5456c1", v5_probe_retired: true, v5_probe_tables_absent: true,
+  v5_prior_execution: "unknown",
   v4_probe_catalog_absent: true,
 };
 
-test("compiled runtime window is the exact approved same-day v5 tuple", () => {
+test("compiled runtime window is the exact approved cross-midnight v6 tuple", () => {
   assert.equal(approvedProbeWindow(), true);
   assert.equal(approvedProbeWindow({ ...PROBE_WINDOW, expires_ms: PROBE_WINDOW.expires_ms + 60_000 }), false);
   assert.equal(approvedProbeWindow({ ...PROBE_WINDOW, nonce: "issue-1700-recovery-20260930-v4" }), false);
 });
 
 // Cloudflare workers-sdk TailEventMessage: scheduled event and console log envelope.
-function scheduledFrame(value = receipt) {
+function scheduledFrame(value = receipt, timestamp = now) {
   return { outcome: "ok", scriptName: "corelink-staging", exceptions: [],
-    eventTimestamp: now, event: { cron: PROBE_CRON, scheduledTime: now },
-    logs: [{ level: "info", timestamp: now,
+    eventTimestamp: timestamp, event: { cron: PROBE_CRON, scheduledTime: timestamp },
+    logs: [{ level: "info", timestamp,
       message: [`[staging_d1_runtime_probe] receipt=${JSON.stringify(value)}`] }],
   };
 }
 
-function harness({ schedules: initial = [], installReadback, sendReceipt = true, driftAfterReceipt = false, emittedReceipt = receipt, frameKind = "text", openMode = "open" } = {}) {
+function harness({ schedules: initial = [], installReadback, sendReceipt = true, driftAfterReceipt = false, emittedReceipt = receipt, frameKind = "text", openMode = "open", stallReplacementOpen = false, pingDuringInstall = false, acknowledgePong = true, receiptAfterMs = 0, reconnectOnce = false, tailTtlMs = 30 * 60_000, failTailRenewal = false, failTailDelete = false, deferTailRenewal = false, duplicateReceipt = false } = {}) {
   let schedules = initial;
   let socket;
   let tailDeleted = false;
   const puts = [];
   let scheduleReads = 0;
   let initialized = false;
+  let heartbeat;
+  let pongs = 0;
+  let socketsCreated = 0;
+  const sockets = [];
+  let tailsCreated = 0;
+  let releaseTailRenewal;
+  const tailIds = new Set();
+  const deleteAttempts = [];
+  const clock = { value: now };
   const api = async (url, init = {}) => {
     const path = new URL(url).pathname;
     const method = init.method ?? "GET";
@@ -57,31 +68,51 @@ function harness({ schedules: initial = [], installReadback, sendReceipt = true,
       if (driftAfterReceipt && scheduleReads === 3) schedules = [{ cron: "0 0 * * *" }];
       return response({ success: true, result: { schedules } });
     }
+    if (path.endsWith("/tails") && method === "GET") {
+      return response({ success: true, result: [...tailIds].map(id => ({ id })) });
+    }
     if (path.endsWith("/tails") && method === "POST") {
+      if (failTailRenewal && tailsCreated > 0) return response({ success: false }, false);
       assert.equal(init.headers["content-type"], "application/json");
       assert.deepEqual(JSON.parse(init.body), { filters: [] });
-      return response({ success: true, result: {
-        id: "0123456789abcdef0123456789abcdef",
-        expires_at: new Date(now + 30 * 60_000).toISOString(),
+      tailsCreated += 1;
+      const id = String(tailsCreated).padStart(32, "0");
+      tailIds.add(id);
+      const createResponse = response({ success: true, result: {
+        id,
+        expires_at: new Date(clock.value + tailTtlMs).toISOString(),
         url: "wss://tail.example.invalid/secret-in-memory",
       } });
+      if (deferTailRenewal && tailsCreated > 1) return new Promise(resolve => { releaseTailRenewal = () => resolve(createResponse); });
+      return createResponse;
     }
     if (path.endsWith("/schedules") && method === "PUT") {
       const next = JSON.parse(init.body);
       if (next.length) assert.equal(initialized, true, "tail handshake precedes schedule installation");
       puts.push(next);
       schedules = next;
+      if (next.length && pingDuringInstall) heartbeat?.();
+      if (next.length && reconnectOnce && socketsCreated === 1) queueMicrotask(() => socket.onclose({ code: 1006, reason: "network interruption" }));
       if (next.length === 1 && sendReceipt) {
-        const text = JSON.stringify(scheduledFrame(emittedReceipt));
+        if (reconnectOnce) return response({ success: true, result: { schedules } });
+        clock.value += receiptAfterMs;
+        const value = receiptAfterMs === 0 ? emittedReceipt : { ...emittedReceipt, scheduled_time_ms: clock.value };
+        const text = JSON.stringify(scheduledFrame(value, clock.value));
         const data = frameKind === "arraybuffer" ? new TextEncoder().encode(text).buffer
           : frameKind === "blob" ? new Blob([text]) : text;
         queueMicrotask(() => socket.onmessage({ data }));
+        if (duplicateReceipt) queueMicrotask(() => socket.onmessage({ data }));
       }
       return response({ success: true, result: { schedules } });
     }
-    if (path.endsWith("/tails/0123456789abcdef0123456789abcdef") && method === "DELETE") {
+    if (/\/tails\/[a-f0-9]{32}$/.test(path) && method === "DELETE") {
+      const id = path.split("/").at(-1);
+      deleteAttempts.push(id);
+      if (!failTailDelete || deleteAttempts.length > 1) tailIds.delete(id);
       tailDeleted = true;
-      return response({ success: true, result: {} });
+      return failTailDelete && deleteAttempts.length === 1
+        ? response({ success: false, result: {} }, false)
+        : response({ success: true, result: {} });
     }
     throw new Error("unexpected test API request");
   };
@@ -89,35 +120,279 @@ function harness({ schedules: initial = [], installReadback, sendReceipt = true,
     api,
     socketFactory: (_url, protocol) => {
       assert.equal(protocol, "trace-v1");
-      socket = { protocol: openMode === "wrong_protocol" ? "" : protocol,
+      socketsCreated += 1;
+      const createdSocket = { protocol: openMode === "wrong_protocol" ? "" : protocol,
         onmessage: undefined, onerror: undefined, onclose: undefined, close() {},
+        on(_name, listener) { this.pongListener = listener; },
+        ping() { pongs += 1; if (acknowledgePong) this.pongListener?.(); },
         send(value) { assert.deepEqual(JSON.parse(value), { debug: false }); initialized = true; },
       };
-      if (openMode !== "timeout") queueMicrotask(() => openMode === "error" ? socket.onerror() : socket.onopen());
+      socket = createdSocket;
+      sockets.push(createdSocket);
+      if (openMode !== "timeout" && !(stallReplacementOpen && socketsCreated > 1)) queueMicrotask(() => {
+        if (openMode === "error") createdSocket.onerror();
+        else {
+          createdSocket.onopen();
+          if (reconnectOnce && sendReceipt && socketsCreated === 2) queueMicrotask(() => createdSocket.onmessage({ data: JSON.stringify(scheduledFrame(emittedReceipt)) }));
+        }
+      });
       return socket;
     },
     get schedules() { return schedules; },
     puts,
+    setHeartbeat(callback) { heartbeat = callback; },
+    get heartbeat() { return heartbeat; },
+    get pongs() { return pongs; },
+    clock,
     get tailDeleted() { return tailDeleted; },
+    get tailsCreated() { return tailsCreated; },
+    releaseTailRenewal() { releaseTailRenewal?.(); },
+    sockets,
+    deleteAttempts,
+    emitReceipt(value = receipt) {
+      const text = JSON.stringify(scheduledFrame(value, clock.value));
+      socket?.onmessage?.({ data: text });
+    },
   };
 }
 
 function response(body, ok = true) {
-  return { ok, json: async () => body };
+  return { ok, status: ok ? 200 : 500, json: async () => body };
 }
 
 test("installs one exact cron, accepts the release-bound receipt, and restores empty schedules", async () => {
-  const h = harness();
+  const h = harness({ pingDuringInstall: true });
   const proof = await runRuntimeProbe({
     token: "test-token-never-logged", release, expectedSha: release,
     imageDigest,
-    api: h.api, socketFactory: h.socketFactory, now: () => now, timeoutMs: 16 * 60_000,
+    api: h.api, socketFactory: h.socketFactory, now: () => now, timeoutMs: 25 * 60_000,
+    setIntervalFn(callback) { h.setHeartbeat(callback); return callback; }, clearIntervalFn() {},
   });
   assert.equal(proof.cron, PROBE_CRON);
   assert.equal(proof.receipt.worker_release, release);
   assert.equal(proof.schedule_restored_empty, true);
   assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
   assert.deepEqual(h.schedules, []);
+  assert.equal(h.tailDeleted, true);
+  assert.equal(proof.tail_cleanup_receipts.length, 1);
+  assert.equal(proof.tail_cleanup_receipts[0].http_status, 200);
+  assert.equal(proof.tail_cleanup_receipts[0].success, true);
+  assert.equal(proof.control_pings, 1);
+  assert.equal(h.pongs, 1);
+});
+
+test("missing control pong fails closed and cleans the exact schedule and tail", async () => {
+  const h = harness({ sendReceipt: false, pingDuringInstall: true, acknowledgePong: false });
+  await assert.rejects(runRuntimeProbe({
+    token: "token", release, expectedSha: release, imageDigest,
+    api: h.api, socketFactory: h.socketFactory, now: () => now,
+    timeoutMs: 25 * 60_000,
+    setIntervalFn(callback) { h.setHeartbeat(callback); return callback; }, clearIntervalFn() {},
+    setTimeoutFn(callback, delay) { if (delay === 10_000) queueMicrotask(callback); return { callback, delay }; },
+    clearTimeoutFn() {},
+  }), /Worker tail pong deadline exceeded/);
+  assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+  assert.deepEqual(h.schedules, []);
+  assert.equal(h.tailDeleted, true);
+  assert.equal(h.pongs, 1);
+});
+
+test("a healthy tail first ping at 10001ms is not treated as an overdue pong", async () => {
+  const h = harness({ pingDuringInstall: false });
+  const running = runRuntimeProbe({ token: "token", release, expectedSha: release, imageDigest,
+    api: h.api, socketFactory: h.socketFactory, now: () => h.clock.value,
+    setIntervalFn(callback) { h.setHeartbeat(callback); return callback; }, clearIntervalFn() {},
+    setTimeoutFn(callback, delay) { return { callback, delay }; }, clearTimeoutFn() {},
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  h.clock.value += 10_001;
+  h.heartbeat();
+  h.emitReceipt();
+  const proof = await running;
+  assert.equal(proof.receipt.outcome, "pass");
+  assert.equal(h.pongs, 1);
+  assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+});
+
+test("accepts the persisted receipt after a fake fifteen-minute Cron propagation interval", async () => {
+  const h = harness({ receiptAfterMs: 15 * 60_000 });
+  const proof = await runRuntimeProbe({ token: "token", release, expectedSha: release,
+    imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => h.clock.value,
+    timeoutMs: 25 * 60_000 });
+  assert.equal(proof.receipt.scheduled_time_ms, now + 15 * 60_000);
+  assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+  assert.equal(h.tailDeleted, true);
+});
+
+test("reconnects the existing tail once without reinstalling the schedule", async () => {
+  const h = harness({ reconnectOnce: true });
+  const proof = await runRuntimeProbe({ token: "token", release, expectedSha: release,
+    imageDigest, api: h.api, socketFactory: h.socketFactory, now: () => now,
+    timeoutMs: 2_000 });
+  assert.equal(proof.tail_reconnects, 1);
+  assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+  assert.equal(proof.receipt.outcome, "pass");
+});
+
+test("renews a short-lived tail with overlap and one schedule install, then deletes every owned tail", async () => {
+  const h = harness({ sendReceipt: false, tailTtlMs: 5 * 60_000, duplicateReceipt: true });
+  const timers = [];
+  const running = runRuntimeProbe({ token: "token", release, expectedSha: release, imageDigest,
+    api: h.api, socketFactory: h.socketFactory, now: () => h.clock.value,
+    setTimeoutFn(callback, delay) { const timer = { callback, delay, cleared: false }; timers.push(timer); return timer; },
+    clearTimeoutFn(timer) { if (timer) timer.cleared = true; },
+    setIntervalFn(callback) { h.setHeartbeat(callback); return callback; }, clearIntervalFn() {},
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const renew = timers.find(timer => !timer.cleared && timer.delay === 4 * 60_000);
+  assert.ok(renew, "renewal is scheduled one minute before the actual tail expiry");
+  renew.callback();
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.tailsCreated, 2);
+  assert.equal(h.sockets.length, 2, "replacement connects before old socket is closed");
+  h.emitReceipt();
+  h.emitReceipt();
+  const proof = await running;
+  assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+  assert.equal(h.tailDeleted, true);
+  assert.equal(proof.schedule_restored_empty, true);
+  assert.equal(proof.tail_cleanup_receipts.length, 2);
+  assert.ok(proof.tail_cleanup_receipts.every(item => item.success && item.http_status === 200));
+});
+
+test("short TTL and failed renewal are inconclusive and clean every created tail", async () => {
+  const short = harness({ tailTtlMs: 4 * 60_000 - 1 });
+  await assert.rejects(runRuntimeProbe({ token: "token", release, expectedSha: release,
+    imageDigest, api: short.api, socketFactory: short.socketFactory, now: () => short.clock.value,
+  }), /tail preflight rejected/);
+  assert.equal(short.tailDeleted, true);
+
+  const h = harness({ sendReceipt: false, tailTtlMs: 5 * 60_000, failTailRenewal: true });
+  const timers = [];
+  const running = runRuntimeProbe({ token: "token", release, expectedSha: release, imageDigest,
+    api: h.api, socketFactory: h.socketFactory, now: () => h.clock.value,
+    setTimeoutFn(callback, delay) { const timer = { callback, delay, cleared: false }; timers.push(timer); return timer; },
+    clearTimeoutFn(timer) { if (timer) timer.cleared = true; },
+    setIntervalFn(callback) { h.setHeartbeat(callback); return callback; }, clearIntervalFn() {},
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  timers.find(timer => !timer.cleared && timer.delay === 4 * 60_000).callback();
+  await assert.rejects(running, /Worker tail renewal failed/);
+  assert.equal(h.tailsCreated, 1);
+  assert.equal(h.tailDeleted, true);
+  assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+});
+
+test("waits for an in-flight tail create before final cleanup", async () => {
+  const h = harness({ sendReceipt: false, tailTtlMs: 5 * 60_000, deferTailRenewal: true });
+  const timers = [];
+  const running = runRuntimeProbe({ token: "token", release, expectedSha: release, imageDigest,
+    api: h.api, socketFactory: h.socketFactory, now: () => h.clock.value,
+    setTimeoutFn(callback, delay) { const timer = { callback, delay, cleared: false }; timers.push(timer); return timer; },
+    clearTimeoutFn(timer) { if (timer) timer.cleared = true; },
+  });
+  let settled = false;
+  running.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  timers.find(timer => !timer.cleared && timer.delay === 4 * 60_000).callback();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.tailsCreated, 2, "renewal POST has started and owns a new ID when it resolves");
+  h.emitReceipt();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, "final cleanup waits for the bounded create request");
+  assert.equal(h.deleteAttempts.length, 0);
+  h.releaseTailRenewal();
+  const proof = await running;
+  assert.equal(h.deleteAttempts.length, 2);
+  assert.equal(proof.tail_cleanup_receipts.length, 2);
+  assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+});
+
+test("attempts cleanup for every owned tail and fails if any DELETE is rejected", async () => {
+  const h = harness({ sendReceipt: false, tailTtlMs: 5 * 60_000, failTailDelete: true });
+  const timers = [];
+  const running = runRuntimeProbe({ token: "token", release, expectedSha: release, imageDigest,
+    api: h.api, socketFactory: h.socketFactory, now: () => h.clock.value,
+    setTimeoutFn(callback, delay) { const timer = { callback, delay, cleared: false }; timers.push(timer); return timer; },
+    clearTimeoutFn(timer) { if (timer) timer.cleared = true; },
+  });
+  const expectedFailure = assert.rejects(running, error => {
+    assert.match(error.message, /Worker tail renewal failed/);
+    const cleanup = failureDiagnostic(error).tail_cleanup;
+    assert.equal(cleanup.length, 2);
+    assert.deepEqual(cleanup.map(item => item.http_status), [500, 200]);
+    assert.deepEqual(cleanup.map(item => item.success), [false, true]);
+    assert.ok(cleanup.every(item => Number.isSafeInteger(item.deleted_at_ms)));
+    return true;
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  timers.find(timer => !timer.cleared && timer.delay === 4 * 60_000).callback();
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  h.emitReceipt();
+  await expectedFailure;
+  assert.equal(h.tailsCreated, 2);
+  assert.equal(h.deleteAttempts.length, 2);
+  assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+});
+
+test("a replacement tail must pong before the old tail is retired", async () => {
+  const h = harness({ sendReceipt: false, tailTtlMs: 5 * 60_000, acknowledgePong: false });
+  const timers = [];
+  const running = runRuntimeProbe({ token: "token", release, expectedSha: release, imageDigest,
+    api: h.api, socketFactory: h.socketFactory, now: () => h.clock.value,
+    setTimeoutFn(callback, delay) {
+      const timer = { callback, delay, cleared: false };
+      timers.push(timer);
+      if (delay === 10_000) queueMicrotask(callback);
+      return timer;
+    },
+    clearTimeoutFn(timer) { if (timer) timer.cleared = true; },
+  });
+  const expectedFailure = assert.rejects(running, /Worker tail renewal failed/);
+  await new Promise(resolve => setImmediate(resolve));
+  timers.find(timer => !timer.cleared && timer.delay === 4 * 60_000).callback();
+  await expectedFailure;
+  assert.equal(h.tailsCreated, 2);
+  assert.equal(h.deleteAttempts.length, 2);
+  assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+});
+
+test("expired replacement open deadline settles renewal and cleans all owned resources", async () => {
+  const h = harness({ sendReceipt: false, tailTtlMs: 5 * 60_000, stallReplacementOpen: true });
+  const timers = [];
+  const running = runRuntimeProbe({ token: "token", release, expectedSha: release, imageDigest,
+    api: h.api, socketFactory: h.socketFactory, now: () => h.clock.value,
+    setTimeoutFn(callback, delay) { const timer = { callback, delay, cleared: false }; timers.push(timer); return timer; },
+    clearTimeoutFn(timer) { if (timer) timer.cleared = true; },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  timers.find(timer => !timer.cleared && timer.delay === 4 * 60_000).callback();
+  await new Promise(resolve => setImmediate(resolve));
+  timers.find(timer => !timer.cleared && timer.delay === 20_000).callback();
+  await assert.rejects(running, /Worker tail renewal failed/);
+  assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
+  assert.equal(h.schedules.length, 0);
+  assert.deepEqual(h.deleteAttempts, ["0".repeat(31) + "2", "0".repeat(31) + "1"]);
+});
+
+test("a stale pong from a replaced socket cannot keep the active tail alive", async () => {
+  const h = harness({ sendReceipt: false, reconnectOnce: true, acknowledgePong: false });
+  const running = runRuntimeProbe({ token: "token", release, expectedSha: release, imageDigest,
+    api: h.api, socketFactory: h.socketFactory, now: () => h.clock.value,
+    setIntervalFn(callback) { h.setHeartbeat(callback); return callback; }, clearIntervalFn() {},
+    setTimeoutFn(callback, delay) { return { callback, delay }; }, clearTimeoutFn() {},
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.sockets.length, 2);
+  h.heartbeat();
+  h.clock.value += 10_001;
+  h.sockets[0].pongListener?.();
+  h.heartbeat();
+  await assert.rejects(running, /Worker tail pong deadline exceeded/);
+  assert.deepEqual(h.puts, [[{ cron: PROBE_CRON }], []]);
   assert.equal(h.tailDeleted, true);
 });
 
@@ -201,6 +476,15 @@ test("fails closed when the bounded probe window cannot fit", async () => {
     api: h.api, socketFactory: h.socketFactory,
     now: () => PROBE_EXPIRY - 10_000,
   }), /preflight rejected/);
+  assert.deepEqual(h.puts, []);
+});
+
+test("fails closed when fifteen-minute Cron propagation cannot fit before last entry", async () => {
+  const h = harness();
+  await assert.rejects(runRuntimeProbe({ token: "token", release, expectedSha: release,
+    imageDigest, api: h.api, socketFactory: h.socketFactory,
+    now: () => PROBE_WINDOW.last_entry_ms - 15 * 60_000,
+    timeoutMs: 25 * 60_000 }), /preflight rejected/);
   assert.deepEqual(h.puts, []);
 });
 
@@ -337,13 +621,20 @@ test("readback rejects wrong app, wrong digest, skipped version, and deadline", 
 test("host ignores wrong nonce, release, expired and pre-invocation receipts and cleans up", async () => {
   const missingV4CatalogReceipt = { ...receipt };
   delete missingV4CatalogReceipt.v4_probe_catalog_absent;
+  const missingV5Retirement = { ...receipt };
+  delete missingV5Retirement.v5_probe_retired;
   for (const emittedReceipt of [
     missingV4CatalogReceipt,
+    missingV5Retirement,
     { ...receipt, v4_probe_catalog_absent: false },
     { ...receipt, probe_nonce: "old-window" },
     { ...receipt, worker_release: "f".repeat(40) },
     { ...receipt, old_probe_retired: false },
     { ...receipt, old_probe_tables_absent: false },
+    { ...receipt, v5_probe_release: "a".repeat(40) },
+    { ...receipt, v5_probe_retired: false },
+    { ...receipt, v5_probe_tables_absent: false },
+    { ...receipt, v5_prior_execution: "pass" },
     { ...receipt, old_probe_release: "a".repeat(40) },
     { ...receipt, scheduled_time_ms: PROBE_EXPIRY },
     { ...receipt, scheduled_time_ms: now - 60000 },

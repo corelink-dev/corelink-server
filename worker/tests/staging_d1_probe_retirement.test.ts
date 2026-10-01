@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { D1Database } from "@cloudflare/workers-types";
-import { assertV4FailedProbeCatalogAbsent, cleanOldProbeTables, OLD_PROBE_TABLES, OLD_TABLE_PREFIX, OLD_PROBE_RUN_BOUNDS, V4_FAILED_PROBE_TABLE_PREFIX } from "../src/staging_d1_probe_retirement.js";
+import { assertV4FailedProbeCatalogAbsent, cleanOldProbeTables, cleanV5ProbeTables, OLD_PROBE_TABLES, OLD_TABLE_PREFIX, OLD_PROBE_RUN_BOUNDS, V4_FAILED_PROBE_TABLE_PREFIX, V5_PROBE_RELEASE, V5_PROBE_RUN_BOUNDS, V5_PROBE_TABLES, V5_TABLE_PREFIX } from "../src/staging_d1_probe_retirement.js";
 
 const table = [...OLD_PROBE_TABLES.keys()][0]!;
 const schema = { type: "table", name: table, tbl_name: table,
@@ -18,6 +18,39 @@ function database(options: { objects?: object[]; foreign?: object[]; rows?: obje
 }
 
 describe("exact old staging probe SQL retirement", () => {
+  it("bounds v5 retirement to the historical release and its minute schedule", async () => {
+    const times = [...V5_PROBE_TABLES.values()];
+    expect(V5_PROBE_RELEASE).toBe("cc32b3d819181bf9175e795868f66212aa5456c1");
+    expect(V5_TABLE_PREFIX).toBe("corelink_staging_d1_probe_cc32b3d819181bf9_");
+    expect(times[0]).toBe(Math.ceil(V5_PROBE_RUN_BOUNDS.start / 60000) * 60000);
+    expect(times.at(-1)).toBe(Math.floor(V5_PROBE_RUN_BOUNDS.end / 60000) * 60000);
+    expect(times.every(t => t % 60000 === 0 && t >= V5_PROBE_RUN_BOUNDS.start && t <= V5_PROBE_RUN_BOUNDS.end)).toBe(true);
+    const name = [...V5_PROBE_TABLES.keys()][0]!;
+    const object = { type: "table", name, tbl_name: name,
+      sql: `CREATE TABLE ${name} (probe_id TEXT PRIMARY KEY, value TEXT NOT NULL)` };
+    const inventory = [object, { type: "index", name: `sqlite_autoindex_${name}_1`, tbl_name: name, sql: null }];
+    const drops: string[] = [];
+    const db = { prepare(sql: string) { return {
+      bind() { return this; },
+      all: async () => ({ success: true, results: sql.startsWith("SELECT type") ? inventory : [] }),
+      first: async () => ({ total: 1, invalid: 0 }),
+      run: async () => { drops.push(sql); inventory.splice(0); return { success: true }; },
+    }; } } as unknown as D1Database;
+    await cleanV5ProbeTables(db, () => 1790809200000);
+    expect(drops).toEqual([`DROP TABLE "${name}"`]);
+  });
+  it("fails closed on an unexpected v5 namespace object without dropping anything", async () => {
+    const rogue = { type: "table", name: `${V5_TABLE_PREFIX}1790800000000`, tbl_name: `${V5_TABLE_PREFIX}1790800000000`, sql: "rogue" };
+    const drops: string[] = [];
+    const db = { prepare(sql: string) { return {
+      bind() { return this; },
+      all: async () => ({ success: true, results: sql.startsWith("SELECT type") ? [rogue] : [] }),
+      first: async () => ({ total: 0, invalid: 0 }),
+      run: async () => { drops.push(sql); return { success: true }; },
+    }; } } as unknown as D1Database;
+    await expect(cleanV5ProbeTables(db, () => 1790809200000)).rejects.toThrow("ownership rejected");
+    expect(drops).toEqual([]);
+  });
   it("proves only the exact failed-v4 D1 namespace absent and never deletes it", async () => {
     const { db, drops, prepare } = database({ objects: [] });
     await assertV4FailedProbeCatalogAbsent(db);

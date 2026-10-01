@@ -69,7 +69,8 @@ class CompletionTests(unittest.TestCase):
             raise ValueError('provider secret')
         result = completion.complete(snapshot, failed, validate)
         self.assertEqual(result['outcome'], 'failed')
-        self.assertEqual(result['residual_state'], 'exact_candidate_route_free_no_schedule_or_tail')
+        self.assertEqual(result['residual_state'], 'current_readback_candidate_route_free_no_schedule_or_tail')
+        self.assertEqual(result['queued_event_state'], 'unresolved')
         self.assertFalse(result['rollback_attempted'])
         self.assertIn('rollback_unsafe_reason', result)
         self.assertNotIn('provider secret', json.dumps(result))
@@ -91,7 +92,7 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(result['residual_state'], 'unverified_or_drifted_operator_readback_required')
 
     def test_incomplete_or_stale_runtime_receipt_is_rejected(self):
-        window = json.loads(Path('crates/corelink-container/src/routes/staging_d1_probe_window.json').read_text())
+        window = completion.V5_WINDOW
         receipt = {'contract': 'corelink-staging-runtime-deployment-proof-v1',
                    'worker_release': completion.PIN['rollout_sha'], 'container_image_digest': completion.PIN['image_digest'],
                    'probe_nonce': window['nonce'], 'schedule_restored_empty': True, 'tail_deleted': True,
@@ -120,7 +121,8 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(result['runtime_failure'], {'code': 'subprocess_timeout', 'timeout_seconds': 1320,
             'host_diagnostics': [{'stage': 'receipt_wait', 'code': 'receipt_timeout'}]})
         self.assertNotIn('do-not-echo', json.dumps(result))
-        self.assertEqual(result['residual_state'], 'exact_candidate_route_free_no_schedule_or_tail')
+        self.assertEqual(result['residual_state'], 'current_readback_candidate_route_free_no_schedule_or_tail')
+        self.assertEqual(result['queued_event_state'], 'unresolved')
 
     def test_nonzero_exit_keeps_stage_and_strips_arbitrary_stderr(self):
         message = 'issue-1700 runtime probe failed {"stage":"tail_cleanup","code":"api_failure","http_status":503,"secret":"hidden"}\n'
