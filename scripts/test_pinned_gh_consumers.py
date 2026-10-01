@@ -13,8 +13,6 @@ from typing import Any
 
 import yaml
 
-from install_pinned_gh import install
-
 ROOT = Path(__file__).resolve().parent.parent
 GUARD = 'python3 scripts/verify_pinned_gh.py --binary "${RUNNER_TEMP}/corelink-pinned-gh/gh"'
 CONSUMERS = (
@@ -112,6 +110,7 @@ def execute_run(run: str, runner_temp: Path, path: str) -> subprocess.CompletedP
         "LC_ALL": "C",
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUNNER_TEMP": str(runner_temp),
+        "GITHUB_PATH": str(runner_temp / "github-path"),
         "GITHUB_WORKSPACE": str(ROOT),
     }
     return subprocess.run(
@@ -169,6 +168,83 @@ def assert_bundle_suffix_behavior(binary: Path, runner_temp: Path) -> None:
             "pinned gh must accept `.json` and proceed to parse the bundle without network credentials")
 
 
+def manual_installer_step() -> str:
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/issue-2572-draft-contract.yml").read_text(encoding="utf-8")
+    )
+    job = workflow.get("jobs", {}).get("verify-preserved-cli-017-draft")
+    require(isinstance(job, dict), "trusted-main draft verifier job is missing")
+    matches = [
+        step for step in job.get("steps", [])
+        if step.get("name") == "Install checksum-pinned GitHub CLI 2.79.0"
+    ]
+    require(len(matches) == 1, "trusted-main job must have one pinned CLI setup step")
+    step = matches[0]
+    require(step.get("shell", "bash") == "bash", "pinned CLI setup must execute under Bash")
+    run = step.get("run")
+    require(isinstance(run, str), "pinned CLI setup run block is missing")
+    install = 'python3 -B scripts/install_pinned_gh.py --output "${GH_BIN}"'
+    path_setup = 'export PATH="${RUNNER_TEMP}/corelink-pinned-gh:${PATH}"'
+    verify = 'python3 -B scripts/verify_pinned_gh.py --binary "${GH_BIN}"'
+    require(run.count(install) == 1, "manual job must install the pinned executable once")
+    require(run.count(path_setup) == 1, "manual job must prepend the pinned executable directory once")
+    require(run.count(verify) == 1, "manual job must run the pinned binary guard once")
+    require(run.index(install) < run.index(path_setup) < run.index(verify),
+            "manual job must prepend the pinned executable before verifying PATH")
+    require('>> "${GITHUB_PATH}"' in run, "later steps must inherit the pinned executable directory")
+    return run
+
+
+def assert_manual_installer_path(runner_temp: Path, python_dir: str) -> None:
+    """Execute the actual trusted-main setup block with pinned and wrong PATH controls."""
+    system_gh = runner_temp / "system-gh"
+    system_gh.mkdir(mode=0o700, parents=True, exist_ok=True)
+    wrong_binary = system_gh / "gh"
+    wrong_binary.write_text(
+        "#!/bin/sh\nprintf '%s\\n' 'gh version 2.80.0 (runner system copy)'\n",
+        encoding="utf-8",
+    )
+    wrong_binary.chmod(0o700)
+    environment_path = os.pathsep.join((str(system_gh), python_dir, os.defpath))
+    run = manual_installer_step()
+    result = execute_run(run, runner_temp, environment_path)
+    if result.returncode != 0:
+        raise AssertionError(f"manual pinned CLI setup failed: {result.stderr.strip()}")
+    require("verified pinned gh path:" in result.stdout,
+            "manual setup must verify the real pinned CLI executable")
+    github_path = runner_temp / "github-path"
+    require(github_path.read_text(encoding="utf-8").splitlines() == [
+        str(runner_temp / "corelink-pinned-gh")
+    ], "manual setup must add only the pinned CLI directory for subsequent steps")
+
+    missing_export = run.replace(
+        'export PATH="${RUNNER_TEMP}/corelink-pinned-gh:${PATH}"\n', "", 1
+    )
+    require(missing_export != run, "manual setup must contain the pinned PATH export")
+    install = 'python3 -B scripts/install_pinned_gh.py --output "${GH_BIN}"'
+    require(run.count(install) == 1, "manual setup must contain one installer invocation")
+    # Keep the already-installed real binary in place while testing path mutations.
+    # The positive run above executed the complete unmodified Bash block and installed it.
+    reusable_binary = 'test -x "${GH_BIN}"'
+    rejected_old_path = execute_run(
+        missing_export.replace(install, reusable_binary, 1), runner_temp, environment_path
+    )
+    require(rejected_old_path.returncode != 0 and "PATH does not resolve" in rejected_old_path.stderr,
+            "manual setup must reject the runner's earlier system gh PATH")
+
+    wrong_path_after_export = run.replace(
+        'export PATH="${RUNNER_TEMP}/corelink-pinned-gh:${PATH}"\n',
+        'export PATH="${RUNNER_TEMP}/corelink-pinned-gh:${PATH}"\n'
+        'export PATH="${RUNNER_TEMP}/system-gh:${PATH}"\n',
+        1,
+    )
+    rejected_wrong_path = execute_run(
+        wrong_path_after_export.replace(install, reusable_binary, 1), runner_temp, environment_path
+    )
+    require(rejected_wrong_path.returncode != 0 and "PATH does not resolve" in rejected_wrong_path.stderr,
+            "manual setup must reject a later PATH override that selects system gh")
+
+
 def main() -> int:
     workflows = read_workflows()
     consumers = []
@@ -219,10 +295,10 @@ def main() -> int:
         binary_dir = runner_temp / "corelink-pinned-gh"
         binary_dir.mkdir(mode=0o700, parents=True)
         binary = binary_dir / "gh"
-        installed = install(binary)
-        require(installed == binary, "installer returned a different executable path")
-        assert_bundle_suffix_behavior(binary, runner_temp)
         python_dir = str(Path(sys.executable).resolve().parent)
+        assert_manual_installer_path(runner_temp, python_dir)
+        require(binary.is_file(), "manual setup did not install the checksum-pinned executable")
+        assert_bundle_suffix_behavior(binary, runner_temp)
         pinned_path = os.pathsep.join((str(binary_dir), python_dir, os.defpath))
 
         for label, run in consumers:
@@ -264,7 +340,7 @@ def main() -> int:
         require(wrong_result.returncode != 0 and "digest mismatch" in wrong_result.stderr,
                 "actual Bash guard must reject a wrong-version executable by digest")
 
-    print("checksum-pinned Linux gh, actual bundle suffix behavior, six Bash guards, auth census, negatives: PASS")
+    print("checksum-pinned Linux gh, manual setup PATH controls, actual bundle suffix behavior, six Bash guards, auth census, negatives: PASS")
     return 0
 
 
