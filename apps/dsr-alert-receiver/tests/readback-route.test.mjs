@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertReadbackPath, READBACK_TARGET, ReadbackError, readTokenPolicyDiagnostic, readWorkerInventory, validateReadbackContext, writeReadbackReceipt } from "../scripts/readback-route.mjs";
+import { assertReadbackPath, assertTokenDiagnosticPath, READBACK_TARGET, ReadbackError, readTokenPolicyDiagnostic, readWorkerInventory, validateReadbackContext, writeReadbackReceipt } from "../scripts/readback-route.mjs";
 
 const context = {
   repository: READBACK_TARGET.repository,
@@ -15,8 +15,28 @@ const context = {
 };
 const versionId = "123e4567-e89b-42d3-a456-426614174000";
 const deploymentId = "123e4567-e89b-42d3-a456-426614174001";
-const activeVerification = { http_status: 200, error_class: "none", active_status: "active", token_id_shape: "valid_32_hex" };
-const inactiveVerification = { http_status: 200, error_class: "none", active_status: "inactive", token_id_shape: "valid_32_hex" };
+const notAttempted = { http_status: null, error_class: "not_attempted" };
+const userOk = { http_status: 200, error_class: "none" };
+const activeVerification = { http_status: 200, error_class: "none", active_status: "active", token_id_shape: "valid_32_hex", token_kind: "user", user_verify: userOk, account_verify: notAttempted };
+const inactiveVerification = { http_status: 200, error_class: "none", active_status: "inactive", token_id_shape: "valid_32_hex", token_kind: "user", user_verify: userOk, account_verify: notAttempted };
+const userVerifyPath = "/client/v4/user/tokens/verify";
+const accountTokensPath = `/client/v4/accounts/${READBACK_TARGET.accountId}/tokens`;
+const accountVerifyPath = `${accountTokensPath}/verify`;
+const targetAccountResource = `com.cloudflare.api.account.${READBACK_TARGET.accountId}`;
+
+// Routes token-diagnostic paths only. The diagnostic swallows a thrown fetch as
+// a transport error, so every test using this fixture also asserts the exact
+// ordered path list: an unexpected endpoint cannot pass silently.
+function tokenFixture(routes) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url: String(url), init });
+    const path = new URL(url).pathname;
+    if (!Object.hasOwn(routes, path)) throw new Error("unexpected token path");
+    return routes[path]();
+  };
+  return { calls, fetchImpl, paths: () => calls.map(({ url }) => new URL(url).pathname) };
+}
 
 function apiFixture(overrides = {}) {
   const calls = [];
@@ -109,7 +129,7 @@ describe("B-216 read-only Worker inventory", () => {
       token_active: null,
       account_5128_scope: null,
       workers_admin_on_5128: null,
-      verification: { http_status: 200, error_class: "malformed_verification_fields", active_status: "other", token_id_shape: "valid_32_hex" },
+      verification: { http_status: 200, error_class: "malformed_verification_fields", active_status: "other", token_id_shape: "valid_32_hex", token_kind: "user", user_verify: userOk, account_verify: notAttempted },
     });
     expect(JSON.stringify(diagnostic)).not.toContain(tokenId);
     expect(JSON.stringify(diagnostic)).not.toContain("private");
@@ -126,52 +146,102 @@ describe("B-216 read-only Worker inventory", () => {
       error_class: "malformed_verification_fields",
       active_status: "active",
       token_id_shape: "malformed",
+      token_kind: "user",
+      user_verify: userOk,
+      account_verify: notAttempted,
     });
     expect(JSON.stringify(diagnostic)).not.toContain(secretLikeId);
   });
 
   it("records an HTTP error class and numeric status without reading a non-200 body", async () => {
     const privateBody = "private provider response must not persist";
+    const calls = [];
     const diagnostic = await readTokenPolicyDiagnostic({
       apiToken: context.apiToken,
-      fetchImpl: async () => new Response(privateBody, { status: 502 }),
+      fetchImpl: async (url) => { calls.push(String(url)); return new Response(privateBody, { status: 502 }); },
     });
     expect(diagnostic).toEqual({
       status: "verify_unknown",
       token_active: null,
       account_5128_scope: null,
       workers_admin_on_5128: null,
-      verification: { http_status: 502, error_class: "http_response", active_status: "unknown", token_id_shape: "not_checked" },
+      verification: {
+        http_status: 502,
+        error_class: "http_response",
+        active_status: "unknown",
+        token_id_shape: "not_checked",
+        token_kind: "unknown",
+        user_verify: { http_status: 502, error_class: "http_response" },
+        account_verify: notAttempted,
+      },
     });
+    expect(calls).toHaveLength(1);
     expect(JSON.stringify(diagnostic)).not.toContain(privateBody);
   });
 
-  it("distinguishes a verify 403 by status while keeping response data private", async () => {
-    const diagnostic = await readTokenPolicyDiagnostic({
-      apiToken: context.apiToken,
-      fetchImpl: async () => new Response("private access details", { status: 403 }),
+  it("tries the account endpoint only after a user 401 or 403, never after other statuses", async () => {
+    for (const status of [400, 404, 429, 500, 503]) {
+      const { fetchImpl, paths } = tokenFixture({ [userVerifyPath]: () => new Response("private", { status }) });
+      const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
+      expect(paths()).toEqual([userVerifyPath]);
+      expect(diagnostic.status).toBe("verify_unknown");
+      expect(diagnostic.verification.token_kind).toBe("unknown");
+      expect(diagnostic.verification.account_verify).toEqual(notAttempted);
+    }
+  });
+
+  it("distinguishes a verify 403 on both endpoints by status while keeping response data private", async () => {
+    const { fetchImpl, paths } = tokenFixture({
+      [userVerifyPath]: () => new Response("private access details", { status: 403 }),
+      [accountVerifyPath]: () => new Response("private account access details", { status: 403 }),
     });
+    const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
+    expect(paths()).toEqual([userVerifyPath, accountVerifyPath]);
     expect(diagnostic.status).toBe("unknown_access");
     expect(diagnostic.verification).toEqual({
       http_status: 403,
       error_class: "http_response",
       active_status: "unknown",
       token_id_shape: "not_checked",
+      token_kind: "unknown",
+      user_verify: { http_status: 403, error_class: "http_response" },
+      account_verify: { http_status: 403, error_class: "http_response" },
     });
     expect(JSON.stringify(diagnostic)).not.toContain("private access details");
+    expect(JSON.stringify(diagnostic)).not.toContain("private account access details");
+  });
+
+  it("keeps a 403 from either endpoint as unknown_access when neither verifies", async () => {
+    for (const [userStatus, accountStatus] of [[401, 403], [403, 401]]) {
+      const { fetchImpl, paths } = tokenFixture({
+        [userVerifyPath]: () => new Response("private", { status: userStatus }),
+        [accountVerifyPath]: () => new Response("private", { status: accountStatus }),
+      });
+      const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
+      expect(paths()).toEqual([userVerifyPath, accountVerifyPath]);
+      expect(diagnostic.status).toBe("unknown_access");
+      expect(diagnostic.token_active).toBeNull();
+      expect(diagnostic.verification.user_verify).toEqual({ http_status: userStatus, error_class: "http_response" });
+      expect(diagnostic.verification.account_verify).toEqual({ http_status: accountStatus, error_class: "http_response" });
+    }
   });
 
   it("records a timeout without retaining an exception message", async () => {
+    const calls = [];
     const diagnostic = await readTokenPolicyDiagnostic({
       apiToken: context.apiToken,
-      fetchImpl: async () => { throw new DOMException("private timeout text", "TimeoutError"); },
+      fetchImpl: async (url) => { calls.push(String(url)); throw new DOMException("private timeout text", "TimeoutError"); },
     });
     expect(diagnostic.verification).toEqual({
       http_status: null,
       error_class: "timeout",
       active_status: "unknown",
       token_id_shape: "not_checked",
+      token_kind: "unknown",
+      user_verify: { http_status: null, error_class: "timeout" },
+      account_verify: notAttempted,
     });
+    expect(calls).toHaveLength(1);
     expect(JSON.stringify(diagnostic)).not.toContain("private timeout text");
   });
 
@@ -185,6 +255,9 @@ describe("B-216 read-only Worker inventory", () => {
       error_class: "transport_error",
       active_status: "unknown",
       token_id_shape: "not_checked",
+      token_kind: "unknown",
+      user_verify: { http_status: null, error_class: "transport_error" },
+      account_verify: notAttempted,
     });
     expect(JSON.stringify(diagnostic)).not.toContain("private transport detail");
   });
@@ -200,6 +273,9 @@ describe("B-216 read-only Worker inventory", () => {
       error_class: "malformed_json",
       active_status: "unknown",
       token_id_shape: "not_checked",
+      token_kind: "unknown",
+      user_verify: { http_status: 200, error_class: "malformed_json" },
+      account_verify: notAttempted,
     });
     expect(JSON.stringify(diagnostic)).not.toContain(privateBody);
   });
@@ -215,8 +291,195 @@ describe("B-216 read-only Worker inventory", () => {
       error_class: "malformed_payload",
       active_status: "unknown",
       token_id_shape: "not_checked",
+      token_kind: "unknown",
+      user_verify: { http_status: 200, error_class: "malformed_payload" },
+      account_verify: notAttempted,
     });
     expect(JSON.stringify(diagnostic)).not.toContain(privateMarker);
+  });
+
+  it("verifies an account-owned token at the fixed account after a user 401 and reads its account policy", async () => {
+    const tokenId = "9".repeat(32);
+    const apiToken = "test-account-token-never-real";
+    const { calls, fetchImpl, paths } = tokenFixture({
+      [userVerifyPath]: () => new Response("private user verify body", { status: 401 }),
+      [accountVerifyPath]: () => Response.json({ success: true, result: { id: tokenId, status: "active", expires_on: "2027-01-01T00:00:00Z" } }),
+      [`${accountTokensPath}/${tokenId}`]: () => Response.json({
+        success: true,
+        result: {
+          id: tokenId,
+          name: "private account token name",
+          status: "active",
+          policies: [{
+            id: "f267e341f3dd4697bd3b9f71dd96247f",
+            effect: "allow",
+            permission_groups: [{ id: "c8fed203ed3043cba015a93ad1616f1f", name: "Workers Admin", meta: { key: "key", value: "value" } }],
+            resources: { [targetAccountResource]: "*" },
+          }],
+        },
+      }),
+    });
+    const diagnostic = await readTokenPolicyDiagnostic({ apiToken, fetchImpl });
+    expect(diagnostic).toEqual({
+      status: "details_read",
+      token_active: true,
+      account_5128_scope: true,
+      workers_admin_on_5128: true,
+      verification: {
+        http_status: 200,
+        error_class: "none",
+        active_status: "active",
+        token_id_shape: "valid_32_hex",
+        token_kind: "account",
+        user_verify: { http_status: 401, error_class: "http_response" },
+        account_verify: { http_status: 200, error_class: "none" },
+      },
+    });
+    expect(paths()).toEqual([userVerifyPath, accountVerifyPath, `${accountTokensPath}/${tokenId}`]);
+    for (const { init } of calls) {
+      expect(init.method).toBe("GET");
+      expect(init.redirect).toBe("error");
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.headers.authorization).toBe(`Bearer ${apiToken}`);
+    }
+    const serialized = JSON.stringify(diagnostic);
+    expect(serialized).not.toContain(apiToken);
+    expect(serialized).not.toContain(tokenId);
+    expect(serialized).not.toContain("private user verify body");
+    expect(serialized).not.toContain("private account token name");
+  });
+
+  it("falls back to the account endpoint after a user 403 as well", async () => {
+    const tokenId = "8".repeat(32);
+    const { fetchImpl, paths } = tokenFixture({
+      [userVerifyPath]: () => new Response("private", { status: 403 }),
+      [accountVerifyPath]: () => Response.json({ success: true, result: { id: tokenId, status: "active" } }),
+      [`${accountTokensPath}/${tokenId}`]: () => Response.json({ success: true, result: { policies: [{
+        effect: "allow",
+        permission_groups: [{ name: "Workers Scripts Write" }],
+        resources: { [targetAccountResource]: "*" },
+      }] } }),
+    });
+    const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
+    expect(paths()).toEqual([userVerifyPath, accountVerifyPath, `${accountTokensPath}/${tokenId}`]);
+    expect(diagnostic).toMatchObject({ status: "details_read", token_active: true, account_5128_scope: true, workers_admin_on_5128: false });
+    expect(diagnostic.verification.token_kind).toBe("account");
+    expect(diagnostic.verification.user_verify).toEqual({ http_status: 403, error_class: "http_response" });
+    expect(JSON.stringify(diagnostic)).not.toContain(tokenId);
+  });
+
+  it("reports verify_unknown with both statuses classified when user and account verify both return 401", async () => {
+    const { fetchImpl, paths } = tokenFixture({
+      [userVerifyPath]: () => new Response("private user 401 body", { status: 401 }),
+      [accountVerifyPath]: () => new Response("private account 401 body", { status: 401 }),
+    });
+    const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
+    expect(paths()).toEqual([userVerifyPath, accountVerifyPath]);
+    expect(diagnostic).toEqual({
+      status: "verify_unknown",
+      token_active: null,
+      account_5128_scope: null,
+      workers_admin_on_5128: null,
+      verification: {
+        http_status: 401,
+        error_class: "http_response",
+        active_status: "unknown",
+        token_id_shape: "not_checked",
+        token_kind: "unknown",
+        user_verify: { http_status: 401, error_class: "http_response" },
+        account_verify: { http_status: 401, error_class: "http_response" },
+      },
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("private user 401 body");
+    expect(JSON.stringify(diagnostic)).not.toContain("private account 401 body");
+  });
+
+  it("classifies a failed account fallback by its own error class", async () => {
+    const { fetchImpl, paths } = tokenFixture({
+      [userVerifyPath]: () => new Response("", { status: 401 }),
+      [accountVerifyPath]: () => new Response("private malformed account body", { status: 200 }),
+    });
+    const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
+    expect(paths()).toEqual([userVerifyPath, accountVerifyPath]);
+    expect(diagnostic.status).toBe("verify_unknown");
+    expect(diagnostic.verification).toMatchObject({
+      http_status: 200,
+      error_class: "malformed_json",
+      token_kind: "unknown",
+      user_verify: { http_status: 401, error_class: "http_response" },
+      account_verify: { http_status: 200, error_class: "malformed_json" },
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("private malformed account body");
+  });
+
+  it("reports an account-owned token scoped to a different account as having no target scope", async () => {
+    const tokenId = "7".repeat(32);
+    const { fetchImpl, paths } = tokenFixture({
+      [userVerifyPath]: () => new Response("", { status: 401 }),
+      [accountVerifyPath]: () => Response.json({ success: true, result: { id: tokenId, status: "active" } }),
+      [`${accountTokensPath}/${tokenId}`]: () => Response.json({ success: true, result: { policies: [{
+        effect: "allow",
+        permission_groups: [{ name: "Workers Admin" }],
+        resources: { [`com.cloudflare.api.account.${"0".repeat(32)}`]: "*" },
+      }] } }),
+    });
+    const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
+    expect(paths()).toEqual([userVerifyPath, accountVerifyPath, `${accountTokensPath}/${tokenId}`]);
+    expect(diagnostic).toMatchObject({ status: "details_read", account_5128_scope: false, workers_admin_on_5128: false });
+    expect(diagnostic.verification.token_kind).toBe("account");
+  });
+
+  it("never treats denied account-token detail access as missing Workers Admin", async () => {
+    const tokenId = "6".repeat(32);
+    const { fetchImpl, paths } = tokenFixture({
+      [userVerifyPath]: () => new Response("", { status: 401 }),
+      [accountVerifyPath]: () => Response.json({ success: true, result: { id: tokenId, status: "active" } }),
+      [`${accountTokensPath}/${tokenId}`]: () => new Response("private detail denial", { status: 403 }),
+    });
+    const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
+    expect(paths()).toEqual([userVerifyPath, accountVerifyPath, `${accountTokensPath}/${tokenId}`]);
+    expect(diagnostic).toMatchObject({ status: "unknown_access", token_active: true, account_5128_scope: null, workers_admin_on_5128: null });
+    expect(diagnostic.verification.token_kind).toBe("account");
+    expect(JSON.stringify(diagnostic)).not.toContain("private detail denial");
+  });
+
+  it("charges the account fallback to the same 45-second budget", async () => {
+    let clock = 0;
+    const { fetchImpl, paths } = tokenFixture({
+      [userVerifyPath]: () => { clock = 45_000; return new Response("", { status: 401 }); },
+    });
+    const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl, now: () => clock });
+    expect(paths()).toEqual([userVerifyPath]);
+    expect(diagnostic.status).toBe("verify_unknown");
+    expect(diagnostic.verification).toMatchObject({
+      error_class: "timeout",
+      token_kind: "unknown",
+      user_verify: { http_status: 401, error_class: "http_response" },
+      account_verify: { http_status: null, error_class: "timeout" },
+    });
+  });
+
+  it("allows token paths only for the user endpoints and the fixed target account", () => {
+    const tokenId = "a".repeat(32);
+    for (const path of [
+      "/user/tokens/verify",
+      `/user/tokens/${tokenId}`,
+      `/accounts/${READBACK_TARGET.accountId}/tokens/verify`,
+      `/accounts/${READBACK_TARGET.accountId}/tokens/${tokenId}`,
+    ]) expect(assertTokenDiagnosticPath(path)).toBe(true);
+    for (const path of [
+      `/accounts/${"0".repeat(32)}/tokens/verify`,
+      `/accounts/${"0".repeat(32)}/tokens/${tokenId}`,
+      `/accounts/${READBACK_TARGET.accountId.toUpperCase()}/tokens/verify`,
+      `/accounts/${READBACK_TARGET.accountId}/tokens`,
+      `/accounts/${READBACK_TARGET.accountId}/tokens/`,
+      `/accounts/${READBACK_TARGET.accountId}/tokens/${tokenId}/value`,
+      `/accounts/${READBACK_TARGET.accountId}/tokens/${"a".repeat(31)}`,
+      `/accounts/${READBACK_TARGET.accountId}/tokens/verify?x=1`,
+      `/accounts/${READBACK_TARGET.accountId}/tokens/permission_groups`,
+      `/accounts/${READBACK_TARGET.accountId}/workers/scripts`,
+      `/user/tokens/${tokenId}/value`,
+    ]) expect(() => assertTokenDiagnosticPath(path)).toThrow(ReadbackError);
   });
 
   it("never treats denied detail access as absent token or missing Workers Admin", async () => {
@@ -379,6 +642,46 @@ describe("B-216 read-only Worker inventory", () => {
       const savedReceiptPath = join(runnerTemp, "b216-receiver-readback-receipt.json");
       expect(JSON.parse(await readFile(savedReceiptPath, "utf8"))).toEqual(receipt);
       expect((await stat(savedReceiptPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(runnerTemp, { recursive: true, force: true });
+    }
+  });
+
+  it("writes an account-owned token diagnostic to the receipt without the token, its ID, or bodies", async () => {
+    const runnerTemp = await mkdtemp(join(tmpdir(), "b216-account-token-diagnostic-"));
+    const tokenId = "5".repeat(32);
+    const inventory = apiFixture();
+    const token = tokenFixture({
+      [userVerifyPath]: () => new Response("private user rejection body", { status: 401 }),
+      [accountVerifyPath]: () => Response.json({ success: true, result: { id: tokenId, status: "active" } }),
+      [`${accountTokensPath}/${tokenId}`]: () => Response.json({ success: true, result: { id: tokenId, name: "private token name", policies: [{
+        effect: "allow",
+        permission_groups: [{ name: "Workers Admin" }],
+        resources: { [targetAccountResource]: "*" },
+      }] } }),
+    });
+    try {
+      const receipt = await writeReadbackReceipt({ ...context, runnerTemp }, {
+        fetchImpl: async (url, init) => {
+          const path = new URL(url).pathname;
+          if (path === userVerifyPath || path.startsWith(`${accountTokensPath}/`)) return token.fetchImpl(url, init);
+          return inventory.fetchImpl(url, init);
+        },
+        includeTokenPolicyDiagnostic: true,
+      });
+      expect(receipt.status).toBe("complete");
+      expect(token.paths()).toEqual([userVerifyPath, accountVerifyPath, `${accountTokensPath}/${tokenId}`]);
+      expect(receipt.token_policy_diagnostic).toMatchObject({
+        status: "details_read",
+        token_active: true,
+        account_5128_scope: true,
+        workers_admin_on_5128: true,
+        verification: { token_kind: "account" },
+      });
+      const saved = await readFile(join(runnerTemp, "b216-receiver-readback-receipt.json"), "utf8");
+      for (const secret of [context.apiToken, tokenId, "private user rejection body", "private token name"]) {
+        expect(saved).not.toContain(secret);
+      }
     } finally {
       await rm(runnerTemp, { recursive: true, force: true });
     }
