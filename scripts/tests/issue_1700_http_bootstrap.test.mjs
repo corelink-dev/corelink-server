@@ -18,7 +18,7 @@ import { PROBE_WINDOW } from "../issue_1700_probe_window.mjs";
 
 const RELEASE = "a".repeat(40), IMAGE = `sha256:${"b".repeat(64)}`;
 const TOKEN = "fixture-api-credential-not-for-output";
-const NOW = Date.parse("2026-10-01T14:00:00Z");
+const NOW = PROBE_WINDOW.starts_ms + 120_000;
 // Complete sanitized 2026-10-01 settings observation: all 35 names/types, no binding values.
 const OBSERVED_BINDINGS = [
   ["AC_BUCKET_IAD", "r2_bucket"],

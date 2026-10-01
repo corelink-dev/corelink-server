@@ -62,11 +62,16 @@ successful revocation. A rejected current credential is not a readiness PASS.
 
 The existing `/internal/v1/auth/rotate` endpoint creates a fresh 90-day PAT and
 is unsuitable for this ephemeral operation. The existing runner-mint broker
-accepts `read-only` and a shortened positive TTL capped at 90 minutes. It requires
-its dedicated runner authority and a server-derived tenant, repository allowlist
-and entitlement. An installation mapping or a valid acquiring PAT is required;
-the caller cannot invent the tenant in the mint body. Verify these actual
-authorities and staging bindings before choosing that route. A production
+accepts only `cas:rw` and `read-write`, with a positive TTL capped at 90 minutes;
+it rejects a `read-only` request. A GET-only readiness operation does not make
+that mint authority read-only. The broker requires its dedicated
+`CORELINK_RUNNER_MINT_AUTH_KEY`, a server-derived tenant, repository allowlist and
+entitlement. `CORELINK_RUNNER_PROVISION_AUTH_KEY` is a different authority. An
+installation mapping or a valid acquiring PAT is required; the caller cannot
+invent the tenant in the mint body. Consequently this broker alone cannot
+satisfy this read-only PAT custody contract. Establish an existing issuer route
+that actually grants read-only scope and the required finite lifetime, and
+verify its staging authority before issuance; do not substitute an admin key. A production
 dogfood token and the production-default admin mint script are not staging
 custody.
 

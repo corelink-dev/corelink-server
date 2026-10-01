@@ -119,12 +119,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -B -m unittest -v tests.test_issue_1700_completion
+          python3 -B -m unittest -v tests.test_issue_1700_completion tests.test_issue_1700_rollback_quiescence tests.test_verify_i2575_readiness
+          python3 scripts/test_issue_1700_native_supervisor.py --static
           node --check scripts/issue_1700_runtime_probe.mjs
           node --test \
             scripts/tests/issue_1700_probe_window.test.mjs \
             scripts/tests/issue_1700_runtime_probe.test.mjs \
-            scripts/tests/issue_1700_probe_process.test.mjs
+            scripts/tests/issue_1700_probe_process.test.mjs \
+            scripts/tests/issue_1700_http_probe.test.mjs \
+            scripts/tests/issue_1700_http_bootstrap.test.mjs
+          pnpm --dir worker exec vitest run tests/staging_runtime_d1_probe.test.ts tests/staging_d1_probe_v8_cleanup.test.ts tests/staging_d1_probe_v9_cleanup.test.ts tests/staging_d1_http.test.ts tests/staging_d1_http_lifecycle.test.ts tests/staging_d1_http_lifetime.test.ts tests/durable_object.test.ts
 
   signup-worker-vitest:
     name: campaign i1639 TypeScript entitlement tests

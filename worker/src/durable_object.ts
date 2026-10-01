@@ -555,7 +555,9 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   }
 
   async admitStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeAdmissionResult> {
-    if (STAGING_D1_PROBE_WINDOW.nonce === "issue-1700-recovery-20261001-v10") throw new Error("HTTP admission required");
+    if (["issue-1700-recovery-20261001-v10", "issue-1700-recovery-20261001-v11"].includes(STAGING_D1_PROBE_WINDOW.nonce)) {
+      throw new Error("HTTP admission required");
+    }
     return this.admitStagingD1RuntimeProbeOwned(scheduledTime);
   }
 

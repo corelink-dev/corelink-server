@@ -615,7 +615,16 @@ describe("staging D1 runtime probe exposure", () => {
     const afterCutoff = new CoreLinkServer(state, env, () => window.last_entry_ms + 1);
     await expect(afterCutoff.admitStagingD1RuntimeProbe(window.last_entry_ms)).rejects.toThrow();
     const candidate = new CoreLinkServer(state, env, () => window.last_entry_ms);
-    await expect(candidate.admitStagingD1RuntimeProbe(window.last_entry_ms)).rejects.toThrow("HTTP admission required");
+    const currentNonce = window.nonce;
+    try {
+      for (const nonce of ["issue-1700-recovery-20261001-v10", "issue-1700-recovery-20261001-v11"]) {
+        window.nonce = nonce;
+        await expect(candidate.admitStagingD1RuntimeProbe(window.last_entry_ms)).rejects.toThrow("HTTP admission required");
+        expect(await state.storage.get("staging-d1-binding-probe-admission-v1")).toBeUndefined();
+      }
+    } finally {
+      window.nonce = currentNonce;
+    }
     expect(await state.storage.get("staging-d1-binding-probe-admission-v1")).toBeUndefined();
     const otherRelease = { contract: "corelink-staging-d1-probe-admission-v1" as const,
       probe_nonce: window.nonce, worker_release: "f".repeat(40), scheduled_time_ms: window.last_entry_ms };
@@ -1399,7 +1408,7 @@ describe("exact v8 cleanup fence and live proof", () => {
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
   it("v9 cleanup uses its separate fence and preserves historical admission/state/receipt", async () => {
-    const current = Date.parse("2026-10-01T14:00:00Z");
+    const current = STAGING_D1_PROBE_WINDOW.starts_ms + 120_000;
     const { do_, state, container, sql } = await fixture(V9_PROBE_NAME, () => current);
     const prior = { contract: "corelink-staging-d1-probe-admission-v1", probe_nonce: V9_PROBE_NONCE,
       worker_release: V9_PROBE_RELEASE, scheduled_time_ms: Date.parse("2026-10-01T12:36:00Z") };

@@ -13,7 +13,7 @@ import {
 import { PROBE_FOREIGN_KEY_CHECK_SQL, probeForeignKeysClear } from "../src/staging_d1_probe_v8_cleanup.js";
 
 const RELEASE = "a".repeat(40);
-const NOW = 1790859623000; // 13:00:23 UTC, after the failed v9 host invocation
+const NOW = window.starts_ms + 1000; // New cleanup lease; historical v9 ticks below remain immutable.
 const DEADLINE = NOW + 60_000;
 const FIRST_TICK = 1790858160000; // 12:36 UTC
 const LAST_TICK = 1790859600000; // 13:00 UTC
