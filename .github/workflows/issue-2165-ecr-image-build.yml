@@ -1,10 +1,11 @@
 name: Issue 2165 bounded nonproduction ECR image build
 
 # Manual build or exact-tag cleanup only. No deployment is performed here. A
-# protected operation lease in the B083 target manifest authorizes each action. The current
-# manifest contract has no cumulative campaign ledger; image_build.spent_usd,
-# remaining_usd, spend_receipt_ref, and budget_checked_at are an explicit new
-# required extension. Until it is owner-bound, this lane fails closed.
+# protected operation lease in the B083 target manifest authorizes each action. Spend
+# admission reads image_build.budget and image_build.proposed_operation through
+# scripts/issue_2165_image_budget.py admit_budget: either a receipt-backed actual or
+# a complete, itemised, receipt-bound upper bound, under the $20 cap and $5 reserve.
+# Until the protected manifest carries one of those, this lane fails closed.
 on:
   workflow_dispatch:
     inputs:
@@ -149,7 +150,7 @@ jobs:
           python3 - "$MANIFEST_PATH" "$B083_TARGET_ALIAS" "$AWS_ACCOUNT_ID" "$AWS_REGION" <<'PY'
           import datetime as dt, json, os, pathlib, sys
           sys.path.insert(0, "scripts")
-          from issue_2165_image_budget import validate_budget, validate_cleanup_deadline
+          from issue_2165_image_budget import BudgetError, admit_budget, validate_cleanup_deadline
           path, alias, account, region = sys.argv[1:]
           try:
               manifest = json.loads(pathlib.Path(path).read_text())
@@ -167,11 +168,10 @@ jobs:
               assert lease["cost_owner"] and lease["cleanup_owner"]
               assert lease["cleanup_operation_ref"] == "cleanup-successful-images"
               validate_cleanup_deadline(lease["cleanup_deadline_at"], now)
-              assert lease["spend_receipt_ref"] and lease["commitments_receipt_ref"]
-              validate_budget(lease["spent_usd"], lease["remaining_usd"], manifest["estimated_cost_usd"], lease["campaign_commitments_usd"])
-              checked = dt.datetime.fromisoformat(lease["budget_checked_at"].replace("Z", "+00:00"))
-              assert checked.tzinfo is not None and checked.utcoffset() == dt.timedelta(0)
-              assert dt.timedelta(0) <= now - checked <= dt.timedelta(hours=2)
+              assert lease["proposed_operation"]["cleanup"]["deadline_at"] == lease["cleanup_deadline_at"]
+              admit_budget(lease["budget"], lease["proposed_operation"], now)
+          except BudgetError as exc:
+              raise SystemExit("protected image-build lease denied: " + ", ".join(exc.reasons))
           except Exception:
               raise SystemExit("protected image-build lease invalid, stale, missing, or outside the $20 cumulative budget")
           PY
