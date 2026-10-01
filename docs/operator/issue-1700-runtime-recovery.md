@@ -13,11 +13,13 @@ execution/cleanup. Its timestamp and nonce are historical only; do not replay
 it. The merged v6 source window became inadmissible before its protected
 deployment could begin: its 75-minute preflight required a start before 01:00
 UTC, but the trusted source merge completed at 02:00 UTC. No v6 deployment or
-probe was attempted. The fresh v7 tuple below has a distinct nonce and does not
-change the unresolved v5 execution/cleanup history.
+probe was attempted. The v7 deploy attempt later failed while importing the
+runtime module before dependency installation; it made no provider request or
+mutation. The fresh v8 tuple below has a distinct nonce and does not change the
+unresolved v5 execution/cleanup history.
 
 The v5 `complete_existing` operation below remains pinned to its historical
-rollout. A future approved v7 deployment must rebuild both runtimes from the
+rollout. A future approved v8 deployment must rebuild both runtimes from the
 same exact source SHA and use the compiled shared window; it cannot replay v5.
 
 The v4 attempt used Worker release `9d8fdbfa04dd16d4099056de6e16ea8343ebba46`;
@@ -90,11 +92,21 @@ Failure readback is point-in-time only: a queued Cron event may still claim the
 one-shot lease after schedules appear empty, so its `queued_event_state` is
 reported as unresolved and requires admission/receipt reconciliation.
 
-## v7 fresh source window
+## v7 blocked deploy attempt (historical)
 
-The compiled tuple is Cron `*/2 * * * *`, start **2026-10-01 02:30 UTC**,
-entry cutoff **2026-10-01 05:13 UTC** (off cadence; the final `*/2` Cron tick
-before it is **05:12 UTC**), and exclusive expiry **06:28 UTC**; nonce `issue-1700-recovery-20261001-v7`. The 75-minute reserve applies after
+The v7 tuple was Cron `*/2 * * * *`, start **2026-10-01 02:30 UTC**, inclusive
+entry cutoff **05:13 UTC**, exclusive expiry **06:28 UTC**, nonce
+`issue-1700-recovery-20261001-v7`. Protected run `36808606263` failed before
+the deploy preimage step because the admission guard imported the runtime
+module before installing `ws`. No Cloudflare API request or provider mutation
+occurred. V7 is never deployed and its nonce must not be replayed.
+
+## v8 fresh source window
+
+The compiled tuple is Cron `*/2 * * * *`, start **2026-10-01 03:30 UTC**,
+entry cutoff **2026-10-01 09:30 UTC** (on cadence; final admissible `*/2` tick
+is **09:30 UTC**), and exclusive expiry **10:45 UTC**; nonce
+`issue-1700-recovery-20261001-v8`. The 75-minute reserve applies after
 the final permitted entry. The host permits at most 25 minutes for tail
 observation and installs Cron once. It renews short-lived tails only when the
 provider reports at least four minutes of remaining TTL, connects the next
@@ -108,14 +120,14 @@ on every exit.
 Each owned tail has an ID-bound DELETE receipt with HTTP status and UTC
 millisecond time; any failed delete leaves the result inconclusive. A stale
 pong from an older socket cannot satisfy the active socket's heartbeat. The
-02:30 boundary is only the first eligible Cron time; the first actual run is
+03:30 boundary is only the first eligible Cron time; the first actual run is
 the first scheduled tick after deployment completes.
 
 The release-specific Durable Object atomically persists one admission before
 the v4 catalog read or either exact historical retirement begins. Its release, nonce, and original
-scheduled timestamp are immutable. The first admission must occur by 05:13 UTC;
+scheduled timestamp are immutable. The first admission must occur by 09:30 UTC;
 that same admission may finish retirement and the Container/Rust proof before
-06:28 UTC if work crosses the cutoff. Later or foreign admissions cannot claim
+10:45 UTC if work crosses the cutoff. Later or foreign admissions cannot claim
 the Container again.
 
 After the latest-entry cutoff, a Cron invocation can only read the immutable
