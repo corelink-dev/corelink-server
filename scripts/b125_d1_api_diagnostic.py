@@ -17,7 +17,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 QUERY_ID = "hourly"
 EXPECTED_ACCOUNT_ID = "6a1fc1c626fc2628823e60b9db01f5cd"
 EXPECTED_DATABASE_ID = "d64742ea-e102-40b2-a844-ff02e3f94562"
-QUERY_SHA256 = "cdef8e03e46abd10cb48e2a5f64d520ae28ded1a873cb73c60710d6fe74f9250"
+QUERY_SHA256 = "3673ddc8a957a20a424bbbb621a633f0c286fd5b9b934730d3d41ee31171e4ab"
 MAX_RESPONSE_BYTES = 65536
 TIMEOUT_SECONDS = 45
 ALLOWED_ROOT_KEYS = {"errors", "messages", "result", "success"}
