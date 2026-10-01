@@ -8,6 +8,7 @@ import hashlib
 import subprocess
 import tempfile
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -259,6 +260,250 @@ class StagingBootstrapProviderTests(unittest.TestCase):
         self.assertNotIn("CF_API_TOKEN", plan["corelink-staging"])
         self.assertEqual(plan["corelink-staging"]["CLOUDFLARE_ACCOUNT_ID"], environment["STAGING_CF_ACCOUNT_ID"])
         self.assertEqual(plan["corelink-synthetic-pager-staging"], {})
+
+    @staticmethod
+    def _b216_environment() -> dict[str, str]:
+        return {
+            "STAGING_CF_ACCOUNT_ID": custom_domain.ACCOUNT_ID,
+            "STAGING_CLERK_ISSUER_URL": "https://staging-clerk.invalid",
+            "STAGING_CLERK_SECRET_KEY": "clerk-secret",
+            "STAGING_CLERK_WEBHOOK_SECRET": "webhook-secret",
+            "STAGING_DSR_DLQ_REDRIVE_AUTH_KEY": "dsr-secret",
+            "STAGING_ERASURE_SALT_KEY": "salt-secret",
+            "STAGING_R2_S3_ACCESS_KEY_ID": "r2-id",
+            "STAGING_R2_S3_SECRET_ACCESS_KEY": "r2-secret",
+            "STAGING_DSR_DLQ_ALERT_ENDPOINT": "https://alerts.example.invalid/",
+            "STAGING_DSR_DLQ_ALERT_AUTH_TOKEN": "dedicated-receiver-bearer",
+            "STAGING_DSR_DLQ_ALERT_ENDPOINT_HOST": "alerts.example.invalid",
+        }
+
+    @staticmethod
+    def _empty_worker_secret_names() -> dict[str, set[str]]:
+        return {
+            "corelink-staging": set(),
+            "corelink-signup-staging": set(),
+            "corelink-synthetic-pager-staging": set(),
+        }
+
+    def test_b216_alert_secret_pair_is_explicit_and_signup_only(self) -> None:
+        environment = self._b216_environment()
+        names = self._empty_worker_secret_names()
+        with self.assertRaisesRegex(RuntimeError, "explicit protected opt-in"):
+            provider.plan_missing_secret_values(names, environment)
+
+        plan = provider.plan_missing_secret_values(
+            names, environment, enable_b216_alert=True
+        )
+        self.assertEqual(
+            set(plan["corelink-signup-staging"]) & {
+                "DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"
+            },
+            {"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"},
+        )
+        self.assertEqual(
+            plan["corelink-signup-staging"]["DSR_DLQ_ALERT_ENDPOINT"],
+            environment["STAGING_DSR_DLQ_ALERT_ENDPOINT"],
+        )
+        self.assertEqual(
+            plan["corelink-signup-staging"]["DSR_DLQ_ALERT_AUTH_TOKEN"],
+            environment["STAGING_DSR_DLQ_ALERT_AUTH_TOKEN"],
+        )
+        for worker in ("corelink-staging", "corelink-synthetic-pager-staging"):
+            self.assertFalse(set(plan[worker]) & {
+                "DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"
+            })
+
+    def test_b216_alert_plan_rejects_partial_pair_and_wrong_worker(self) -> None:
+        environment = self._b216_environment()
+        partial = self._empty_worker_secret_names()
+        partial["corelink-signup-staging"].add("DSR_DLQ_ALERT_ENDPOINT")
+        with self.assertRaisesRegex(RuntimeError, "pair is incomplete"):
+            provider.plan_missing_secret_values(
+                partial, environment, enable_b216_alert=True
+            )
+        wrong_worker = self._empty_worker_secret_names()
+        wrong_worker["corelink-staging"].add("DSR_DLQ_ALERT_ENDPOINT")
+        with self.assertRaisesRegex(RuntimeError, "unexpected names"):
+            provider.plan_missing_secret_values(
+                wrong_worker, environment, enable_b216_alert=True
+            )
+
+    def test_b216_alert_plan_rejects_mismatched_endpoint_and_invalid_authority_host(self) -> None:
+        environment = self._b216_environment()
+        for endpoint, host in (
+            ("http://alerts.example.invalid/", "alerts.example.invalid"),
+            ("https://other.example.invalid/", "alerts.example.invalid"),
+            ("https://alerts.example.invalid/events", "alerts.example.invalid"),
+            ("https://user@alerts.example.invalid/", "alerts.example.invalid"),
+            ("https://alerts.example.invalid/", "alerts.example.invalid:443"),
+            ("https://alerts.example.invalid/", "alerts.example.invalid.workers.dev"),
+        ):
+            invalid = {
+                **environment,
+                "STAGING_DSR_DLQ_ALERT_ENDPOINT": endpoint,
+                "STAGING_DSR_DLQ_ALERT_ENDPOINT_HOST": host,
+            }
+            with self.subTest(endpoint=endpoint, host=host), self.assertRaisesRegex(
+                RuntimeError, "owner-authorized HTTPS receiver root"
+            ):
+                provider.plan_missing_secret_values(
+                    self._empty_worker_secret_names(), invalid, enable_b216_alert=True
+                )
+        for token in ("", " dedicated-receiver-bearer"):
+            invalid = {**environment, "STAGING_DSR_DLQ_ALERT_AUTH_TOKEN": token}
+            with self.subTest(token=repr(token)), self.assertRaisesRegex(
+                RuntimeError, "both B-216 staging alert secret sources are required"
+            ):
+                provider.plan_missing_secret_values(
+                    self._empty_worker_secret_names(), invalid, enable_b216_alert=True
+                )
+        invalid = {
+            **environment,
+            "STAGING_DSR_DLQ_ALERT_AUTH_TOKEN": "dedicated-receiver-bearer\nforged",
+        }
+        with self.assertRaisesRegex(RuntimeError, "bearer token is malformed"):
+            provider.plan_missing_secret_values(
+                self._empty_worker_secret_names(), invalid, enable_b216_alert=True
+            )
+
+    def test_b216_existing_exact_pair_is_idempotent_and_default_maintenance_tolerates_it(self) -> None:
+        names = {
+            "corelink-staging": {
+                "CLERK_ISSUER_URL", "CLERK_SECRET_KEY", "CLOUDFLARE_ACCOUNT_ID",
+                "CORELINK_ADMIN_AUTH_KEY", "CORELINK_ERASE_AUTH_KEY",
+                "CORELINK_INTERNAL_AUTH_KEY", "PAT_SIGNING_KEY",
+                "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY",
+            },
+            "corelink-signup-staging": {
+                "CLERK_SECRET_KEY", "CLERK_WEBHOOK_SECRET", "CORELINK_ERASE_AUTH_KEY",
+                "CORELINK_INTERNAL_AUTH_KEY", "DSR_DLQ_REDRIVE_AUTH_KEY", "ERASURE_SALT_KEY",
+                "DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN",
+            },
+            "corelink-synthetic-pager-staging": set(),
+        }
+        self.assertNotIn(
+            "DSR_DLQ_ALERT_ENDPOINT",
+            provider.plan_missing_secret_values(names, {})["corelink-signup-staging"],
+        )
+        with self.assertRaisesRegex(RuntimeError, "explicit protected opt-in"):
+            provider.plan_missing_secret_values(
+                names, self._b216_environment()
+            )
+        repeat = provider.plan_missing_secret_values(
+            names, self._b216_environment(), enable_b216_alert=True
+        )
+        self.assertNotIn("DSR_DLQ_ALERT_ENDPOINT", repeat["corelink-signup-staging"])
+        self.assertNotIn("DSR_DLQ_ALERT_AUTH_TOKEN", repeat["corelink-signup-staging"])
+
+    def test_b216_readback_tolerates_only_the_complete_signup_pair(self) -> None:
+        topology = renderer.StagingTopologyAdapter.from_file()
+        required = provider.expected_worker_bindings(topology, "corelink-signup-staging")
+        pair = {"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"}
+
+        def read(names: set[str]) -> None:
+            payload = {
+                "result": {
+                    "bindings": [
+                        {
+                            "name": name,
+                            **({"text": "staging"} if name == "ENVIRONMENT" else {}),
+                            **(
+                                {"text": "https://" + "a" * 32 + ".r2.cloudflarestorage.com"}
+                                if name == "R2_S3_ENDPOINT"
+                                else {}
+                            ),
+                        }
+                        for name in names
+                    ]
+                }
+            }
+            with patch.dict(
+                os.environ,
+                {"STAGING_R2_S3_ENDPOINT": "https://" + "a" * 32 + ".r2.cloudflarestorage.com"},
+            ), patch.object(provider, "get", return_value=payload):
+                provider.read_worker_bindings(
+                    topology, "token", custom_domain.ACCOUNT_ID,
+                    "corelink-signup-staging",
+                )
+
+        read(required | pair)
+        with self.assertRaisesRegex(RuntimeError, "outside the explicit signup-only scope"):
+            read(required | {"DSR_DLQ_ALERT_ENDPOINT"})
+        with self.assertRaisesRegex(RuntimeError, "do not match the typed topology"):
+            read(required | pair | {"ENVIRONMENT_EXTRA"})
+
+    def test_b216_readback_receipt_requires_exact_fresh_route_and_owner_ack(self) -> None:
+        host = "alerts.example.invalid"
+        sha = "a" * 40
+        receipt = {
+            "schema_version": 1,
+            "repository": "HuGR-dev/corelink-server",
+            "ref": "refs/heads/main",
+            "sha": sha,
+            "account_id": "51284495e71acdb5a7677e7383ab026b",
+            "worker_name": "corelink-dsr-b216-alert-receiver-20260927",
+            "captured_at": "2026-09-30T12:00:00.000Z",
+            "status": "complete",
+            "worker": {"exists": True, "inventory_count": 1},
+            "routes": {
+                "status": "known",
+                "count": 1,
+                "pattern_sha256": [hashlib.sha256(f"{host}/*".encode()).hexdigest()],
+            },
+            "subdomain": {"status": "known", "enabled": False, "previews_enabled": False},
+        }
+        owner_ack = "https://github.com/HuGR-dev/corelink-server/issues/1678#issuecomment-123"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "receipt.json"
+            raw = json.dumps(receipt, sort_keys=True).encode()
+            path.write_bytes(raw)
+            digest = hashlib.sha256(raw).hexdigest()
+            now = datetime(2026, 9, 30, 12, 10, tzinfo=timezone.utc)
+            evidence = provider.validate_b216_alert_authority(
+                path, digest, owner_ack, f"https://{host}/", sha, now=now
+            )
+            self.assertEqual(evidence["receipt_sha256"], digest)
+            for mutation in (
+                {"account_id": "6a1fc1c626fc2628823e60b9db01f5cd"},
+                {"sha": "b" * 40},
+                {"subdomain": {"status": "known", "enabled": True, "previews_enabled": False}},
+                {"routes": {"status": "known", "count": 0, "pattern_sha256": []}},
+                {"captured_at": "2026-09-30T11:29:00.000Z"},
+            ):
+                changed = {**receipt, **mutation}
+                path.write_text(json.dumps(changed, sort_keys=True), encoding="utf-8")
+                with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
+                    provider.validate_b216_alert_authority(
+                        path, hashlib.sha256(path.read_bytes()).hexdigest(),
+                        owner_ack, f"https://{host}/", sha, now=now,
+                    )
+            path.write_bytes(raw)
+            with self.assertRaisesRegex(RuntimeError, "owner acknowledgement"):
+                provider.validate_b216_alert_authority(
+                    path, digest, "not-an-issue-reference", f"https://{host}/", sha, now=now
+                )
+
+    def test_b216_opt_in_without_authority_stops_before_provider_reads(self) -> None:
+        environment = {
+            "STAGING_CF_WORKER_API_TOKEN": "worker-token",
+            "STAGING_CF_ROUTE_READ_TOKEN": "route-token",
+            "STAGING_CF_ACCOUNT_ID": custom_domain.ACCOUNT_ID,
+            "CF_ZONE_ID": custom_domain.ZONE_ID,
+            "STAGING_R2_S3_ENDPOINT": "https://" + "a" * 32 + ".r2.cloudflarestorage.com",
+            **self._b216_environment(),
+        }
+        with patch.dict(os.environ, environment, clear=True), patch.object(
+            provider, "get"
+        ) as get, patch.object(provider.subprocess, "run") as run:
+            with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
+                RuntimeError, "authority readback is required"
+            ):
+                provider.apply_existing_secret_updates(
+                    Path(temporary), Path(temporary) / "receipt.json", "12", "a" * 40,
+                    enable_b216_alert=True,
+                )
+        get.assert_not_called()
+        run.assert_not_called()
 
     def test_existing_secret_plan_never_overwrites_or_accepts_partial_shared_secret(self) -> None:
         complete = {

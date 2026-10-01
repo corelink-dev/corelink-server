@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -11,6 +13,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -124,8 +127,16 @@ def read_worker_bindings(
     }
     expected = expected_worker_bindings(topology, worker)
     secret_names = set(topology.required_secret_names.get(worker, []))
+    if worker == "corelink-signup-staging":
+        secret_names.update({"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"})
     if not expected.issubset(actual) or actual - expected - secret_names:
         raise RuntimeError("staging Worker bindings do not match the typed topology")
+    b216_names = actual & {"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"}
+    if b216_names and (
+        worker != "corelink-signup-staging"
+        or b216_names != {"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"}
+    ):
+        raise RuntimeError("B-216 alert bindings are outside the explicit signup-only scope")
     for binding in bindings:
         if not isinstance(binding, dict):
             continue
@@ -138,8 +149,155 @@ def read_worker_bindings(
             raise RuntimeError("staging R2 endpoint readback does not match the validated endpoint")
 
 
+def _b216_alert_secret_values(environment: dict[str, str], enabled: bool) -> dict[str, str]:
+    """Validate and return B-216 secret values only under explicit opt-in."""
+    endpoint_name = "STAGING_DSR_DLQ_ALERT_ENDPOINT"
+    token_name = "STAGING_DSR_DLQ_ALERT_AUTH_TOKEN"
+    authorized_host_name = "STAGING_DSR_DLQ_ALERT_ENDPOINT_HOST"
+    endpoint = environment.get(endpoint_name, "")
+    token = environment.get(token_name, "")
+    authorized_host = environment.get(authorized_host_name, "")
+    if not isinstance(endpoint, str) or not isinstance(token, str):
+        raise RuntimeError("B-216 staging alert secret sources are malformed")
+    if not enabled:
+        if endpoint or token:
+            raise RuntimeError("B-216 alert bindings require explicit protected opt-in")
+        return {}
+    if (
+        not endpoint.strip()
+        or not token.strip()
+        or endpoint != endpoint.strip()
+        or token != token.strip()
+    ):
+        raise RuntimeError("both B-216 staging alert secret sources are required")
+    if any(char in token for char in "\r\n"):
+        raise RuntimeError("B-216 staging alert bearer token is malformed")
+    try:
+        parsed = urllib.parse.urlsplit(endpoint)
+        hostname = parsed.hostname or ""
+        parsed.port  # Force malformed port syntax to fail closed.
+        authorized = urllib.parse.urlsplit(f"//{authorized_host}")
+        authorized_hostname = authorized.hostname or ""
+        authorized_port = authorized.port
+    except ValueError as error:
+        raise RuntimeError("B-216 staging alert endpoint is invalid") from error
+    try:
+        ipaddress.ip_address(authorized_hostname)
+        is_ip_address = True
+    except ValueError:
+        is_ip_address = False
+    labels = authorized_hostname.split(".")
+    if (
+        not authorized_host
+        or authorized_hostname != authorized_host
+        or authorized_hostname != authorized_hostname.lower()
+        or len(labels) < 2
+        or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels)
+        or is_ip_address
+        or authorized_port is not None
+        or authorized.username is not None
+        or authorized.password is not None
+        or authorized.path
+        or authorized.query
+        or authorized.fragment
+        or authorized_hostname.endswith(".workers.dev")
+        or authorized_hostname == "workers.dev"
+        or parsed.scheme != "https"
+        or hostname != authorized_hostname
+        or parsed.path != "/"
+        or parsed.query
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+    ):
+        raise RuntimeError("B-216 alert endpoint must match the owner-authorized HTTPS receiver root")
+    return {
+        "DSR_DLQ_ALERT_ENDPOINT": endpoint,
+        "DSR_DLQ_ALERT_AUTH_TOKEN": token,
+    }
+
+
+def validate_b216_alert_authority(
+    receipt_path: Path,
+    receipt_sha256: str,
+    owner_ack_ref: str,
+    endpoint: str,
+    sha: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, str]:
+    """Require a fresh exact receiver route readback and issue acknowledgement."""
+    if not re.fullmatch(r"[0-9a-f]{64}", receipt_sha256):
+        raise RuntimeError("B-216 receiver authority receipt digest is malformed")
+    if not re.fullmatch(
+        r"https://github\.com/HuGR-dev/corelink-server/issues/1678#issuecomment-[1-9][0-9]*",
+        owner_ack_ref,
+    ):
+        raise RuntimeError("B-216 owner acknowledgement reference is absent or malformed")
+    raw = receipt_path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != receipt_sha256:
+        raise RuntimeError("B-216 receiver authority receipt digest does not match")
+    try:
+        receipt = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError("B-216 receiver authority receipt is malformed") from error
+    expected = {
+        "repository": "HuGR-dev/corelink-server",
+        "ref": "refs/heads/main",
+        "sha": sha,
+        "account_id": "51284495e71acdb5a7677e7383ab026b",
+        "worker_name": "corelink-dsr-b216-alert-receiver-20260927",
+        "status": "complete",
+    }
+    if not isinstance(receipt, dict) or any(receipt.get(key) != value for key, value in expected.items()):
+        raise RuntimeError("B-216 receiver authority receipt target is not exact")
+    worker = receipt.get("worker")
+    if (
+        not isinstance(worker, dict)
+        or worker.get("exists") is not True
+        or not isinstance(worker.get("inventory_count"), int)
+        or worker["inventory_count"] < 1
+    ):
+        raise RuntimeError("B-216 receiver authority receipt Worker readback is incomplete")
+    routes = receipt.get("routes")
+    subdomain = receipt.get("subdomain")
+    if (
+        not isinstance(routes, dict)
+        or routes.get("status") != "known"
+        or not isinstance(routes.get("pattern_sha256"), list)
+        or routes.get("count") != len(routes["pattern_sha256"])
+        or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item) for item in routes["pattern_sha256"])
+        or not isinstance(subdomain, dict)
+        or subdomain.get("status") != "known"
+        or subdomain.get("enabled") is not False
+        or subdomain.get("previews_enabled") is not False
+    ):
+        raise RuntimeError("B-216 receiver authority readback does not prove a reachable custom route")
+    try:
+        parsed_endpoint = urllib.parse.urlsplit(endpoint)
+        endpoint_host = parsed_endpoint.hostname or ""
+        captured = datetime.fromisoformat(str(receipt.get("captured_at", "")).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("B-216 receiver authority timestamp or endpoint is malformed") from error
+    if captured.tzinfo is None:
+        raise RuntimeError("B-216 receiver authority timestamp has no timezone")
+    current = now or datetime.now(timezone.utc)
+    age = (current - captured.astimezone(timezone.utc)).total_seconds()
+    route_digest = hashlib.sha256(f"{endpoint_host}/*".encode("utf-8")).hexdigest()
+    if age < -60 or age > 30 * 60 or route_digest not in routes["pattern_sha256"]:
+        raise RuntimeError("B-216 receiver authority receipt is stale or does not match the endpoint host")
+    return {
+        "receipt_sha256": receipt_sha256,
+        "owner_ack_ref": owner_ack_ref,
+    }
+
+
 def plan_missing_secret_values(
-    secret_names: dict[str, set[str]], environment: dict[str, str]
+    secret_names: dict[str, set[str]],
+    environment: dict[str, str],
+    *,
+    enable_b216_alert: bool = False,
 ) -> dict[str, dict[str, str]]:
     """Build a values-only plan for absent names; never overwrite a live secret."""
     workers = {
@@ -178,11 +336,24 @@ def plan_missing_secret_values(
     }
     if set(secret_names) != set(workers):
         raise RuntimeError("existing Worker secret inventory is incomplete")
-    if any(not isinstance(names, set) or names - required[worker] for worker, names in secret_names.items()):
+    optional_b216 = {"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"}
+    if any(
+        not isinstance(names, set)
+        or names - required[worker] - (optional_b216 if worker == "corelink-signup-staging" else set())
+        for worker, names in secret_names.items()
+    ):
         raise RuntimeError("existing Worker secret inventory has unexpected names")
     for worker, names in secret_names.items():
-        if not names.issubset(required[worker]):
+        optional_b216 = {"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"}
+        allowed = required[worker] | (optional_b216 if worker == "corelink-signup-staging" else set())
+        if not names.issubset(allowed):
             raise RuntimeError("existing Worker secret inventory is malformed")
+
+    b216_values = _b216_alert_secret_values(environment, enable_b216_alert)
+    b216_names = {"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"}
+    already_bound = secret_names["corelink-signup-staging"] & b216_names
+    if already_bound and already_bound != b216_names:
+        raise RuntimeError("existing B-216 alert secret-name pair is incomplete")
 
     # These credentials are shared between root and signup. If only one Worker
     # has a name already, the value cannot be copied or reconciled safely.
@@ -209,6 +380,8 @@ def plan_missing_secret_values(
             if not isinstance(value, str) or not value.strip():
                 raise RuntimeError(f"required staging secret source is absent: {source_name or name}")
             plan[worker][name] = value
+    if enable_b216_alert and not already_bound:
+        plan["corelink-signup-staging"].update(b216_values)
     return plan
 
 
@@ -325,7 +498,15 @@ def _active_exact_marker(
 
 
 def apply_existing_secret_updates(
-    config_dir: Path, receipt_path: Path, run_id: str, sha: str
+    config_dir: Path,
+    receipt_path: Path,
+    run_id: str,
+    sha: str,
+    *,
+    enable_b216_alert: bool = False,
+    authority_receipt_path: Path | None = None,
+    authority_receipt_sha256: str = "",
+    owner_ack_ref: str = "",
 ) -> dict[str, Any]:
     """Add only missing secrets to existing Workers with versioned rollback."""
     if not re.fullmatch(r"[1-9][0-9]{0,19}", run_id) or not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -336,6 +517,18 @@ def apply_existing_secret_updates(
     zone = os.environ.get("CF_ZONE_ID", "")
     if not all((worker_token, route_token, account, zone)):
         raise RuntimeError("required staging-scoped provider input names are absent")
+    b216_values = _b216_alert_secret_values(dict(os.environ), enable_b216_alert)
+    authority = {}
+    if enable_b216_alert:
+        if authority_receipt_path is None:
+            raise RuntimeError("B-216 receiver authority readback is required before opt-in")
+        authority = validate_b216_alert_authority(
+            authority_receipt_path,
+            authority_receipt_sha256,
+            owner_ack_ref,
+            b216_values["DSR_DLQ_ALERT_ENDPOINT"],
+            sha,
+        )
     topology = renderer.StagingTopologyAdapter.from_file()
     renderer._provider_endpoint(os.environ.get("STAGING_R2_S3_ENDPOINT", ""))
     if account != custom_domain.ACCOUNT_ID or zone != custom_domain.ZONE_ID:
@@ -357,10 +550,19 @@ def apply_existing_secret_updates(
 
     names = {worker: _secret_names(worker_token, account, worker) for worker in topology.workers}
     expected_names = {worker: set(topology.required_secret_names.get(worker, [])) for worker in topology.workers}
+    existing_alert_pair = names["corelink-signup-staging"] & {
+        "DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"
+    }
+    if enable_b216_alert or existing_alert_pair:
+        expected_names["corelink-signup-staging"].update(
+            {"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"}
+        )
     if any(names[worker] - expected_names[worker] for worker in topology.workers):
         raise RuntimeError("existing Worker has an unapproved staging secret name")
     environment = dict(os.environ)
-    plans = plan_missing_secret_values(names, environment)
+    plans = plan_missing_secret_values(
+        names, environment, enable_b216_alert=enable_b216_alert
+    )
     preimages: dict[str, dict[str, str]] = {}
     for worker in topology.workers:
         row, version = _deployment_state(worker_token, account, worker)
@@ -375,6 +577,9 @@ def apply_existing_secret_updates(
         "run_id": run_id,
         "sha": sha,
         "target": "staging-only",
+        "b216_dsr_alert_opt_in": enable_b216_alert,
+        "b216_authority_receipt_sha256": authority.get("receipt_sha256"),
+        "b216_owner_ack_ref": authority.get("owner_ack_ref"),
         "route_count": len(route_rows),
         "canonical_staging_route_count": 0,
         "preimages": preimages,
@@ -617,6 +822,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--run-id")
     parser.add_argument("--sha")
+    parser.add_argument("--b216-authority-receipt", type=Path)
+    parser.add_argument("--b216-authority-sha256", default="")
+    parser.add_argument("--b216-owner-ack-ref", default="")
+    parser.add_argument(
+        "--enable-b216-dsr-alert",
+        action="store_true",
+        help="explicitly bind the approved fixed B-216 alert receiver to staging signup",
+    )
     args = parser.parse_args(argv)
 
     if args.phase == "update-existing-apply":
@@ -624,7 +837,11 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("update-existing-apply requires --config-dir, --receipt, --run-id, and --sha")
         try:
             receipt = apply_existing_secret_updates(
-                args.config_dir, args.receipt, args.run_id, args.sha
+                args.config_dir, args.receipt, args.run_id, args.sha,
+                enable_b216_alert=args.enable_b216_dsr_alert,
+                authority_receipt_path=args.b216_authority_receipt,
+                authority_receipt_sha256=args.b216_authority_sha256,
+                owner_ack_ref=args.b216_owner_ack_ref,
             )
             print(json.dumps(receipt, sort_keys=True))
             return 0

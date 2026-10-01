@@ -354,6 +354,79 @@ def _preauthorized_exact_staging_transition(candidate_root: Path, trusted_root: 
     return True
 
 
+# One exact #1678 follow-on transition from fresh protected main.
+# This is a closed 12-path old/new byte and mode map.
+STAGING_I1678_PREIMAGES = {
+    '.actionlint.yaml': (0o644, '58b569484649b8240de7f5af89209168bccd6b27968579cbc2ec1ec319222d5e'),
+    '.github/workflows/issue-1678-b216-dsr-dlq.yml': (0o644, 'e534c143fb60ca052028c62125aac158b33c1adf541657b093be81d551741e86'),
+    '.github/workflows/staging-quarantine-apply.yml': (0o644, '24d901a61e2b45af71fc5ec0632455956690725f8f05f9959c0baf213deb1594'),
+    'apps/dsr-alert-receiver/scripts/readback-route.mjs': (0o644, 'eee9a78856fca6c4e308527515e433ec626a0f9176a7685aade3a8d0ed92c5e5'),
+    'apps/dsr-alert-receiver/tests/readback-route.test.mjs': (0o644, '06b5832cd2c536913d526fbb37859b7c3c3078f7a30f9cdf993d6742eaddd091'),
+    'docs/internal/b216-critical-alert-contract.md': (0o644, '96ada0f00e4f879a6875666616ed6319c1f9d6e735cb898deeb3b72a5848d28a'),
+    'docs/internal/secrets-checklist.md': (0o644, '7208079a60cdb4bae8271dd339a20105b99b039ba8d17a289931a786388691d8'),
+    'docs/operator/b216-staging-dsr-receiver-runbook.md': (0o644, '6646e84d967b5dc81f22f7292b302965e02cf9b1d85b50ae906f56704670ef1a'),
+    'scripts/staging_bootstrap_provider.py': (0o644, '8a77837893f2bd094f1fd834042361e69375e1453ec1d4dde9c20c605d00ccdb'),
+    'scripts/verify_staging_provider_preflight.py': (0o644, 'ddc9d57aa31cbee273dabc923b23a3ef33fb11b40bbd3b746ad7dcaca0633b62'),
+    'tests/test_staging_bootstrap_provider.py': (0o644, 'ec4633c038fd4ae1553464e00ba2ce6dfe79e10562f79243e0fb629d1d93e219'),
+    'tests/test_staging_quarantine_apply_contract.py': (0o644, 'b90d143271b96038ce2f51a23bc62b3be3fee546a231f003b9bcfbfb79a497bf'),
+}
+
+STAGING_I1678_TARGETS = {
+    '.actionlint.yaml': (0o644, 'cc33bffaabef3689d2e698c46d5e9ad03b83ec4b2366c5a930c44de58cb47e57'),
+    '.github/workflows/issue-1678-b216-dsr-dlq.yml': (0o644, '7509a6d4a2c935c45a6cbc0722c940597457b30ea6d22479aa05515b331928b2'),
+    '.github/workflows/staging-quarantine-apply.yml': (0o644, '574c37a78fbed91be485fddc98309e464521d99bfc3a5d05c269daa486d4130b'),
+    'apps/dsr-alert-receiver/scripts/readback-route.mjs': (0o644, 'ac2d8b31cf565d00a1e56d5e12b7ca98c098aa743dd1628944ea6ef7b7bd5bf2'),
+    'apps/dsr-alert-receiver/tests/readback-route.test.mjs': (0o644, '7bc62f76bfca166c5b192d04f0ac14c9dac07ad8553c136b3e8b264140fb7ea1'),
+    'docs/internal/b216-critical-alert-contract.md': (0o644, '8032df0b68da79278e769a01ce4c98d00aec2c8cdf82a918ca324cc237da515f'),
+    'docs/internal/secrets-checklist.md': (0o644, '1e65d3384da6747d319cedafeb07bc131abbadb05a97faf2ec3102ac02d1afc9'),
+    'docs/operator/b216-staging-dsr-receiver-runbook.md': (0o644, '220d195c011d52002c39afd55939dc79a621de751ed6568564970d7b521eaba5'),
+    'scripts/staging_bootstrap_provider.py': (0o644, '4f09213ba0fad99a7433a448f84abc20600e1af9d521b0b15080a7b76cb037fe'),
+    'scripts/verify_staging_provider_preflight.py': (0o644, '001d0392e7f8adff0c82d36d9c3a13a9d4fa25e603d6baf415c079185a6f35c9'),
+    'tests/test_staging_bootstrap_provider.py': (0o644, '6585723899a4cca74d58b1b33c9c816ea7cbc45390274bfa1dd3fea84489b9a2'),
+    'tests/test_staging_quarantine_apply_contract.py': (0o644, 'e09ee968adbe7149e3e2f0b02b25fcbb4277bcd3ff835fe1ca4275f367d02b0d'),
+}
+
+# Exact protected-main snapshot of the 37-path staging binding control inventory.
+STAGING_I1678_BASE_CONTROL_PINS = {
+    '.github/workflows/issue-1700-container-staging-deploy.yml': (0o644, '7d75bc3a590210bef297b86d6513f58b7eedb8ddd3341704a6311fd790957786'),
+    '.github/workflows/staging-quarantine-apply.yml': (0o644, '24d901a61e2b45af71fc5ec0632455956690725f8f05f9959c0baf213deb1594'),
+    'crates/corelink-container/src/main.rs': (0o644, '44c28a9a8387212b156ce05aa65918b0c34454453d7fcd85e79fd29f9a5518db'),
+    'crates/corelink-container/src/routes.rs': (0o644, '04a84d7be655fd25ee6d05d1b5c598c169be1aae381a255533ffeda0aad1ec2f'),
+    'crates/corelink-container/src/routes/staging_d1_binding_probe.rs': (0o644, '6a20cb5f94b83f7d14afa604f71178d497b37fc33c472b80731a7eea9e4696ff'),
+    'crates/corelink-container/src/storage.rs': (0o644, 'a21a64dc152eea27354de0b14627fd88213d20e1c43129315b4137eec49b711c'),
+    'crates/corelink-container/src/storage/d1_http.rs': (0o644, '60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d'),
+    'docs/internal/secrets-checklist.md': (0o644, '7208079a60cdb4bae8271dd339a20105b99b039ba8d17a289931a786388691d8'),
+    'infra/staging/README.md': (0o644, '5f3daac1edba6320bcfc6663d57bece16a9c63b7977156c0fc3a3b562276a435'),
+    'infra/staging/topology.json': (0o644, 'a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14'),
+    'pnpm-lock.yaml': (0o644, '7d8509a802bad9c700070722a8e834c98aef18c925768fb9c763a90a5a10c6cc'),
+    'scripts/issue_1700_runtime_probe.mjs': (0o644, '8912c27e4f1dd99bf14703b18f118f771204cdb808ad9ba1da9167f062e5aee4'),
+    'scripts/staging_bootstrap_provider.py': (0o644, '8a77837893f2bd094f1fd834042361e69375e1453ec1d4dde9c20c605d00ccdb'),
+    'scripts/tests/issue_1700_runtime_probe.test.mjs': (0o644, 'bfc00766af1855b213a0c49ad7ff7df7c3ddb9f9a93bd66f54ae42bf5b725306'),
+    'scripts/verify_staging_provider_preflight.py': (0o644, 'ddc9d57aa31cbee273dabc923b23a3ef33fb11b40bbd3b746ad7dcaca0633b62'),
+    'scripts/verify_staging_topology_contract.py': (0o644, '48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9'),
+    'tests/test_issue_1700_route_inventory.py': (0o644, 'a371d50bc84eafad075c9ad943cbe9ab5b90a53a4e1501d19a428d38873a5d4a'),
+    'tests/test_staging_bootstrap_provider.py': (0o644, 'ec4633c038fd4ae1553464e00ba2ce6dfe79e10562f79243e0fb629d1d93e219'),
+    'tests/test_staging_custom_domain.py': (0o644, 'cfc063496302c06c8bc879c380c7f24e13088fdf8f2a5412def3e6e60b115afc'),
+    'tests/test_staging_quarantine_apply_contract.py': (0o644, 'b90d143271b96038ce2f51a23bc62b3be3fee546a231f003b9bcfbfb79a497bf'),
+    'worker/package.json': (0o644, '96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34'),
+    'worker/src/durable_object.ts': (0o644, '10a22f81b4e407c5200d217e43db83ec68620c48b8ba273eaaea41861283d22e'),
+    'worker/src/durable_object_start.ts': (0o644, '7f8c28ac7b93628f4c4767efd1bb68bb75d2df9ea85442e92d9a6097c500ce4c'),
+    'worker/src/index.ts': (0o644, '18b960a74833284f953bd28818cd7260798d9570c17bce459502f7b7ca50f3cd'),
+    'worker/src/index_schedule.ts': (0o644, '390a6458dbcc7bc825105dc5373b017e3044dd41085c4d775cafe6b02913cfdb'),
+    'worker/src/lib/devenv_cleanup_route.ts': (0o644, 'e279cb99a585388fbf4483313a80c042df3c14bf1ca5ef52c31dc451e329907c'),
+    'worker/src/lib/runner_credential_routes.ts': (0o644, '6cd7af8c032dd8315c619f6830c3ef63df1a459152f197ca6a7faedf847b5731'),
+    'worker/src/pat_issue_rate_limit.ts': (0o644, 'ff4ca0814c40f128fed4650b2041660670bcc985037b975cb6f29b177d3c1afb'),
+    'worker/src/staging_d1_binding_proxy.ts': (0o644, '1e5d940b240a4bef9daba0e360758793ab7b11a165f5b1bc8ccb7eae658a348d'),
+    'worker/src/staging_d1_binding_proxy_entrypoint.ts': (0o644, 'af759d84e63a2016737c899cfba045f52c1fcf20061678a3612ddeec6c18bdab'),
+    'worker/src/staging_runtime_d1_probe.ts': (0o644, '2030dc1439e9aa93bdf4b6f0f0e9df229ae2ad42bc3357051e24d8f7cf519845'),
+    'worker/tests/cloudflare_workers_node_stub.ts': (0o644, '0237103e747517298fea07261598d250e25edff6f412cd1df33695c1585cfcf7'),
+    'worker/tests/durable_object.test.ts': (0o644, '08c2bebe46b885fcdef58cbe08d0fdba76710c21da5d2780ac8d63c49cafc206'),
+    'worker/tests/staging_d1_binding_proxy.test.ts': (0o644, '5710f974898de4c88a1ddca3f9815589d7c805faa4481f44d9005054d10796cc'),
+    'worker/tests/staging_d1_binding_start_gate.test.ts': (0o644, '2377e10e46528888f60f711820a931f8358d214ac53b8c822bfac9c2d9f2da66'),
+    'worker/tests/staging_runtime_d1_probe.test.ts': (0o644, 'be63eab8bab6b52c0e62c3de1e23cc91d615a4934e41da4828e14593840c56f0'),
+    'worker/vitest.config.mts': (0o644, 'e2c2f0e46d4a45d5e789f920f95b73ffd44e6a14a9450e11817426995feda506'),
+}
+
 STAGING_I2568_PREIMAGES = {
     '.actionlint.yaml': (420, '8e119ec23c53aa981bbfea4d909637d76f79956bee8d7aee30f4d6cfbbc48099'),
     '.github/workflows/issue-2568-sla-credit-real.yml': None,
@@ -1171,6 +1244,14 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
         candidate_root, trusted_root, STAGING_B216_PREIMAGES, STAGING_B216_TARGETS,
         (STAGING_D1_BINDING_PROXY_TARGETS, STAGING_I1648_TARGETS),
     )
+    i1678_transition = (
+        len(STAGING_I1678_BASE_CONTROL_PINS) == 37
+        and set(STAGING_I1678_BASE_CONTROL_PINS) == set(STAGING_D1_BINDING_PROXY_PREIMAGES)
+        and _preauthorized_exact_staging_transition(
+            candidate_root, trusted_root, STAGING_I1678_PREIMAGES, STAGING_I1678_TARGETS,
+            (STAGING_I1678_BASE_CONTROL_PINS,),
+        )
+    )
     i2568_transition = _preauthorized_exact_staging_transition(
         candidate_root, trusted_root, STAGING_I2568_PREIMAGES, STAGING_I2568_TARGETS,
         (STAGING_D1_BINDING_PROXY_TARGETS, STAGING_I1648_TARGETS, STAGING_B216_TARGETS),
@@ -1188,7 +1269,9 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
                 and staging_d1_binding_proxy_transition
             ) or (relative in STAGING_I1648_TARGETS and i1648_transition) or (
                 relative in STAGING_B216_TARGETS and b216_transition
-            ) or (relative in STAGING_I2568_TARGETS and i2568_transition):
+            ) or (relative in STAGING_I2568_TARGETS and i2568_transition) or (
+                relative in STAGING_I1678_TARGETS and i1678_transition
+            ):
                 continue
             if relative == "scripts/verify_b057_sli.py" and _preauthorized_b057_c0(
                 candidate_root, trusted_root
