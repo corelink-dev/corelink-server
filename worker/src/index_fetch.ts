@@ -13,12 +13,15 @@ import { finishResponse } from "./index_finish_stage.js";
 import { runScheduled } from "./index_schedule.js";
 import { rejectUnprovenGrpcTransport } from "./grpc_transport_gate.js";
 import { forwardStagingGrpcDiagnostic } from "./grpc_staging_transport.js";
+import { handleStagingD1HttpProof } from "./staging_d1_http.js";
 
 let requestCounter = 0;
 
 export const baseHandler: ExportedHandler<Env> = {
   scheduled: runScheduled,
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const stagingD1Proof = await handleStagingD1HttpProof(request, env);
+    if (stagingD1Proof !== null) return stagingD1Proof;
     const grpcTransportGate = rejectUnprovenGrpcTransport(request);
     if (grpcTransportGate !== null) return grpcTransportGate;
     const stagingGrpcResponse = await forwardStagingGrpcDiagnostic(request, env);

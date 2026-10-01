@@ -228,7 +228,7 @@ mod tests {
         assert_eq!(window.starts_ms, 1790856000000);
         assert_eq!(window.last_entry_ms, 1790877600000);
         assert_eq!(window.expires_ms, 1790882100000);
-        assert_eq!(window.nonce, "issue-1700-recovery-20261001-v9");
+        assert_eq!(window.nonce, "issue-1700-recovery-20261001-v10");
         assert!(valid_request(&input(), TIME));
         let mut last_valid = input();
         last_valid.scheduled_time_ms = probe_window().last_entry_ms;

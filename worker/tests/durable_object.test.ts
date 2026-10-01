@@ -13,9 +13,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { CoreLinkServer, timingSafeEqual } from "../src/durable_object.js";
+import { CoreLinkServer, timingSafeEqual, STAGING_D1_HTTP_OPERATION_KEY, STAGING_D1_HTTP_COMPLETION_DEADLINE_KEY } from "../src/durable_object.js";
 import { STAGING_D1_PROBE_WINDOW } from "../src/staging_runtime_d1_probe.js";
 import { V8_PROBE_NAME, V8_PROBE_RELEASE, V8_PROBE_NONCE, V8_PROBE_RETIRED_KEY, V8_CLEANUP_RECEIPT_KEY } from "../src/staging_d1_probe_v8_cleanup.js";
+import { V9_PROBE_NAME, V9_PROBE_RELEASE, V9_PROBE_NONCE, V9_PROBE_RETIRED_KEY } from "../src/staging_d1_probe_v9_cleanup.js";
+import { OLD_PROBE_NAME, OLD_PROBE_RELEASE, V5_PROBE_NAME, V5_PROBE_RELEASE } from "../src/staging_d1_probe_retirement.js";
+import { isStagingD1HttpStatus } from "../src/staging_d1_http_contract.js";
 import cleanupWindow from "../src/staging_d1_probe_cleanup_window.json";
 import type { Env } from "../src/index.js";
 
@@ -73,6 +76,210 @@ function makeEnv(): Env {
     PAGERDUTY_ROUTING_KEY: "",
   };
 }
+
+describe("durable authenticated HTTP native coordinator", () => {
+  const release = "a".repeat(40), at = STAGING_D1_PROBE_WINDOW.starts_ms + 120_000;
+  const native = { contract: "corelink-staging-d1-binding-runtime-v1", outcome: "pass",
+    probe_nonce: STAGING_D1_PROBE_WINDOW.nonce, worker_release: release, scheduled_time_ms: at,
+    parameterized_select: true, failed_batch_observed: true, rollback_absence_verified: true,
+    probe_table_dropped: true, d1_binding_intercepted: true, authorization_absent: true, cf_api_token_absent: true };
+  const v8Receipt = { contract: "corelink-staging-v8-cleanup-v1", old_release: V8_PROBE_RELEASE,
+    old_nonce: V8_PROBE_NONCE, worker_release: release, prior_execution: "unknown",
+    prior_admission_present: true, container_stopped: true, alarm_absent: true, tables_absent: true, completed_at_ms: at };
+  const v9Receipt = { ...v8Receipt, contract: "corelink-staging-v9-cleanup-v1", old_release: V9_PROBE_RELEASE, old_nonce: V9_PROBE_NONCE };
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(at); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+  const flush = async () => { for (let n = 0; n < 1000; n++) await Promise.resolve(); };
+
+  async function fixture() {
+    const name = `_staging_d1_binding_probe_v2:${STAGING_D1_PROBE_WINDOW.nonce}:${release}`;
+    const state = makeMockState(name), order: string[] = [];
+    let initialized!: Promise<unknown>;
+    state.blockConcurrencyWhile = <T>(fn: () => Promise<T>) => { const result = fn(); initialized = result; return result; };
+    const v8 = vi.fn(async () => {
+      expect(await state.storage.get(STAGING_D1_HTTP_OPERATION_KEY)).toHaveProperty("status", "running");
+      expect(await state.storage.get("staging-d1-binding-probe-admission-v1")).toBeUndefined();
+      order.push("v8"); return v8Receipt;
+    });
+    const v9 = vi.fn(async () => { order.push("v9"); return v9Receipt; });
+    const old = vi.fn(async () => { order.push("old"); return {
+      old_probe_release: OLD_PROBE_RELEASE, old_probe_retired: true, old_probe_tables_absent: true }; });
+    const v5 = vi.fn(async () => { order.push("v5"); return {
+      v5_probe_release: V5_PROBE_RELEASE, v5_probe_retired: true, v5_probe_tables_absent: true }; });
+    const sql = vi.fn(() => ({ bind() { return this; }, all: async () => {
+      order.push("v4"); return { success: true, results: [] }; } }));
+    const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: release,
+      CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd", D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
+      R2_S3_ENDPOINT: "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com", CONFIG_DB: { prepare: sql },
+      CORELINK_SERVER: { idFromName: (id: string) => ({ toString: () => id }), get: (id: DurableObjectId) => {
+        if (id.toString() === V8_PROBE_NAME) return { cleanupV8StagingD1RuntimeProbe: v8 };
+        if (id.toString() === V9_PROBE_NAME) return { cleanupV9StagingD1RuntimeProbe: v9 };
+        if (id.toString() === OLD_PROBE_NAME) return { retireStagingD1RuntimeProbe: old };
+        if (id.toString() === V5_PROBE_NAME) return { retireStagingD1RuntimeProbe: v5 };
+        throw new Error("unexpected fixture namespace");
+      } },
+    } as unknown as Env;
+    const port = vi.fn(async (_request: Request) => { order.push("native"); return Response.json(native); });
+    const container = { running: false, getTcpPort: () => ({ fetch: port }),
+      destroy: vi.fn(async () => { order.push("stop"); container.running = false; }) };
+    Object.assign(state, { container });
+    const do_ = new CoreLinkServer(state, env, Date.now); await initialized;
+    const start = vi.spyOn(do_ as unknown as { startHttpProbeContainer: () => Promise<{ ok: true }> }, "startHttpProbeContainer")
+      .mockImplementation(async () => { container.running = true; return { ok: true }; });
+    return { do_, state, env, order, v8, v9, old, v5, sql, port, container, start };
+  }
+
+  it("claims before all cleanup, executes whole order, and persists exact stopped proof", async () => {
+    const h = await fixture();
+    const result = await h.do_.executeStagingD1HttpProof(at);
+    expect(h.order).toEqual(["v8", "v9", "v4", "old", "v5", "native", "stop"]);
+    expect(isStagingD1HttpStatus(result, release, Date.now())).toBe(true);
+    expect(result.status).toBe("complete"); expect(result.rollback_safe).toBe(true);
+    expect(Object.keys(result)).toHaveLength(9);
+    expect(Object.keys(result.native_receipt as object)).toHaveLength(20);
+    expect(Object.keys(result.v8_cleanup as object)).toHaveLength(10);
+    expect(Object.keys(result.v9_cleanup as object)).toHaveLength(10);
+    const request = h.port.mock.calls[0]![0];
+    expect(request.method).toBe("POST");
+    expect(request.headers.has("authorization")).toBe(false);
+    expect(request.headers.has("x-corelink-internal-auth")).toBe(false);
+    expect(h.old).toHaveBeenCalledWith(at, at + 600_000);
+    expect(await h.do_.readStagingD1HttpProof()).toEqual(result);
+    expect((await h.do_.fetch(new Request("https://test/_internal/staging/d1-binding-runtime-probe", { method: "POST" }))).status).toBe(404);
+    await expect(h.do_.executeStagingD1HttpProof(at)).rejects.toThrow();
+    expect(h.v8).toHaveBeenCalledOnce();
+    expect(await h.state.storage.get("staging-d1-binding-probe-receipt-v1")).toEqual(native);
+  });
+
+  it.each(["v8", "v9", "old", "v5"] as const)("persists UNKNOWN and never admits native work after %s failure", async phase => {
+    const h = await fixture(); h[phase].mockRejectedValue(new Error("private-provider-sentinel"));
+    const result = await h.do_.executeStagingD1HttpProof(at);
+    expect(result.status).toBe("unknown"); expect(result.rollback_safe).toBe(false);
+    expect(JSON.stringify(result)).not.toContain("private-provider-sentinel");
+    expect(h.start).not.toHaveBeenCalled(); expect(h.container.destroy).not.toHaveBeenCalled();
+    expect(await h.state.storage.get(STAGING_D1_HTTP_OPERATION_KEY)).toHaveProperty("status", "unknown");
+    await expect(h.do_.executeStagingD1HttpProof(at)).rejects.toThrow();
+  });
+
+  it("records UNKNOWN before waiting for an uncancellable cleanup; late resolution never admits", async () => {
+    const h = await fixture(); let finish!: (receipt: typeof v8Receipt) => void;
+    h.v8.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const result = h.do_.executeStagingD1HttpProof(at); await flush();
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(await h.state.storage.get(STAGING_D1_HTTP_OPERATION_KEY)).toHaveProperty("status", "unknown");
+    expect((await h.do_.readStagingD1HttpProof()).rollback_safe).toBe(false);
+    expect(h.v9).not.toHaveBeenCalled(); expect(h.container.destroy).not.toHaveBeenCalled();
+    finish(v8Receipt); expect((await result).status).toBe("unknown");
+    expect(h.v9).not.toHaveBeenCalled(); expect(h.start).not.toHaveBeenCalled();
+    expect(await h.state.storage.get("staging-d1-binding-probe-admission-v1")).toBeUndefined();
+  });
+
+  it("never cleans during pending native fetch and never completes after late native success", async () => {
+    const h = await fixture(); let finish!: (response: Response) => void;
+    h.port.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const result = h.do_.executeStagingD1HttpProof(at); await flush();
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(h.container.destroy).not.toHaveBeenCalled();
+    expect(await h.state.storage.get(STAGING_D1_HTTP_OPERATION_KEY)).toHaveProperty("status", "unknown");
+    finish(Response.json(native)); expect((await result).status).toBe("unknown");
+    expect(h.container.destroy).toHaveBeenCalledOnce();
+    expect(await h.state.storage.get("staging-d1-binding-probe-receipt-v1")).toBeUndefined();
+    expect((await h.do_.readStagingD1HttpProof()).rollback_safe).toBe(false);
+  });
+
+  it("does not make an unresolved native operation safe after both budgets expire", async () => {
+    const h = await fixture(); h.port.mockImplementation(() => new Promise(() => {}));
+    const result = h.do_.executeStagingD1HttpProof(at); await flush();
+    await vi.advanceTimersByTimeAsync(1_200_000);
+    expect((await result).status).toBe("unknown");
+    expect(h.container.destroy).not.toHaveBeenCalled();
+    expect((await h.do_.readStagingD1HttpProof()).rollback_safe).toBe(false);
+  });
+
+  it.each(["extra", "stopped", "alarm"])("rejects incomplete final proof: %s", async failure => {
+    const h = await fixture();
+    if (failure === "extra") h.port.mockResolvedValue(Response.json({ ...native, private: "sentinel" }));
+    if (failure === "stopped") h.container.destroy.mockResolvedValue(undefined);
+    if (failure === "alarm") vi.spyOn(h.state.storage, "getAlarm").mockResolvedValue(at);
+    const result = await h.do_.executeStagingD1HttpProof(at);
+    expect(result.status).toBe("unknown"); expect(result.rollback_safe).toBe(false);
+    expect(result.native_receipt).toBeNull();
+    expect(await h.state.storage.get("staging-d1-binding-probe-receipt-v1")).toBeUndefined();
+  });
+
+  it("rehydrates a running claim as UNKNOWN, preserves all native keys, and read cannot replay", async () => {
+    const h = await fixture();
+    const keys = ["staging-d1-binding-probe-admission-v1", "staging-d1-binding-probe-state-v1", "staging-d1-binding-probe-receipt-v1"];
+    for (const key of keys) await h.state.storage.put(key, { preserved: key });
+    await h.state.storage.put(STAGING_D1_HTTP_OPERATION_KEY, { status: "running" });
+    let ready!: Promise<unknown>;
+    h.state.blockConcurrencyWhile = <T>(fn: () => Promise<T>) => { const result = fn(); ready = result; return result; };
+    const restored = new CoreLinkServer(h.state, h.env, Date.now); await ready;
+    expect((await restored.readStagingD1HttpProof()).status).toBe("unknown");
+    await expect(restored.executeStagingD1HttpProof(at)).rejects.toThrow();
+    await expect(restored.admitStagingD1RuntimeProbe(at)).rejects.toThrow();
+    expect(h.v8).not.toHaveBeenCalled();
+    for (const key of keys) expect(await h.state.storage.get(key)).toEqual({ preserved: key });
+  });
+
+  it.each([undefined, {}, { operation_started_ms: at, completion_deadline_ms: Infinity },
+    { operation_started_ms: at, completion_deadline_ms: at },
+    { operation_started_ms: at, completion_deadline_ms: at + 1_200_001 },
+    { operation_started_ms: at, completion_deadline_ms: at + 600_000, extra: true }])(
+    "orphaned COMPLETE with absent/malformed/out-of-budget deadline is never safe", async deadline => {
+      const h = await fixture(); await h.do_.executeStagingD1HttpProof(at);
+      if (deadline === undefined) await h.state.storage.delete(STAGING_D1_HTTP_COMPLETION_DEADLINE_KEY);
+      else await h.state.storage.put(STAGING_D1_HTTP_COMPLETION_DEADLINE_KEY, deadline);
+      expect((await h.do_.readStagingD1HttpProof()).status).toBe("unknown");
+      expect((await h.do_.readStagingD1HttpProof()).rollback_safe).toBe(false);
+    });
+
+  it("a commit delayed after callback return cannot resurrect COMPLETE after timeout and eviction", async () => {
+    const h = await fixture();
+    let commit!: () => void, committed!: Promise<void>;
+    vi.spyOn(h.state.storage, "transaction").mockImplementation(async callback => {
+      const staged = new Map<string, unknown>();
+      const result = await callback({
+        get: async (key: string) => staged.has(key) ? staged.get(key) : h.state.storage.get(key),
+        put: async (key: string, value: unknown) => { staged.set(key, value); },
+      } as unknown as DurableObjectTransaction);
+      // The callback (including its final deadline check) already returned.
+      if ((staged.get(STAGING_D1_HTTP_OPERATION_KEY) as { status?: string } | undefined)?.status === "complete") {
+        let finish!: () => void;
+        committed = new Promise<void>(resolve => { finish = resolve; });
+        await new Promise<void>(resolve => { commit = resolve; });
+        for (const [key, value] of staged) await h.state.storage.put(key, value);
+        finish();
+      } else for (const [key, value] of staged) await h.state.storage.put(key, value);
+      return result;
+    });
+    const execution = h.do_.executeStagingD1HttpProof(at);
+    const rejected = expect(execution).rejects.toThrow("status unavailable");
+    await flush();
+    expect(commit).toBeTypeOf("function");
+    await vi.advanceTimersByTimeAsync(600_000); await rejected;
+    expect(await h.state.storage.get(STAGING_D1_HTTP_OPERATION_KEY)).toHaveProperty("status", "unknown");
+    commit(); await committed;
+    expect(await h.state.storage.get(STAGING_D1_HTTP_OPERATION_KEY)).toHaveProperty("status", "complete");
+    let ready!: Promise<unknown>;
+    h.state.blockConcurrencyWhile = <T>(fn: () => Promise<T>) => { const result = fn(); ready = result; return result; };
+    const restored = new CoreLinkServer(h.state, h.env, Date.now); await ready;
+    const status = await restored.readStagingD1HttpProof();
+    expect(status.status).toBe("unknown"); expect(status.rollback_safe).toBe(false);
+    await expect(restored.executeStagingD1HttpProof(at + 600_000)).rejects.toThrow();
+  });
+
+  it("restores the v9 retired fence before fetch, alarm, or native admission", async () => {
+    const h = await fixture(); await h.state.storage.put(V9_PROBE_RETIRED_KEY, { old_release: V9_PROBE_RELEASE });
+    let ready!: Promise<unknown>;
+    h.state.blockConcurrencyWhile = <T>(fn: () => Promise<T>) => { const result = fn(); ready = result; return result; };
+    const restored = new CoreLinkServer(h.state, h.env, Date.now); await ready;
+    expect((await restored.fetch(new Request("https://test/"))).status).toBe(410);
+    expect((await restored.fetch(new Request("https://test/_internal/staging/d1-binding-runtime-probe", { method: "POST" }))).status).toBe(404);
+    await expect(restored.executeStagingD1HttpProof(at)).rejects.toThrow();
+    await restored.alarm(); expect(h.start).not.toHaveBeenCalled();
+  });
+});
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Idempotent-start guard (multi-region cold-start thrash fix, 2026-08-18)
@@ -277,37 +484,6 @@ describe("staging D1 runtime probe exposure", () => {
     expect(await response.text()).toBe("not_found");
   });
 
-  it("persists one admitted scheduled timestamp and consumes it after cutoff", async () => {
-    const window = STAGING_D1_PROBE_WINDOW;
-    const release = "d".repeat(40);
-    const name = `_staging_d1_binding_probe_v2:${window.nonce}:${release}`;
-    const state = makeMockState(name);
-    const env = { ...makeEnv(), ENVIRONMENT: "staging", SENTRY_RELEASE: release,
-      CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd",
-      D1_DATABASE_ID: "d72a6b39-6a48-4338-bfda-1111dda98604",
-      R2_S3_ENDPOINT: "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com",
-      CORELINK_SERVER: { idFromName: (id: string) => ({ toString: () => id }) },
-    } as unknown as Env;
-    let now = window.last_entry_ms;
-    const do_ = new CoreLinkServer(state, env, () => now);
-    const first = await do_.admitStagingD1RuntimeProbe(window.last_entry_ms);
-    expect(first.status).toBe("admitted");
-    expect(await do_.admitStagingD1RuntimeProbe(window.last_entry_ms)).toEqual({ status: "already_admitted" });
-    if (first.status !== "admitted") throw new Error("fixture admission rejected");
-    now += 1000;
-    const start = vi.spyOn(do_ as unknown as { ensureContainerRunning: (...args: unknown[]) => Promise<unknown> }, "ensureContainerRunning")
-      .mockRejectedValue(new Error("container-start-stop"));
-    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    await expect(do_.runStagingD1RuntimeProbe(first.admission)).rejects.toThrow("container-start-stop");
-    expect(start).toHaveBeenCalledOnce();
-    expect(info.mock.calls.map(call => call[0])).toEqual([
-      `[staging_d1_runtime_probe] phase=native_start release=${release}`,
-      `[staging_d1_runtime_probe] phase=native_error release=${release}`,
-    ]);
-    expect(info.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0]!);
-    info.mockRestore();
-  });
-
   it("emits native_complete only after the validated receipt and stopped state persist", async () => {
     const window = STAGING_D1_PROBE_WINDOW, release = "a".repeat(40), scheduledTime = window.starts_ms;
     const state = makeMockState(`_staging_d1_binding_probe_v2:${window.nonce}:${release}`);
@@ -325,12 +501,13 @@ describe("staging D1 runtime probe exposure", () => {
       CORELINK_SERVER: { idFromName: (id: string) => ({ toString: () => id }) },
     } as unknown as Env;
     const do_ = new CoreLinkServer(state, env, () => scheduledTime + 5000);
-    const admitted = await do_.admitStagingD1RuntimeProbe(scheduledTime);
-    if (admitted.status !== "admitted") throw new Error("fixture admission rejected");
+    const admission = { contract: "corelink-staging-d1-probe-admission-v1" as const,
+      probe_nonce: window.nonce, worker_release: release, scheduled_time_ms: scheduledTime };
+    await state.storage.put("staging-d1-binding-probe-admission-v1", admission);
     vi.spyOn(do_ as unknown as { ensureContainerRunning: (...args: unknown[]) => Promise<unknown> }, "ensureContainerRunning").mockResolvedValue({ ok: true });
     const put = vi.spyOn(state.storage, "put");
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    await expect(do_.runStagingD1RuntimeProbe(admitted.admission)).resolves.toEqual(receipt);
+    await expect(do_.runStagingD1RuntimeProbe(admission)).resolves.toEqual(receipt);
     expect(container.running).toBe(false);
     expect(await state.storage.get("staging-d1-binding-probe-state-v1")).toBe("complete");
     expect(info.mock.calls.map(call => call[0])).toEqual([
@@ -354,11 +531,12 @@ describe("staging D1 runtime probe exposure", () => {
       CORELINK_SERVER: { idFromName: (id: string) => ({ toString: () => id }) },
     } as unknown as Env;
     const afterCutoff = new CoreLinkServer(state, env, () => window.last_entry_ms + 1);
-    await expect(afterCutoff.admitStagingD1RuntimeProbe(window.last_entry_ms)).rejects.toThrow("admission guard");
-    const admitted = await new CoreLinkServer(state, env, () => window.last_entry_ms).admitStagingD1RuntimeProbe(window.last_entry_ms);
-    if (admitted.status !== "admitted") throw new Error("fixture admission rejected");
-    const otherRelease = { ...admitted.admission, worker_release: "f".repeat(40) };
-    const candidate = new CoreLinkServer(state, env, () => window.last_entry_ms + 1000);
+    await expect(afterCutoff.admitStagingD1RuntimeProbe(window.last_entry_ms)).rejects.toThrow();
+    const candidate = new CoreLinkServer(state, env, () => window.last_entry_ms);
+    await expect(candidate.admitStagingD1RuntimeProbe(window.last_entry_ms)).rejects.toThrow("HTTP admission required");
+    expect(await state.storage.get("staging-d1-binding-probe-admission-v1")).toBeUndefined();
+    const otherRelease = { contract: "corelink-staging-d1-probe-admission-v1" as const,
+      probe_nonce: window.nonce, worker_release: "f".repeat(40), scheduled_time_ms: window.last_entry_ms };
     await expect(candidate.runStagingD1RuntimeProbe(otherRelease)).rejects.toThrow("guard rejected");
   });
 });
@@ -1138,13 +1316,35 @@ describe("exact v8 cleanup fence and live proof", () => {
   }
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
+  it("v9 cleanup uses its separate fence and preserves historical admission/state/receipt", async () => {
+    const current = Date.parse("2026-10-01T14:00:00Z");
+    const { do_, state, container, sql } = await fixture(V9_PROBE_NAME, () => current);
+    const prior = { contract: "corelink-staging-d1-probe-admission-v1", probe_nonce: V9_PROBE_NONCE,
+      worker_release: V9_PROBE_RELEASE, scheduled_time_ms: Date.parse("2026-10-01T12:36:00Z") };
+    await state.storage.put(admissionKey, prior);
+    await state.storage.put(claimKey, "unknown");
+    await state.storage.put(receiptKey, { prior_execution: "unknown" });
+    const result = await do_.cleanupV9StagingD1RuntimeProbe(current, release);
+    expect(result).toEqual({ contract: "corelink-staging-v9-cleanup-v1", old_release: V9_PROBE_RELEASE,
+      old_nonce: V9_PROBE_NONCE, worker_release: release, prior_execution: "unknown",
+      prior_admission_present: true, container_stopped: true, alarm_absent: true, tables_absent: true, completed_at_ms: current });
+    expect(await state.storage.get(V9_PROBE_RETIRED_KEY)).toBeDefined();
+    expect(await state.storage.get(V8_PROBE_RETIRED_KEY)).toBeUndefined();
+    expect(await state.storage.get(admissionKey)).toEqual(prior);
+    expect(await state.storage.get(claimKey)).toBe("unknown");
+    expect(await state.storage.get(receiptKey)).toEqual({ prior_execution: "unknown" });
+    expect(container.running).toBe(false); expect(sql).toHaveBeenCalledTimes(2);
+    expect((await do_.fetch(new Request("https://test/"))).status).toBe(410);
+    expect((await do_.fetch(new Request("https://test/_internal/staging/d1-binding-runtime-probe", { method: "POST" }))).status).toBe(404);
+  });
+
   it("preserves all three historical keys and only writes the exact completion after live proof", async () => {
     const { do_, state, sql, container } = await fixture();
     const historical = { [admissionKey]: admission, [claimKey]: "unknown", [receiptKey]: { execution: "unknown" } };
     for (const [key, value] of Object.entries(historical)) await state.storage.put(key, value);
     const put = vi.spyOn(state.storage, "put");
     // The historical object is already ineligible for native replay before its marker exists.
-    await expect(do_.admitStagingD1RuntimeProbe(time)).rejects.toThrow("guard rejected");
+    await expect(do_.admitStagingD1RuntimeProbe(time)).rejects.toThrow();
     await expect(do_.runStagingD1RuntimeProbe(admission)).rejects.toThrow("old probe cannot be replayed");
     const result = await do_.cleanupV8StagingD1RuntimeProbe(time, release);
     expect(result).toEqual(completion);
@@ -1159,7 +1359,7 @@ describe("exact v8 cleanup fence and live proof", () => {
     expect(put.mock.calls.at(-1)).toEqual([V8_CLEANUP_RECEIPT_KEY, completion]);
     expect(put.mock.invocationCallOrder.at(-1)).toBeGreaterThan(sql.mock.invocationCallOrder.at(-1)!);
     expect((await do_.fetch(new Request("https://test/"))).status).toBe(410);
-    await expect(do_.admitStagingD1RuntimeProbe(time)).rejects.toThrow("guard rejected");
+    await expect(do_.admitStagingD1RuntimeProbe(time)).rejects.toThrow();
     await expect(do_.runStagingD1RuntimeProbe(admission)).rejects.toThrow("old probe cannot be replayed");
     await do_.alarm();
     expect(sql).toHaveBeenCalledTimes(2);
@@ -1256,7 +1456,7 @@ describe("exact v8 cleanup fence and live proof", () => {
     await expect(do_.cleanupV8StagingD1RuntimeProbe(scheduled, release)).resolves.toMatchObject({ completed_at_ms: now });
     const freshState = makeMockState(`_staging_d1_binding_probe_v2:${STAGING_D1_PROBE_WINDOW.nonce}:${release}`);
     const fresh = new CoreLinkServer(freshState, env, () => now);
-    await expect(fresh.admitStagingD1RuntimeProbe(scheduled)).rejects.toThrow("admission guard");
+    await expect(fresh.admitStagingD1RuntimeProbe(scheduled)).rejects.toThrow();
     await expect(do_.runStagingD1RuntimeProbe(admission)).rejects.toThrow("old probe cannot be replayed");
     const expired = new CoreLinkServer(state, env, () => cleanupWindow.expires_ms);
     await expect(expired.cleanupV8StagingD1RuntimeProbe(scheduled, release)).rejects.toThrow("guard rejected");

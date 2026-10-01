@@ -71,160 +71,45 @@ function env(stub: { runStagingD1RuntimeProbe: ReturnType<typeof vi.fn>; readSta
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
-describe("temporary staging native D1 runtime Cron", () => {
-  it("uses a distinct cadence and never treats an unauthorized B-072 tick as a v9 probe", async () => {
-    expect(B072_ONE_SHOT_CRON).toBe("* * * * *");
-    expect(STAGING_D1_RUNTIME_PROBE_CRON).toBe("*/2 * * * *");
-    expect(STAGING_D1_RUNTIME_PROBE_CRON).not.toBe(B072_ONE_SHOT_CRON);
-    vi.useFakeTimers();
-    vi.setSystemTime(SCHEDULED_TIME + 5000);
-    const probe = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
-    const target = { ...env(probe), SYNTHETIC_DRILL_PROVIDER_MODE: "provider_deferred",
-      SCHEDULED_DRILL_DELIVERY: { fetch: vi.fn() },
-      CONFIG_DB: { prepare: vi.fn(() => ({ first: vi.fn().mockResolvedValue(null) })) },
-    } as unknown as Env;
-    const tick = controller(B072_ONE_SHOT_CRON);
-    await expect(runScheduled(tick, target)).rejects.toThrow("B-072 one-shot rejected");
+describe("native Cron is a read-only receipt carrier", () => {
+  it.each([SCHEDULED_TIME, STAGING_D1_PROBE_WINDOW.last_entry_ms + 60_000])(
+    "reads the fixed namespace without cleanup, admission or native work at %s", async scheduledTime => {
+      vi.useFakeTimers(); vi.setSystemTime(scheduledTime + 5000);
+      const fresh = { runStagingD1RuntimeProbe: vi.fn(), admitStagingD1RuntimeProbe: vi.fn(),
+        readStagingD1RuntimeProbeReceipt: vi.fn().mockResolvedValue(RECEIPT) };
+      const cleanup = vi.fn(), target = env(fresh, cleanup), tick = controllerAt(scheduledTime);
+      const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+      await runScheduled(tick, target);
+      expect(tick.noRetry).toHaveBeenCalledOnce();
+      expect(target.CORELINK_SERVER.get).toHaveBeenCalledOnce();
+      expect(fresh.readStagingD1RuntimeProbeReceipt).toHaveBeenCalledWith(scheduledTime);
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(fresh.admitStagingD1RuntimeProbe).not.toHaveBeenCalled();
+      expect(fresh.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
+      expect(JSON.stringify(info.mock.calls)).not.toContain("authenticated_http");
+    });
+  it("does not substitute an execution when there is no stored receipt", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(SCHEDULED_TIME);
+    const fresh = { runStagingD1RuntimeProbe: vi.fn() }, cleanup = vi.fn();
+    const target = env(fresh, cleanup), tick = controller();
+    await runScheduled(tick, target);
     expect(tick.noRetry).toHaveBeenCalledOnce();
-    expect(probe.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(fresh.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
   });
-
-  it("calls only the fixed release-specific DO RPC and emits no synthetic drill", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(SCHEDULED_TIME + 5000);
-    const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
-    const target = env(stub);
-    const controllerValue = controller();
-    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
-
-    await expect(runScheduled(controllerValue, target)).resolves.toBeUndefined();
-
-    expect(target.CORELINK_SERVER.idFromName).toHaveBeenCalledWith(`_staging_d1_binding_probe_v2:${STAGING_D1_PROBE_WINDOW.nonce}:${RELEASE}`);
-    expect(target.CORELINK_SERVER.idFromName).toHaveBeenCalledWith("_staging_d1_binding_probe_v2:issue-1700-recovery-20260930-v5:cc32b3d819181bf9175e795868f66212aa5456c1");
-    expect(target.CORELINK_SERVER.get).toHaveBeenCalledTimes(4);
-    expect(stub.runStagingD1RuntimeProbe).toHaveBeenCalledWith({ contract: "corelink-staging-d1-probe-admission-v1",
-      probe_nonce: STAGING_D1_PROBE_WINDOW.nonce, worker_release: RELEASE, scheduled_time_ms: SCHEDULED_TIME });
-    expect(controllerValue.noRetry).not.toHaveBeenCalled();
-    expect(info).toHaveBeenNthCalledWith(1, `[staging_d1_runtime_probe] phase=scheduled_entry release=${RELEASE}`);
-    expect(info).toHaveBeenNthCalledWith(2, `[staging_d1_runtime_probe] v8_cleanup=${JSON.stringify(CLEANUP_RECEIPT)}`);
-    expect(vi.mocked(target.CORELINK_SERVER.idFromName).mock.calls[0]).toEqual([V8_PROBE_NAME]);
-    expect(info.mock.invocationCallOrder[1]).toBeLessThan(vi.mocked(target.CORELINK_SERVER.idFromName).mock.invocationCallOrder[1]!);
-    expect(info.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(target.CORELINK_SERVER.idFromName).mock.invocationCallOrder[0]!);
-    info.mockRestore();
-  });
-
-  it("accepts the same stored release receipt on a later minute for tail recovery", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(SCHEDULED_TIME + 5000);
-    const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
-    const later = controllerAt(SCHEDULED_TIME);
-    await expect(runScheduled(later, env(stub))).resolves.toBeUndefined();
-    expect(stub.runStagingD1RuntimeProbe).toHaveBeenCalledWith({ contract: "corelink-staging-d1-probe-admission-v1",
-      probe_nonce: STAGING_D1_PROBE_WINDOW.nonce, worker_release: RELEASE, scheduled_time_ms: later.scheduledTime });
-  });
-
-  it("accepts a later Cron tick inside the immutable v9 entry window", async () => {
-    vi.useFakeTimers();
-    const scheduledTime = SCHEDULED_TIME + 120_000;
-    vi.setSystemTime(scheduledTime + 5000);
-    const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
-    await expect(runScheduled(controllerAt(scheduledTime), env(stub))).resolves.toBeUndefined();
-    expect(stub.runStagingD1RuntimeProbe).toHaveBeenCalledWith({
-      contract: "corelink-staging-d1-probe-admission-v1",
-      probe_nonce: STAGING_D1_PROBE_WINDOW.nonce,
-      worker_release: RELEASE,
-      scheduled_time_ms: scheduledTime,
-    });
-  });
-
-  it("reads only the existing receipt after latest entry and never claims or retires", async () => {
-    vi.useFakeTimers();
-    const scheduledTime = STAGING_D1_PROBE_WINDOW.last_entry_ms + 60_000;
-    vi.setSystemTime(scheduledTime + 5000);
-    const stub = {
-      runStagingD1RuntimeProbe: vi.fn(),
-      readStagingD1RuntimeProbeReceipt: vi.fn().mockResolvedValue(RECEIPT),
-    };
-    const target = env(stub);
-    await expect(runScheduled(controllerAt(scheduledTime), target)).resolves.toBeUndefined();
-    expect(stub.readStagingD1RuntimeProbeReceipt).toHaveBeenCalledWith(scheduledTime);
-    expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
-    expect(target.CORELINK_SERVER.get).toHaveBeenCalledOnce();
-  });
-
-  it("admits a valid scheduled tick before the immutable entry cutoff", async () => {
-    vi.useFakeTimers();
-    const scheduledTime = STAGING_D1_PROBE_WINDOW.last_entry_ms - 120_000;
-    vi.setSystemTime(scheduledTime + 5000);
-    const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
-    const tick = controllerAt(scheduledTime);
-    const target = env(stub);
-    await expect(runScheduled(tick, target)).resolves.toBeUndefined();
-    expect(stub.runStagingD1RuntimeProbe).toHaveBeenCalledWith({
-      contract: "corelink-staging-d1-probe-admission-v1",
-      probe_nonce: STAGING_D1_PROBE_WINDOW.nonce,
-      worker_release: RELEASE,
-      scheduled_time_ms: scheduledTime,
-    });
-    expect(tick.noRetry).not.toHaveBeenCalled();
-    expect(target.CORELINK_SERVER.get).toHaveBeenCalledTimes(4);
-  });
-
-  it("reads only a historical valid receipt after the entry lease closes, without admission or retirement", async () => {
-    vi.useFakeTimers();
-    const scheduledTime = STAGING_D1_PROBE_WINDOW.last_entry_ms - 120_000;
-    const stub = {
-      runStagingD1RuntimeProbe: vi.fn(),
-      readStagingD1RuntimeProbeReceipt: vi.fn().mockResolvedValue(RECEIPT),
-    };
-    const target = env(stub);
-    const lateTick = controllerAt(scheduledTime);
-    vi.setSystemTime(new Date(STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS));
-    await expect(runScheduled(lateTick, target)).resolves.toBeUndefined();
-    expect(stub.readStagingD1RuntimeProbeReceipt).toHaveBeenCalledWith(scheduledTime);
-    expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
-    expect(target.CORELINK_SERVER.idFromName).toHaveBeenCalledWith(
-      `_staging_d1_binding_probe_v2:${STAGING_D1_PROBE_WINDOW.nonce}:${RELEASE}`);
-    expect(target.CORELINK_SERVER.get).toHaveBeenCalledOnce();
-    expect(lateTick.noRetry).not.toHaveBeenCalled();
-  });
-
-  it("rejects a newly scheduled timestamp at expiry before fetching a receipt or running the probe", async () => {
-    vi.useFakeTimers();
-    const stub = {
-      runStagingD1RuntimeProbe: vi.fn(),
-      readStagingD1RuntimeProbeReceipt: vi.fn().mockResolvedValue(RECEIPT),
-    };
-    const target = env(stub);
-    const expiredTick = controllerAt(STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS);
-    vi.setSystemTime(new Date(STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS));
-    await expect(runScheduled(expiredTick, target)).rejects.toThrow("staging runtime receipt read target rejected");
-    expect(stub.readStagingD1RuntimeProbeReceipt).not.toHaveBeenCalled();
-    expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
+  it("rejects a wrong target and expired timestamp before querying a DO", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(SCHEDULED_TIME);
+    const target = env({ runStagingD1RuntimeProbe: vi.fn() });
+    await expect(runScheduled(controller(), { ...target, ENVIRONMENT: "production" })).rejects.toThrow("guard rejected");
+    await expect(runScheduled(controllerAt(STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS), target)).rejects.toThrow("read target rejected");
     expect(target.CORELINK_SERVER.get).not.toHaveBeenCalled();
-    expect(expiredTick.noRetry).not.toHaveBeenCalled();
   });
-
-  it("rejects a wrong target before the probe or retry", async () => {
-    vi.useFakeTimers();
-    const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(RECEIPT) };
-    const target = env(stub);
-    const badTarget = { ...target, ENVIRONMENT: "production" } as Env;
-    const tick = controllerAt(SCHEDULED_TIME);
-    vi.setSystemTime(new Date(tick.scheduledTime + 5000));
-    await expect(runScheduled(tick, badTarget)).rejects.toThrow("staging D1 runtime probe guard rejected");
-    expect(tick.noRetry).toHaveBeenCalledOnce();
-    expect(stub.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
-  });
-
-  it("rejects malformed or incomplete receipts without logging their body", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(SCHEDULED_TIME + 5000);
-    const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue({ ...RECEIPT, rollback_absence_verified: false }) };
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    await expect(runScheduled(controller(), env(stub))).rejects.toThrow("staging D1 runtime probe failed");
-    expect(error).toHaveBeenCalledWith("[staging_d1_runtime_probe] failed reason=probe_failed");
-    expect(error.mock.calls.flat().join(" ")).not.toContain(JSON.stringify(stub.runStagingD1RuntimeProbe.mock.results));
+  it("does not reinterpret the separate B072 cadence as native admission", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(SCHEDULED_TIME);
+    expect(B072_ONE_SHOT_CRON).not.toBe(STAGING_D1_RUNTIME_PROBE_CRON);
+    const target = env({ runStagingD1RuntimeProbe: vi.fn() });
+    await expect(runScheduled(controller(B072_ONE_SHOT_CRON), target)).rejects.toThrow();
+    expect(target.CORELINK_SERVER.get).not.toHaveBeenCalled();
   });
 });
 
@@ -330,7 +215,7 @@ it("does not enter the fresh DO when exact v5 retirement proof is incomplete", a
         worker_release: RELEASE, scheduled_time_ms: SCHEDULED_TIME,
       } }), runStagingD1RuntimeProbe: fresh.runStagingD1RuntimeProbe } as never);
   });
-  await expect(runScheduled(controller(), target)).rejects.toThrow("staging D1 runtime probe failed");
+  await expect(runStagingD1BindingRuntimeProbe(target, SCHEDULED_TIME)).rejects.toThrow();
   expect(fresh.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
 });
 
@@ -344,7 +229,7 @@ it("rejects previous-window nonce and previous-release receipts", async () => {
     { ...RECEIPT, scheduled_time_ms: STAGING_D1_PROBE_WINDOW.starts_ms - 60000 },
   ]) {
     const stub = { runStagingD1RuntimeProbe: vi.fn().mockResolvedValue(receipt) };
-    await expect(runScheduled(controller(), env(stub))).rejects.toThrow("staging D1 runtime probe failed");
+    await expect(runStagingD1BindingRuntimeProbe(env(stub), SCHEDULED_TIME)).rejects.toThrow();
   }
 });
 
@@ -366,7 +251,7 @@ it("does not enter fresh probe when either exact historical retirement fails or 
           contract: "corelink-staging-d1-probe-admission-v1", probe_nonce: STAGING_D1_PROBE_WINDOW.nonce,
           worker_release: RELEASE, scheduled_time_ms: SCHEDULED_TIME,
         } }), runStagingD1RuntimeProbe: fresh.runStagingD1RuntimeProbe } as never));
-    await expect(runScheduled(controller(), target)).rejects.toThrow();
+    await expect(runStagingD1BindingRuntimeProbe(target, SCHEDULED_TIME)).rejects.toThrow();
     expect(fresh.runStagingD1RuntimeProbe).not.toHaveBeenCalled();
   }
 });

@@ -54,7 +54,7 @@ jobs:
       github.ref == 'refs/heads/main' && github.ref_protected &&
       inputs.operation == 'deploy' &&
       inputs.confirm == 'deploy-container-staging-1700'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: staging
     timeout-minutes: 100
     env:
@@ -128,6 +128,10 @@ jobs:
           assert config['compatibility_date']=='2026-04-01'
           assert set(config['compatibility_flags'])=={'nodejs_compat','enable_request_signal','request_signal_passthrough'}
           PY
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
       - name: Install pinned Wrangler and capture exact active preimage
         id: preimage
         run: |
@@ -148,6 +152,26 @@ jobs:
             "$RUNNER_TEMP/staging-containers-before.json" \
             "$RUNNER_TEMP/staging-container-preimage.json"
 
+      - name: Start owned temporary HTTP bootstrap after exact preimages
+        id: http_bootstrap
+        timeout-minutes: 3
+        env:
+          PREIMAGE_DEPLOYMENT_ID: ${{ steps.preimage.outputs.preimage_deployment_id }}
+          PREIMAGE_VERSION_ID: ${{ steps.preimage.outputs.preimage_version_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,subprocess
+          payload={'api_token':os.environ['CLOUDFLARE_API_TOKEN'],
+                   'operation_id':os.environ['GITHUB_RUN_ID'], 'expected_release':os.environ['GITHUB_SHA'],
+                   'preimage_deployment_id':os.environ['PREIMAGE_DEPLOYMENT_ID'],
+                   'preimage_version_id':os.environ['PREIMAGE_VERSION_ID']}
+          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','start',
+                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
+                         input=json.dumps(payload),text=True,check=True,
+                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
+          PY
+
       - name: Deploy root with container rollout and no route
         id: deploy
         timeout-minutes: 30
@@ -160,11 +184,6 @@ jobs:
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --strict \
             --message "$DEPLOYMENT_MARKER" 2>&1 | tee "$RUNNER_TEMP/staging-deploy.log"
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: always() && steps.preimage.outcome == 'success'
-        with:
-          node-version: 22
 
       - name: Capture the exact deployed Worker version and Container image digest
         id: deployed_image
@@ -332,6 +351,27 @@ jobs:
           python3 scripts/verify_issue_1700_route_inventory.py \
             > "$RUNNER_TEMP/staging-route-inventory-after.json"
 
+      - name: Bind temporary HTTP bootstrap to the exact verified candidate
+        id: http_bind
+        if: steps.verify.outcome == 'success' && steps.candidate_route.outcome == 'success'
+        env:
+          CANDIDATE_DEPLOYMENT_ID: ${{ steps.verify_candidate.outputs.candidate_deployment_id }}
+          CANDIDATE_VERSION_ID: ${{ steps.verify_candidate.outputs.candidate_version_id }}
+          IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os,subprocess
+          payload={'operation_id':os.environ['GITHUB_RUN_ID'],
+                   'candidate_deployment_id':os.environ['CANDIDATE_DEPLOYMENT_ID'],
+                   'candidate_version_id':os.environ['CANDIDATE_VERSION_ID'],
+                   'worker_release':os.environ['GITHUB_SHA'],'image_digest':os.environ['IMAGE_DIGEST']}
+          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','bind_candidate',
+                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
+                         input=json.dumps(payload),text=True,check=True,
+                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
+          PY
+
       - name: Roll back only this run to the recorded exact preimage
         id: early_rollback
         if: failure() && steps.verify_candidate.outcome == 'success' && (steps.verify.outcome != 'success' || steps.candidate_route.outcome != 'success')
@@ -395,6 +435,8 @@ jobs:
           restored=tomllib.loads(Path(sys.argv[2]).read_text())
           assert restored['containers'][0]['image']==image
           PY
+          node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
+            > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/rollback.toml" \
             --strict --message "$ROLLBACK_MARKER"
@@ -426,6 +468,7 @@ jobs:
             "$RUNNER_TEMP/staging-containers-after-rollback.json"
 
       - name: Verify route-free early rollback
+        id: verify_early_rollback
         if: always() && steps.early_rollback.outcome == 'success'
         env:
           ROLLBACK_MARKER: issue-1700-route-free-rollback-${{ github.run_id }}-${{ github.sha }}
@@ -441,23 +484,35 @@ jobs:
             --routes "$RUNNER_TEMP/staging-route-inventory-after-rollback.json" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json" \
             --marker "$ROLLBACK_MARKER"
+          python3 - "$RUNNER_TEMP/staging-deploy-receipt.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          path=Path(sys.argv[1]); receipt=json.loads(path.read_text())
+          assert receipt['rollback']['confirmed'] is True
+          receipt.update(rollout_state='preimage_restored',runtime_evidence_scope='historical',active_runtime_claim=False)
+          path.write_text(json.dumps(receipt,sort_keys=True)+'\n')
+          PY
 
-      - name: Prove native D1 binding read and batch rollback through staging Container
+      - name: Prove native D1 binding through authenticated HTTP and staging Container
         id: runtime_probe
-        timeout-minutes: 34
-        if: steps.verify.outcome == 'success' && steps.candidate_route.outcome == 'success' && steps.deployed_image.outcome == 'success'
+        timeout-minutes: 23
+        if: steps.verify.outcome == 'success' && steps.candidate_route.outcome == 'success' && steps.deployed_image.outcome == 'success' && steps.http_bind.outcome == 'success'
         env:
           EXPECTED_SHA: ${{ github.sha }}
           SENTRY_RELEASE: ${{ github.sha }}
           IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
         run: |
           set -euo pipefail
-          node --input-type=module -e 'import WebSocket from "ws"; if (Number(process.versions.node.split(".")[0]) !== 22 || typeof WebSocket !== "function") process.exit(1)'
-          echo '{"outcome":"incomplete","stage":"runtime_probe","new_runtime_proof":false}' > "$RUNNER_TEMP/staging-runtime-probe-progress.json"
-          node scripts/issue_1700_runtime_probe.mjs \
+          node --input-type=module -e 'if (Number(process.versions.node.split(".")[0]) !== 22) process.exit(1)'
+          echo '{"outcome":"incomplete","carrier":"authenticated_http","new_runtime_proof":false,"rollback_safe":false}' > "$RUNNER_TEMP/staging-runtime-probe-progress.json"
+          # The broker keeps the ephemeral key only in RAM. The operator syncs
+          # its attempt ledger before the sole POST. At most three authenticated
+          # status GETs can read persisted state within the original deadline.
+          # Cron/Tail transport remains UNPROVEN and is not used by this carrier.
+          node scripts/issue_1700_http_bootstrap.mjs probe "$RUNNER_TEMP/staging-http-broker" \
             > "$RUNNER_TEMP/staging-runtime-probe-receipt.json" \
             2> >(tee "$RUNNER_TEMP/staging-runtime-probe-diagnostic.log" >&2)
-          echo '{"outcome":"complete","stage":"runtime_probe"}' > "$RUNNER_TEMP/staging-runtime-probe-progress.json"
+          echo '{"outcome":"complete","carrier":"authenticated_http","rollback_safe":true}' > "$RUNNER_TEMP/staging-runtime-probe-progress.json"
 
       - name: Reverify unchanged rollout and record complete runtime proof
         if: steps.runtime_probe.outcome == 'success'
@@ -500,14 +555,9 @@ jobs:
             --response "$RUNNER_TEMP/staging-worker-settings-final.json" \
             --topology infra/staging/topology.json \
             > "$RUNNER_TEMP/staging-worker-settings-readback.json"
-          python3 - "$RUNNER_TEMP/staging-runtime-probe-receipt.json" "$IMAGE_DIGEST" <<'PY'
-          import json,re,sys
-          from pathlib import Path
-          receipt=json.loads(Path(sys.argv[1]).read_text())
-          assert receipt.get('contract')=='corelink-staging-runtime-deployment-proof-v1'
-          assert receipt.get('container_image_digest')==sys.argv[2]
-          assert re.fullmatch(r'sha256:[0-9a-f]{64}',sys.argv[2])
-          PY
+          EXPECTED_SHA="$GITHUB_SHA" node scripts/issue_1700_http_probe.mjs validate \
+            "$RUNNER_TEMP/staging-runtime-probe-receipt.json" \
+            "$RUNNER_TEMP/staging-http-broker/staging-http-probe-attempt.json"
 
       - name: Prove route-free settings after runtime probe
         id: route_after_runtime
@@ -530,13 +580,26 @@ jobs:
             --routes "$RUNNER_TEMP/staging-route-inventory-after-runtime-probe.json" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
 
-      - name: Roll back only this run after runtime acceptance failure
+      - name: Mark finite runtime evidence as historical before bootstrap cleanup
+        if: always() && steps.verify_candidate.outcome == 'success' && steps.early_rollback.outcome == 'skipped'
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/staging-deploy-receipt.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          path=Path(sys.argv[1]); receipt=json.loads(path.read_text())
+          receipt.update(rollout_state='preimage_restore_required',runtime_evidence_scope='historical',active_runtime_claim=False)
+          path.write_text(json.dumps(receipt,sort_keys=True)+'\n')
+          PY
+
+      - name: Restore both preimages after the finite runtime operation
         id: runtime_rollback
         timeout-minutes: 12
-        if: always() && failure() && steps.verify_candidate.outcome == 'success' && steps.verify.outcome == 'success' && steps.early_rollback.outcome == 'skipped'
+        if: always() && steps.verify_candidate.outcome == 'success' && steps.verify.outcome == 'success' && steps.early_rollback.outcome == 'skipped'
         env:
           ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
           PREIMAGE_VERSION_ID: ${{ steps.preimage.outputs.preimage_version_id }}
+          PREIMAGE_DEPLOYMENT_ID: ${{ steps.preimage.outputs.preimage_deployment_id }}
           PREIMAGE_CONTAINER_IMAGE: ${{ steps.preimage.outputs.preimage_container_image }}
           PREIMAGE_CONTAINER_VERSION: ${{ steps.preimage.outputs.preimage_container_version }}
           CANDIDATE_CONTAINER_VERSION: ${{ steps.candidate_container.outputs.candidate_container_version }}
@@ -546,6 +609,8 @@ jobs:
           DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
           ROLLBACK_MARKER: issue-1700-route-free-rollback-${{ github.run_id }}-${{ github.sha }}
           WORKER_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+          EXPECTED_SHA: ${{ github.sha }}
+          HTTP_PROBE_STEP_OUTCOME: ${{ steps.runtime_probe.outcome }}
         run: |
           set -euo pipefail
           CLOUDFLARE_API_TOKEN="$ROUTE_READ_TOKEN" python3 scripts/verify_issue_1700_route_inventory.py > /dev/null
@@ -596,6 +661,10 @@ jobs:
           assert restored['containers'][0]['image']==image
           PY
           python3 scripts/issue_1700_rollback_quiescence.py
+          node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
+            > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"
+          # Keep the cleaned, admission-closed broker available for the second
+          # fresh never_execute status check; always-local shutdown runs below.
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/rollback-runtime.toml" \
             --strict --message "$ROLLBACK_MARKER"
@@ -626,6 +695,7 @@ jobs:
             "$RUNNER_TEMP/staging-runtime-containers-image-restored.json" \
             "$RUNNER_TEMP/staging-runtime-containers-after-rollback.json"
       - name: Verify route-free runtime rollback
+        id: verify_runtime_rollback
         if: always() && steps.runtime_rollback.outcome == 'success'
         env:
           ROLLBACK_MARKER: issue-1700-route-free-rollback-${{ github.run_id }}-${{ github.sha }}
@@ -641,6 +711,50 @@ jobs:
             --routes "$RUNNER_TEMP/staging-runtime-routes-after-rollback.json" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json" \
             --marker "$ROLLBACK_MARKER"
+          python3 - "$RUNNER_TEMP/staging-deploy-receipt.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          path=Path(sys.argv[1]); receipt=json.loads(path.read_text())
+          assert receipt['rollback']['confirmed'] is True
+          receipt.update(rollout_state='preimage_restored',runtime_evidence_scope='historical',active_runtime_claim=False)
+          path.write_text(json.dumps(receipt,sort_keys=True)+'\n')
+          PY
+
+      - name: Clean owned bootstrap when candidate execution was never reached
+        if: always() && steps.http_bootstrap.outcome != 'skipped' && steps.runtime_probe.outcome == 'skipped' && steps.early_rollback.outcome == 'skipped' && steps.runtime_rollback.outcome == 'skipped'
+        run: |
+          set -euo pipefail
+          # Broker-positive never_execute is required. Missing broker state or
+          # an unknown candidate lineage leaves cleanup and rollback blocked.
+          node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
+            > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"
+
+      - name: Always shut down the local broker and verify its process has exited
+        id: http_broker_shutdown
+        if: always() && steps.http_bootstrap.outcome != 'skipped'
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          # Local process custody only, including UNKNOWN and cleanup failure.
+          # This receipt never claims provider cleanup or rollback permission.
+          node scripts/issue_1700_http_bootstrap.mjs shutdown "$RUNNER_TEMP/staging-http-broker" \
+            > "$RUNNER_TEMP/staging-http-broker-shutdown.json"
+
+      - name: Require historical native proof and verified restoration of both preimages
+        if: always()
+        env:
+          PROBE_OUTCOME: ${{ steps.runtime_probe.outcome }}
+          RECORD_OUTCOME: ${{ steps.record_runtime.outcome }}
+          RESTORE_OUTCOME: ${{ steps.runtime_rollback.outcome }}
+          VERIFY_RESTORE_OUTCOME: ${{ steps.verify_runtime_rollback.outcome }}
+          BROKER_SHUTDOWN_OUTCOME: ${{ steps.http_broker_shutdown.outcome }}
+        run: |
+          set -euo pipefail
+          test "$PROBE_OUTCOME" = success
+          test "$RECORD_OUTCOME" = success
+          test "$RESTORE_OUTCOME" = success
+          test "$VERIFY_RESTORE_OUTCOME" = success
+          test "$BROKER_SHUTDOWN_OUTCOME" = success
 
       - name: Upload redacted route-free deployment receipt
         if: always()
@@ -659,6 +773,12 @@ jobs:
             ${{ runner.temp }}/staging-worker-settings-final.json
             ${{ runner.temp }}/staging-route-inventory-after-runtime-probe.json
             ${{ runner.temp }}/staging-runtime-probe-receipt.json
+            ${{ runner.temp }}/staging-http-broker/staging-http-probe-attempt.json
+            ${{ runner.temp }}/staging-http-broker/staging-http-bootstrap.json
+            ${{ runner.temp }}/staging-http-bootstrap-cleanup.json
+            ${{ runner.temp }}/staging-http-broker-status.json
+            ${{ runner.temp }}/staging-http-broker-shutdown.json
+            ${{ runner.temp }}/staging-http-broker/broker-process.json
             ${{ runner.temp }}/staging-rollback-quiescence.json
             ${{ runner.temp }}/staging-runtime-probe-progress.json
             ${{ runner.temp }}/staging-runtime-probe-diagnostic.log

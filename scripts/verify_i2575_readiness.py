@@ -16,6 +16,20 @@ UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 DOMAIN_ID = re.compile(r"[0-9a-f]{32}", re.I)
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 SHA = re.compile(r"[0-9a-f]{40}")
+HTTP_ORIGIN = "https://corelink-staging.gmhelmold.workers.dev"
+HTTP_NONCE = "issue-1700-recovery-20261001-v10"
+HTTP_START_MS = 1790856000000
+HTTP_LAST_ENTRY_MS = 1790877600000
+HTTP_EXPIRES_MS = 1790882100000
+HTTP_WRAPPER_KEYS = frozenset("contract carrier account_id worker_name workflow_sha worker_release container_image_digest probe_nonce origin http_proof receipt schedules_empty tails_empty".split())
+HTTP_PROOF_KEYS = frozenset("contract carrier worker_release probe_nonce status rollback_safe native_receipt v8_cleanup v9_cleanup".split())
+HTTP_NATIVE_FLAGS = frozenset("old_probe_retired old_probe_tables_absent v5_probe_retired v5_probe_tables_absent v4_probe_catalog_absent parameterized_select failed_batch_observed rollback_absence_verified probe_table_dropped d1_binding_intercepted authorization_absent cf_api_token_absent".split())
+HTTP_NATIVE_KEYS = HTTP_NATIVE_FLAGS | frozenset("contract probe_nonce outcome worker_release scheduled_time_ms old_probe_release v5_probe_release v5_prior_execution".split())
+HTTP_CLEANUP_KEYS = frozenset("contract old_release old_nonce worker_release prior_execution prior_admission_present container_stopped alarm_absent tables_absent completed_at_ms".split())
+HTTP_OLD_RELEASES = {
+    "v8": "7d18bcfc450db97b1b987923050b92971da530a8",
+    "v9": "5da497051f0b11dbfc8b87d1dfa8e753304e2719",
+}
 
 
 class ReadinessError(ValueError):
@@ -39,6 +53,72 @@ def validate_run(run: Any, *, expected_sha: str, workflow_path: str) -> None:
         or run.get("conclusion") != "success"
     ):
         raise ReadinessError("readiness run is not a successful exact-SHA protected workflow")
+
+
+def _exact_keys(value: Any, keys: frozenset[str]) -> bool:
+    return isinstance(value, dict) and set(value) == keys
+
+
+def _valid_http_native(value: Any, release: str) -> bool:
+    if not _exact_keys(value, HTTP_NATIVE_KEYS):
+        return False
+    scheduled = value["scheduled_time_ms"]
+    return (
+        value["contract"] == "corelink-staging-d1-binding-runtime-v1"
+        and value["probe_nonce"] == HTTP_NONCE and value["outcome"] == "pass"
+        and value["worker_release"] == release
+        and type(scheduled) is int and scheduled % 120_000 == 0
+        and HTTP_START_MS <= scheduled <= HTTP_LAST_ENTRY_MS
+        and value["old_probe_release"] == "0f785fb9b096afe01247f1057d46377b9f604f13"
+        and value["v5_probe_release"] == "cc32b3d819181bf9175e795868f66212aa5456c1"
+        and value["v5_prior_execution"] == "unknown"
+        and all(value[key] is True for key in HTTP_NATIVE_FLAGS)
+    )
+
+
+def _validate_http_runtime(runtime: dict, release: str) -> None:
+    """Read retained HTTP proof without claiming Scheduled/Tail execution.
+
+    This consumer checks the immutable execution window, not the current clock:
+    a protected successful run remains attributable after its window expires.
+    """
+    error = "authenticated HTTP runtime proof is incomplete or malformed"
+    if (
+        not _exact_keys(runtime, HTTP_WRAPPER_KEYS)
+        or runtime["carrier"] != "authenticated_http"
+        or runtime["origin"] != HTTP_ORIGIN or runtime["probe_nonce"] != HTTP_NONCE
+        or runtime["schedules_empty"] is not True or runtime["tails_empty"] is not True
+        or release in HTTP_OLD_RELEASES.values()
+    ):
+        raise ReadinessError(error)
+    proof = runtime["http_proof"]
+    if (
+        not _exact_keys(proof, HTTP_PROOF_KEYS)
+        or proof["contract"] != "corelink-staging-d1-http-proof-v1"
+        or proof["carrier"] != "authenticated_http" or proof["worker_release"] != release
+        or proof["probe_nonce"] != HTTP_NONCE or proof["status"] != "complete"
+        or proof["rollback_safe"] is not True
+        or not _valid_http_native(proof["native_receipt"], release)
+        or not _valid_http_native(runtime["receipt"], release)
+        or runtime["receipt"] != proof["native_receipt"]
+    ):
+        raise ReadinessError(error)
+    scheduled = proof["native_receipt"]["scheduled_time_ms"]
+    for version, old_release in HTTP_OLD_RELEASES.items():
+        cleanup = proof[version + "_cleanup"]
+        if not _exact_keys(cleanup, HTTP_CLEANUP_KEYS):
+            raise ReadinessError(error)
+        completed = cleanup["completed_at_ms"]
+        if (
+            cleanup["contract"] != f"corelink-staging-{version}-cleanup-v1"
+            or cleanup["old_release"] != old_release
+            or cleanup["old_nonce"] != "issue-1700-recovery-20261001-" + version
+            or cleanup["worker_release"] != release or cleanup["prior_execution"] != "unknown"
+            or type(cleanup["prior_admission_present"]) is not bool
+            or any(cleanup[key] is not True for key in ("container_stopped", "alarm_absent", "tables_absent"))
+            or type(completed) is not int or not scheduled <= completed < HTTP_EXPIRES_MS
+        ):
+            raise ReadinessError(error)
 
 
 def validate_deployment_receipts(deployment: Any, runtime: Any, *, expected_sha: str) -> dict[str, str]:
@@ -65,9 +145,13 @@ def validate_deployment_receipts(deployment: Any, runtime: Any, *, expected_sha:
         or runtime.get("worker_release") != expected_sha
         or not isinstance(image, str)
         or not DIGEST.fullmatch(image)
-        or runtime.get("schedule_restored_empty") is not True
-        or runtime.get("tail_deleted") is not True
     ):
+        raise ReadinessError("active Container or Worker runtime readback is incomplete")
+    # Any HTTP-specific field selects the strict branch, so partial/mixed proof
+    # cannot fall back to the historical Scheduled/Tail receipt contract.
+    if {"carrier", "origin", "http_proof", "schedules_empty", "tails_empty"} & runtime.keys():
+        _validate_http_runtime(runtime, expected_sha)
+    elif runtime.get("schedule_restored_empty") is not True or runtime.get("tail_deleted") is not True:
         raise ReadinessError("active Container or Worker runtime readback is incomplete")
     return {"worker_version_id": candidate_version, "image_digest": image}
 
