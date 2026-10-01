@@ -816,16 +816,24 @@ WAVE_GROUPS: dict[str, dict[Path, tuple[tuple[int, str] | None, tuple[int, str] 
         Path('docs/handoff/2026-09-22-i1650-real-integration-readiness.json'): ((0o0644, "d826103bdc29aad73a5345465105ab8aa63200ed0175301421f168827664536c"), (0o0644, "947e49ba07061eac1db56c389924d03928e64ba691fd5a825fca35535de07b1f")),
         Path('scripts/real-ignored-harness-manifest.json'): ((0o0644, "00e3c392584fc56b0533d40df265fb37b8785a65b20031e327481062a785b55f"), (0o0644, "c71ea89468fe06595270142646ee25ef4f853839c0115ea54fd58c4441b1740c")),
         Path('scripts/run-real-ignored-harnesses.sh'): ((0o0755, "9a3bb0d28733b0c9a6f655330a06ca57183a78787c93015f5f9cd1087bdd0287"), (0o0755, "71d05f1557d3603e2f565e4572f544fa1d284eb52f055789afa1f0aeeb387a47")),
-        Path('scripts/verify_real_ignored_harnesses.py'): ((0o0644, "d2ec122fea6fcb6f7b7504ebe00dfcad32bf692c6e959141433ce59d7dc1eb6b"), (0o0644, "377bcacb98e7e936bc812babc781a1fc50e68c4da8760c0bf25910f1e16e283a")),
+        Path('scripts/verify_real_ignored_harnesses.py'): ((0o0644, "d2ec122fea6fcb6f7b7504ebe00dfcad32bf692c6e959141433ce59d7dc1eb6b"), (0o0644, "b795ae90046f7ba6fc92a0064ca8f78fac784533ec42701b9c1b0b8f3dff1c1d")),
     },
 }
+# Snapshot of the transport control surface. Taken at d2f1 (#2786); 14 entries,
+# the P0 matrix and the B068 verifier pair were re-pinned to reviewed main
+# b60f5ee8c after a per-commit review classified their post-d2f1 changes as not
+# transport-relevant. Dockerfile, durable_object_start.ts, index_fetch.ts and
+# both staging_d1_binding_proxy sources keep their d2f1 pins: their changes
+# (#2853, #2858) touch the Worker/Container request path and await a human
+# transport review, so current main still fails this gate as BASE. All four
+# WAVE_GROUPS have also drifted from exact old/new states on that main.
 WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('.github/workflows/container-build-push-prod.yml'): (0o0644, "8ee0d29eff20ef5d473e4a712279a727fcdc6c881ba2bb46433f7659802f598f"),
     Path('.github/workflows/issue-2183-reapi-composition.yml'): (0o0644, "bb382d6898ce95fb690c62bfc50334e94889dbf371fa7a0871dd7bac5e24b431"),
     Path('.github/workflows/issue-2568-sla-credit-real.yml'): (0o0644, "1376e1b9eb4136ef1faba62abbe3e051bcf9c9df837351697e0b3048bac55390"),
     Path('.github/workflows/issue-2730-dsr-alert-receiver.yml'): (0o0644, "00ed5dab40391114b3a3a5bc299f98568e78c2dfcd14a05ccf5bac4276a6a235"),
-    Path('.github/workflows/staging-quarantine-apply.yml'): (0o0644, "24d901a61e2b45af71fc5ec0632455956690725f8f05f9959c0baf213deb1594"),
-    Path('Cargo.lock'): (0o0644, "e161aa27d6994badb497a9c881b99d9ee0255a4c2796b7f345e8a81c1bb9e707"),
+    Path('.github/workflows/staging-quarantine-apply.yml'): (0o0644, "574c37a78fbed91be485fddc98309e464521d99bfc3a5d05c269daa486d4130b"),
+    Path('Cargo.lock'): (0o0644, "02dd662ecdf7bcd6836c9ae18384b9f964c52dc739f63661de2d1a6e8b99929e"),
     Path('Cargo.toml'): (0o0644, "6012612bdd15b83e906f9a870049e137a9f2b947af1dd1105ee9aa6a460bfb0a"),
     Path('Dockerfile'): (0o0644, "884f577834cfb8ef3c357afee884ac02f27c9c6031a139db04a0523fc07d5472"),
     Path('crates/corelink-container/build.rs'): (0o0644, "b7d1b11510f0bf00a21f2f83a97a43389b0d288167f6b9c5516da57ffda9ce4d"),
@@ -835,20 +843,20 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('crates/corelink-container/src/main.rs'): (0o0644, "44c28a9a8387212b156ce05aa65918b0c34454453d7fcd85e79fd29f9a5518db"),
     Path('crates/corelink-container/src/reapi_composition.rs'): (0o0644, "57b3e2c730cf2f326b7f8bdb99df04b9423179524dc830805c3dbb8e62a5f337"),
     Path('crates/corelink-container/src/routes.rs'): (0o0644, "04a84d7be655fd25ee6d05d1b5c598c169be1aae381a255533ffeda0aad1ec2f"),
-    Path('crates/corelink-container/src/storage.rs'): (0o0644, "ee16e0155fae72ddfe01fedb4b7d29bff087467b2a23c42c830a42f3aeb9b78e"),
-    Path('crates/corelink-container/src/storage/d1_http.rs'): (0o0644, "258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5"),
-    Path('infra/staging/README.md'): (0o0644, "5f3daac1edba6320bcfc6663d57bece16a9c63b7977156c0fc3a3b562276a435"),
-    Path('infra/staging/topology.json'): (0o0644, "a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14"),
-    Path('scripts/staging_bootstrap_provider.py'): (0o0644, "8a77837893f2bd094f1fd834042361e69375e1453ec1d4dde9c20c605d00ccdb"),
+    Path('crates/corelink-container/src/storage.rs'): (0o0644, "a21a64dc152eea27354de0b14627fd88213d20e1c43129315b4137eec49b711c"),
+    Path('crates/corelink-container/src/storage/d1_http.rs'): (0o0644, "60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d"),
+    Path('infra/staging/README.md'): (0o0644, "9a6b64adb090de17cc753fcb05c514998a14bccc487d4c66c5c6783c56aa1de6"),
+    Path('infra/staging/topology.json'): (0o0644, "4855688905257f05c174d0f02c71bc1a9ffb23c2506a6bd00531d7b655eecd52"),
+    Path('scripts/staging_bootstrap_provider.py'): (0o0644, "4f09213ba0fad99a7433a448f84abc20600e1af9d521b0b15080a7b76cb037fe"),
     Path('scripts/verify_i2183_reapi_composition.py'): (0o0644, "532408187817e4ff508e9b2f5776e1646f7f304235ab697cf2e28fbab49a1b6c"),
     Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "28023901b65dd1046af666fb26c8d862a389b94cafc11e3870a2794d869a6743"),
-    Path('scripts/verify_staging_provider_preflight.py'): (0o0644, "ddc9d57aa31cbee273dabc923b23a3ef33fb11b40bbd3b746ad7dcaca0633b62"),
+    Path('scripts/verify_staging_provider_preflight.py'): (0o0644, "001d0392e7f8adff0c82d36d9c3a13a9d4fa25e603d6baf415c079185a6f35c9"),
     Path('scripts/verify_staging_topology_contract.py'): (0o0644, "48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9"),
     Path('specs/03_architecture/issue-2176-grpc-transport-contract.md'): (0o0644, "351aa666c129c7dbc87db4f69f476f8bcdf522d0ba35223dca7eb507c8a926b3"),
     Path('tests/test_issue_1700_route_inventory.py'): (0o0644, "a371d50bc84eafad075c9ad943cbe9ab5b90a53a4e1501d19a428d38873a5d4a"),
-    Path('tests/test_staging_bootstrap_provider.py'): (0o0644, "ec4633c038fd4ae1553464e00ba2ce6dfe79e10562f79243e0fb629d1d93e219"),
-    Path('tests/test_staging_custom_domain.py'): (0o0644, "cfc063496302c06c8bc879c380c7f24e13088fdf8f2a5412def3e6e60b115afc"),
-    Path('tests/test_staging_quarantine_apply_contract.py'): (0o0644, "b90d143271b96038ce2f51a23bc62b3be3fee546a231f003b9bcfbfb79a497bf"),
+    Path('tests/test_staging_bootstrap_provider.py'): (0o0644, "6585723899a4cca74d58b1b33c9c816ea7cbc45390274bfa1dd3fea84489b9a2"),
+    Path('tests/test_staging_custom_domain.py'): (0o0644, "7fbbd59861b99a6b2ecdeb49bb726da48dde2323bc18004c4867c884edccf02f"),
+    Path('tests/test_staging_quarantine_apply_contract.py'): (0o0644, "5c2c77182f49f7fb2a3d6d65b2acf1cb4f76d907d69938b16f5c1ce6ae141e54"),
     Path('worker/package.json'): (0o0644, "96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34"),
     Path('worker/src/durable_object_probes.ts'): (0o0644, "3b1a67b3c6883d23dfd29bd0a8cf18de9e9c3848b4e79e1d3d04539944081f78"),
     Path('worker/src/durable_object_start.ts'): (0o0644, "7f8c28ac7b93628f4c4767efd1bb68bb75d2df9ea85442e92d9a6097c500ce4c"),
@@ -857,7 +865,7 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('worker/src/grpc_transport_gate.ts'): (0o0644, "68b14c5537100733ff467d8beb80f3cadce07f9b3b5f43339ab323e8ca1cfcfd"),
     Path('worker/src/index.ts'): (0o0644, "18b960a74833284f953bd28818cd7260798d9570c17bce459502f7b7ca50f3cd"),
     Path('worker/src/index_common.ts'): (0o0644, "dadbd05f00c855febed2266eb0ef308e2aaa80a909c4c8e463c400ed2d6bb4de"),
-    Path('worker/src/index_env.ts'): (0o0644, "ae733fad5467d839b0983f5b0df306fe8ad4c7bee68822e66e1d5b4f028886cf"),
+    Path('worker/src/index_env.ts'): (0o0644, "a6242775bc4a315db4fd8574f842498a54f2b63993e42ec178b50adb9a299daa"),
     Path('worker/src/index_env_contract.ts'): (0o0644, "ec259cf4d4f4c6bab582375b88a449c3d5a3d8d53c7680afdcb8e7728710eb9d"),
     Path('worker/src/index_fetch.ts'): (0o0644, "d8619985ea28485792198c8f0e8607c108d82af66a76c0fbfc5253f2e2c3ab07"),
     Path('worker/src/lib/devenv_cleanup_route.ts'): (0o0644, "e279cb99a585388fbf4483313a80c042df3c14bf1ca5ef52c31dc451e329907c"),
@@ -868,14 +876,14 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('worker/src/staging_d1_binding_proxy_entrypoint.ts'): (0o0644, "af759d84e63a2016737c899cfba045f52c1fcf20061678a3612ddeec6c18bdab"),
     Path('worker/tests/cloudflare_workers_node_stub.ts'): (0o0644, "0237103e747517298fea07261598d250e25edff6f412cd1df33695c1585cfcf7"),
     Path('worker/tests/grpc_staging_transport.test.ts'): (0o0644, "ab3748063dda62d241c4c0cfdd482261514a2b8fd8a6f427d5ef4023c7fe4f96"),
-    Path('worker/tests/staging_d1_binding_proxy.test.ts'): (0o0644, "5710f974898de4c88a1ddca3f9815589d7c805faa4481f44d9005054d10796cc"),
-    Path('worker/tests/staging_d1_binding_start_gate.test.ts'): (0o0644, "2377e10e46528888f60f711820a931f8358d214ac53b8c822bfac9c2d9f2da66"),
+    Path('worker/tests/staging_d1_binding_proxy.test.ts'): (0o0644, "3928991ec958ba8b22d6758823df35519b2821bc9f09219b9deced0acd2e1ce8"),
+    Path('worker/tests/staging_d1_binding_start_gate.test.ts'): (0o0644, "b82ffeecb8b937d80ea9a696886bc2a57a844643c331f2d363a4182e5b333641"),
     Path('worker/tsconfig.json'): (0o0644, "98bfdb3e20a22fe1433a82c1cb04bd3522fa74445a61524a4f2a7263f01a93b3"),
     Path('worker/tsconfig.test.json'): (0o0644, "7dded910aa967755433a54655f915ba7cf35e271afce2d9f47dffa32ad6f3f79"),
     Path('worker/vitest.config.mts'): (0o0644, "e2c2f0e46d4a45d5e789f920f95b73ffd44e6a14a9450e11817426995feda506"),
     Path('worker/vitest.miniflare.config.mts'): (0o0644, "da43009c6edc93f9ca3b626e29371b84d5125de0645c10ba7f3b6bbf3751a12a"),
 }
-WAVE_MATRIX_SHA256 = "323917e9f4cb3c67ace170b59cd548034a7af1d17759f81ab5ccd9e300f9b8aa"
+WAVE_MATRIX_SHA256 = "06e13899bd841edcea335ed54989fdbd09e785e5f2a482cb206862c80d816475"
 WAVE_CONTROLLED_PATHS = frozenset((
     Path("scripts/verify_i2176_grpc_deny_gate.py"),
     Path("tests/test_verify_i2176_grpc_deny_gate.py"),
@@ -901,7 +909,7 @@ def _wave_controls_match(root: Path) -> bool:
 
 def _wave_common_controls_equal(candidate: Path, trusted_base: Path) -> None:
     if not _wave_controls_match(trusted_base) or not _wave_controls_match(candidate):
-        raise ContractError("actual d2f1 transport controls or P0 secrets matrix drift")
+        raise ContractError("reviewed transport control snapshot or P0 secrets matrix drift")
     for relative in WAVE_CONTROLLED_PATHS:
         require_regular_mode(trusted_base, relative)
         require_regular_mode(candidate, relative)
@@ -929,7 +937,7 @@ WALLET_ROUTE_LIVE_MODULE = b"mod cleanup_fault_injection {"
 WALLET_ROUTE_LIVE_END = b"\n}\n\nimpl Drop for HarnessCleanup"
 WALLET_ROUTE_LIVE_LITERAL_COUNT = 11
 WALLET_ROUTE_TRANSFORMED_LIVE_SHA256 = "4667e8354afb20adea5eb18afe33fcadf77bee696e3e91b1f00eefcf7e200b11"
-WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256 = "294ea6c178b6713f75e3b85f4db9e4ee28c79576c20a47aeb071069f175333fa"
+WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256 = "3d977e6f9878c54859071f2ae09896546f27b6d87e8c1fa027d9de888995439e"
 WALLET_ROUTE_VERIFIER_KEY = (
     b'"crates/corelink-stripe-real/tests/live_integration.rs": "'
 )
@@ -1059,9 +1067,9 @@ def _wave_group_state(root: Path, group: str) -> str:
     return "old" if old else "new"
 
 def validate_wave(candidate: Path, trusted_base: Path, changes: set[Path]) -> bool:
-    # Accept only the actual d2f1 control surface plus four complete old/new groups.
+    # Accept only the reviewed control snapshot plus four complete old/new groups.
     if not _wave_controls_match(trusted_base):
-        raise ContractError("trusted BASE transport controls do not match actual d2f1 snapshot")
+        raise ContractError("trusted BASE transport controls do not match the reviewed snapshot")
     route_base = None
     has_route_sentinels = (trusted_base / WALLET_ROUTE_LIVE_PATH).is_file() and (
         trusted_base / WALLET_ROUTE_VERIFIER_PATH

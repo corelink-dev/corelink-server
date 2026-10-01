@@ -67,6 +67,28 @@ class P0WaveClassifierTests(unittest.TestCase):
         ):
             self.assertEqual(text.count(f"`{name}`"), 1)
 
+    def test_controls_drift_only_where_transport_review_is_pending(self) -> None:
+        # Both directions: an unreviewed control drift fails by name, and a
+        # pending entry that matches its pin again is stale and fails too.
+        pending = {
+            Path("Dockerfile"),
+            Path("worker/src/durable_object_start.ts"),
+            Path("worker/src/index_fetch.ts"),
+            Path("worker/src/staging_d1_binding_proxy.ts"),
+            Path("worker/src/staging_d1_binding_proxy_entrypoint.ts"),
+        }
+        root = Path(__file__).resolve().parents[1]
+        self.assertTrue(pending <= set(verify.WAVE_BASE_CONTROLS))
+        checked = [
+            path for path, pin in verify.WAVE_BASE_CONTROLS.items() if pin is not None
+        ]
+        self.assertEqual(len(checked), 54)
+        drifted = {
+            path for path in checked
+            if not verify.matches_pinned_file(root, path, verify.WAVE_BASE_CONTROLS[path])
+        }
+        self.assertEqual(sorted(map(str, drifted)), sorted(map(str, pending)))
+
     def _wallet_route_fixture(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
