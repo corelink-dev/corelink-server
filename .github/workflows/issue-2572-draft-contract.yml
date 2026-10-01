@@ -1,16 +1,19 @@
 name: Issue 2572 draft release contract
 
 on:
-  workflow_dispatch:
-    inputs:
-      candidate_sha:
-        description: Exact pull request head SHA to validate
-        required: true
-        type: string
-      base_sha:
-        description: Exact protected main SHA used for the candidate diff
-        required: true
-        type: string
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+    paths:
+      - .github/workflows/release-cli.yml
+      - .github/workflows/release-slsa3.yml
+      - .github/workflows/issue-2572-draft-contract.yml
+      - scripts/cli_release_draft_manifest.py
+      - scripts/verify_cli_release_draft.py
+      - tests/test_cli_release_draft_contract.py
+      - tools/cli/tests/release_workflow_contract/assertions.rs
+      - tools/cli/tests/release_workflow_contract/cases.rs
+      - changelog.d/2572-draft-only-cli-release.md
 
 permissions:
   contents: read
@@ -20,36 +23,36 @@ env:
   CARGO_INCREMENTAL: "0"
 
 concurrency:
-  group: issue-2572-draft-contract-${{ inputs.candidate_sha }}
+  group: issue-2572-draft-contract-${{ github.event.pull_request.head.sha }}
   cancel-in-progress: false
 
 jobs:
   contract:
     name: draft verifier and release workflow contract
+    if: github.repository_id == '1232040291' && github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout exact candidate without persisted credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.candidate_sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Assert exact dispatch identity
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          BASE_SHA: ${{ inputs.base_sha }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           [[ "${CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          test "${GITHUB_SHA}" = "${CANDIDATE_SHA}"
           test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
           [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
           git cat-file -e "${BASE_SHA}^{commit}"
           git merge-base --is-ancestor "${BASE_SHA}" "${CANDIDATE_SHA}"
       - name: Run deterministic draft inventory negatives
         env:
-          BASE_SHA: ${{ inputs.base_sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
           set -euo pipefail
@@ -69,8 +72,8 @@ jobs:
             .github/workflows/release-slsa3.yml .github/workflows/issue-2572-draft-contract.yml
       - name: Validate DCO and tracked diff boundary
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          BASE_SHA: ${{ inputs.base_sha }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           git show --format='%B' --no-patch "${CANDIDATE_SHA}" | grep -Fq 'Signed-off-by: '
@@ -82,6 +85,7 @@ jobs:
 
   build-package:
     name: release target fixture (${{ matrix.target.name }})
+    if: github.repository_id == '1232040291' && github.event.pull_request.base.ref == 'main'
     runs-on: ${{ matrix.target.runner }}
     timeout-minutes: 45
     strategy:
@@ -108,23 +112,22 @@ jobs:
       - name: Checkout exact candidate without persisted credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.candidate_sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Assert exact dispatch identity
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "${CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          test "${GITHUB_SHA}" = "${CANDIDATE_SHA}"
           test "$(git rev-parse HEAD)" = "${CANDIDATE_SHA}"
       - name: Set up target build environment
         shell: bash
         env:
           TARGET_TRIPLE: ${{ matrix.target.triple }}
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           bash scripts/ci-assert-pinned-toolchain.sh
@@ -170,7 +173,7 @@ jobs:
           TARGET_TRIPLE: ${{ matrix.target.triple }}
           TARGET_NAME: ${{ matrix.target.name }}
           TARGET_EXT: ${{ matrix.target.ext }}
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${CANDIDATE_SHA}")"
