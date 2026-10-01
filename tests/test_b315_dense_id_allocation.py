@@ -320,6 +320,61 @@ def test_fake_github_enforces_the_model_the_scenarios_rely_on(tmp_path: Path):
     assert parents == [landed, world.main0] and trees[0] == trees[1]
 
 
+def test_lock_probe_sees_free_absent_and_held_locks(tmp_path: Path):
+    """The guard check at the merge call is only as good as this probe."""
+    lock = tmp_path / "corelink-backlog-id-allocation.lock"
+    assert harness.lock_held(lock) is False  # absent
+    lock.touch()
+    assert harness.lock_held(lock) is False  # present, nobody holds it
+    ready = tmp_path / "ready"
+    holder = subprocess.Popen(
+        [sys.executable, str(SCRIPT), "--hold-lock", str(lock), "--common-dir", str(tmp_path),
+         "--ready", str(ready)],
+        stdin=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not (ready.exists() and ready.read_text(encoding="utf-8")) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.read_text(encoding="utf-8").startswith("locked ")
+        assert harness.lock_held(lock) is True
+    finally:
+        holder.send_signal(signal.SIGTERM)
+        holder.wait(timeout=10)
+    assert harness.lock_held(lock) is False  # released with the holder
+
+
+def _mutated_helper(tmp_path: Path, needle: str, replacement: str) -> Path:
+    """A copy of the real helper with ONE content mutation, next to the allocator it needs."""
+    source = (ROOT / "scripts/b315_atomic_merge.sh").read_text(encoding="utf-8")
+    assert source.count(needle) == 1, f"mutation needle matched {source.count(needle)}x, expected 1"
+    directory = tmp_path / "mutant"
+    directory.mkdir()
+    # A symlink, not a copy: the allocator imports its siblings from its
+    # resolved directory, i.e. the real scripts/.
+    (directory / "backlog_id_alloc.py").symlink_to(SCRIPT)
+    helper = directory / "b315_atomic_merge.sh"
+    helper.write_text(source.replace(needle, replacement), encoding="utf-8")
+    return helper
+
+
+@pytest.mark.parametrize(
+    ("replacement", "named"),
+    [
+        ("stop_backlog_allocation_lock", "local allocation lock was NOT held when the merge endpoint was called"),
+        ("release_remote_backlog_lease", "remote lease was NOT held when the merge endpoint was called"),
+    ],
+)
+def test_releasing_a_guard_before_the_merge_call_is_caught(tmp_path: Path, replacement: str, named: str):
+    """Teeth for the lock/lease-at-merge check: a helper that drops either guard
+    after its last health check still merges, and the harness must say so."""
+    helper = _mutated_helper(tmp_path, 'backlog_lock_healthy || refuse "local lock lost."', replacement)
+    landing = next(s for s in harness.SCENARIOS if s.name == "lands_through_pr_api")
+    run, failures = harness.run_scenario(landing, tmp_path / "world", helper=helper)
+    assert run.puts, "the mutant never reached the merge endpoint, so nothing was probed"
+    assert named in failures, failures
+
+
 def test_origin_in_the_harness_declines_a_direct_push_to_main(tmp_path: Path):
     """The world reproduces production's refusal of the retired design."""
     world = harness.build_world(tmp_path / "w")
@@ -368,14 +423,68 @@ def test_wiring_refuses_empty_text():
     assert verifier.wiring_problems("   \n") == ["gate + helper text is EMPTY: nothing to check"]
 
 
+def _gate() -> str:
+    return (ROOT / "scripts/pre-merge-gate-check.sh").read_text(encoding="utf-8")
+
+
+def test_gate_wrapper_has_one_dry_run_forwarding_call_site_and_no_merge_of_its_own():
+    assert verifier.gate_problems(_gate()) == []
+
+
+@pytest.mark.parametrize(
+    ("planted", "named"),
+    [
+        ('gh api -X PUT "repos/{owner}/{repo}/pulls/$PR/merge" -f sha="$CAPTURED_HEAD"', "names its own merge call"),
+        ('gh pr merge "$PR" --squash', "names its own merge call"),
+        ("gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }'",
+         "names its own merge call"),
+        ("gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }'",
+         "names its own merge call"),
+        ('bash scripts/b315_atomic_merge.sh "$PR" "$CAPTURED_HEAD" 0 "$CAPTURED_HEAD_REF" a b',
+         "2 helper call sites"),
+    ],
+)
+def test_gate_wrapper_check_names_a_planted_bypass(planted: str, named: str):
+    problems = verifier.gate_problems(_gate() + "\n" + planted + "\n")
+    assert any(named in problem for problem in problems), problems
+
+
+def test_gate_wrapper_check_names_a_call_site_that_drops_dry_run():
+    gate = _gate()
+    mutated = gate.replace('"$CAPTURED_HEAD" "$DRY_RUN" "$CAPTURED_HEAD_REF"', '"$CAPTURED_HEAD" 0 "$CAPTURED_HEAD_REF"')
+    assert mutated.count('"$CAPTURED_HEAD" 0 "$CAPTURED_HEAD_REF"') == 1, "the mutation did not apply exactly once"
+    problems = verifier.gate_problems(mutated)
+    assert any('does not forward "$DRY_RUN"' in problem for problem in problems), problems
+
+
+def test_gate_wrapper_check_refuses_empty_text_and_a_missing_call_site():
+    assert verifier.gate_problems(" \n") == ["gate wrapper text is EMPTY: nothing to check"]
+    without = "\n".join(line for line in _gate().splitlines() if "bash scripts/b315_atomic_merge.sh" not in line)
+    assert any("0 helper call sites" in problem for problem in verifier.gate_problems(without))
+
+
 # ── The gate wrapper (scripts/pre-merge-gate-check.sh) ──────────────────────
 
 
 def test_gate_header_states_the_real_required_checks():
+    """Pins the dated 2026-10-01 read of main's protection, which the header
+    quotes. GitHub is the oracle and cannot be read hermetically, so this is a
+    copy: when protection changes, re-read it and update header and test."""
     gate = (ROOT / "scripts/pre-merge-gate-check.sh").read_text(encoding="utf-8")
     header = gate[: gate.index("set -euo pipefail")]
     assert "Branch protection has `required checks = []`" not in header
-    for fact in ("`dco`", "`cargo fmt --all --check`", "strict", "enforce_admins", "linear history"):
+    assert "exactly TWO checks" not in header
+    for fact in (
+        "FOUR required checks",
+        "`dco`",
+        "`cargo fmt --all --check`",
+        "`gitleaks detect`",
+        "`CHANGELOG.md updated when feat/fix present`",
+        "strict",
+        "enforce_admins",
+        "linear history",
+        "branches/main/protection",
+    ):
         assert fact in header, fact
 
 

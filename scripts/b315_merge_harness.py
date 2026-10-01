@@ -22,7 +22,10 @@ main, a wrong tree, a lost API response) are applied inside the fake at the
 exact call where the race would happen.
 
 Every scenario also asserts the helper never pushed to main and never left the
-remote lease behind. No network, no credentials: ``gh`` cannot reach GitHub.
+remote lease behind, and, at every call of the merge endpoint, that the local
+allocation lock (probed with the allocator's own ``fcntl.flock``) and the
+remote lease ref were still held: the lock must span allocation AND merge.
+No network, no credentials: ``gh`` cannot reach GitHub.
 """
 
 from __future__ import annotations
@@ -246,6 +249,44 @@ def _inject(state: dict, origin: str, point: str) -> None:
             raise HarnessError(f"unknown injection {action!r}")
 
 
+def lock_held(path: Path) -> bool:
+    """True when another process holds the allocator's flock on ``path``.
+
+    Same primitive as scripts/backlog_id_alloc.py (``fcntl.flock``), probed
+    non-blocking and released at once. A missing file is not held: the helper
+    creates it when it takes the lock.
+    """
+    import fcntl
+
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def _record_guards_at_merge_call(state: dict, origin: str) -> None:
+    """Note, at the instant the merge endpoint is called, whether the helper
+    still holds the local allocation lock and the remote lease. The B-315
+    guarantee is that both span allocation AND merge, not just allocation."""
+    lock = os.environ.get("B315_FAKE_LOCK", "")
+    lease = subprocess.run(
+        ["git", "--git-dir", origin, "rev-parse", "--verify", "--quiet", LEASE_REF],
+        capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    state.setdefault("guards_at_put", []).append(
+        {"lock": bool(lock) and lock_held(Path(lock)), "lease": bool(lease)}
+    )
+
+
 def _http_error(code: int, message: str) -> int:
     print(json.dumps({"message": message, "status": str(code)}))
     print(f"gh: {message} (HTTP {code})", file=sys.stderr)
@@ -333,6 +374,7 @@ def _fake_dispatch(state: dict, origin: str, argv: list[str]) -> int:
     if argv[:1] == ["api"]:
         method, path, params = _parse_api(argv)
         if method == "PUT" and path == f"repos/{{owner}}/{{repo}}/pulls/{state['pr']}/merge":
+            _record_guards_at_merge_call(state, origin)
             _inject(state, origin, "put")
             return _fake_merge(state, origin, params)
     print(f"fake gh: unsupported invocation {argv}", file=sys.stderr)
@@ -372,6 +414,7 @@ def run_helper(
     env["PATH"] = f"{world.bin}{os.pathsep}{env.get('PATH', '')}"
     env["B315_FAKE_STATE"] = str(world.state)
     env["B315_FAKE_ORIGIN"] = str(world.origin)
+    env["B315_FAKE_LOCK"] = str(lock_path(world))
     env["TMPDIR"] = str(world.root / "tmp")
     result = subprocess.run(
         ["bash", str(helper), str(PR), expected_head or world.head, "1" if dry_run else "0",
@@ -434,11 +477,16 @@ SCENARIOS: tuple[Scenario, ...] = (
 )
 
 
+def lock_path(world: World) -> Path:
+    """The helper's allocation lock: ``<git common-dir>/corelink-backlog-id-allocation.lock``."""
+    return world.work / ".git" / "corelink-backlog-id-allocation.lock"
+
+
 def _hold_lock(world: World) -> subprocess.Popen:
     common = world.work / ".git"
     ready = world.root / "held.ready"
     holder = subprocess.Popen(
-        [sys.executable, str(ALLOCATOR), "--hold-lock", str(common / "corelink-backlog-id-allocation.lock"),
+        [sys.executable, str(ALLOCATOR), "--hold-lock", str(lock_path(world)),
          "--common-dir", str(common), "--ready", str(ready)],
         stdin=subprocess.DEVNULL, env=world.env,
     )
@@ -452,7 +500,7 @@ def _hold_lock(world: World) -> subprocess.Popen:
 
 
 def run_scenario(
-    scenario: Scenario, root: Path, template: World | None = None
+    scenario: Scenario, root: Path, template: World | None = None, helper: Path = HELPER
 ) -> tuple[Run, list[str]]:
     """Run one scenario in a fresh world under ``root``; return the failures."""
     if template is None:
@@ -470,7 +518,7 @@ def run_scenario(
     elif scenario.precondition == "lock":
         holder = _hold_lock(world)
     try:
-        run = run_helper(world, dry_run=scenario.dry_run)
+        run = run_helper(world, dry_run=scenario.dry_run, helper=helper)
     finally:
         if holder is not None:
             holder.send_signal(signal.SIGTERM)
@@ -484,6 +532,14 @@ def run_scenario(
     for call in run.puts:
         if call != expected_put:
             failures.append(f"merge call {call} is not the exact head-pinned squash {expected_put}")
+    guards = run.state.get("guards_at_put", [])
+    if len(guards) != len(run.puts):
+        failures.append(f"guard probe ran {len(guards)}x for {len(run.puts)} merge call(s)")
+    for guard in guards:
+        if not guard["lock"]:
+            failures.append("local allocation lock was NOT held when the merge endpoint was called")
+        if not guard["lease"]:
+            failures.append("remote lease was NOT held when the merge endpoint was called")
     if (run.state["state"] == "MERGED") != scenario.merged:
         failures.append(f"fake PR state {run.state['state']}, expected merged={scenario.merged}")
     if scenario.text not in run.out + run.err:

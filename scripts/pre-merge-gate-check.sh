@@ -17,12 +17,14 @@
 # are exactly the fast, load-bearing ones — and they must all be green before
 # merge. This guards against blind `--admin` merges that skip them.
 #
-# ⚠️ Branch protection on main requires exactly TWO checks — `dco` and
-# `cargo fmt --all --check` — and is strict (the PR must be up to date with
-# main), enforce_admins, and linear history. That is what
-# `gh api repos/{owner}/{repo}/branches/main/protection` returned on 2026-10-01;
-# re-read it rather than trusting this line, and note CLAUDE.md's
-# `required checks = []` was already stale then. Every OTHER check on a PR is
+# ⚠️ Branch protection on main, as `gh api repos/{owner}/{repo}/branches/main/protection`
+# returned it on 2026-10-01 (re-read it; do not trust this paragraph): strict
+# (the PR must be up to date with main), enforce_admins, required
+# linear history, force pushes off, and FOUR required checks — `dco`,
+# `cargo fmt --all --check`, `gitleaks detect` and
+# `CHANGELOG.md updated when feat/fix present`. A census earlier the same day
+# recorded only the first two, so the list moves; CLAUDE.md's
+# `required checks = []` was stale before either. Every OTHER check on a PR is
 # enforced only by THIS script, so for those it is the last line of defense.
 # It must never fail OPEN.
 #
@@ -108,8 +110,8 @@ usage: bash scripts/pre-merge-gate-check.sh [flags] <PR-number>
                           API call, never call it.
   --admin-reason "<why>"  with --merge: proceed past this gate's OWN refusal
                           (GitHub still enforces branch protection, admins
-                          included, so dco/fmt are never bypassed), and
-                          ONLY when the sole
+                          included, so its required checks are never
+                          bypassed), and ONLY when the sole
                           reason the gate refused is a failed/cancelled check.
                           Never usable on draft, pending, conflicting, or
                           missing-gate refusals. The reason is echoed into the

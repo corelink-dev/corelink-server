@@ -1837,9 +1837,12 @@ verify: python3 scripts/verify_b315_dense_id_allocation.py --self-test
 verify-means: |
   done — the allocator fixture self-test, the real BACKLOG.md population, the wiring
   tripwire (PR-API landing tokens present; the retired direct dual-ref push and
-  `gh pr merge` designs absent), and every scenario of scripts/b315_merge_harness.py
-  pass. The harness executes the real helper against a fake GitHub whose origin
-  declines every push to main, as branch protection does. Its scenarios: the merge
+  `gh pr merge` designs absent; the gate wrapper has exactly one helper call site,
+  which forwards "$DRY_RUN", and names no merge call of its own), and every scenario
+  of scripts/b315_merge_harness.py pass. The harness executes the real helper
+  against a fake GitHub whose origin declines every push to main, as branch
+  protection does, and at every merge-endpoint call checks that the local allocation
+  lock and the remote lease are still held. Its scenarios: the merge
   lands through one head-pinned squash API call, with parent = captured main and
   tree = tree(head); a dry run never calls the merge endpoint or takes the lease;
   head or main moving at capture, during allocation, at the merge boundary or inside

@@ -5,17 +5,24 @@ Four layers, each a refusal on its own:
 
 1. wiring — the merge gate plus its helper still carry every token of the
    PR-API landing design and none of the retired designs (the direct dual-ref
-   push that branch protection declined, the `gh pr merge` CLI). Tokens are a
-   tripwire for an accidental revert, not a proof: a token can sit in a
-   comment. Layer 4 is the proof (its fake `gh` also refuses every call it does
-   not model, so a helper that fetched bytes through the API would fail there).
+   push that branch protection declined, the `gh pr merge` CLI); and the gate
+   wrapper itself has exactly one helper call site, which forwards
+   ``"$DRY_RUN"``, and names no merge call of its own (REST ``pulls/…/merge``,
+   ``gh pr merge``, or a GraphQL ``mergePullRequest(`` / auto-merge mutation).
+   Tokens are a tripwire for an accidental revert, not a proof: a token can sit
+   in a comment, and a merge spelled some other way (a query read from a file,
+   say) is not detected. Layer 4 is the proof for the helper (its fake `gh`
+   also refuses every call it does not model, so a helper that fetched bytes
+   through the API would fail there); nothing here EXECUTES the wrapper.
 2. the allocator's fixture self-test;
 3. the allocator on the real BACKLOG.md population;
 4. behaviour — scripts/b315_merge_harness.py runs the REAL helper against a
    fake GitHub in throwaway repositories (land, dry run, every race, a 409, a
    405, a merge on an unvalidated main, a wrong tree, a lost response, a stale
-   lease, a busy lock). It proves the helper against the harness's model of
-   GitHub; that GitHub enforces the model is argued, not proven, here.
+   lease, a busy lock), and at every merge-endpoint call checks that the local
+   allocation lock and the remote lease are still held. It proves the helper
+   against the harness's model of GitHub; that GitHub enforces the model is
+   argued, not proven, here.
 """
 
 from __future__ import annotations
@@ -104,13 +111,40 @@ def wiring_problems(text: str) -> list[str]:
     return problems
 
 
+HELPER_CALL = "bash scripts/b315_atomic_merge.sh"
+HELPER_CALL_ARGS = 'bash scripts/b315_atomic_merge.sh "$PR" "$CAPTURED_HEAD" "$DRY_RUN" '
+# A merge issued by the wrapper itself would bypass the helper's lock, its
+# allocator check and its dry-run stop. Raw lines, comments included: a hit in
+# a comment is a false alarm a human clears in one edit, never a miss.
+WRAPPER_MERGE_CALL = re.compile(
+    r"pulls/[^\s\"']*/merge\b|\bgh\s+pr\s+merge\b|\bmergePullRequest\s*\(|\benablePullRequestAutoMerge\b"
+)
+
+
+def gate_problems(gate: str) -> list[str]:
+    """Return one line per way the wrapper could merge without the helper."""
+    if not gate.strip():
+        return ["gate wrapper text is EMPTY: nothing to check"]
+    problems: list[str] = []
+    call_sites = [line.strip() for line in gate.splitlines() if HELPER_CALL in line and not line.lstrip().startswith("#")]
+    if len(call_sites) != 1:
+        problems.append(f"gate wrapper has {len(call_sites)} helper call sites, expected exactly 1")
+    elif HELPER_CALL_ARGS not in call_sites[0]:
+        problems.append(f"helper call site does not forward \"$DRY_RUN\": {call_sites[0][:160]}")
+    for number, line in enumerate(gate.splitlines(), start=1):
+        if WRAPPER_MERGE_CALL.search(line):
+            problems.append(f"gate wrapper names its own merge call at line {number}: {line.strip()[:120]}")
+    return problems
+
+
 def main() -> int:
     missing_files = [str(p.relative_to(ROOT)) for p in (ALLOCATOR, GATE, ATOMIC, HARNESS) if not p.is_file()]
     if missing_files:
         print(f"B-315 instrument broken: missing {missing_files}", file=sys.stderr)
         return 2
-    text = GATE.read_text(encoding="utf-8") + "\n" + ATOMIC.read_text(encoding="utf-8")
-    problems = wiring_problems(text)
+    gate = GATE.read_text(encoding="utf-8")
+    text = gate + "\n" + ATOMIC.read_text(encoding="utf-8")
+    problems = wiring_problems(text) + gate_problems(gate)
     if problems:
         print("B-315 merge wiring:", *problems, sep="\n  ", file=sys.stderr)
         return 1
