@@ -4,26 +4,34 @@
 
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync, writeSync } from "node:fs";
+import { createHash } from "node:crypto";
+import WebSocket from "ws";
 
 export const ACCOUNT_ID = "6a1fc1c626fc2628823e60b9db01f5cd";
 export const WORKER_NAME = "corelink-staging";
 export const CONTAINER_APP_ID = "a033fb81-6388-47d9-9049-0b6942778055";
 export const CONTAINER_APP_NAME = "corelink-staging-corelinkserver";
 export const PROBE_WINDOW = JSON.parse(readFileSync(new URL("../crates/corelink-container/src/routes/staging_d1_probe_window.json", import.meta.url), "utf8"));
-const APPROVED_PROBE_WINDOW = Object.freeze({ cron: "* * 30 9 *", starts_ms: 1790791200000,
-  expires_ms: 1790812740000, nonce: "issue-1700-recovery-20260930-v5" });
+const APPROVED_PROBE_WINDOW = Object.freeze({ cron: "*/2 * * * *", starts_ms: 1790805600000,
+  last_entry_ms: 1790820900000, expires_ms: 1790825400000, nonce: "issue-1700-recovery-20260930-v6" });
 export function approvedProbeWindow(value = PROBE_WINDOW) {
   return value !== null && typeof value === "object" && value.cron === APPROVED_PROBE_WINDOW.cron &&
-    value.starts_ms === APPROVED_PROBE_WINDOW.starts_ms && value.expires_ms === APPROVED_PROBE_WINDOW.expires_ms &&
-    value.nonce === APPROVED_PROBE_WINDOW.nonce && Object.keys(value).sort().join(",") === "cron,expires_ms,nonce,starts_ms";
+    value.starts_ms === APPROVED_PROBE_WINDOW.starts_ms && value.last_entry_ms === APPROVED_PROBE_WINDOW.last_entry_ms &&
+    value.expires_ms === APPROVED_PROBE_WINDOW.expires_ms && value.nonce === APPROVED_PROBE_WINDOW.nonce &&
+    Object.keys(value).sort().join(",") === "cron,expires_ms,last_entry_ms,nonce,starts_ms";
 }
 export const PROBE_CRON = PROBE_WINDOW.cron;
 export const PROBE_EXPIRY = PROBE_WINDOW.expires_ms;
 export const RECEIPT_PREFIX = "[staging_d1_runtime_probe] receipt=";
+const MIN_TAIL_TTL_MS = 4 * 60_000;
+const TAIL_RENEW_LEAD_MS = 60_000;
+const MAX_OWNED_TAILS = 8;
+const TAIL_CREATE_TIMEOUT_MS = 20_000;
+const TAIL_RENEW_OPEN_TIMEOUT_MS = 20_000;
 
 const apiBase = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts/${WORKER_NAME}`;
 const allowedReceiptKeys = new Set([
-  "old_probe_release", "old_probe_retired", "old_probe_tables_absent", "v4_probe_catalog_absent",
+  "old_probe_release", "old_probe_retired", "old_probe_tables_absent", "v5_probe_release", "v5_probe_retired", "v5_probe_tables_absent", "v5_prior_execution", "v4_probe_catalog_absent",
   "contract", "probe_nonce", "outcome", "worker_release", "scheduled_time_ms", "parameterized_select",
   "failed_batch_observed", "rollback_absence_verified", "probe_table_dropped",
   "d1_binding_intercepted", "authorization_absent", "cf_api_token_absent",
@@ -168,6 +176,9 @@ function exactReceipt(receipt, release, startedAt, deadline) {
     receipt.probe_nonce === PROBE_WINDOW.nonce &&
     receipt.old_probe_release === "0f785fb9b096afe01247f1057d46377b9f604f13" &&
     receipt.old_probe_retired === true && receipt.old_probe_tables_absent === true &&
+    receipt.v5_probe_release === "cc32b3d819181bf9175e795868f66212aa5456c1" &&
+    receipt.v5_probe_retired === true && receipt.v5_probe_tables_absent === true &&
+    receipt.v5_prior_execution === "unknown" &&
     receipt.v4_probe_catalog_absent === true &&
     receipt.outcome === "pass" && receipt.worker_release === release &&
     Number.isSafeInteger(receipt.scheduled_time_ms) &&
@@ -211,6 +222,7 @@ function exactSchedules(schedules, crons) {
 // Retain only bounded structural evidence, never arbitrary provider values.
 // WeakMap provenance prevents callers from injecting diagnostic payloads.
 const scheduleReadbacks = new WeakMap();
+const tailCleanupEvidence = new WeakMap();
 function scheduleReadbackSummary(schedules) {
   const cronField = /^(?:[0-9*/?,LW#-]+|(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|SUN|MON|TUE|WED|THU|FRI|SAT)(?:[-/,](?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|SUN|MON|TUE|WED|THU|FRI|SAT))*)$/;
   return {
@@ -246,6 +258,11 @@ const probeErrors = new Map([
   ["Worker tail protocol rejected", "tail_protocol"],
   ["Worker tail stream failed", "tail_stream"],
   ["Worker tail stream closed before receipt", "tail_closed"],
+  ["Worker tail renewal failed", "tail_renewal"],
+  ["Worker tail renewal window missed", "tail_renewal_window"],
+  ["Worker tail renewal limit exceeded", "tail_renewal_limit"],
+  ["Worker tail renewal pong deadline exceeded", "tail_renewal_pong_timeout"],
+  ["Worker tail expired before replacement", "tail_expired"],
   ["runtime probe receipt timed out", "receipt_timeout"],
   ["schedule API response rejected", "schedule_envelope"],
   ["installed schedule readback rejected", "schedule_readback"],
@@ -261,6 +278,7 @@ export function failureDiagnostic(error) {
     ...(Number.isInteger(error?.httpStatus) && error.httpStatus >= 100 && error.httpStatus <= 599
       ? { http_status: error.httpStatus } : {}),
     ...(scheduleReadbacks.has(error) ? { schedule_readback: scheduleReadbacks.get(error) } : {}),
+    ...(tailCleanupEvidence.has(error) ? { tail_cleanup: tailCleanupEvidence.get(error) } : {}),
   };
 }
 
@@ -283,30 +301,37 @@ export async function runRuntimeProbe({
   socketFactory = (url, protocol) => new WebSocket(url, protocol),
   now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  timeoutMs = 16 * 60_000,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+  setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval,
+  signal,
+  timeoutMs = 25 * 60_000,
 }) {
   if (!approvedProbeWindow()) throw Object.assign(new Error("runtime probe window rejected"), { stage: "probe_preflight" });
   if (typeof token !== "string" || token.length < 1 || !/^[0-9a-f]{40}$/.test(release ?? "") ||
       release !== expectedSha || !/^sha256:[0-9a-f]{64}$/.test(imageDigest ?? "") ||
-      !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 16 * 60_000 ||
+      !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 25 * 60_000 ||
       now() < PROBE_WINDOW.starts_ms ||
+      now() + 16 * 60_000 >= PROBE_WINDOW.last_entry_ms ||
       now() + timeoutMs >= PROBE_EXPIRY) {
     throw Object.assign(new Error("runtime probe preflight rejected"), { stage: "probe_preflight" });
   }
 
   let stage = "schedule_preflight";
   const tagged = (error) => Object.assign(error instanceof Error ? error : new Error("runtime probe failed"), { stage });
-  async function request(path, init = {}) {
+  async function request(path, init = {}, cleanup = false, requestTimeoutMs = 30_000) {
     let response;
     try { response = await api(`${apiBase}${path}`, {
       ...init,
-      signal: AbortSignal.timeout(30_000),
+      signal: cleanup || signal === undefined ? AbortSignal.timeout(requestTimeoutMs)
+        : AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]),
       headers: { authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
     }); } catch { throw tagged(new Error("Cloudflare API request failed")); }
     let body;
     try { body = await response.json(); } catch { throw tagged(new Error("Cloudflare API response rejected")); }
     if (!response.ok || body?.success !== true) throw Object.assign(tagged(new Error("Cloudflare API operation failed")), { httpStatus: response.status });
-    return body;
+    return Object.assign(body, { http_status: response.status });
   }
 
   const startedAt = now();
@@ -316,34 +341,101 @@ export async function runRuntimeProbe({
     if (before.length !== 0) throw new Error("preexisting Worker schedules block probe");
   } catch (error) { throw tagged(error); }
 
-  let tailId;
+  const tails = [];
+  let activeTail;
   let socket;
   let scheduleAttempted = false;
   let receipt;
   let primaryError;
   let receiptTimer;
   let openTimer;
+  let heartbeatTimer;
+  let heartbeatFn;
+  let pongTimer;
+  let renewalTimer;
+  let tailExpiryTimer;
+  let renewalTask = Promise.resolve();
+  let resolveCandidatePong;
+  let rejectCandidatePong;
+  let resolveCandidateOpen;
+  let rejectCandidateOpen;
+  let renewalConnecting = false;
+  let bindTailSocket;
+  let initializeTailSocket;
+  let lastPongAt;
+  let pendingPongAt;
+  let tailFrameCount = 0;
+  let tailReconnects = 0;
+  let receiptAccepted = false;
+  let terminalFailure = false;
+  let stopRequested = false;
+  let pingCount = 0;
+  let closeEvidence;
+  const tailCleanupReceipts = [];
+  let resolveOpen = () => {};
+  let rejectOpen = () => {};
+  let rejectReceipt = () => {};
+  let failTail = (_reason) => {};
+  async function createTail() {
+    if (tails.length >= MAX_OWNED_TAILS) throw new Error("Worker tail renewal limit exceeded");
+    const record = (await request("/tails", { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify({ filters: [] }),
+    }, false, TAIL_CREATE_TIMEOUT_MS)).result;
+    if (typeof record?.id !== "string" || !/^[a-f0-9]{32}$/.test(record.id)) throw new Error("tail preflight rejected");
+    const expiry = Date.parse(record?.expires_at);
+    const owned = { id: record.id, url: record.url, expiresAt: expiry };
+    tails.push(owned);
+    if (typeof record?.url !== "string" || !/^wss:\/\//.test(record.url) ||
+        !Number.isFinite(expiry) || expiry < now() + MIN_TAIL_TTL_MS) throw new Error("tail preflight rejected");
+    return owned;
+  }
+  async function deleteOwnedTail(tail) {
+    if (tail.cleanupAttempted) return;
+    tail.cleanupAttempted = true;
+    try {
+      const deleted = await request(`/tails/${tail.id}`, { method: "DELETE" }, true);
+      tailCleanupReceipts.push({ id: tail.id, http_status: deleted.http_status,
+        success: deleted.success === true, deleted_at_ms: now() });
+    } catch (error) {
+      tailCleanupReceipts.push({ id: tail.id,
+        http_status: Number.isInteger(error?.httpStatus) ? error.httpStatus : null,
+        success: false, deleted_at_ms: now() });
+      throw error;
+    }
+  }
+  function armTailExpiry(tail) {
+    clearTimeoutFn(tailExpiryTimer);
+    tailExpiryTimer = setTimeoutFn(() => {
+      if (activeTail?.id === tail.id && now() >= tail.expiresAt) failTail("Worker tail expired before replacement");
+    }, Math.max(1, tail.expiresAt - now()));
+  }
+  const onAbort = () => {
+    stopRequested = true;
+    rejectOpen(new Error("runtime probe cancelled"));
+    rejectReceipt(new Error("runtime probe cancelled"));
+    rejectCandidateOpen?.(new Error("runtime probe cancelled"));
+    rejectCandidatePong?.(new Error("runtime probe cancelled"));
+    clearTimeoutFn(renewalTimer);
+    try { socket?.close(); } catch { /* schedule and tail cleanup still run below */ }
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
   try {
     stage = "tail_create";
-    const tail = (await request("/tails", { method: "POST",
-      headers: { "content-type": "application/json" }, body: JSON.stringify({ filters: [] }),
-    })).result;
-    if (typeof tail?.id !== "string" || !/^[a-f0-9]{32}$/.test(tail.id)) throw new Error("tail preflight rejected");
-    tailId = tail.id;
-    if (typeof tail?.url !== "string" || !/^wss:\/\//.test(tail.url) ||
-        !Number.isFinite(Date.parse(tail.expires_at)) || Date.parse(tail.expires_at) <= now()) {
-      throw new Error("tail preflight rejected");
-    }
+    const tail = await createTail();
+    activeTail = tail;
+    armTailExpiry(tail);
+    if (signal?.aborted) throw new Error("runtime probe cancelled");
 
     stage = "tail_connect";
     socket = socketFactory(tail.url, "trace-v1");
     socket.binaryType = "arraybuffer";
-    let rejectOpen;
     const opened = new Promise((resolve, reject) => {
+      resolveOpen = resolve;
       rejectOpen = reject;
-      openTimer = setTimeout(() => reject(new Error("Worker tail connection timed out")), Math.min(30_000, Math.max(1, deadline - now())));
+      openTimer = setTimeoutFn(() => reject(new Error("Worker tail connection timed out")), Math.min(30_000, Math.max(1, deadline - now())));
       socket.onopen = () => {
-        clearTimeout(openTimer);
+        clearTimeoutFn(openTimer);
         if (socket.protocol !== "trace-v1") return reject(new Error("Worker tail protocol rejected"));
         try { socket.send(JSON.stringify({ debug: false })); }
         catch { return reject(new Error("Worker tail initialization failed")); }
@@ -351,29 +443,101 @@ export async function runRuntimeProbe({
       };
     });
     const receiptPromise = new Promise((resolve, reject) => {
-      receiptTimer = setTimeout(() => reject(new Error("runtime probe receipt timed out")), Math.max(0, deadline - now()));
-      socket.onmessage = async (message) => {
+      rejectReceipt = reject;
+      receiptTimer = setTimeoutFn(() => reject(new Error("runtime probe receipt timed out")), Math.max(0, deadline - now()));
+      const onMessage = async (message) => {
+        tailFrameCount = Math.min(1_000_000, tailFrameCount + 1);
         try {
           const event = JSON.parse(await decodeTailFrame(message.data));
           const found = extractReceipt(event, release, startedAt, deadline);
           if (found !== undefined && now() < deadline && found.scheduled_time_ms <= now()) {
-            clearTimeout(receiptTimer);
+            receiptAccepted = true;
+            clearTimeoutFn(renewalTimer);
+            clearTimeoutFn(tailExpiryTimer);
+            resolveCandidateOpen?.();
+            resolveCandidatePong?.();
+            clearTimeoutFn(receiptTimer);
             resolve(found);
           }
         } catch {
           // Ignore malformed tail frames without logging their contents.
         }
       };
-      socket.onerror = () => {
-        clearTimeout(receiptTimer);
-        rejectOpen(new Error("Worker tail stream failed"));
-        reject(new Error("Worker tail stream failed"));
+      const closeEvidenceFor = (event) => {
+        const code = Number.isInteger(event?.code) ? event.code : null;
+        const reason = event?.reason instanceof Buffer ? event.reason : Buffer.from(String(event?.reason ?? ""));
+        closeEvidence = { code, was_clean: typeof event?.wasClean === "boolean" ? event.wasClean : null,
+          reason_sha256: createHash("sha256").update(reason).digest("hex") };
       };
-      socket.onclose = () => {
-        clearTimeout(receiptTimer);
-        rejectOpen(new Error("Worker tail stream closed before receipt"));
-        reject(new Error("Worker tail stream closed before receipt"));
+      const fail = (reason) => {
+        terminalFailure = true;
+        clearTimeoutFn(receiptTimer);
+        rejectOpen(new Error(reason));
+        rejectCandidateOpen?.(new Error(reason));
+        rejectCandidatePong?.(new Error(reason));
+        reject(new Error(reason));
       };
+      failTail = fail;
+      const onPong = (target) => {
+        // A late pong from a replaced socket must not satisfy the active tail's
+        // heartbeat deadline.
+        if (target !== socket) return;
+        lastPongAt = now();
+        pendingPongAt = undefined;
+        clearTimeoutFn(pongTimer);
+        pongTimer = undefined;
+        resolveCandidatePong?.();
+      };
+      const initialize = (target) => {
+        clearTimeoutFn(openTimer);
+        pendingPongAt = undefined;
+        if (target.protocol !== "trace-v1") return fail("Worker tail protocol rejected");
+        try { target.send(JSON.stringify({ debug: false })); }
+        catch { return fail("Worker tail initialization failed"); }
+        lastPongAt = now();
+        resolveOpen();
+      };
+      initializeTailSocket = initialize;
+      const recover = () => {
+        if (receiptAccepted || tailReconnects >= 1 || now() >= deadline) return false;
+        tailReconnects += 1;
+        clearTimeoutFn(pongTimer);
+        pongTimer = undefined;
+        pendingPongAt = undefined;
+        try {
+          const replacement = socketFactory(activeTail.url, "trace-v1");
+          socket = replacement;
+          replacement.binaryType = "arraybuffer";
+          bind(replacement);
+          openTimer = setTimeoutFn(() => fail("Worker tail reconnect timed out"),
+            Math.min(30_000, Math.max(1, deadline - now())));
+          replacement.onopen = () => initialize(replacement);
+          return true;
+        } catch { return false; }
+      };
+      const bind = (target) => {
+        target.onmessage = onMessage;
+        target.onerror = () => {
+          if (target !== socket) return;
+          if (renewalConnecting) {
+            rejectCandidateOpen?.(new Error("Worker tail renewal stream failed"));
+            rejectCandidatePong?.(new Error("Worker tail renewal stream failed"));
+          } else if (!recover()) fail("Worker tail stream failed");
+        };
+        target.onclose = (event) => {
+          if (target !== socket) return;
+          closeEvidenceFor(event);
+          if (renewalConnecting) {
+            rejectCandidateOpen?.(new Error("Worker tail renewal stream closed"));
+            rejectCandidatePong?.(new Error("Worker tail renewal stream closed"));
+            return;
+          }
+          if (!recover() && !receiptAccepted) fail("Worker tail stream closed before receipt");
+        };
+        target.on?.("pong", () => onPong(target));
+      };
+      bindTailSocket = bind;
+      bind(socket);
     });
     // A failed schedule install can return before the receipt promise is
     // awaited. Mark its later timeout handled while preserving the awaited
@@ -381,6 +545,92 @@ export async function runRuntimeProbe({
     receiptPromise.catch(() => undefined);
 
     await opened;
+    lastPongAt = now();
+    const scheduleRenewal = (currentTail) => {
+      clearTimeoutFn(renewalTimer);
+      if (currentTail.expiresAt >= deadline) return;
+      const delay = currentTail.expiresAt - TAIL_RENEW_LEAD_MS - now();
+      if (delay < 1) {
+        failTail("Worker tail renewal window missed");
+        return;
+      }
+      renewalTimer = setTimeoutFn(() => {
+        renewalTask = (async () => {
+          if (now() >= deadline) throw new Error("runtime probe receipt timed out");
+          const next = await createTail();
+          if (receiptAccepted || terminalFailure || stopRequested) return;
+          clearIntervalFn(heartbeatTimer);
+          const oldSocket = socket;
+          stage = "tail_connect";
+          const replacement = socketFactory(next.url, "trace-v1");
+          replacement.binaryType = "arraybuffer";
+          renewalConnecting = true;
+          socket = replacement;
+          bindTailSocket(replacement);
+          await new Promise((resolve, reject) => {
+            resolveCandidateOpen = resolve;
+            rejectCandidateOpen = reject;
+            openTimer = setTimeoutFn(() => reject(new Error("Worker tail renewal timed out")),
+              Math.min(TAIL_RENEW_OPEN_TIMEOUT_MS, Math.max(1, deadline - now())));
+            replacement.onopen = () => {
+              clearTimeoutFn(openTimer);
+              if (replacement.protocol !== "trace-v1") return reject(new Error("Worker tail protocol rejected"));
+              initializeTailSocket(replacement);
+              resolveCandidateOpen = undefined;
+              rejectCandidateOpen = undefined;
+              resolve();
+            };
+          });
+          resolveCandidateOpen = undefined;
+          rejectCandidateOpen = undefined;
+          if (receiptAccepted || terminalFailure || stopRequested) return;
+          await new Promise((resolve, reject) => {
+            resolveCandidatePong = resolve;
+            rejectCandidatePong = reject;
+            pongTimer = setTimeoutFn(() => reject(new Error("Worker tail renewal pong deadline exceeded")),
+              Math.min(10_000, Math.max(1, deadline - now())));
+            pendingPongAt = now();
+            try { replacement.ping(); }
+            catch { reject(new Error("Worker tail control ping failed")); }
+          });
+          resolveCandidatePong = undefined;
+          rejectCandidatePong = undefined;
+          if (receiptAccepted || terminalFailure || stopRequested) return;
+          activeTail = next;
+          armTailExpiry(next);
+          renewalConnecting = false;
+          try { oldSocket?.close(); } catch { /* owned tail is still deleted through the API */ }
+          stage = "tail_cleanup";
+          await deleteOwnedTail(currentTail);
+          heartbeatTimer = setIntervalFn(heartbeatFn, 10_000);
+          stage = "receipt_wait";
+          scheduleRenewal(next);
+        })().catch((error) => {
+          renewalConnecting = false;
+          failTail(error?.message === "Worker tail renewal limit exceeded"
+            ? "Worker tail renewal limit exceeded" : "Worker tail renewal failed");
+        });
+      }, delay);
+    };
+    scheduleRenewal(activeTail);
+    heartbeatFn = () => {
+      if (pendingPongAt !== undefined && now() - pendingPongAt >= 10_000) {
+        failTail("Worker tail pong deadline exceeded");
+        return;
+      }
+      if (pongTimer !== undefined) return;
+      try {
+        pingCount = Math.min(1_000_000, pingCount + 1);
+        pendingPongAt = now();
+        pongTimer = setTimeoutFn(() => {
+          failTail("Worker tail pong deadline exceeded");
+        }, 10_000);
+        socket.ping();
+      } catch {
+        socket.onerror?.(new Error("Worker tail control ping failed"));
+      }
+    };
+    heartbeatTimer = setIntervalFn(heartbeatFn, 10_000);
     stage = "schedule_install";
     scheduleAttempted = true;
     await request("/schedules", {
@@ -400,16 +650,32 @@ export async function runRuntimeProbe({
   } catch (error) {
     primaryError = tagged(error);
   } finally {
-    clearTimeout(receiptTimer);
-    clearTimeout(openTimer);
+    stopRequested = true;
+    clearTimeoutFn(receiptTimer);
+    renewalConnecting = false;
+    // Wake any renewal handshake before joining its tracked task. The task
+    // must settle before we snapshot tail IDs for cleanup.
+    rejectCandidateOpen?.(new Error("runtime probe cleanup started"));
+    rejectCandidatePong?.(new Error("runtime probe cleanup started"));
+    clearTimeoutFn(renewalTimer);
+    clearTimeoutFn(tailExpiryTimer);
+    clearIntervalFn(heartbeatTimer);
+    // Serialize final cleanup behind a tail-create/connect handoff already in flight.
+    await renewalTask;
+    clearTimeoutFn(openTimer);
+    clearTimeoutFn(pongTimer);
+    resolveCandidateOpen = undefined;
+    rejectCandidateOpen = undefined;
+    resolveCandidatePong = undefined;
+    rejectCandidatePong = undefined;
     try { socket?.close(); } catch { /* best-effort close; tail is deleted below */ }
     if (scheduleAttempted) {
       stage = "schedule_cleanup";
       try {
-        const current = requireScheduleEnvelope(await request("/schedules"));
+        const current = requireScheduleEnvelope(await request("/schedules", {}, true));
         if (exactSchedules(current, [PROBE_CRON])) {
-          await request("/schedules", { method: "PUT", headers: { "content-type": "application/json" }, body: "[]" });
-          const cleared = requireScheduleEnvelope(await request("/schedules"));
+          await request("/schedules", { method: "PUT", headers: { "content-type": "application/json" }, body: "[]" }, true);
+          const cleared = requireScheduleEnvelope(await request("/schedules", {}, true));
           if (cleared.length !== 0) throw new Error("schedule cleanup readback rejected");
         } else if (current.length !== 0) {
           throw new Error("schedule drift requires operator cleanup");
@@ -418,14 +684,20 @@ export async function runRuntimeProbe({
         primaryError ??= tagged(error);
       }
     }
-    if (tailId !== undefined) {
+    if (tails.length !== 0) {
       stage = "tail_cleanup";
-      try { await request(`/tails/${tailId}`, { method: "DELETE" }); }
-      catch (error) { primaryError ??= tagged(error); }
+      for (const tail of [...tails].reverse()) {
+        try { await deleteOwnedTail(tail); }
+        catch (error) { primaryError ??= tagged(error); }
+      }
     }
   }
+  signal?.removeEventListener("abort", onAbort);
 
-  if (primaryError !== undefined) throw primaryError;
+  if (primaryError !== undefined) {
+    if (tailCleanupReceipts.length !== 0) tailCleanupEvidence.set(primaryError, tailCleanupReceipts.slice(0, MAX_OWNED_TAILS));
+    throw primaryError;
+  }
   if (!exactReceipt(receipt, release, startedAt, deadline)) throw new Error("runtime probe receipt rejected");
   return {
     contract: "corelink-staging-runtime-deployment-proof-v1",
@@ -440,10 +712,19 @@ export async function runRuntimeProbe({
     receipt,
     schedule_restored_empty: true,
     tail_deleted: true,
+    tail_cleanup_receipts: tailCleanupReceipts,
+    tail_close: closeEvidence ?? { code: null, was_clean: null, reason_sha256: null },
+    tail_frames: tailFrameCount,
+    tail_reconnects: tailReconnects,
+    control_pings: pingCount,
   };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const abortController = new AbortController();
+  const abortOnSignal = () => abortController.abort();
+  process.on("SIGTERM", abortOnSignal);
+  process.on("SIGINT", abortOnSignal);
   try {
     if (process.argv[2] === "capture-deploy") {
       const log = await readFile(process.argv[3], "utf8");
@@ -527,6 +808,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       release: process.env.SENTRY_RELEASE,
       expectedSha: process.env.EXPECTED_SHA,
       imageDigest: process.env.IMAGE_DIGEST,
+      signal: abortController.signal,
     });
     // Native WebSocket.close() may leave a CLOSING handle indefinitely.
     // runRuntimeProbe has awaited cleanup; flush proof before terminating CLI.

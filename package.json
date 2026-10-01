@@ -78,6 +78,7 @@
     "build": "pnpm -r build"
   },
   "devDependencies": {
+    "ws": "8.21.0",
     "wrangler": "^4.111.0"
   }
 }

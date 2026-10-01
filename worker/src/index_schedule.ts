@@ -2,11 +2,12 @@
 import type { ScheduledController } from "@cloudflare/workers-types";
 import type { Env } from "./index_common.js";
 import { scheduledDrillForCron, scheduledWeekNumber, syntheticRegionForWeek, syntheticEmitAtMs, SYNTHETIC_PAGE_CONTRACT } from "./index_common.js";
-import { runStagingD1BindingRuntimeProbe, STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
+import { readStagingD1BindingRuntimeProbeReceipt, runStagingD1BindingRuntimeProbe, STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
 import { B072_ONE_SHOT_CRON, runB072OneShot } from "./b072_one_shot.js";
 
 export const STAGING_D1_RUNTIME_PROBE_CRON = STAGING_D1_PROBE_WINDOW.cron;
 export const STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS = STAGING_D1_PROBE_WINDOW.expires_ms;
+export const STAGING_D1_RUNTIME_PROBE_LAST_ENTRY_MS = STAGING_D1_PROBE_WINDOW.last_entry_ms;
 
 export async function runScheduled(controller: ScheduledController, env: Env): Promise<void> {
     if (controller.cron === B072_ONE_SHOT_CRON) {
@@ -15,16 +16,35 @@ export async function runScheduled(controller: ScheduledController, env: Env): P
     }
 
     if (controller.cron === STAGING_D1_RUNTIME_PROBE_CRON) {
+      const release = env.SENTRY_RELEASE ?? "";
+      const targetIsStaging = env.ENVIRONMENT === "staging" &&
+        /^[0-9a-f]{40}$/.test(release) &&
+        env.CLOUDFLARE_ACCOUNT_ID === "6a1fc1c626fc2628823e60b9db01f5cd" &&
+        env.D1_DATABASE_ID === "d72a6b39-6a48-4338-bfda-1111dda98604" &&
+        env.R2_S3_ENDPOINT === "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com";
+      if (!targetIsStaging) {
+        console.error("[staging_d1_runtime_probe] rejected reason=staging_guard");
+        controller.noRetry();
+        throw new Error("staging D1 runtime probe guard rejected");
+      }
+      // The host's entry lease is fixed. After it closes, a queued or delayed
+      // Cron may only read the existing immutable receipt; it cannot retire
+      // the old probe, touch D1, or start a Container.
+      if (controller.scheduledTime > STAGING_D1_RUNTIME_PROBE_LAST_ENTRY_MS ||
+          Date.now() > STAGING_D1_RUNTIME_PROBE_LAST_ENTRY_MS) {
+        const receipt = await readStagingD1BindingRuntimeProbeReceipt(env, controller.scheduledTime);
+        if (receipt !== undefined) {
+          console.info(`[staging_d1_runtime_probe] receipt=${JSON.stringify(receipt)}`);
+          return;
+        }
+        controller.noRetry();
+        return;
+      }
       if (
-        env.ENVIRONMENT !== "staging" ||
         controller.scheduledTime < STAGING_D1_PROBE_WINDOW.starts_ms ||
         controller.scheduledTime >= STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS ||
         Date.now() < STAGING_D1_PROBE_WINDOW.starts_ms ||
-        Date.now() >= STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS ||
-        !/^[0-9a-f]{40}$/.test(env.SENTRY_RELEASE ?? "") ||
-        env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
-        env.D1_DATABASE_ID !== "d72a6b39-6a48-4338-bfda-1111dda98604" ||
-        env.R2_S3_ENDPOINT !== "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com"
+        Date.now() >= STAGING_D1_RUNTIME_PROBE_EXPIRES_AT_MS
       ) {
         console.error("[staging_d1_runtime_probe] rejected reason=staging_guard");
         controller.noRetry();

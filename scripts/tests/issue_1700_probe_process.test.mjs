@@ -11,11 +11,11 @@ import { PROBE_WINDOW, PROBE_CRON } from "../issue_1700_runtime_probe.mjs";
 for (const cleanupFails of [false, true]) {
 test(`CLI exits ${cleanupFails ? "failure" : "success"} after cleanup settles despite an unacknowledged tail close`, { timeout: 5000 }, async (t) => {
   const release = "a".repeat(40), digest = `sha256:${"b".repeat(64)}`;
-  const now = PROBE_WINDOW.starts_ms + 60_000;
+  const now = PROBE_WINDOW.starts_ms + 120_000;
   const receipt = { contract: "corelink-staging-d1-binding-runtime-v1", outcome: "pass",
     worker_release: release, probe_nonce: PROBE_WINDOW.nonce, scheduled_time_ms: now,
     parameterized_select: true, failed_batch_observed: true, rollback_absence_verified: true,
-    probe_table_dropped: true, d1_binding_intercepted: true, authorization_absent: true, cf_api_token_absent: true, old_probe_release: "0f785fb9b096afe01247f1057d46377b9f604f13", old_probe_retired: true, old_probe_tables_absent: true, v4_probe_catalog_absent: true };
+    probe_table_dropped: true, d1_binding_intercepted: true, authorization_absent: true, cf_api_token_absent: true, old_probe_release: "0f785fb9b096afe01247f1057d46377b9f604f13", old_probe_retired: true, old_probe_tables_absent: true, v5_probe_release: "cc32b3d819181bf9175e795868f66212aa5456c1", v5_probe_retired: true, v5_probe_tables_absent: true, v5_prior_execution: "unknown", v4_probe_catalog_absent: true };
   let peer, schedules = [], tailDeleted = false;
   const server = createServer(async (request, response) => {
     let body = "";
@@ -60,7 +60,18 @@ test(`CLI exits ${cleanupFails ? "failure" : "success"} after cleanup settles de
     globalThis.fetch = (url, options) => nativeFetch("http://127.0.0.1:${port}" + new URL(url).pathname, options);
     globalThis.WebSocket = class extends NativeSocket { constructor(_url, protocol) { super("ws://127.0.0.1:${port}", protocol); } };
   `);
-  const child = spawn(process.execPath, ["--import", preload, new URL("../issue_1700_runtime_probe.mjs", import.meta.url).pathname], {
+  const loader = join(directory, "ws-loader.mjs");
+  await writeFile(loader, `
+    export async function resolve(specifier, context, nextResolve) {
+      if (specifier === "ws") return {
+        url: "data:text/javascript,export default globalThis.WebSocket",
+        shortCircuit: true,
+      };
+      return nextResolve(specifier, context);
+    }
+  `);
+  const child = spawn(process.execPath, ["--import", preload, "--experimental-loader", loader,
+    new URL("../issue_1700_runtime_probe.mjs", import.meta.url).pathname], {
     env: { ...process.env, CLOUDFLARE_API_TOKEN: "local-fixture", SENTRY_RELEASE: release, EXPECTED_SHA: release, IMAGE_DIGEST: digest },
     stdio: ["ignore", "pipe", "pipe"],
   });

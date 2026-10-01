@@ -24,6 +24,7 @@ use crate::storage::{
 struct ProbeWindow {
     cron: String,
     starts_ms: u64,
+    last_entry_ms: u64,
     expires_ms: u64,
     nonce: String,
 }
@@ -107,7 +108,7 @@ fn valid_request(input: &ProbeRequest, now: u64) -> bool {
     input.cron == window.cron
         && input.probe_nonce == window.nonce
         && input.scheduled_time_ms % 60_000 == 0
-        && (window.starts_ms..window.expires_ms).contains(&input.scheduled_time_ms)
+        && (window.starts_ms..=window.last_entry_ms).contains(&input.scheduled_time_ms)
         && (window.starts_ms..window.expires_ms).contains(&now)
         && input.worker_release.len() == 40
         && input
@@ -209,7 +210,7 @@ mod tests {
     use super::*;
 
     const RELEASE: &str = "0123456789abcdef0123456789abcdef01234567";
-    const TIME: u64 = 1790791260000;
+    const TIME: u64 = 1790805720000;
 
     fn input() -> ProbeRequest {
         ProbeRequest {
@@ -223,16 +224,23 @@ mod tests {
     #[test]
     fn accepts_only_exact_timed_staging_probe_contract() {
         let window = probe_window();
-        assert_eq!(window.cron, "* * 30 9 *");
-        assert_eq!(window.starts_ms, 1790791200000);
-        assert_eq!(window.expires_ms, 1790812740000);
-        assert_eq!(window.nonce, "issue-1700-recovery-20260930-v5");
+        assert_eq!(window.cron, "*/2 * * * *");
+        assert_eq!(window.starts_ms, 1790805600000);
+        assert_eq!(window.last_entry_ms, 1790820900000);
+        assert_eq!(window.expires_ms, 1790825400000);
+        assert_eq!(window.nonce, "issue-1700-recovery-20260930-v6");
         assert!(valid_request(&input(), TIME));
         let mut last_valid = input();
-        last_valid.scheduled_time_ms = probe_window().expires_ms - 60_000;
-        assert!(valid_request(&last_valid, probe_window().expires_ms - 1));
+        last_valid.scheduled_time_ms = probe_window().last_entry_ms;
+        assert!(valid_request(&last_valid, probe_window().last_entry_ms));
+        assert!(valid_request(&last_valid, probe_window().last_entry_ms + 1));
+        let mut after_cutoff = input();
+        after_cutoff.scheduled_time_ms = probe_window().last_entry_ms + 60_000;
+        assert!(!valid_request(
+            &after_cutoff,
+            probe_window().last_entry_ms + 1
+        ));
         assert!(!valid_request(&last_valid, probe_window().expires_ms));
-        assert!(!valid_request(&input(), probe_window().expires_ms));
         let mut bad = input();
         bad.probe_nonce = "old-probe".to_owned();
         assert!(!valid_request(&bad, TIME));
@@ -251,7 +259,7 @@ mod tests {
     fn probe_table_identifier_is_derived_only_from_hex_release_and_time() {
         assert_eq!(
             format!("corelink_staging_d1_probe_{}_{}", &RELEASE[..16], TIME),
-            "corelink_staging_d1_probe_0123456789abcdef_1790791260000"
+            "corelink_staging_d1_probe_0123456789abcdef_1790805720000"
         );
     }
 }

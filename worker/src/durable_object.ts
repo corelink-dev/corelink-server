@@ -1,4 +1,4 @@
-import { cleanOldProbeTables, OLD_PROBE_NAME, OLD_PROBE_RELEASE, OLD_PROBE_RETIRED_KEY, type OldProbeRetirement } from "./staging_d1_probe_retirement.js";
+import { cleanOldProbeTables, cleanV5ProbeTables, OLD_PROBE_NAME, OLD_PROBE_RELEASE, OLD_PROBE_RETIRED_KEY, V5_PROBE_NAME, V5_PROBE_RELEASE, V5_PROBE_RETIRED_KEY, type OldProbeRetirement } from "./staging_d1_probe_retirement.js";
 import { STAGING_D1_PROBE_WINDOW } from "./staging_runtime_d1_probe.js";
 /**
  * CoreLinkServer Durable Object — container lifecycle manager + gRPC proxy.
@@ -42,6 +42,9 @@ import { startContainer as runStartContainer } from "./durable_object_start.js";
 import { installD1BindingProxy } from "./staging_d1_binding_proxy.js";
 import {
   STAGING_D1_RUNTIME_PROBE_PATH,
+  STAGING_D1_RUNTIME_PROBE_DO_PREFIX,
+  type StagingD1RuntimeProbeAdmission,
+  type StagingD1RuntimeProbeAdmissionResult,
   type StagingD1RuntimeProbeReceipt,
 } from "./staging_runtime_d1_probe.js";
 import type {
@@ -177,15 +180,24 @@ const STAGING_D1_PROBE_CRON = STAGING_D1_PROBE_WINDOW.cron;
 const STAGING_D1_PROBE_EXPIRES_AT_MS = STAGING_D1_PROBE_WINDOW.expires_ms;
 const STAGING_D1_PROBE_RECEIPT_KEY = "staging-d1-binding-probe-receipt-v1";
 const STAGING_D1_PROBE_STATE_KEY = "staging-d1-binding-probe-state-v1";
+const STAGING_D1_PROBE_ADMISSION_KEY = "staging-d1-binding-probe-admission-v1";
 const STAGING_D1_PROBE_STARTS_AT_MS = STAGING_D1_PROBE_WINDOW.starts_ms;
+const STAGING_D1_PROBE_LAST_ENTRY_MS = STAGING_D1_PROBE_WINDOW.last_entry_ms;
 
 function validStagingD1ProbeTime(scheduledTime: number, now: number): boolean {
   return Number.isSafeInteger(scheduledTime) &&
     scheduledTime % 60_000 === 0 &&
     scheduledTime >= STAGING_D1_PROBE_STARTS_AT_MS &&
+    scheduledTime <= STAGING_D1_PROBE_LAST_ENTRY_MS &&
     scheduledTime < STAGING_D1_PROBE_EXPIRES_AT_MS &&
     now >= STAGING_D1_PROBE_STARTS_AT_MS &&
     now < STAGING_D1_PROBE_EXPIRES_AT_MS;
+}
+
+function validStagingD1ProbeReceiptRead(scheduledTime: number, now: number): boolean {
+  return Number.isSafeInteger(scheduledTime) && scheduledTime % 60_000 === 0 &&
+    scheduledTime >= STAGING_D1_PROBE_STARTS_AT_MS && scheduledTime < STAGING_D1_PROBE_EXPIRES_AT_MS &&
+    now >= STAGING_D1_PROBE_STARTS_AT_MS && now < STAGING_D1_PROBE_EXPIRES_AT_MS;
 }
 
 function isStagingD1RuntimeProbeReceipt(
@@ -238,7 +250,8 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
 
     // Restore persisted lifecycle state on DO wakeup
     void this.state.blockConcurrencyWhile(async () => {
-      this.probeRetired = (await this.storage.get(OLD_PROBE_RETIRED_KEY)) !== undefined;
+      this.probeRetired = (await this.storage.get(OLD_PROBE_RETIRED_KEY)) !== undefined ||
+        (await this.storage.get(V5_PROBE_RETIRED_KEY)) !== undefined;
       const stored = await this.storage.get<LifecycleState>("lifecycle");
       if (stored !== undefined) {
         this.lifecycleState = stored;
@@ -253,7 +266,8 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
    */
   private isOldProbeObject(): boolean {
     return typeof this.env.CORELINK_SERVER?.idFromName === "function" &&
-      this.state.id.equals(this.env.CORELINK_SERVER.idFromName(OLD_PROBE_NAME));
+      (this.state.id.equals(this.env.CORELINK_SERVER.idFromName(OLD_PROBE_NAME)) ||
+       this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V5_PROBE_NAME)));
   }
 
   private async withProbeActivity<T>(operation: () => Promise<T>): Promise<T> {
@@ -262,13 +276,52 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     try { return await operation(); } finally { this.probeActiveCalls--; }
   }
 
+  async admitStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeAdmissionResult> {
+    const release = this.env.SENTRY_RELEASE ?? "";
+    if (this.isOldProbeObject() || this.env.ENVIRONMENT !== "staging" ||
+        this.env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
+        this.env.D1_DATABASE_ID !== "d72a6b39-6a48-4338-bfda-1111dda98604" ||
+        this.env.R2_S3_ENDPOINT !== "https://6a1fc1c626fc2628823e60b9db01f5cd.r2.cloudflarestorage.com" ||
+        !/^[0-9a-f]{40}$/.test(release) || !validStagingD1ProbeTime(scheduledTime, this.now()) ||
+        this.now() > STAGING_D1_PROBE_LAST_ENTRY_MS ||
+        !this.state.id.equals(this.env.CORELINK_SERVER.idFromName(`${STAGING_D1_RUNTIME_PROBE_DO_PREFIX}${release}`))) {
+      throw new Error("staging D1 runtime probe admission guard rejected");
+    }
+    const admission: StagingD1RuntimeProbeAdmission = {
+      contract: "corelink-staging-d1-probe-admission-v1",
+      probe_nonce: STAGING_D1_PROBE_WINDOW.nonce,
+      worker_release: release,
+      scheduled_time_ms: scheduledTime,
+    };
+    return this.storage.transaction(async (txn) => {
+      const receipt = await txn.get<StagingD1RuntimeProbeReceipt>(STAGING_D1_PROBE_RECEIPT_KEY);
+      if (receipt !== undefined) {
+        if (!isStagingD1RuntimeProbeReceipt(receipt, release, receipt.scheduled_time_ms) ||
+            receipt.scheduled_time_ms > scheduledTime) throw new Error("staging runtime stored receipt rejected");
+        return { status: "complete", receipt } as const;
+      }
+      if (await txn.get<StagingD1RuntimeProbeAdmission>(STAGING_D1_PROBE_ADMISSION_KEY) !== undefined) {
+        return { status: "already_admitted" } as const;
+      }
+      if (await txn.get<string>(STAGING_D1_PROBE_STATE_KEY) !== undefined) {
+        throw new Error("staging D1 runtime probe is already claimed");
+      }
+      await txn.put(STAGING_D1_PROBE_ADMISSION_KEY, admission);
+      return { status: "admitted", admission } as const;
+    });
+  }
+
   async retireStagingD1RuntimeProbe(scheduledTime: number): Promise<OldProbeRetirement> {
+    const isV5 = this.state.id.equals(this.env.CORELINK_SERVER.idFromName(V5_PROBE_NAME));
+    const expectedName = isV5 ? V5_PROBE_NAME : OLD_PROBE_NAME;
+    const expectedRelease = isV5 ? V5_PROBE_RELEASE : OLD_PROBE_RELEASE;
+    const retiredKey = isV5 ? V5_PROBE_RETIRED_KEY : OLD_PROBE_RETIRED_KEY;
     if (this.env.ENVIRONMENT !== "staging" ||
         this.env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
         this.env.D1_DATABASE_ID !== "d72a6b39-6a48-4338-bfda-1111dda98604" ||
-        !/^[0-9a-f]{40}$/.test(this.env.SENTRY_RELEASE ?? "") || this.env.SENTRY_RELEASE === OLD_PROBE_RELEASE ||
+        !/^[0-9a-f]{40}$/.test(this.env.SENTRY_RELEASE ?? "") || this.env.SENTRY_RELEASE === expectedRelease ||
         !validStagingD1ProbeTime(scheduledTime, this.now()) ||
-        !this.state.id.equals(this.env.CORELINK_SERVER.idFromName(OLD_PROBE_NAME))) {
+        !this.state.id.equals(this.env.CORELINK_SERVER.idFromName(expectedName))) {
       throw new Error("old probe retirement guard rejected");
     }
     // No await before these fences. Already-running fetch/alarm/probe work must
@@ -278,7 +331,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
     this.probeRetired = true;
     try {
       // Preserve the original claim and receipt, including unknown/failed state.
-      await this.storage.put(OLD_PROBE_RETIRED_KEY, { old_release: OLD_PROBE_RELEASE });
+      await this.storage.put(retiredKey, { old_release: expectedRelease });
       const container = this.state.container;
       if (container === undefined) throw new Error("old probe Container binding unavailable");
       if (container.running) await container.destroy();
@@ -286,19 +339,44 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
       await this.storage.deleteAlarm();
       if (await this.storage.getAlarm() !== null) throw new Error("old probe alarm cleanup unproven");
       await this.transitionStatus("stopped", "staging-d1-probe-retirement");
-      await cleanOldProbeTables(this.env.CONFIG_DB, this.now);
-      return { old_probe_release: OLD_PROBE_RELEASE, old_probe_retired: true, old_probe_tables_absent: true };
+      if (isV5) await cleanV5ProbeTables(this.env.CONFIG_DB, this.now);
+      else await cleanOldProbeTables(this.env.CONFIG_DB, this.now);
+      return isV5
+        ? { v5_probe_release: V5_PROBE_RELEASE, v5_probe_retired: true, v5_probe_tables_absent: true }
+        : { old_probe_release: OLD_PROBE_RELEASE, old_probe_retired: true, old_probe_tables_absent: true };
     } finally { this.retirementActive = false; }
   }
 
-  async runStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt> {
+  async runStagingD1RuntimeProbe(admission: StagingD1RuntimeProbeAdmission): Promise<StagingD1RuntimeProbeReceipt> {
     if (this.isOldProbeObject()) throw new Error("old probe cannot be replayed");
-    return this.withProbeActivity(() => this.runStagingD1RuntimeProbeActive(scheduledTime));
+    return this.withProbeActivity(() => this.runStagingD1RuntimeProbeActive(admission));
   }
 
-  private async runStagingD1RuntimeProbeActive(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt> {
+  async readStagingD1RuntimeProbeReceipt(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt | undefined> {
     const release = this.env.SENTRY_RELEASE ?? "";
+    if (this.isOldProbeObject() || this.env.ENVIRONMENT !== "staging" ||
+        this.env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
+        this.env.D1_DATABASE_ID !== "d72a6b39-6a48-4338-bfda-1111dda98604" ||
+        !/^[0-9a-f]{40}$/.test(release) ||
+        !this.state.id.equals(this.env.CORELINK_SERVER.idFromName(`${STAGING_D1_RUNTIME_PROBE_DO_PREFIX}${release}`)) ||
+        !validStagingD1ProbeReceiptRead(scheduledTime, this.now())) {
+      throw new Error("staging runtime receipt read guard rejected");
+    }
+    const receipt = await this.storage.get<StagingD1RuntimeProbeReceipt>(STAGING_D1_PROBE_RECEIPT_KEY);
+    if (receipt === undefined) return undefined;
+    if (!isStagingD1RuntimeProbeReceipt(receipt, release, receipt.scheduled_time_ms) ||
+        receipt.scheduled_time_ms > scheduledTime) throw new Error("staging runtime stored receipt rejected");
+    return receipt;
+  }
+
+  private async runStagingD1RuntimeProbeActive(admission: StagingD1RuntimeProbeAdmission): Promise<StagingD1RuntimeProbeReceipt> {
+    const release = this.env.SENTRY_RELEASE ?? "";
+    const scheduledTime = admission?.scheduled_time_ms;
     if (
+      admission?.contract !== "corelink-staging-d1-probe-admission-v1" ||
+      admission.probe_nonce !== STAGING_D1_PROBE_WINDOW.nonce ||
+      admission.worker_release !== release ||
+      !Number.isSafeInteger(scheduledTime) ||
       this.env.ENVIRONMENT !== "staging" ||
       !/^[0-9a-f]{40}$/.test(release) ||
       this.env.CLOUDFLARE_ACCOUNT_ID !== "6a1fc1c626fc2628823e60b9db01f5cd" ||
@@ -317,9 +395,21 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
       }
       return previous;
     }
-    const state = await this.storage.get<string>(STAGING_D1_PROBE_STATE_KEY);
-    if (state !== undefined) throw new Error("staging D1 runtime probe is already claimed");
-    await this.storage.put(STAGING_D1_PROBE_STATE_KEY, "running");
+    if (!Number.isSafeInteger(this.now()) || this.now() >= STAGING_D1_PROBE_EXPIRES_AT_MS) {
+      throw new Error("staging D1 runtime probe completion window expired");
+    }
+    const claimed = await this.storage.transaction(async (txn) => {
+      const storedAdmission = await txn.get<StagingD1RuntimeProbeAdmission>(STAGING_D1_PROBE_ADMISSION_KEY);
+      if (storedAdmission?.contract !== admission.contract || storedAdmission.probe_nonce !== admission.probe_nonce ||
+          storedAdmission.worker_release !== admission.worker_release ||
+          storedAdmission.scheduled_time_ms !== admission.scheduled_time_ms) {
+        throw new Error("staging D1 runtime probe admission receipt rejected");
+      }
+      if (await txn.get<string>(STAGING_D1_PROBE_STATE_KEY) !== undefined) return false;
+      await txn.put(STAGING_D1_PROBE_STATE_KEY, "running");
+      return true;
+    });
+    if (!claimed) throw new Error("staging D1 runtime probe is already claimed");
 
     const requestId = "staging-d1-binding-runtime-probe";
     const started = await this.ensureContainerRunning(requestId, true);

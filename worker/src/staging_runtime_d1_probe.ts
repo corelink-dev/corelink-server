@@ -1,6 +1,7 @@
-import { assertV4FailedProbeCatalogAbsent, OLD_PROBE_NAME, OLD_PROBE_RELEASE, type OldProbeRetirement } from "./staging_d1_probe_retirement.js";
+import { assertV4FailedProbeCatalogAbsent, OLD_PROBE_NAME, OLD_PROBE_RELEASE, V5_PROBE_NAME, V5_PROBE_RELEASE, type OldProbeRetirement } from "./staging_d1_probe_retirement.js";
 import window from "../../crates/corelink-container/src/routes/staging_d1_probe_window.json";
 export const STAGING_D1_PROBE_WINDOW = window;
+export const STAGING_D1_PROBE_LAST_ENTRY_MS = window.last_entry_ms;
 import type { Env } from "./index_common.js";
 
 export const STAGING_D1_RUNTIME_PROBE_DO_PREFIX = `_staging_d1_binding_probe_v2:${window.nonce}:`;
@@ -21,16 +22,64 @@ export interface StagingD1RuntimeProbeReceipt {
   readonly cf_api_token_absent: true;
 }
 
+export interface StagingD1RuntimeProbeAdmission {
+  readonly contract: "corelink-staging-d1-probe-admission-v1";
+  readonly probe_nonce: string;
+  readonly worker_release: string;
+  readonly scheduled_time_ms: number;
+}
+
+export type StagingD1RuntimeProbeAdmissionResult =
+  | { readonly status: "admitted"; readonly admission: StagingD1RuntimeProbeAdmission }
+  | { readonly status: "already_admitted" }
+  | { readonly status: "complete"; readonly receipt: StagingD1RuntimeProbeReceipt };
+
 interface StagingD1RuntimeProbeStub {
+  admitStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeAdmissionResult>;
   retireStagingD1RuntimeProbe(scheduledTime: number): Promise<OldProbeRetirement>;
-  runStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt>;
+  readStagingD1RuntimeProbeReceipt(scheduledTime: number): Promise<StagingD1RuntimeProbeReceipt | undefined>;
+  runStagingD1RuntimeProbe(admission: StagingD1RuntimeProbeAdmission): Promise<StagingD1RuntimeProbeReceipt>;
+}
+
+type RetirementProof = {
+  readonly old_probe_release: typeof OLD_PROBE_RELEASE; readonly old_probe_retired: true; readonly old_probe_tables_absent: true;
+  readonly v5_probe_release: typeof V5_PROBE_RELEASE; readonly v5_probe_retired: true; readonly v5_probe_tables_absent: true;
+  readonly v5_prior_execution: "unknown";
+};
+function withRetirementProof(receipt: StagingD1RuntimeProbeReceipt): StagingD1RuntimeProbeReceipt & RetirementProof & { readonly v4_probe_catalog_absent: true } {
+  return { ...receipt, v4_probe_catalog_absent: true as const,
+    old_probe_release: OLD_PROBE_RELEASE, old_probe_retired: true as const,
+    old_probe_tables_absent: true as const, v5_probe_release: V5_PROBE_RELEASE,
+    v5_probe_retired: true as const, v5_probe_tables_absent: true as const,
+    v5_prior_execution: "unknown" as const };
+}
+
+function releaseStub(env: Env, release: string): StagingD1RuntimeProbeStub {
+  const id = env.CORELINK_SERVER.idFromName(`${STAGING_D1_RUNTIME_PROBE_DO_PREFIX}${release}`);
+  return env.CORELINK_SERVER.get(id) as unknown as StagingD1RuntimeProbeStub;
+}
+
+/** Read only the already persisted receipt after the one-shot entry lease closes. */
+export async function readStagingD1BindingRuntimeProbeReceipt(
+  env: Env,
+  scheduledTime: number,
+): Promise<ReturnType<typeof withRetirementProof> | undefined> {
+  const release = env.SENTRY_RELEASE ?? "";
+  if (env.ENVIRONMENT !== "staging" || !/^[0-9a-f]{40}$/.test(release) ||
+      !Number.isSafeInteger(scheduledTime) || scheduledTime < window.starts_ms ||
+      scheduledTime >= window.expires_ms) throw new Error("staging runtime receipt read target rejected");
+  const receipt = await releaseStub(env, release).readStagingD1RuntimeProbeReceipt(scheduledTime);
+  if (receipt === undefined) return undefined;
+  if (receipt.probe_nonce !== window.nonce || receipt.scheduled_time_ms > scheduledTime ||
+      receipt.worker_release !== release) throw new Error("staging runtime stored receipt rejected");
+  return withRetirementProof(receipt);
 }
 
 /** Call a dedicated per-release DO through its non-HTTP RPC method. */
 export async function runStagingD1BindingRuntimeProbe(
   env: Env,
   scheduledTime: number,
-): Promise<StagingD1RuntimeProbeReceipt & OldProbeRetirement & { readonly v4_probe_catalog_absent: true }> {
+): Promise<StagingD1RuntimeProbeReceipt & RetirementProof & { readonly v4_probe_catalog_absent: true }> {
   const release = env.SENTRY_RELEASE ?? "";
   if (
     env.ENVIRONMENT !== "staging" ||
@@ -39,16 +88,32 @@ export async function runStagingD1BindingRuntimeProbe(
   ) {
     throw new Error("staging runtime probe target rejected");
   }
+  if (scheduledTime > window.last_entry_ms || Date.now() > window.last_entry_ms) {
+    throw new Error("staging runtime probe entry lease closed");
+  }
+  const stub = releaseStub(env, release);
+  const stored = await stub.readStagingD1RuntimeProbeReceipt(scheduledTime);
+  if (stored !== undefined) {
+    if (stored.probe_nonce !== window.nonce || stored.scheduled_time_ms > scheduledTime ||
+        stored.worker_release !== release) throw new Error("staging runtime stored receipt rejected");
+    return withRetirementProof(stored);
+  }
+  const admission = await stub.admitStagingD1RuntimeProbe(scheduledTime);
+  if (admission.status === "complete") return withRetirementProof(admission.receipt);
+  if (admission.status !== "admitted") throw new Error("staging runtime probe already admitted");
   await assertV4FailedProbeCatalogAbsent(env.CONFIG_DB);
   const oldId = env.CORELINK_SERVER.idFromName(OLD_PROBE_NAME);
   const oldStub = env.CORELINK_SERVER.get(oldId) as unknown as StagingD1RuntimeProbeStub;
   const retired = await oldStub.retireStagingD1RuntimeProbe(scheduledTime);
   if (retired.old_probe_release !== OLD_PROBE_RELEASE || retired.old_probe_retired !== true ||
       retired.old_probe_tables_absent !== true) throw new Error("old probe retirement rejected");
-  const id = env.CORELINK_SERVER.idFromName(`${STAGING_D1_RUNTIME_PROBE_DO_PREFIX}${release}`);
-  const stub = env.CORELINK_SERVER.get(id) as unknown as StagingD1RuntimeProbeStub;
-  const receipt = await stub.runStagingD1RuntimeProbe(scheduledTime);
-  // Cloudflare runs this cron every minute. Once the dedicated DO has emitted
+  const v5Id = env.CORELINK_SERVER.idFromName(V5_PROBE_NAME);
+  const v5Stub = env.CORELINK_SERVER.get(v5Id) as unknown as StagingD1RuntimeProbeStub;
+  const v5Retired = await v5Stub.retireStagingD1RuntimeProbe(scheduledTime);
+  if (v5Retired.v5_probe_release !== V5_PROBE_RELEASE || v5Retired.v5_probe_retired !== true ||
+      v5Retired.v5_probe_tables_absent !== true) throw new Error("v5 probe retirement rejected");
+  const receipt = await stub.runStagingD1RuntimeProbe(admission.admission);
+  // Cloudflare runs this cron every two minutes. Once the dedicated DO has emitted
   // its release-bound receipt, later ticks return that same receipt so a tail
   // can recover it; the first scheduled timestamp remains the proof timestamp.
   if (
@@ -70,5 +135,5 @@ export async function runStagingD1BindingRuntimeProbe(
   ) {
     throw new Error("staging runtime probe receipt rejected");
   }
-  return { ...receipt, v4_probe_catalog_absent: true, old_probe_release: OLD_PROBE_RELEASE, old_probe_retired: true, old_probe_tables_absent: true };
+  return withRetirementProof(receipt);
 }
