@@ -106,6 +106,8 @@ jobs:
           Cargo.lock
           scripts/cli_release_api.py
           scripts/cli_release_draft_manifest.py
+          scripts/test_pinned_gh_consumers.py
+          scripts/verify_b112_release_root_cause.py
           tests/test_cli_release_draft_contract.py
           tools/cli/Cargo.toml
           tools/cli/tests/release_workflow_contract/assertions.rs
