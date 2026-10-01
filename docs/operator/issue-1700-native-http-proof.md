@@ -14,12 +14,14 @@ the coordinator RPC; HTTP authentication never enters the native Container.
 
 The POST body has exactly `worker_release`, `probe_nonce`, and
 `scheduled_time_ms`, at most 512 bytes. The timestamp is the current two-minute
-bucket and the nonce is `issue-1700-recovery-20261001-v11`. Its source admission
-window is 2026-10-01T20:00:00Z through 22:00:00Z inclusive; completion expires at
-23:15:00Z exclusively. The deployment guard permits dispatch only from 20:00:00Z
-inclusive through 20:20:00Z exclusive, retaining its 75-minute cleanup reserve.
-The cleanup-only authorization uses 20:00:00Z–23:15:00Z; the old v8/v9 invocation
-windows and namespaces are unchanged. Retired v10 is never replayed. These source
+bucket and the nonce is `issue-1700-recovery-20261002-v12`. Its source admission
+window is 2026-10-02T15:00:00Z through 17:00:00Z inclusive; completion expires at
+18:15:00Z exclusively. The deployment guard permits dispatch only from 15:00:00Z
+inclusive through 15:20:00Z exclusive, retaining its 75-minute cleanup reserve.
+The cleanup-only authorization uses 15:00:00Z–18:15:00Z; the old v8/v9 invocation
+windows and namespaces are unchanged. Retired v10 is never replayed. The v11
+window (2026-10-01T20:00:00Z–23:15:00Z) expired unused: the protected deploy
+workflow was never dispatched inside it, and its nonce is never reused. These source
 bounds do not independently authorize a runtime dispatch. A GET
 of the same path on the canonical domain reads persisted status without admission or cleanup. Query
 parameters, Authorization/Cookie headers, and other methods are rejected.

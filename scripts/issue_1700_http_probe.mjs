@@ -44,7 +44,7 @@ export function validateAttempt(value, expectedRelease) {
   return exactKeys(value, ATTEMPT_KEYS) && value.contract === ATTEMPT_CONTRACT &&
     value.carrier === "authenticated_http" && value.request_attempted === true && validOrigin(value.origin) &&
     validRelease(value.worker_release) && value.worker_release === expectedRelease &&
-    value.probe_nonce === "issue-1700-recovery-20261001-v11" &&
+    value.probe_nonce === "issue-1700-recovery-20261002-v12" &&
     value.probe_nonce === PROBE_WINDOW.nonce && isApprovedProbeWindow(PROBE_WINDOW) &&
     ["started_at_ms", "scheduled_time_ms", "deadline_ms", "transport_deadline_ms"].every(key => Number.isSafeInteger(value[key])) &&
     value.started_at_ms >= PROBE_WINDOW.starts_ms && value.started_at_ms < PROBE_WINDOW.last_entry_ms &&
@@ -71,8 +71,8 @@ function validCleanup(value, version, attempt, observedAt) {
     typeof value.prior_admission_present === "boolean" && value.container_stopped === true &&
     value.alarm_absent === true && value.tables_absent === true && Number.isSafeInteger(value.completed_at_ms) &&
     value.completed_at_ms >= attempt.started_at_ms && value.completed_at_ms <= observedAt &&
-    value.completed_at_ms < attempt.deadline_ms && value.completed_at_ms >= Date.parse("2026-10-01T20:00:00Z") &&
-    value.completed_at_ms < Date.parse("2026-10-01T23:15:00Z");
+    value.completed_at_ms < attempt.deadline_ms && value.completed_at_ms >= Date.parse("2026-10-02T15:00:00Z") &&
+    value.completed_at_ms < Date.parse("2026-10-02T18:15:00Z");
 }
 export function validateHttpStatus(value, attempt, { expectedRelease = attempt?.worker_release, observedAt = Date.now(), requireComplete = false } = {}) {
   if (!validateAttempt(attempt, expectedRelease) || !Number.isSafeInteger(observedAt) ||
