@@ -371,6 +371,9 @@ def _commitment(raw: Any, where: str, now: dt.datetime, denials: _Denials) -> Co
         # outside the declared lifetime.
         if deadline is not None and ends is not None and deadline > ends:
             denials.add("component.cleanup_after_expiry", where)
+        # A deadline before the operation even starts cannot describe its cleanup.
+        if deadline is not None and starts is not None and deadline < starts:
+            denials.add("cleanup.deadline_before_start", where)
 
     exact = None
     if units is not None and price is not None:

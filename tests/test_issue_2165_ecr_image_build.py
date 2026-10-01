@@ -489,6 +489,19 @@ class DualModeBudgetAdmissionTests(unittest.TestCase):
         budget["included_commitments"][0]["cleanup"]["deadline_at"] = "2026-11-01T00:00:00Z"
         self.assertDenied(budget, proposal(), "component.cleanup_after_expiry")
 
+    def test_cleanup_deadline_before_start_is_denied(self) -> None:
+        budget = upper_budget()
+        budget["included_commitments"][0]["cleanup"]["deadline_at"] = "2026-09-30T23:59:59Z"
+        self.assertDenied(budget, proposal(), "cleanup.deadline_before_start")
+        # The proposal is checked the same way.
+        bad = proposal()
+        bad["cleanup"]["deadline_at"] = "2026-10-02T00:59:59Z"
+        self.assertDenied(upper_budget(), bad, "cleanup.deadline_before_start")
+        # Boundary: a deadline exactly at start is not before it.
+        budget = upper_budget()
+        budget["included_commitments"][0]["cleanup"]["deadline_at"] = "2026-10-01T00:00:00Z"
+        admit_budget(budget, proposal(), NOW)
+
     def test_uncompleted_record_past_its_lifetime_is_denied(self) -> None:
         budget = self._ledger_change(0, starts_at="2026-09-01T00:00:00Z", end_or_expiry_at="2026-10-01T00:00:00Z")
         budget["included_commitments"][0]["cleanup"]["deadline_at"] = "2026-10-01T00:00:00Z"
@@ -587,7 +600,8 @@ class DualModeBudgetAdmissionTests(unittest.TestCase):
     def test_lifetime_and_time_denials(self) -> None:
         inverted = self._ledger_change(0, starts_at="2026-11-02T00:00:00Z", end_or_expiry_at="2026-11-01T00:00:00Z")
         inverted["included_commitments"][0]["cleanup"]["deadline_at"] = "2026-11-01T00:00:00Z"
-        self.assertDenied(inverted, proposal(), "component.lifetime_inverted")
+        # With end before start, a deadline at end is also before start: both are named.
+        self.assertDenied(inverted, proposal(), "component.lifetime_inverted", "cleanup.deadline_before_start")
         self.assertDenied(self._ledger_change(0, starts_at="2026-10-01T00:00:00"), proposal(), "time.not_utc")
         self.assertDenied(self._ledger_change(0, starts_at="yesterday"), proposal(), "time.malformed")
         self.assertDenied(self._ledger_change(0, price_date="2026-10-03"), proposal(), "time.future")
