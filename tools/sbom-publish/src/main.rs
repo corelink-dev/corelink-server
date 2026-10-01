@@ -255,10 +255,6 @@ async fn run(cli: Cli) -> Result<(), SbomError> {
     Ok(())
 }
 
-fn ingestion_summary(_project_uuid: &str) -> serde_json::Value {
-    serde_json::json!({ "ingested": true })
-}
-
 fn exit_code_for_error(e: &SbomError) -> ExitCode {
     match e {
         SbomError::GenerationFailed(_)
@@ -273,6 +269,10 @@ fn exit_code_for_error(e: &SbomError) -> ExitCode {
         SbomError::Http(_) => ExitCode::from(4),
         _ => ExitCode::from(1),
     }
+}
+
+fn ingestion_summary(_project_uuid: &str) -> serde_json::Value {
+    serde_json::json!({ "ingested": true })
 }
 
 #[cfg(test)]
