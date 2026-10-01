@@ -121,6 +121,7 @@ def _verify_observation_workflow(workflow_texts: dict[str, str]) -> None:
         raise Blocked("staging observation workflow must define only the observe job")
     job = _block(jobs, "observe:", 2)
     required_job_lines = (
+        "    if: github.ref == 'refs/heads/main'",
         "    runs-on: ubuntu-24.04",
         "    environment: staging",
         "    timeout-minutes: 5",
@@ -141,29 +142,53 @@ def _verify_observation_workflow(workflow_texts: dict[str, str]) -> None:
         if steps is not None
         else []
     )
-    if step_headers != [step_header]:
-        raise Blocked("staging observation job must have one production observation step")
-    step = _block(steps, "- name: Invoke production GC observation", 6)
-    required_step_lines = (
-        "        run: /usr/local/bin/corelink-gc-sweep-production",
-        "        env:",
-        '          GC_OBSERVATION_ONLY: "true"',
-        '          GC_LIVE_DELETE: "false"',
+    expected_steps = [
+        "      - name: Checkout source",
+        "      - name: Invoke production GC observation",
+        "      - name: Upload pending owner receipt",
+    ]
+    if step_headers != expected_steps:
+        raise Blocked("staging observation job must use the pinned checkout, wrapper, and receipt steps")
+    action_uses = [line for line in lines if len(line) - len(line.lstrip()) == 8 and line.lstrip().startswith("uses:")]
+    if action_uses != [
+        "        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+        "        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    ]:
+        raise Blocked("staging observation workflow has an unsupported action")
+    required = (
+        "        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+        "          ref: ${{ github.sha }}",
+        "          persist-credentials: false",
+        "        run: python3 scripts/run_b071_gc_observation_from_image.py",
+        "        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        "          if-no-files-found: error",
     )
-    if step is None or any(step.count(line) != 1 for line in required_step_lines):
-        raise Blocked("production observation step is missing its read-only runtime fence")
-    # GitHub Actions accepts an indented YAML continuation after a plain-scalar
-    # `run:` value.  That text becomes part of the shell command, so requiring
-    # the allowlisted run line to be the final non-comment line closes a path
-    # where a destructive command could otherwise be appended invisibly.
-    if step[-1] != required_step_lines[0]:
+    if any(lines.count(line) != 1 for line in required):
+        raise Blocked("staging observation workflow is missing an exact image/scope/runtime binding")
+    invoke_step = _block(steps, "- name: Invoke production GC observation", 6)
+    if invoke_step is None or invoke_step[-1] != "        run: python3 scripts/run_b071_gc_observation_from_image.py":
         raise Blocked("production observation step has a multiline or trailing command continuation")
-    step_headers = [line for line in step if len(line) - len(line.lstrip()) == 8]
-    if step_headers != ["        env:", "        run: /usr/local/bin/corelink-gc-sweep-production"]:
+    invoke_headers = [line for line in invoke_step if len(line) - len(line.lstrip()) == 8]
+    if invoke_headers != ["        env:", "        run: python3 scripts/run_b071_gc_observation_from_image.py"]:
         raise Blocked("production observation step has unsupported execution controls")
-    env = _block(step, "env:", 8)
-    if env != ['          GC_OBSERVATION_ONLY: "true"', '          GC_LIVE_DELETE: "false"']:
-        raise Blocked("production observation step has unsupported environment controls")
+    env = _block(invoke_step, "env:", 8)
+    expected_env = [
+        "          B071_GC_OBSERVATION_IMAGE_REF: ${{ vars.B071_GC_OBSERVATION_IMAGE_REF }}",
+        "          B071_GC_OBSERVATION_SCOPE_JSON: ${{ secrets.B071_GC_OBSERVATION_SCOPE_JSON }}",
+        "          B071_CF_REGISTRY_READ_TOKEN: ${{ secrets.B071_CF_REGISTRY_READ_TOKEN }}",
+        "          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}",
+        "          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}",
+        "          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}",
+        "          R2_TDK_HEX: ${{ secrets.R2_TDK_HEX }}",
+        "          GITHUB_ACTOR: ${{ github.actor }}",
+        "          B071_SOURCE_REF: ${{ github.ref }}",
+        "          B071_SOURCE_SHA: ${{ github.sha }}",
+    ]
+    if env != expected_env:
+        raise Blocked("production observation env must contain exactly the pinned image, one scope, runtime, and operator bindings")
+    run_lines = [line for line in lines if line.lstrip().startswith("run:")]
+    if run_lines != ["        run: python3 scripts/run_b071_gc_observation_from_image.py"]:
+        raise Blocked("staging observation workflow has an unsupported or multiline command")
 
 
 def verify() -> None:
