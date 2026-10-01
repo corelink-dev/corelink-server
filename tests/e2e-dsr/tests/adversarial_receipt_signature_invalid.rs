@@ -40,7 +40,10 @@ fn tampered_jwt_signature_rejected() {
     };
     let receipt = match decision {
         DsrDecision::RequestAccepted { receipt, .. } => receipt,
-        other => panic!("expected RequestAccepted, got {other:?}"),
+        other => panic!(
+            "expected RequestAccepted, got decision variant {}",
+            other.as_str()
+        ),
     };
 
     // Sanity: pristine receipt verifies.

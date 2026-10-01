@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { setupClerkTestingToken } from "@clerk/testing/playwright";
+import { randomBytes } from "node:crypto";
 
 /**
  * PHASE-1 SPIKE — prove a REAL prod-accepted Clerk session in a browser.
@@ -31,7 +32,7 @@ test("real prod Clerk session loads the authed dashboard", async ({ page }) => {
   const email = `corelink-e2e-browser-${Date.now()}@corelink-e2e.dev`;
   const user = await clerkPost("/users", {
     email_address: [email],
-    password: `Corelink-e2e-${Math.random().toString(36).slice(2)}!A9`,
+    password: `Corelink-e2e-${randomBytes(24).toString("hex")}!A9`,
     skip_password_checks: true,
   });
   const userId = user.id as string;

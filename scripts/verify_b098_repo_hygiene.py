@@ -111,12 +111,9 @@ REMOTE_EVIDENCE_MAX_AGE = datetime.timedelta(hours=24)
 OID_PATTERN = r"(?:[0-9a-f]{40}|[0-9a-f]{64})"
 OID_RE = re.compile(rf"^{OID_PATTERN}$")
 
-SEMVER_TAG = re.compile(
-    r"^v"
-    r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-    r"(?:-((?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?"
-    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
-)
+MAX_TAG_LENGTH = 256
+MAX_CENSUS_BYTES = 1_000_000
+MAX_CENSUS_LINE_CHARS = 16_384
 PACKAGE_COUNT = re.compile(r"\*\*(\d+) Rust packages\*\*")
 CRATE_DIR_COUNT = re.compile(r"directory holds \*\*(\d+)\*\*")
 EXTRA_PACKAGE_COUNT = re.compile(r"and (\d+) live under `tests/`, `tools/` and\s*`apps/`", re.MULTILINE)
@@ -153,6 +150,36 @@ def _json_loads(text: str) -> object:
 
 def _is_oid(value: object) -> bool:
     return isinstance(value, str) and OID_RE.fullmatch(value) is not None
+
+
+def _valid_numeric_identifier(value: str) -> bool:
+    return bool(value) and all("0" <= char <= "9" for char in value) and (value == "0" or not value.startswith("0"))
+
+
+def _valid_prerelease_identifier(value: str) -> bool:
+    if not value or any(not (char.isascii() and (char.isalnum() or char == "-")) for char in value):
+        return False
+    return not (all("0" <= char <= "9" for char in value) and len(value) > 1 and value.startswith("0"))
+
+
+def _is_semver_tag(value: str) -> bool:
+    """Validate SemVer tags with bounded, linear token checks."""
+    if len(value) > MAX_TAG_LENGTH or not value.startswith("v"):
+        return False
+    core_build = value[1:].split("+", 1)
+    if len(core_build) > 2:
+        return False
+    core_pre = core_build[0].split("-", 1)
+    core = core_pre[0].split(".")
+    if len(core) != 3 or not all(_valid_numeric_identifier(part) for part in core):
+        return False
+    if len(core_pre) == 2 and not all(_valid_prerelease_identifier(part) for part in core_pre[1].split(".")):
+        return False
+    if len(core_build) == 2:
+        build = core_build[1].split(".")
+        if not all(part and all(char.isascii() and (char.isalnum() or char == "-") for char in part) for part in build):
+            return False
+    return True
 
 
 def _extract_census_metadata(census_text: str) -> dict[str, object]:
@@ -241,7 +268,7 @@ def _check_live_origin(
             refs.add(ref)
     semver_refs = {
         ref for ref in refs
-        if ref.startswith("refs/tags/") and SEMVER_TAG.fullmatch(ref.removeprefix("refs/tags/"))
+        if ref.startswith("refs/tags/") and _is_semver_tag(ref.removeprefix("refs/tags/"))
     }
     special_refs = refs - semver_refs
     expected_semver = {f"refs/tags/{tag}" for tag in tags}
@@ -265,9 +292,20 @@ def _check_census(root: Path, *, census_text: str | None = None) -> list[str]:
         if not path.is_file() or path.is_symlink():
             return [f"B-098 Ops authority census is missing: {path.relative_to(root)}"]
         try:
-            census_text = path.read_text(encoding="utf-8")
+            with path.open("rb") as source_file:
+                raw = source_file.read(MAX_CENSUS_BYTES + 1)
         except (OSError, UnicodeDecodeError) as exc:
             return [f"B-098 Ops authority census is unreadable: {exc}"]
+        if len(raw) > MAX_CENSUS_BYTES:
+            return ["B-098 Ops authority census exceeds bounded input size"]
+        try:
+            census_text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return [f"B-098 Ops authority census is unreadable: {exc}"]
+    if len(census_text.encode("utf-8")) > MAX_CENSUS_BYTES:
+        return ["B-098 Ops authority census exceeds bounded input size"]
+    if any(len(line) > MAX_CENSUS_LINE_CHARS for line in census_text.splitlines()):
+        return ["B-098 Ops authority census has an overlong line"]
     issues: list[str] = []
     if not census_text.startswith("---\n"):
         return ["B-098 Ops authority census front matter is missing"]
@@ -681,7 +719,7 @@ def semver_tags(root: Path = ROOT) -> tuple[str, ...]:
         raise VerificationError(f"git tag could not run: {exc}") from exc
     if completed.returncode != 0:
         raise VerificationError(f"git tag failed: {completed.stderr.strip()}")
-    return tuple(sorted(tag for tag in completed.stdout.splitlines() if SEMVER_TAG.fullmatch(tag)))
+    return tuple(sorted(tag for tag in completed.stdout.splitlines() if _is_semver_tag(tag)))
 
 
 def _check_release_contract(root: Path, tags: tuple[str, ...]) -> list[str]:

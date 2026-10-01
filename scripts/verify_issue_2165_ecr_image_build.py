@@ -33,11 +33,34 @@ def validate(workflow: str, runtime: str) -> None:
         "cleanup_deleted_exact_run_tags",
         'retention:\"successful-under-cap-tags-retained-for-authorized-lifecycle\"',
         "Fail the build after cleanup when aggregate image size exceeds 20 GB",
+        "inputs.operation == 'build-both-images'",
+        "inputs.operation == 'cleanup-successful-images'",
+        "from issue_2165_image_budget import validate_budget, validate_cleanup_deadline",
+        'lease["cleanup_operation_ref"] == "cleanup-successful-images"',
+        'lease["cleanup_deadline_at"]',
+        '"cleanup_deadline_at"], now)',
+        'dt.timedelta(hours=2)',
+        'dt.timedelta(hours=24)',
+        'lease["commitments_receipt_ref"]',
+        'lease["campaign_commitments_usd"]',
+        'git merge-base --is-ancestor "$SOURCE_SHA" "$GITHUB_SHA"',
+        'lease["operation"] == "cleanup-successful-images"',
+        'lease["owner"] == os.environ["GITHUB_ACTOR"]',
+        'lease["app_repository"] == os.environ["APP_REPOSITORY"]',
+        'lease["operator_repository"] == os.environ["OPERATOR_REPOSITORY"]',
+        'lease["app_digest"] == os.environ["APP_DIGEST"]',
+        'lease["operator_digest"] == os.environ["OPERATOR_DIGEST"]',
+        "Final read-only task check, assume cleanup role, and delete exact SHA tags",
+        'aws ecs list-tasks --cluster "$cluster" --desired-status "$status"',
+        "aws sts assume-role-with-web-identity",
+        "readback_times_utc",
+        "postread:$postread_at",
+        "role_arns",
     )
     if any(marker not in workflow for marker in required_workflow):
         raise ContractError("image build workflow is missing a bounded cap, isolated cleanup role, exact-tag cleanup, or retention receipt control")
-    if workflow.count("aws ecr batch-delete-image") != 1:
-        raise ContractError("image cleanup must have exactly one narrowly scoped delete command")
+    if workflow.count("aws ecr batch-delete-image") != 2:
+        raise ContractError("failed-build and successful-image cleanup must each have one exact-tag delete command")
     if workflow.index("aws ecr get-lifecycle-policy") > workflow.index("aws ecr put-lifecycle-policy"):
         raise ContractError("retention policy must be read before creation")
     if workflow.index("Delete only this run's image tags") > workflow.index("Fail the build after cleanup when aggregate image size exceeds 20 GB"):
@@ -45,6 +68,23 @@ def validate(workflow: str, runtime: str) -> None:
     cleanup_condition = "steps.app.outcome != 'success' || steps.operator.outcome != 'success' || steps.readback.outcome != 'success' || steps.image-size.outcome != 'success' || steps.image-size.outputs.within_cap == 'false'"
     if cleanup_condition not in workflow or "(steps.app.outcome != 'skipped' || steps.operator.outcome != 'skipped')" not in workflow:
         raise ContractError("cleanup must run for partial builds, failed readback, or aggregate size above the cap")
+    if workflow.index("validate_budget(lease[") > workflow.index("Build and push the exact-main application image"):
+        raise ContractError("protected reserve admission must complete before either image build dispatch")
+    cleanup_job = workflow.split("  cleanup-successful-images:\n", 1)[1]
+    if "docker build" in cleanup_job or "docker push" in cleanup_job:
+        raise ContractError("successful-image cleanup mode must not build or push images")
+    delete_step = cleanup_job.split("- name: Final read-only task check, assume cleanup role, and delete exact SHA tags\n", 1)[1]
+    if cleanup_job.index("Read back both exact SHA tags") > cleanup_job.index("aws sts assume-role-with-web-identity"):
+        raise ContractError("exact digest preimage must pass before cleanup credentials are assumed")
+    if not (
+        delete_step.index('aws ecs list-tasks --cluster "$cluster" --desired-status "$status"')
+        < delete_step.index("aws sts assume-role-with-web-identity")
+        < delete_step.index("cleanup_aws ecr batch-delete-image")
+    ):
+        raise ContractError("final task reread must use the read-only role immediately before cleanup-role assumption and deletion in one step")
+    receipt_step = cleanup_job.split("- name: Publish cleanup receipt\n", 1)[1]
+    if "if: always()" not in receipt_step or "if-no-files-found: error" not in receipt_step:
+        raise ContractError("cleanup receipt upload must be reached after failed, partial, or successful cleanup")
 
     required_runtime = (
         "MAX_CONCURRENT_TASKS = 2",

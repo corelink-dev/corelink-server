@@ -120,7 +120,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases()))]
     #[test]
     fn prop_caller_eq_approver_rejected(seed in 0u64..u64::MAX) {
-        let key = AdminSigningKey::test_zero();
+        // Explicit deterministic test fixture; never use as production key material.
+        let key = AdminSigningKey::new([0xA5; 32]);
         let user = Uuid::from_u64_pair(seed, seed);
         let tenant = Uuid::now_v7();
         let now = BASE_NOW;
@@ -141,7 +142,8 @@ proptest! {
         mutation_byte in 0usize..32usize,
         xor_val in 1u8..=255u8,
     ) {
-        let key = AdminSigningKey::test_zero();
+        // Explicit deterministic test fixture; never use as production key material.
+        let key = AdminSigningKey::new([0xA5; 32]);
         let caller = Uuid::now_v7();
         let approver = Uuid::now_v7();
         let tenant = Uuid::now_v7();
@@ -162,7 +164,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases()))]
     #[test]
     fn prop_mfa_stale_rejected(extra_min in 1u32..480u32) {
-        let key = AdminSigningKey::test_zero();
+        // Explicit deterministic test fixture; never use as production key material.
+        let key = AdminSigningKey::new([0xA5; 32]);
         let caller = Uuid::now_v7();
         let approver = Uuid::now_v7();
         let tenant = Uuid::now_v7();
@@ -183,7 +186,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases()))]
     #[test]
     fn prop_clock_skew_rejected(skew_extra_ms in 1u64..60_000u64) {
-        let key = AdminSigningKey::test_zero();
+        // Explicit deterministic test fixture; never use as production key material.
+        let key = AdminSigningKey::new([0xA5; 32]);
         let caller = Uuid::now_v7();
         let approver = Uuid::now_v7();
         let tenant = Uuid::now_v7();
@@ -217,7 +221,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(cases()))]
     #[test]
     fn prop_nonce_replay_rejected(seed in 0u8..=255u8) {
-        let key = AdminSigningKey::test_zero();
+        // Explicit deterministic test fixture; never use as production key material.
+        let key = AdminSigningKey::new([0xA5; 32]);
         let caller = Uuid::now_v7();
         let approver = Uuid::now_v7();
         let tenant = Uuid::now_v7();

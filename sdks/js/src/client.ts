@@ -23,6 +23,12 @@ const DEFAULT_RETRY: RetryConfig = {
   maxDelayMs: 10_000,
 };
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end -= 1;
+  return value.slice(0, end);
+}
+
 /** Read `CORELINK_PAT` from the environment when available (Node/Workers). */
 function envPat(): string | undefined {
   if (typeof process !== "undefined" && process.env) {
@@ -92,7 +98,7 @@ export class CoreLinkClient {
     }
     this.pat = pat;
     this.tenantId = config.tenantId;
-    this.baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    this.baseUrl = trimTrailingSlashes(config.baseUrl ?? DEFAULT_BASE_URL);
     this.clientVerify = config.clientVerify ?? true;
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.retry = { ...DEFAULT_RETRY, ...(config.retry ?? {}) };

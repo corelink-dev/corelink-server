@@ -42,7 +42,7 @@
 
 use std::time::Duration;
 
-use reqwest::Client;
+use reqwest::{redirect::Policy, Client, ClientBuilder, Url};
 
 use crate::jwks::{Jwks, JwksFetchError, JwksFetchFuture, JwksFetcher};
 
@@ -74,14 +74,7 @@ const POOL_PER_HOST: usize = 4;
 #[derive(Clone, Debug)]
 pub struct HttpJwksFetcher {
     client: Client,
-    /// Whether to enforce the `https://` prefix on the URL passed to
-    /// [`fetch_jwks`]. The canonical `new()` / `with_timeout()`
-    /// constructors set this `true`; the test-only [`from_client`]
-    /// constructor sets it `false` so wiremock can serve over plain
-    /// HTTP on a loopback port. Production callers MUST never go
-    /// through [`from_client`] — that surface exists exclusively for
-    /// the integration test harness.
-    enforce_https_prefix: bool,
+    allow_loopback_http: bool,
 }
 
 /// Errors surfaced during [`HttpJwksFetcher::with_timeout`] /
@@ -131,6 +124,7 @@ impl HttpJwksFetcher {
         }
         let client = Client::builder()
             .https_only(true)
+            .redirect(Policy::none())
             .timeout(timeout)
             .pool_max_idle_per_host(POOL_PER_HOST)
             .user_agent(concat!("corelink-clerk/", env!("CARGO_PKG_VERSION")))
@@ -138,21 +132,43 @@ impl HttpJwksFetcher {
             .map_err(|e| HttpFetcherBuildError::ClientBuild(e.to_string()))?;
         Ok(Self {
             client,
-            enforce_https_prefix: true,
+            allow_loopback_http: false,
         })
     }
 
-    /// Inject a pre-built `reqwest::Client`. Useful in test harnesses
-    /// that want to wire `wiremock`-style instrumentation. The caller
-    /// is responsible for the TLS / timeout posture and for ensuring
-    /// the target URL is HTTPS in production. Disables the internal
-    /// `https://` prefix check so loopback HTTP works in tests.
+    /// Build a production fetcher from a configured client builder.
+    /// HTTPS is enforced both at URL validation and in the client, and
+    /// redirects are disabled so credentials or JWKS requests cannot be
+    /// forwarded to another scheme or host.
     #[must_use]
-    pub fn from_client(client: Client) -> Self {
-        Self {
+    pub fn from_client(builder: ClientBuilder) -> Result<Self, HttpFetcherBuildError> {
+        let client = builder
+            .https_only(true)
+            .redirect(Policy::none())
+            .build()
+            .map_err(|e| HttpFetcherBuildError::ClientBuild(e.to_string()))?;
+        Ok(Self {
             client,
-            enforce_https_prefix: false,
-        }
+            allow_loopback_http: false,
+        })
+    }
+
+    /// Test-only transport for local mock servers. Plain HTTP is
+    /// permitted only for loopback IP addresses or `localhost`; all
+    /// redirects remain disabled. This API is omitted from default
+    /// production builds and is exposed only with `test-utils`.
+    #[doc(hidden)]
+    #[cfg(feature = "test-utils")]
+    pub fn for_loopback_http_tests(builder: ClientBuilder) -> Result<Self, HttpFetcherBuildError> {
+        let client = builder
+            .https_only(false)
+            .redirect(Policy::none())
+            .build()
+            .map_err(|e| HttpFetcherBuildError::ClientBuild(e.to_string()))?;
+        Ok(Self {
+            client,
+            allow_loopback_http: true,
+        })
     }
 
     /// Fetch a JWKS document from `url` using the canonical
@@ -168,13 +184,23 @@ impl HttpJwksFetcher {
     pub async fn fetch_jwks(&self, url: &str) -> Result<Jwks, JwksFetchError> {
         // Defense-in-depth: the [`crate::config::ClerkConfig`] builder
         // already rejects non-HTTPS URLs, but we re-check here so a
-        // caller constructing the fetcher in isolation cannot
-        // accidentally point it at an HTTP endpoint. The test-only
-        // [`from_client`] constructor disables this check so wiremock
-        // can serve over loopback HTTP.
-        if self.enforce_https_prefix && !url.starts_with("https://") {
+        // Validate the URL before handing it to reqwest. Test mode is
+        // limited to loopback HTTP; it does not permit external HTTP.
+        let parsed = Url::parse(url)
+            .map_err(|e| JwksFetchError::Transport(format!("invalid JWKS URL: {e}")))?;
+        let is_https = parsed.scheme() == "https";
+        let is_loopback_http = self.allow_loopback_http
+            && parsed.scheme() == "http"
+            && parsed.host_str().is_some_and(|host| {
+                host == "localhost"
+                    || host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            });
+        if !is_https && !is_loopback_http {
             return Err(JwksFetchError::Transport(
-                "JWKS URL must be HTTPS".to_owned(),
+                "JWKS URL must be HTTPS (HTTP is allowed only for loopback test servers)"
+                    .to_owned(),
             ));
         }
         let response = self
@@ -231,6 +257,27 @@ mod tests {
         let fetcher = HttpJwksFetcher::new().unwrap();
         let err = fetcher
             .fetch_jwks("http://insecure.example.dev/.well-known/jwks.json")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, JwksFetchError::Transport(_)));
+    }
+
+    #[tokio::test]
+    async fn injected_production_client_rejects_http_before_sending() {
+        let fetcher = HttpJwksFetcher::from_client(Client::builder()).unwrap();
+        let err = fetcher
+            .fetch_jwks("http://127.0.0.1:1/jwks")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, JwksFetchError::Transport(_)));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "test-utils")]
+    async fn loopback_test_client_rejects_external_http_before_sending() {
+        let fetcher = HttpJwksFetcher::for_loopback_http_tests(Client::builder()).unwrap();
+        let err = fetcher
+            .fetch_jwks("http://example.com/jwks")
             .await
             .unwrap_err();
         assert!(matches!(err, JwksFetchError::Transport(_)));

@@ -13,7 +13,8 @@ fn main() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let now_ms = 10_000_000u64;
     let payload = b"{}".to_vec();
     let nonce = [0xCCu8; 16];

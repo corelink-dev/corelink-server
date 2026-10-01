@@ -4,8 +4,10 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 280
-workflow-paths-sha256: 55e06600071bf412fb393f1e7232b0d9c79de7ba2ea4f6c7a4cbf4510bd36972
+The B-071 observation workflow is actively owned by the connected whole owner of issues #2167 and #1651. This catalog accepts only valid WP IDs from B131-B167, so its row remains `LEAD-BLOCKED | blocked` until a valid WP ID can represent that issue lane. This catalog status records an unmapped WP owner; it does not mean the source implementation lacks an owner or is blocked.
+
+workflow-count: 281
+workflow-paths-sha256: a3a08438db5c990b2e4fe2701130e780e77b738dbdb777fed7b9b944d8f89617
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -116,6 +118,7 @@ workflow-paths-sha256: 55e06600071bf412fb393f1e7232b0d9c79de7ba2ea4f6c7a4cbf4510
 .github/workflows/issue-1650-real-integration-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1651-gc-control.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1651-gc-live-readiness.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1651-gc-staging-observation.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1652-b072-evidence.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1653-byok-kms-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1655-b089-contract.yml | LEAD-BLOCKED | blocked

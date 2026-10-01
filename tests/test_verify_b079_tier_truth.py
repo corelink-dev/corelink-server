@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +94,26 @@ class B079VerifierTests(unittest.TestCase):
         with self.assertRaises(verifier.VerificationError) as failure:
             verifier.validate({**self.files, "rust": changed})
         self.assertIn("wildcard fallback is ambiguous", str(failure.exception))
+
+    def test_overlong_malformed_source_is_rejected_before_structural_scans(self) -> None:
+        with self.assertRaises(verifier.VerificationError):
+            verifier.validate({**self.files, "rust": "pub fn " + " " * 20_000})
+
+    def test_legitimate_longer_line_within_cap_remains_supported(self) -> None:
+        changed = {**self.files, "docs": self.files["docs"] + "\n" + " " * 200}
+        verifier.validate(changed)
+
+    def test_reader_rejects_oversized_bytes_before_decoding(self) -> None:
+        class OversizedBytes(io.BytesIO):
+            def read(self, size: int = -1) -> bytes:
+                self.requested_size = size
+                return b"x" * size
+
+        source = OversizedBytes()
+        with patch.object(Path, "open", return_value=source):
+            with self.assertRaisesRegex(verifier.VerificationError, "exceeds bounded input size"):
+                verifier.read(verifier.RUST_PATH)
+        self.assertEqual(source.requested_size, verifier.MAX_PROOF_BYTES + 1)
 
 
 if __name__ == "__main__":

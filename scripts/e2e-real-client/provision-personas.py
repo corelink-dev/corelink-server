@@ -19,6 +19,8 @@ from the process env.
 import hashlib
 import json
 import os
+import secrets
+import stat
 import sys
 import time
 import urllib.error
@@ -298,17 +300,92 @@ def provision():
     return out
 
 
+def write_secret_env(dest, env):
+    """Atomically write the sourced environment file as an owner-only regular file."""
+    directory = os.path.dirname(os.path.abspath(dest))
+    basename = os.path.basename(dest)
+    dir_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    temp_name = None
+    try:
+        # Reject unsafe pre-existing targets and tighten a regular file before
+        # replacing it, so old contents are never left broadly readable.
+        try:
+            target_info = os.stat(basename, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            target_info = None
+        if target_info is not None and not stat.S_ISREG(target_info.st_mode):
+            raise SystemExit("refusing non-regular persona env target")
+        try:
+            target_fd = (os.open(basename, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+                         if target_info is not None else None)
+        except FileNotFoundError:
+            target_fd = None
+        if target_fd is not None:
+            try:
+                if not stat.S_ISREG(os.fstat(target_fd).st_mode):
+                    raise SystemExit("refusing non-regular persona env target")
+                os.fchmod(target_fd, 0o600)
+            finally:
+                os.close(target_fd)
+
+        content = ["# e2e Group-A persona env (operator-minted) — source before the suite\n"]
+        content.extend(f"export {key}={_shell_quote(value)}\n" for key, value in env.items())
+        payload = "".join(content).encode("utf-8")
+
+        for _ in range(10):
+            temp_name = f".{basename}.{secrets.token_hex(8)}.tmp"
+            try:
+                temp_fd = os.open(
+                    temp_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=dir_fd,
+                )
+                break
+            except FileExistsError:
+                temp_name = None
+        else:
+            raise SystemExit("could not allocate private persona env temp file")
+
+        try:
+            os.fchmod(temp_fd, 0o600)
+            with os.fdopen(temp_fd, "wb") as output:
+                output.write(payload)
+                output.flush()
+                os.fsync(output.fileno())
+
+            # Check again immediately before replacement to fail closed if the
+            # destination was changed to a symlink or special file meanwhile.
+            try:
+                current = os.stat(basename, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                current = None
+            if current is not None and not stat.S_ISREG(current.st_mode):
+                raise SystemExit("refusing non-regular persona env target")
+            os.replace(temp_name, basename, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            temp_name = None
+        finally:
+            if temp_name is not None:
+                try:
+                    os.unlink(temp_name, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    pass
+    finally:
+        os.close(dir_fd)
+
+
+def _shell_quote(value):
+    """Return a POSIX-shell single-quoted literal, including embedded apostrophes."""
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
+
 def main():
     dest = sys.argv[1] if len(sys.argv) > 1 else "/tmp/e2e-persona-env.sh"
     env = provision()
-    with open(dest, "w") as f:
-        f.write("# e2e Group-A persona env (operator-minted) — source before the suite\n")
-        for k, v in env.items():
-            f.write(f"export {k}={json.dumps(v)}\n")
+    write_secret_env(dest, env)
     print(f"provisioned {len(env)} persona vars → {dest}")
     for k in env:
-        masked = "<set>" if "PAT_" in k or k.endswith("INTROSPECT_KEY") else env[k]
-        print(f"  {k}={masked}")
+        print(f"  {k}=<set>")
 
 
 if __name__ == "__main__":

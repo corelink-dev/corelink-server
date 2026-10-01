@@ -198,6 +198,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+          fetch-depth: ${{ inputs.suite == 'i1674' && '0' || '1' }}
 
       - name: Install the workspace Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable toolchain action
@@ -218,11 +219,11 @@ jobs:
           python-version: '3.12'
 
       - name: Set up pnpm for the worker lane
-        if: ${{ inputs.suite == 'i1700' || inputs.suite == 'i1662' || inputs.suite == 'i1671' || inputs.suite == 'i1678' || inputs.suite == 'i1792-miniflare-epoch' }}
+        if: ${{ inputs.suite == 'i1700' || inputs.suite == 'i1662' || inputs.suite == 'i1671' || inputs.suite == 'i1678' || inputs.suite == 'i1792-miniflare-epoch' || inputs.suite == 'i1674' }}
         uses: ./.github/actions/setup-pnpm
 
       - name: Set up Node.js for the worker lane
-        if: ${{ inputs.suite == 'i1700' || inputs.suite == 'i1662' || inputs.suite == 'i1671' || inputs.suite == 'i1678' || inputs.suite == 'i1792-miniflare-epoch' }}
+        if: ${{ inputs.suite == 'i1700' || inputs.suite == 'i1662' || inputs.suite == 'i1671' || inputs.suite == 'i1678' || inputs.suite == 'i1792-miniflare-epoch' || inputs.suite == 'i1674' }}
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -243,6 +244,11 @@ jobs:
         shell: bash
         run: pnpm install --frozen-lockfile --filter @corelink/signup-worker... --ignore-scripts
 
+      - name: Install pinned i1674 docs and test dependencies
+        if: ${{ inputs.suite == 'i1674' }}
+        shell: bash
+        run: pnpm install --frozen-lockfile --filter @corelink/docs... --filter corelink-e2e-browser --ignore-scripts
+
       - name: Install pinned DSR receiver dependencies
         if: ${{ inputs.suite == 'i1678' }}
         shell: bash
@@ -253,7 +259,7 @@ jobs:
         run: python -m pip install pytest pyyaml
 
       - name: Install protoc for the Rust lanes
-        if: ${{ inputs.suite == 'i1700' || inputs.suite == 'i1629' || inputs.suite == 'i1630' || inputs.suite == 'i1631' || inputs.suite == 'i1632' || inputs.suite == 'i1636' || inputs.suite == 'i1638' || inputs.suite == 'i1639' || inputs.suite == 'i1628' || inputs.suite == 'i1671' || inputs.suite == 'i1668' || inputs.suite == 'i1722' || inputs.suite == 'i1665' || inputs.suite == 'i1663' || inputs.suite == 'i1659-dry' || inputs.suite == 'i1809-b063-archive-replay' || inputs.suite == 'i2421' }}
+        if: ${{ inputs.suite == 'i1700' || inputs.suite == 'i1629' || inputs.suite == 'i1630' || inputs.suite == 'i1631' || inputs.suite == 'i1632' || inputs.suite == 'i1636' || inputs.suite == 'i1638' || inputs.suite == 'i1639' || inputs.suite == 'i1628' || inputs.suite == 'i1671' || inputs.suite == 'i1668' || inputs.suite == 'i1722' || inputs.suite == 'i1665' || inputs.suite == 'i1663' || inputs.suite == 'i1659-dry' || inputs.suite == 'i1809-b063-archive-replay' || inputs.suite == 'i2421' || inputs.suite == 'i1674' }}
         uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ github.token }}
@@ -1002,15 +1008,54 @@ jobs:
       - name: i1674 exact B-132 and B-142 hosted contract suites
         if: ${{ inputs.suite == 'i1674' }}
         shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           {
             python3 -S scripts/verify_b142_workflows.py
             python3 -m unittest -q \
+              tests/test_codeql_reviewed_dispositions.py \
+              tests/test_codeql_severity_gate.py \
               tests/test_b132_secrets_evidence.py \
               tests/test_b142_codeql_selfhost.py \
-              tests/test_b142_workflow_predicate.py
+              tests/test_b142_workflow_predicate.py \
+              tests/test_provision_personas_secure_output.py \
+              tests/test_verify_b079_tier_truth.py \
+              tests/test_verify_b098_repo_hygiene.py
+            python3 -m unittest -q \
+              tests.test_verify_b155_backlog_grep_population.B155VerifierTests.test_long_malformed_verify_line_fails_closed_with_bounded_work \
+              tests.test_verify_b155_backlog_grep_population.B155VerifierTests.test_valid_verify_line_within_limit_remains_supported
           } 2>&1 | tee artifacts/campaign-ci/i1674.log
+
+      - name: i1674 hosted source regression suites
+        if: ${{ inputs.suite == 'i1674' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            pnpm --dir apps/docs exec vitest run tests/static.test.ts
+            node --test \
+              tests/e2e-browser/stripe-checkout-url.test.mjs \
+              vendor/image-size/fromFile.test.mjs
+            cargo test --locked -p corelink-dpa-acceptance
+            cargo test --locked -p corelink-server dpa_accept
+            cargo check --locked -p e2e-signup-flow --tests
+            cargo check --locked -p corelink-dual-approval --all-targets
+            cargo test --locked -p corelink-dual-approval hmac_verify
+            cargo test --locked -p corelink-dual-approval --doc
+            cargo test --locked -p corelink-clerk --features test-utils --test http_fetcher
+            cargo test --locked -p e2e-dsr \
+              --test happy_access \
+              --test happy_rectification \
+              --test adversarial_receipt_signature_invalid
+            cargo test --locked -p sbom-publish --bin sbom-publish ingestion_summary_reports_success_without_project_uuid
+            cargo test --locked -p corelink-ops --example deploy_verify_signed_deploy
+            cargo check --locked -p corelink-ops --all-targets
+          } 2>&1 | tee artifacts/campaign-ci/i1674-source-regressions.log
 
       - name: Install i2194 Python verifier dependencies
         if: ${{ inputs.suite == 'i2194' }}

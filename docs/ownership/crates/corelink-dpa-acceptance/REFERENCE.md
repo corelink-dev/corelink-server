@@ -102,7 +102,7 @@ The service’s replay envelope is rebuilt from stored identifiers rather than n
 <a id="r06"></a>
 ## R06 — Configuration and data boundary
 
-The constructor accepts a notice registry, signing key, `kid`, clock, JTI minter, and effect implementations; `with_ip_salt` replaces the default salt. Those are injection surfaces, not evidence of configured production values. The manifest declares `jsonwebtoken` with `rust_crypto`; this documents cryptographic code dependency, not key custody or operational cryptography.
+The constructor requires an opaque `IpHashSalt`, validated as exactly 32 non-zero bytes; there is no default salt. The container refuses to mount the DPA-accept route unless `DPA_ACCEPT_IP_HASH_SALT` provides those bytes as 64 hexadecimal characters. Tests inject deterministic fixture salts. These are configuration requirements, not evidence that production secret provisioning is configured. The manifest declares `jsonwebtoken` with `rust_crypto`; this documents cryptographic code dependency, not key custody or operational cryptography.
 
 <a id="r07"></a>
 ## R07 — Failure taxonomy
