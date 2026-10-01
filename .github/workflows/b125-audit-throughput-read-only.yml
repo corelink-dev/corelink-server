@@ -121,7 +121,7 @@ jobs:
           repair_source_sha="46e2d1cbe7c00a303c0942e8f46751dce75e5c14"
           repair_image_digest="sha256:ecd63379d2040c6a891edaeb140fd388f26b5ffc181987c9c777060ced633e8a"
           expected_account_id="6a1fc1c626fc2628823e60b9db01f5cd"
-          expected_database_id="d64742ea-e102-40b2-a844-ff02f3e94562"
+          expected_database_id="d64742ea-e102-40b2-a844-ff02e3f94562"
           expected_config_blob_sha="5ffec8b882bcb99dcaf1df964c609e9d2c35838d"
           expected_config_sha256="568d0e6994ce1156542e350520a9750924a0f3f416e67af07c7275682e24c7a6"
           [[ "$CF_ACCOUNT_ID" == "$expected_account_id" ]] || fail_closed "cloudflare_account_target_mismatch"
