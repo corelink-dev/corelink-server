@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/i1664-gpg-release-identity-audit.yml"
 RUNNER = ROOT / "scripts/run_i2587_gpg_audit.py"
 CI_WORKFLOW = ROOT / ".github/workflows/i2587-gpg-audit-ci.yml"
+PUBLIC_KEY_FIXTURE = ROOT / "tests/fixtures/i2571-release-pubkey.asc"
 
 
 class ContractError(ValueError):
@@ -52,7 +53,8 @@ def validate(workflow: str, runner: str, ci_workflow: str) -> None:
         'fingerprint != EXPECTED_FINGERPRINT',
         'key_id != EXPECTED_FINGERPRINT[-16:]',
         'def validate_configured_binding(',
-        '"--export-filter", "keep-uid=primary", "--export"',
+        'PRIMARY_UID_EXPORT_FILTER = "keep-uid=primary -t"',
+        '["--export-filter", PRIMARY_UID_EXPORT_FILTER, "--export", EXPECTED_FINGERPRINT]',
         '"--with-colons", "--fixed-list-mode", "--with-fingerprint", "--show-keys"',
         'input_bytes=primary_public_key.stdout',
         'public[1][:1] in {"r", "e", "d", "i", "n"}',
@@ -85,6 +87,8 @@ def validate(workflow: str, runner: str, ci_workflow: str) -> None:
     require("permissions:\n  contents: read" in ci_workflow, "credentialless CI permissions are not read-only")
     require("scripts/verify_i2587_gpg_audit.py --self-test" in ci_workflow, "credentialless CI omits the contract verifier")
     require(ci_workflow.count("tests/test_i2587_gpg_audit.py") == 3, "credentialless CI must trigger on and run synthetic adversarial tests")
+    require(ci_workflow.count("tests/fixtures/i2571-release-pubkey.asc") == 2, "credentialless CI must trigger on the public-key fixture")
+    require(PUBLIC_KEY_FIXTURE.is_file() and PUBLIC_KEY_FIXTURE.stat().st_size < 4096, "public-key fixture missing or unexpectedly large")
     require("secrets." not in ci_workflow and "upload-artifact" not in ci_workflow, "credentialless CI can read secrets or upload artifacts")
     exact_head_ref = "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
     require(ci_workflow.count(f"ref: {exact_head_ref}") == 1, "credentialless CI checkout must pin PR head with a safe push fallback")
@@ -114,7 +118,7 @@ def self_test() -> int:
         (workflow + "\n      - uses: actions/upload-artifact@v4\n", runner, ci_workflow),
         (workflow, runner.replace('fingerprint != EXPECTED_FINGERPRINT', 'fingerprint.endswith(EXPECTED_FINGERPRINT[-16:])', 1), ci_workflow),
         (workflow, runner.replace('key_id != EXPECTED_FINGERPRINT[-16:]', 'key_id[-8:] != EXPECTED_FINGERPRINT[-8:]', 1), ci_workflow),
-        (workflow, runner.replace('"--export-filter", "keep-uid=primary", "--export"', '"--export", EXPECTED_FINGERPRINT', 1), ci_workflow),
+        (workflow, runner.replace('"--export-filter", PRIMARY_UID_EXPORT_FILTER, "--export", EXPECTED_FINGERPRINT', '"--export", EXPECTED_FINGERPRINT', 1), ci_workflow),
         (workflow, runner.replace('"--passphrase-fd"', '"--passphrase"', 1), ci_workflow),
         (workflow, runner.replace('"--output",\n            os.devnull', '"--output",\n            "signature.asc"', 1), ci_workflow),
         (workflow, runner.replace('input=PROBE_BYTES', 'input=env["RELEASE_BYTES"]', 1), ci_workflow),

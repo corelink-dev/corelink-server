@@ -13,9 +13,10 @@
 #
 # Public-key distribution:
 #   - Publish the matching public key at
-#     `https://corelink.humangr.com/.well-known/gpg-pubkey.asc`.
+#     `https://raw.githubusercontent.com/HuGR-dev/corelink-server/f4fdbb2b0e0c13af25c68e988f4eb9cc749070c3/docs/internal/gpg-release-pubkey.asc`
+#     (immutable public key blob; verify fingerprint 795253CEBD6D54C862CFC4A3EC0AD89A75EC6756).
 #   - End-users verify with:
-#       `curl -fsSL https://corelink.humangr.com/.well-known/gpg-pubkey.asc | gpg --import`
+#       `curl -fsSL https://raw.githubusercontent.com/HuGR-dev/corelink-server/f4fdbb2b0e0c13af25c68e988f4eb9cc749070c3/docs/internal/gpg-release-pubkey.asc | gpg --import`
 #       `gpg --verify corelink-linux-x86_64.tar.gz.asc corelink-linux-x86_64.tar.gz`
 #
 # Secrets required:
@@ -79,7 +80,7 @@ jobs:
           if [ -z "${GPG_PRIVATE_KEY}" ] || [ -z "${GPG_PRIVATE_KEY_PASS}" ] \
             || [ -z "${GPG_KEY_ID}" ] || [ -z "${GPG_KEY_FINGERPRINT}" ]; then
             echo "ready=false" >> "${GITHUB_OUTPUT}"
-            echo "::notice ::GPG_PRIVATE_KEY secret not populated — Linux signing skipped (acquire 4096-bit RSA key + populate secret + publish pubkey at https://corelink.humangr.com/.well-known/gpg-pubkey.asc)."
+            echo "::notice ::GPG_PRIVATE_KEY secret not populated — Linux signing skipped (acquire 4096-bit RSA key + populate secret + publish pubkey at https://raw.githubusercontent.com/HuGR-dev/corelink-server/f4fdbb2b0e0c13af25c68e988f4eb9cc749070c3/docs/internal/gpg-release-pubkey.asc)."
           else
             echo "ready=true" >> "${GITHUB_OUTPUT}"
           fi

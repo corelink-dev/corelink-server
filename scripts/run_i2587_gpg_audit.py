@@ -33,6 +33,7 @@ EXPECTED_SECRET_NAMES = [
     "GPG_KEY_FINGERPRINT",
 ]
 PROBE_BYTES = b"CoreLink protected GPG access audit probe v1\n"
+PRIMARY_UID_EXPORT_FILTER = "keep-uid=primary -t"
 WRONG_PASSPHRASE = "corelink-intentionally-wrong-audit-passphrase-v1"
 HEX_FINGERPRINT = re.compile(r"^[0-9A-F]{40}$")
 HEX_KEY_ID = re.compile(r"^[0-9A-F]{16}$")
@@ -312,7 +313,7 @@ def run_audit(env: dict[str, str], *, now_epoch: int | None = None, command_runn
         imported = command_runner(["--import"], gnupghome=gnupghome, input_bytes=env["GPG_PRIVATE_KEY"].encode("utf-8"))
         del imported
         primary_public_key = command_runner(
-            ["--export-filter", "keep-uid=primary", "--export", EXPECTED_FINGERPRINT],
+            ["--export-filter", PRIMARY_UID_EXPORT_FILTER, "--export", EXPECTED_FINGERPRINT],
             gnupghome=gnupghome,
         )
         if not primary_public_key.stdout:

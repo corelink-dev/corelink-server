@@ -8,6 +8,7 @@ on:
       - 'scripts/run_i2587_gpg_audit.py'
       - 'scripts/verify_i2587_gpg_audit.py'
       - 'tests/test_i2587_gpg_audit.py'
+      - 'tests/fixtures/i2571-release-pubkey.asc'
   push:
     branches: [main]
     paths:
@@ -16,6 +17,7 @@ on:
       - 'scripts/run_i2587_gpg_audit.py'
       - 'scripts/verify_i2587_gpg_audit.py'
       - 'tests/test_i2587_gpg_audit.py'
+      - 'tests/fixtures/i2571-release-pubkey.asc'
 
 permissions:
   contents: read
