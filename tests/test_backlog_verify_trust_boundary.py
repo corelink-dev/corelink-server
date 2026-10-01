@@ -34,6 +34,72 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(contents)
 
+    def test_b316_transition_is_exact_and_cannot_downgrade(self) -> None:
+        fixtures = {
+            "scripts/verify_b316_pending_vendor_reviews.py": (b"old verifier\n", b"pinned verifier\n"),
+            "docs/handoff/2026-09-06-b316-vendor-legal-review.json": (b"old packet\n", b"pinned packet\n"),
+        }
+        preimages = {
+            path: (0o644, hashlib.sha256(old).hexdigest())
+            for path, (old, _) in fixtures.items()
+        }
+        targets = {
+            path: (0o644, hashlib.sha256(target).hexdigest())
+            for path, (_, target) in fixtures.items()
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            trusted = Path(directory) / "trusted"
+            candidate = Path(directory) / "candidate"
+            trusted.mkdir()
+            candidate.mkdir()
+            for path, (old, target) in fixtures.items():
+                self._write(trusted, path, old)
+                self._write(candidate, path, target)
+            with patch.object(backlog_verify, "B316_PENDING_STATE_PREIMAGES", preimages), patch.object(
+                backlog_verify, "B316_PENDING_STATE_TARGETS", targets
+            ):
+                self.assertTrue(backlog_verify._preauthorized_b316_pending_state(candidate, trusted))
+
+                extra = candidate / "unapproved.txt"
+                extra.write_text("extra\n", encoding="utf-8")
+                self.assertFalse(backlog_verify._preauthorized_b316_pending_state(candidate, trusted))
+                extra.unlink()
+
+                target = candidate / "scripts/verify_b316_pending_vendor_reviews.py"
+                target.write_text("mutated verifier\n", encoding="utf-8")
+                self.assertFalse(backlog_verify._preauthorized_b316_pending_state(candidate, trusted))
+                target.write_text("pinned verifier\n", encoding="utf-8")
+                target.chmod(0o755)
+                self.assertFalse(backlog_verify._preauthorized_b316_pending_state(candidate, trusted))
+                target.chmod(0o644)
+
+                # Once the pinned state is trusted, reverting it to the old bytes
+                # cannot reuse this one-time old -> new transition.
+                self._write(trusted, "scripts/verify_b316_pending_vendor_reviews.py", b"pinned verifier\n")
+                self._write(trusted, "docs/handoff/2026-09-06-b316-vendor-legal-review.json", b"pinned packet\n")
+                self._write(candidate, "scripts/verify_b316_pending_vendor_reviews.py", b"old verifier\n")
+                self._write(candidate, "docs/handoff/2026-09-06-b316-vendor-legal-review.json", b"old packet\n")
+                self.assertFalse(backlog_verify._preauthorized_b316_pending_state(candidate, trusted))
+
+    def test_b316_transition_has_closed_real_path_and_hash_inventory(self) -> None:
+        expected = {
+            "docs/handoff/2026-09-06-b316-vendor-legal-review.json",
+            "scripts/verify_b316_pending_vendor_reviews.py",
+            "tests/test_verify_b316_pending_vendor_reviews.py",
+            ".github/workflows/issue-1682-b316-vendor-review.yml",
+            "docs/campaigns/remediation/wp150-workflow-ownership.md",
+        }
+        self.assertEqual(set(backlog_verify.B316_PENDING_STATE_PREIMAGES), expected)
+        self.assertEqual(set(backlog_verify.B316_PENDING_STATE_TARGETS), expected)
+        for path in expected:
+            with self.subTest(path=path):
+                old_mode, old_hash = backlog_verify.B316_PENDING_STATE_PREIMAGES[path]
+                target_mode, target_hash = backlog_verify.B316_PENDING_STATE_TARGETS[path]
+                self.assertIn(old_mode, (0o644, 0o755))
+                self.assertEqual(old_mode, target_mode)
+                self.assertRegex(old_hash, r"^[0-9a-f]{64}$")
+                self.assertRegex(target_hash, r"^[0-9a-f]{64}$")
+
     def test_i1652_receiver_requires_entire_exact_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             trusted = Path(directory) / "trusted"

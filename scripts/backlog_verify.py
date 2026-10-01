@@ -448,6 +448,31 @@ STAGING_I2568_TARGETS = {
     'docs/campaigns/remediation/wp150-workflow-ownership.md': (420, 'cb9bb10177faf2fd578e1cc23163015f8c2913e360e8f2880dcd2afc71904e15'),
     'docs/internal/secrets-checklist.md': (420, '4d3cbad537f0ec07f00cdc34336f41000822c60febbf178dd9fe16a48ea52af7'),
 }
+# One exact B-316 pending-state transition. The source verifier is normally a
+# BASE-only control and candidate code is never executed by this check. This
+# one-time pin admits exactly the reviewed five-path pending-state change from
+# the recorded preimage to these reviewed bytes; no later B-316 refresh or
+# downgrade inherits this exception.
+B316_PENDING_STATE_PREIMAGES = {
+    "docs/handoff/2026-09-06-b316-vendor-legal-review.json": (0o644, "207e5826dc9f28dc295ee30e0a75d58253a7ee670582b340f663b53b2982bbcf"),
+    "scripts/verify_b316_pending_vendor_reviews.py": (0o755, "4d9c4cdcc84b74fe2b8f83dc2eba552a93b82357a6ab04a1a0898c9a100484c8"),
+    "tests/test_verify_b316_pending_vendor_reviews.py": (0o644, "3472aef08daafff0d455495d51572815681a20de5172821a0892d95749f4e359"),
+    ".github/workflows/issue-1682-b316-vendor-review.yml": (0o644, "f5503f5d8e0d5db1a0ada132c54af40883799a47a6a6e093c81a151225919728"),
+    "docs/campaigns/remediation/wp150-workflow-ownership.md": (0o644, "cb9bb10177faf2fd578e1cc23163015f8c2913e360e8f2880dcd2afc71904e15"),
+}
+B316_PENDING_STATE_TARGETS = {
+    "docs/handoff/2026-09-06-b316-vendor-legal-review.json": (0o644, "6680f15d43afc1b05683feb773de6bb6496ef38b8193979cfb8f718bd6513e68"),
+    "scripts/verify_b316_pending_vendor_reviews.py": (0o755, "ffcef14252a159be166b07934e6b0a4d65bf01cb29865656e51962b9fad37df0"),
+    "tests/test_verify_b316_pending_vendor_reviews.py": (0o644, "3e6b41b74fb0f356b670a1ea33f4f03d66f89deabbe450ca7fa827919a3f8216"),
+    ".github/workflows/issue-1682-b316-vendor-review.yml": (0o644, "e866e557eae8e6cec4f03489f98ecbd6c14dcd6fe6095f1a316449dd666ad4de"),
+    "docs/campaigns/remediation/wp150-workflow-ownership.md": (0o644, "beef1f4966219fa11f5261a155e9bf1af68443753374f6202ec598d6430aa5b1"),
+}
+
+
+def _preauthorized_b316_pending_state(candidate_root: Path, trusted_root: Path) -> bool:
+    return _preauthorized_exact_staging_transition(
+        candidate_root, trusted_root, B316_PENDING_STATE_PREIMAGES, B316_PENDING_STATE_TARGETS
+    )
 
 
 # One reviewed B-035 closeout. The exact old/new bytes and file modes are
@@ -1256,6 +1281,7 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
         candidate_root, trusted_root, STAGING_I2568_PREIMAGES, STAGING_I2568_TARGETS,
         (STAGING_D1_BINDING_PROXY_TARGETS, STAGING_I1648_TARGETS, STAGING_B216_TARGETS),
     )
+    b316_transition = _preauthorized_b316_pending_state(candidate_root, trusted_root)
     b035_transition: bool | None = None
     for relative in sorted(_candidate_control_paths(trusted_root, trusted_items)):
         trusted = _regular_control(trusted_root, relative)
@@ -1271,6 +1297,7 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
                 relative in STAGING_B216_TARGETS and b216_transition
             ) or (relative in STAGING_I2568_TARGETS and i2568_transition) or (
                 relative in STAGING_I1678_TARGETS and i1678_transition
+            ) or (relative in B316_PENDING_STATE_TARGETS and b316_transition
             ):
                 continue
             if relative == "scripts/verify_b057_sli.py" and _preauthorized_b057_c0(
