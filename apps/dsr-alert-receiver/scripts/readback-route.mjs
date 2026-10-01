@@ -15,6 +15,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const TAG = /^b216-(?:source-)?[0-9a-f]{40}$/i;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 100;
+const TOKEN_DIAGNOSTIC_TIMEOUT_MS = 45_000;
+const TOKEN_ID = /^[0-9a-f]{32}$/i;
 
 export class ReadbackError extends Error {
   constructor(code) { super(code); this.name = "ReadbackError"; this.code = code; }
@@ -53,6 +55,12 @@ export function assertReadbackPath(path) {
   const child = new RegExp(`^${root}/${READBACK_TARGET.workerName}/(versions|deployments|subdomain)(?:\\?page=[1-9][0-9]*&per_page=${PAGE_SIZE})?$`);
   if (child.test(path)) return true;
   fail("provider_path_rejected");
+}
+
+function assertTokenDiagnosticPath(path) {
+  if (path === "/user/tokens/verify") return true;
+  if (/^\/user\/tokens\/[0-9a-f]{32}$/i.test(path)) return true;
+  fail("token_diagnostic_path_rejected");
 }
 
 function makeReadOnlyApi(token, fetchImpl) {
@@ -182,11 +190,118 @@ export async function readWorkerInventory({ context, fetchImpl = fetch, now = ()
   return receipt;
 }
 
+function unknownTokenPolicyDiagnostic(status = "unknown_response", tokenActive = null) {
+  return Object.freeze({
+    status,
+    token_active: tokenActive,
+    account_5128_scope: null,
+    workers_admin_on_5128: null,
+  });
+}
+
+function summarizeTokenPolicies(policies) {
+  if (!Array.isArray(policies)) return unknownTokenPolicyDiagnostic("policy_unknown", true);
+  let accountScoped = false;
+  let scopeUnclassified = false;
+  let adminOnTargetAccount = false;
+  let adminDeniedOnTargetAccount = false;
+  for (const policy of policies) {
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)
+      || !["allow", "deny"].includes(policy.effect)
+      || !Array.isArray(policy.permission_groups)
+      || !policy.resources || typeof policy.resources !== "object" || Array.isArray(policy.resources)) {
+      return unknownTokenPolicyDiagnostic("policy_unknown", true);
+    }
+    const targetResource = `com.cloudflare.api.account.${READBACK_TARGET.accountId}`;
+    for (const [resourceName, resourceValue] of Object.entries(policy.resources)) {
+      const accountResource = /^com\.cloudflare\.api\.account\.([0-9a-f]{32})$/i.test(resourceName);
+      if (!accountResource || resourceValue !== "*") {
+        scopeUnclassified = true;
+        continue;
+      }
+    }
+    const targetIncluded = Object.entries(policy.resources)
+      .some(([resourceName, resourceValue]) => resourceName.toLowerCase() === targetResource && resourceValue === "*");
+    if (policy.effect === "allow" && targetIncluded) accountScoped = true;
+    for (const group of policy.permission_groups) {
+      if (!group || typeof group !== "object" || Array.isArray(group) || typeof group.name !== "string") {
+        return unknownTokenPolicyDiagnostic("policy_unknown", true);
+      }
+      if (targetIncluded && group.name === "Workers Admin") {
+        if (policy.effect === "allow") adminOnTargetAccount = true;
+        if (policy.effect === "deny") adminDeniedOnTargetAccount = true;
+      }
+    }
+  }
+  if (scopeUnclassified) return unknownTokenPolicyDiagnostic("policy_scope_unknown", true);
+  if (adminOnTargetAccount && adminDeniedOnTargetAccount) {
+    return unknownTokenPolicyDiagnostic("policy_conflict", true);
+  }
+  return Object.freeze({
+    status: "details_read",
+    token_active: true,
+    account_5128_scope: accountScoped,
+    workers_admin_on_5128: accountScoped ? adminOnTargetAccount : false,
+  });
+}
+
+export async function readTokenPolicyDiagnostic({ apiToken, fetchImpl = fetch, now = () => Date.now() } = {}) {
+  if (typeof apiToken !== "string" || apiToken.length === 0) return unknownTokenPolicyDiagnostic("token_missing");
+  const deadline = now() + TOKEN_DIAGNOSTIC_TIMEOUT_MS;
+  const request = async (path) => {
+    assertTokenDiagnosticPath(path);
+    const remaining = deadline - now();
+    if (remaining <= 0) return { kind: "timeout" };
+    let response;
+    try {
+      response = await fetchImpl(`${API}${path}`, {
+        method: "GET",
+        redirect: "error",
+        signal: AbortSignal.timeout(remaining),
+        headers: { authorization: `Bearer ${apiToken}`, accept: "application/json" },
+      });
+    } catch {
+      return { kind: "transport_unknown" };
+    }
+    if (response.status !== 200) return { kind: response.status === 403 ? "unknown_access" : "http_unknown" };
+    let payload;
+    try { payload = await response.json(); } catch { return { kind: "response_unknown" }; }
+    return payload?.success === true && payload.result && typeof payload.result === "object" && !Array.isArray(payload.result)
+      ? { kind: "ok", result: payload.result }
+      : { kind: "response_unknown" };
+  };
+
+  const verification = await request("/user/tokens/verify");
+  if (verification.kind !== "ok") {
+    return unknownTokenPolicyDiagnostic(verification.kind === "unknown_access" ? "unknown_access" : "verify_unknown");
+  }
+  const tokenStatus = verification.result.status;
+  if (["disabled", "expired"].includes(tokenStatus)) return unknownTokenPolicyDiagnostic("inactive", false);
+  if (tokenStatus !== "active" || typeof verification.result.id !== "string" || !TOKEN_ID.test(verification.result.id)) {
+    return unknownTokenPolicyDiagnostic("verify_unknown");
+  }
+  const details = await request(`/user/tokens/${encodeURIComponent(verification.result.id)}`);
+  if (details.kind === "unknown_access") return unknownTokenPolicyDiagnostic("unknown_access", true);
+  if (details.kind !== "ok") return unknownTokenPolicyDiagnostic("details_unknown", true);
+  return summarizeTokenPolicies(details.result.policies);
+}
+
 export async function writeReadbackReceipt(context, options = {}) {
   const outputPath = join(context.runnerTemp || tmpdir(), "b216-receiver-readback-receipt.json");
   let receipt;
   try {
     receipt = await readWorkerInventory({ context, ...options });
+    if (options.includeTokenPolicyDiagnostic === true) {
+      try {
+        receipt.token_policy_diagnostic = await readTokenPolicyDiagnostic({
+          apiToken: context.apiToken,
+          fetchImpl: options.fetchImpl,
+          now: options.nowMs,
+        });
+      } catch {
+        receipt.token_policy_diagnostic = unknownTokenPolicyDiagnostic();
+      }
+    }
   } catch (error) {
     receipt = {
       schema_version: 1,

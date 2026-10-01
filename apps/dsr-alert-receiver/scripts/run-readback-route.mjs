@@ -9,5 +9,5 @@ const receipt = await writeReadbackReceipt({
   readbackOnly: "true",
   apiToken: process.env.B216_CF_RECEIVER_WRITE_TOKEN,
   runnerTemp: process.env.RUNNER_TEMP,
-});
+}, { includeTokenPolicyDiagnostic: true });
 if (receipt.status !== "complete") process.exitCode = 1;
