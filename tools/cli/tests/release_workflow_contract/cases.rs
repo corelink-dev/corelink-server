@@ -46,9 +46,13 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
         "python3 -B scripts/test_pinned_gh_consumers.py",
         "echo pinned gh smoke skipped",
     );
-    assert_ne!(no_credentialless_smoke, pack, "smoke removal mutation must take effect");
+    assert_ne!(
+        no_credentialless_smoke, pack,
+        "smoke removal mutation must take effect"
+    );
     assert!(
-        std::panic::catch_unwind(|| assert_pinned_gh_hosted_smoke(&no_credentialless_smoke)).is_err(),
+        std::panic::catch_unwind(|| assert_pinned_gh_hosted_smoke(&no_credentialless_smoke))
+            .is_err(),
         "the issue pack must reject removal of the actual-binary six-consumer smoke"
     );
 

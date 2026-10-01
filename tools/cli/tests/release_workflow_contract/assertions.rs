@@ -75,7 +75,9 @@ fn assert_gh_install_precedes_use(name: &str, section: &str) {
         .find("- name: Verify pinned GitHub CLI")
         .unwrap_or_else(|| panic!("{name} must retain the exact version guard"));
     let command = section[guard..]
-        .find("python3 scripts/verify_pinned_gh.py --binary \"${RUNNER_TEMP}/corelink-pinned-gh/gh\"")
+        .find(
+            "python3 scripts/verify_pinned_gh.py --binary \"${RUNNER_TEMP}/corelink-pinned-gh/gh\"",
+        )
         .unwrap_or_else(|| panic!("{name} must verify the absolute checksum-pinned CLI"))
         + guard;
     let use_index = ["gh api ", "gh release "]
@@ -129,7 +131,10 @@ pub(super) fn assert_pinned_gh_contract(
         "re.escape(VERSION)",
         "date.fromisoformat(match.group(1))",
     ] {
-        assert!(verifier.contains(required), "pinned gh verifier missing {required}");
+        assert!(
+            verifier.contains(required),
+            "pinned gh verifier missing {required}"
+        );
     }
     for required in [
         "(\"release-cli.yml\", \"release\", \"release\")",
@@ -156,7 +161,10 @@ pub(super) fn assert_pinned_gh_contract(
         "target_counts == TARGET_STEP_COUNTS",
         "missing destination read credential mutation must be rejected",
     ] {
-        assert!(smoke.contains(required), "pinned gh six-consumer smoke missing {required}");
+        assert!(
+            smoke.contains(required),
+            "pinned gh six-consumer smoke missing {required}"
+        );
     }
     assert!(
         checksums.contains("gh_2.79.0_linux_amd64.tar.gz")
@@ -188,7 +196,10 @@ pub(super) fn assert_pinned_gh_hosted_smoke(pack: &str) {
         "GITHUB_ENTERPRISE_TOKEN: \"\"",
         "python3 -B scripts/test_pinned_gh_consumers.py",
     ] {
-        assert!(section.contains(required), "credentialless pinned gh pack missing {required}");
+        assert!(
+            section.contains(required),
+            "credentialless pinned gh pack missing {required}"
+        );
     }
     assert!(
         !section.contains("${{ secrets."),
