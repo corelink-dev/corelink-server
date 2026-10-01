@@ -113,6 +113,15 @@ isolation, owner, timestamp, and run ID. Do not mark the topology provisioned
 unless the exact Workers, Custom Domain, resources, and isolated bindings match
 `topology.json`.
 
+Use `issue-1700-staging-readiness.yml` and the
+[scoped readiness operator](../../docs/operator/issue-1700-scoped-readiness.md)
+for `GET /v1/users/me`, its missing/invalid PAT controls and credential lifecycle
+observations. The B152 `i1675-live-probe.yml` chaos client is a separate contract.
+Bind a privately checked synthetic tenant and deployed release through the
+existing protected `K6_TARGET_IDENTITY_RECEIPT`; HTTP identity does not itself
+prove a deployed release. Credential issuance, replacement and revocation
+require their own finite custody charter and actual mutation receipts.
+
 Issue #2161 must provide the live authenticated, exact-run teardown endpoint
 before either synthetic-data lane starts. A successful readiness receipt alone
 does not satisfy that dependency. Once readiness and teardown proof pass, the

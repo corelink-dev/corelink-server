@@ -15,6 +15,7 @@ RUNNER_WORKFLOWS = {
     WORKFLOWS[0]: {"k6-staging", "baseline-regression"},
     WORKFLOWS[1]: {"endurance-2h", "baseline-drift-check"},
     Path(".github/workflows/i1675-live-probe.yml"): {"probe"},
+    Path(".github/workflows/issue-1700-staging-readiness.yml"): {"contract", "readiness"},
 }
 SECRETS = {
     "K6_STAGING_BYOK_CMK_ID",
