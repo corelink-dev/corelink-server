@@ -153,6 +153,21 @@ function mdEscape(text: string): string {
   return text.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\|/g, "\\|");
 }
 
+/** Render untrusted proto comments as literal text in Markdown/MDX. */
+export function renderProtoComment(text: string): string {
+  return [...text]
+    .map((character) => {
+      const code = character.charCodeAt(0);
+      // Encoding every ASCII punctuation character prevents Markdown syntax,
+      // HTML tags, autolinks, and MDX expressions from being interpreted.
+      return (code >= 33 && code <= 47) || (code >= 58 && code <= 64) ||
+        (code >= 91 && code <= 96) || (code >= 123 && code <= 126)
+        ? `&#${code};`
+        : character;
+    })
+    .join("");
+}
+
 function renderServiceMdx(svc: ServiceDoc): string {
   const lines: string[] = [];
   lines.push("---");
@@ -172,7 +187,7 @@ function renderServiceMdx(svc: ServiceDoc): string {
   if (svc.comment) {
     lines.push("## Overview");
     lines.push("");
-    lines.push(svc.comment);
+    lines.push(renderProtoComment(svc.comment));
     lines.push("");
   }
   lines.push("## Methods");
@@ -191,7 +206,7 @@ function renderServiceMdx(svc: ServiceDoc): string {
     lines.push(`- **Streaming:** ${m.streaming}`);
     lines.push("");
     if (m.comment) {
-      lines.push(m.comment);
+      lines.push(renderProtoComment(m.comment));
       lines.push("");
     }
   }
@@ -202,7 +217,7 @@ function renderServiceMdx(svc: ServiceDoc): string {
       lines.push(`### ${msg.name}`);
       lines.push("");
       if (msg.comment) {
-        lines.push(msg.comment);
+        lines.push(renderProtoComment(msg.comment));
         lines.push("");
       }
       if (msg.fields.length > 0) {
@@ -290,11 +305,12 @@ function checkDrift(): number {
   return 0;
 }
 
-const checkMode = process.argv.includes("--check");
-
-if (checkMode) {
-  process.exit(checkDrift());
-} else {
-  const services = generate(GENERATED_DIR);
-  console.log(`[gen-reapi-docs] wrote ${services.length} service page(s) to ${relative(REPO_ROOT, GENERATED_DIR)}`);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const checkMode = process.argv.includes("--check");
+  if (checkMode) {
+    process.exit(checkDrift());
+  } else {
+    const services = generate(GENERATED_DIR);
+    console.log(`[gen-reapi-docs] wrote ${services.length} service page(s) to ${relative(REPO_ROOT, GENERATED_DIR)}`);
+  }
 }

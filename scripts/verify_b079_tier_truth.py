@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 RUST_PATH = ROOT / "crates/corelink-ratelimit/src/tier.rs"
 DOCS_PATH = ROOT / "apps/docs/docs/explanation/rate-limits.mdx"
 PRICING_PATH = ROOT / "apps/docs/src/lib/pricing.ts"
+MAX_PROOF_BYTES = 2_000_000
+MAX_PROOF_LINE_CHARS = 16_384
 
 
 class VerificationError(RuntimeError):
@@ -36,9 +38,25 @@ def read(path: Path) -> str:
     if not path.is_file():
         fail(f"missing B-079 proof object: {path.relative_to(ROOT)}")
     try:
-        return path.read_text(encoding="utf-8")
+        with path.open("rb") as source_file:
+            raw = source_file.read(MAX_PROOF_BYTES + 1)
     except OSError as error:
         fail(f"cannot read B-079 proof object {path.relative_to(ROOT)}: {error}")
+    if len(raw) > MAX_PROOF_BYTES:
+        fail(f"B-079 proof object exceeds bounded input size: {path.name}")
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        fail(f"B-079 proof object is not UTF-8: {path.name}: {error}")
+    _check_input_bounds(content, path.relative_to(ROOT).as_posix())
+    return content
+
+
+def _check_input_bounds(source: str, label: str) -> None:
+    if len(source.encode("utf-8")) > MAX_PROOF_BYTES:
+        fail(f"B-079 proof object exceeds bounded input size: {label}")
+    if any(len(line) > MAX_PROOF_LINE_CHARS for line in source.splitlines()):
+        fail(f"B-079 proof object has an overlong line: {label}")
 
 
 def _mask_rust(source: str, *, mask_strings: bool) -> str:
@@ -459,6 +477,8 @@ def pricing_max_contract(pricing: str) -> tuple[int, int]:
 
 
 def validate(files: dict[str, str]) -> None:
+    for label, source in files.items():
+        _check_input_bounds(source, label)
     rust = files["rust"]
     docs = files["docs"]
     pricing = files["pricing"]

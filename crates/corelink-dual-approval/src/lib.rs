@@ -1,6 +1,18 @@
 //! `corelink-dual-approval` — Admin API dual-approval enforcement +
 //! collusion-rotation defense (WI-S13-002).
 //!
+//! # Production key construction
+//!
+//! Test fixtures in examples and external test targets construct an
+//! explicit deterministic key with [`AdminSigningKey::new`]. Never use
+//! that fixture as production key material. The all-zero unit-test
+//! helper is private and compiled only under `cfg(test)`.
+//!
+//! ```compile_fail
+//! use corelink_dual_approval::AdminSigningKey;
+//! let _ = AdminSigningKey::test_zero();
+//! ```
+//!
 //! # What this crate ships
 //!
 //! Per the corelink autonomous execution charter
@@ -70,7 +82,8 @@
 //! let caller = Uuid::now_v7();
 //! let approver = Uuid::now_v7();
 //! let tenant = Uuid::now_v7();
-//! let key = AdminSigningKey::test_zero();
+//! // Explicit deterministic test fixture; never use as production key material.
+//! let key = AdminSigningKey::new([0xA5; 32]);
 //! let nonce = [42u8; 16];
 //! let ts_ms = 1_000_000u64;
 //! let payload = b"{}".to_vec();
@@ -91,7 +104,8 @@
 //! let sink = Arc::new(InMemoryAdminOpAuditSink::new());
 //! let role_store = Arc::new(InMemoryAdminRoleStore::new(vec![caller, approver]));
 //! let gate = DualApprovalGateImpl::new(
-//!     AdminSigningKey::test_zero(),
+//! // Explicit deterministic test fixture; never use as production key material.
+//!     AdminSigningKey::new([0xA5; 32]),
 //!     role_store,
 //!     InMemoryCollusionStore::new(),
 //!     InMemoryNonceStore::new(),

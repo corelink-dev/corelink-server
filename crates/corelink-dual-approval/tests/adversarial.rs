@@ -62,7 +62,8 @@ fn make_gate(
 
 #[test]
 fn adversarial_collusion_3_cycle_third_op_rejected() {
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let caller_a = Uuid::now_v7();
     let caller_b = Uuid::now_v7();
     let tenant = Uuid::now_v7();
@@ -102,7 +103,8 @@ fn adversarial_collusion_3_cycle_third_op_rejected() {
 
 #[test]
 fn adversarial_hmac_forge_rejected() {
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
@@ -130,7 +132,8 @@ fn adversarial_hmac_forge_rejected() {
 
 #[test]
 fn adversarial_approver_role_revoked_rejected() {
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
@@ -161,7 +164,8 @@ fn adversarial_approver_role_revoked_rejected() {
 
 #[test]
 fn adversarial_nonce_replay_rejected() {
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
@@ -211,7 +215,8 @@ fn adversarial_nonce_replay_rejected() {
 
 #[test]
 fn adversarial_clock_skew_rejected() {
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
@@ -251,7 +256,8 @@ fn adversarial_clock_skew_rejected() {
 
 #[test]
 fn adversarial_mfa_stale_rejected() {
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
@@ -278,7 +284,8 @@ fn adversarial_mfa_stale_rejected() {
 
 #[test]
 fn adversarial_audit_emit_failure_blocks_op() {
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();

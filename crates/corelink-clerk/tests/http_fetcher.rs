@@ -1,14 +1,8 @@
 //! R2-2 integration tests for [`corelink_clerk::HttpJwksFetcher`].
 //!
 //! Uses `wiremock` to stand up a mock JWKS endpoint and exercises the
-//! end-to-end fetch → parse → validate path. Wiremock serves over
-//! plaintext HTTP; we instantiate `HttpJwksFetcher` via
-//! [`HttpJwksFetcher::from_client`] with a `reqwest::Client` whose
-//! `https_only` is disabled so the test harness can target
-//! `127.0.0.1:<port>` without provisioning a TLS cert per test. The
-//! production constructor [`HttpJwksFetcher::new`] still enforces
-//! HTTPS-only (covered by `tests::rejects_non_https_url` in
-//! `src/http_fetcher.rs`).
+//! end-to-end fetch → parse → validate path. Plain HTTP is enabled only
+//! through the explicitly named loopback test constructor.
 //!
 //! Coverage:
 //!
@@ -36,7 +30,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-use reqwest::Client;
+use reqwest::ClientBuilder;
 use serde::Serialize;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -94,11 +88,8 @@ fn sign(key: &TestRsaKey, claims: &Claims) -> String {
 /// Build a `reqwest::Client` that targets a local wiremock server
 /// over plain HTTP. The production fetcher enforces HTTPS only; this
 /// test-only client disables that to keep the mock server simple.
-fn http_test_client() -> Client {
-    Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .expect("reqwest test client")
+fn http_test_client() -> ClientBuilder {
+    ClientBuilder::new().timeout(Duration::from_secs(5))
 }
 
 /// Build a [`ClerkConfig`] that allows an HTTP JWKS URL. Bypasses the
@@ -107,7 +98,7 @@ fn http_test_client() -> Client {
 /// `jwks_url` post-build via reflection-free `from_env` would require
 /// HTTPS too — so we tweak the wiremock URL to look like
 /// `https://127.0.0.1:<port>/...` and instead pass the URL directly to
-/// the fetcher (which has its own override mode `from_client`).
+/// the fetcher (which has its own loopback-only test mode).
 ///
 /// Concretely: the [`ClerkConfig`] still uses a placeholder HTTPS URL
 /// (it's used by the cache instance_hash + freshness checks; the
@@ -178,6 +169,39 @@ async fn mount_jwks_status(mock: &MockServer, status: u16) {
 }
 
 #[tokio::test]
+async fn loopback_test_client_does_not_follow_redirects() {
+    let source = MockServer::start().await;
+    let target = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/target", target.uri())),
+        )
+        .mount(&source)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/target"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("{}", "application/json"))
+        .mount(&target)
+        .await;
+
+    let fetcher = HttpJwksFetcher::for_loopback_http_tests(http_test_client()).unwrap();
+    let err = fetcher
+        .fetch_jwks(&format!("{}/start", source.uri()))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        corelink_clerk::jwks::JwksFetchError::HttpStatus { status: 302 }
+    ));
+    assert_eq!(
+        target.received_requests().await.unwrap_or_default().len(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn http_fetch_and_validate_happy_path() {
     let mock = MockServer::start().await;
     let key = TestRsaKey::generate("kid_v1");
@@ -185,7 +209,7 @@ async fn http_fetch_and_validate_happy_path() {
     let issuer = format!("https://issuer-{}.example.dev", port_tag(&mock));
     let target_url = format!("{}/.well-known/jwks.json", mock.uri());
 
-    let fetcher = HttpJwksFetcher::from_client(http_test_client());
+    let fetcher = HttpJwksFetcher::for_loopback_http_tests(http_test_client()).unwrap();
     let (rewriting, hits) = RewritingFetcher::new(fetcher, target_url);
     let cache = InMemoryKvCache::with_clock(fixed_clock);
     let adapter = ClerkAdapter::new_with_clock(make_config(&issuer), rewriting, cache, fixed_clock);
@@ -204,7 +228,7 @@ async fn http_fetch_expired_jwt_rejected() {
     let issuer = format!("https://issuer-{}.example.dev", port_tag(&mock));
     let target_url = format!("{}/.well-known/jwks.json", mock.uri());
 
-    let fetcher = HttpJwksFetcher::from_client(http_test_client());
+    let fetcher = HttpJwksFetcher::for_loopback_http_tests(http_test_client()).unwrap();
     let (rewriting, _hits) = RewritingFetcher::new(fetcher, target_url);
     let cache = InMemoryKvCache::with_clock(fixed_clock);
     let adapter = ClerkAdapter::new_with_clock(make_config(&issuer), rewriting, cache, fixed_clock);
@@ -225,7 +249,7 @@ async fn http_fetch_wrong_issuer_rejected() {
     let attacker_issuer = format!("https://attacker-{}.example.dev", port_tag(&mock));
     let target_url = format!("{}/.well-known/jwks.json", mock.uri());
 
-    let fetcher = HttpJwksFetcher::from_client(http_test_client());
+    let fetcher = HttpJwksFetcher::for_loopback_http_tests(http_test_client()).unwrap();
     let (rewriting, _hits) = RewritingFetcher::new(fetcher, target_url);
     let cache = InMemoryKvCache::with_clock(fixed_clock);
     let adapter = ClerkAdapter::new_with_clock(
@@ -253,7 +277,7 @@ async fn http_fetch_tampered_signature_rejected() {
     let issuer = format!("https://issuer-{}.example.dev", port_tag(&mock));
     let target_url = format!("{}/.well-known/jwks.json", mock.uri());
 
-    let fetcher = HttpJwksFetcher::from_client(http_test_client());
+    let fetcher = HttpJwksFetcher::for_loopback_http_tests(http_test_client()).unwrap();
     let (rewriting, _hits) = RewritingFetcher::new(fetcher, target_url);
     let cache = InMemoryKvCache::with_clock(fixed_clock);
     let adapter = ClerkAdapter::new_with_clock(make_config(&issuer), rewriting, cache, fixed_clock);
@@ -303,7 +327,7 @@ async fn http_fetch_key_rotation_triggers_refetch() {
     let issuer = format!("https://issuer-{}.example.dev", port_tag(&mock));
     let target_url = format!("{}/.well-known/jwks.json", mock.uri());
 
-    let fetcher = HttpJwksFetcher::from_client(http_test_client());
+    let fetcher = HttpJwksFetcher::for_loopback_http_tests(http_test_client()).unwrap();
     let (rewriting, hits) = RewritingFetcher::new(fetcher, target_url);
     let cache = InMemoryKvCache::with_clock(fixed_clock);
     let adapter = ClerkAdapter::new_with_clock(make_config(&issuer), rewriting, cache, fixed_clock);
@@ -330,7 +354,7 @@ async fn http_fetch_cache_hit_avoids_refetch() {
     let issuer = format!("https://issuer-{}.example.dev", port_tag(&mock));
     let target_url = format!("{}/.well-known/jwks.json", mock.uri());
 
-    let fetcher = HttpJwksFetcher::from_client(http_test_client());
+    let fetcher = HttpJwksFetcher::for_loopback_http_tests(http_test_client()).unwrap();
     let (rewriting, hits) = RewritingFetcher::new(fetcher, target_url);
     let cache = InMemoryKvCache::with_clock(fixed_clock);
     let adapter = ClerkAdapter::new_with_clock(make_config(&issuer), rewriting, cache, fixed_clock);
@@ -355,7 +379,7 @@ async fn http_fetch_503_surfaces_canonical_error() {
     let issuer = format!("https://issuer-{}.example.dev", port_tag(&mock));
     let target_url = format!("{}/.well-known/jwks.json", mock.uri());
 
-    let fetcher = HttpJwksFetcher::from_client(http_test_client());
+    let fetcher = HttpJwksFetcher::for_loopback_http_tests(http_test_client()).unwrap();
     let (rewriting, _hits) = RewritingFetcher::new(fetcher, target_url);
     let cache = InMemoryKvCache::with_clock(fixed_clock);
     let adapter = ClerkAdapter::new_with_clock(make_config(&issuer), rewriting, cache, fixed_clock);
@@ -373,7 +397,7 @@ async fn validate_session_free_function_works() {
     let issuer = format!("https://issuer-{}.example.dev", port_tag(&mock));
     let target_url = format!("{}/.well-known/jwks.json", mock.uri());
 
-    let fetcher = HttpJwksFetcher::from_client(http_test_client());
+    let fetcher = HttpJwksFetcher::for_loopback_http_tests(http_test_client()).unwrap();
     let (rewriting, _hits) = RewritingFetcher::new(fetcher, target_url);
     let cache = InMemoryKvCache::with_clock(fixed_clock);
     // The free-function surface uses `SystemTime::now()` for its clock;

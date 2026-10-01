@@ -163,7 +163,8 @@ fn make_gate_with_sink(admins: Vec<Uuid>) -> (DualApprovalGateImpl, Arc<InMemory
     let sink = Arc::new(InMemoryAdminOpAuditSink::new());
     let role_store = Arc::new(InMemoryAdminRoleStore::new(admins));
     let gate = DualApprovalGateImpl::new(
-        AdminSigningKey::test_zero(),
+        // Explicit deterministic test fixture; never use as production key material.
+        AdminSigningKey::new([0xA5; 32]),
         role_store,
         InMemoryCollusionStore::new(),
         InMemoryNonceStore::new(),
@@ -178,7 +179,8 @@ fn gate_denial_emits_audit_for_clock_skew() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let (gate, sink) = make_gate_with_sink(vec![caller, approver]);
     let now = 10_000_000u64;
     // ts > 60s in the past → ClockSkew.
@@ -208,7 +210,8 @@ fn gate_denial_emits_audit_for_mfa_stale() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let (gate, sink) = make_gate_with_sink(vec![caller, approver]);
     let now = 10_000_000u64;
     let req = make_signed_request(
@@ -234,7 +237,8 @@ fn gate_denial_emits_audit_for_mfa_stale() {
 fn gate_denial_emits_audit_for_caller_eq_approver() {
     let user = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let (gate, sink) = make_gate_with_sink(vec![user]);
     let now = 10_000_000u64;
     let req = make_signed_request(
@@ -259,7 +263,8 @@ fn gate_denial_emits_audit_for_approver_not_admin() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     // Approver NOT in admin role.
     let (gate, sink) = make_gate_with_sink(vec![caller]);
     let now = 10_000_000u64;
@@ -285,7 +290,8 @@ fn gate_denial_emits_audit_for_sig_invalid() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let (gate, sink) = make_gate_with_sink(vec![caller, approver]);
     let now = 10_000_000u64;
     let mut req = make_signed_request(
@@ -311,7 +317,8 @@ fn gate_denial_emits_audit_for_collusion() {
     let caller_a = Uuid::now_v7();
     let caller_b = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let now = 10_000_000u64;
 
     // Use a shared in-memory store across two gates so we can pre-load
@@ -358,7 +365,8 @@ fn gate_denial_emits_audit_for_nonce_replay() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let (gate, sink) = make_gate_with_sink(vec![caller, approver]);
     let now = 10_000_000u64;
     // Use non-destructive op to isolate from collusion tracking.
@@ -508,7 +516,8 @@ fn gate_audit_payload_and_prev_state_hashes_are_distinct() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let (gate, sink) = make_gate_with_sink(vec![caller, approver]);
     let now = 10_000_000u64;
     let req = make_signed_request(
@@ -551,7 +560,8 @@ fn in_memory_audit_sink_captured_reflects_emit_history_exactly() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let (gate, sink) = make_gate_with_sink(vec![caller, approver]);
     // Pristine sink → captured is empty (kills `vec![Default::default()]`
     // which returns a 1-element canary even with zero emits).
@@ -607,7 +617,8 @@ fn gate_mfa_max_age_const_is_30_minutes_precisely() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let now = 10_000_000u64;
 
     // 29 min ago — must be accepted (1_740_000 ≤ 1_800_000).

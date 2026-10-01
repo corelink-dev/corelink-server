@@ -15,9 +15,9 @@ use std::sync::{Mutex, OnceLock};
 
 use corelink_dpa_acceptance::service::{Clock, DpaAcceptanceService, JtiMinter};
 use corelink_dpa_acceptance::{
-    InMemoryDpaAcceptanceStore, InMemoryDpaAuditSink, InMemoryNotificationSink, Jurisdiction,
-    LocaleBcp47, LocaleNoticeRegistry, RsaPrivateKeyPem, RsaPublicKeyPem, SignupId, TenantCtx,
-    TenantId,
+    InMemoryDpaAcceptanceStore, InMemoryDpaAuditSink, InMemoryNotificationSink, IpHashSalt,
+    Jurisdiction, LocaleBcp47, LocaleNoticeRegistry, RsaPrivateKeyPem, RsaPublicKeyPem, SignupId,
+    TenantCtx, TenantId,
 };
 
 use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
@@ -120,6 +120,7 @@ pub fn build_service(now_ms: i64) -> (TestService, RsaPublicKeyPem) {
         registry_three_locales(),
         keys.private,
         "kid-test-01",
+        IpHashSalt::new(Some(&[0x51; 32])).expect("valid test salt"),
     );
     (svc, keys.public)
 }

@@ -25,8 +25,9 @@ use std::sync::{Arc, Mutex};
 use corelink_dpa_acceptance::service::{Clock, DpaAcceptanceService, JtiMinter};
 use corelink_dpa_acceptance::{
     ConsentProofPayload, DpaAcceptanceRequest, InMemoryDpaAcceptanceStore, InMemoryDpaAuditSink,
-    InMemoryNotificationSink, Jurisdiction, LocaleBcp47, LocaleNoticeRegistry, RsaPrivateKeyPem,
-    RsaPublicKeyPem, SignupId as DpaSignupId, TenantCtx as DpaTenantCtx, TenantId as DpaTenantId,
+    InMemoryNotificationSink, IpHashSalt, Jurisdiction, LocaleBcp47, LocaleNoticeRegistry,
+    RsaPrivateKeyPem, RsaPublicKeyPem, SignupId as DpaSignupId, TenantCtx as DpaTenantCtx,
+    TenantId as DpaTenantId,
 };
 use corelink_signup::orchestrator::InMemoryProvisionRecord;
 use corelink_signup::{
@@ -183,6 +184,7 @@ pub fn setup_test_ledgers() -> TestEnv {
         registry,
         private,
         "kid-e2e-test-01",
+        IpHashSalt::new(Some(&[0x53; 32])).expect("valid e2e salt"),
     );
 
     // ---- Tier-selection ledger ----

@@ -36,8 +36,12 @@ impl AdminSigningKey {
         Self { raw }
     }
 
-    /// Construct a test-only all-zeroes key (MUST NOT be used in production).
-    pub fn test_zero() -> Self {
+    /// Construct a crate-private test-only all-zeroes key.
+    ///
+    /// This helper is compiled only into unit-test builds and is unavailable
+    /// to integration tests, examples, doctests, and production consumers.
+    #[cfg(test)]
+    fn test_zero() -> Self {
         Self { raw: [0u8; 32] }
     }
 }

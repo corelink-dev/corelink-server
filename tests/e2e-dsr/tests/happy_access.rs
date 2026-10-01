@@ -50,14 +50,17 @@ fn access_request_happy_path() {
             );
             assert!(
                 receipt.as_str().split('.').count() == 3,
-                "expected canonical 3-segment compact JWT, got {}",
-                receipt.as_str()
+                "expected canonical 3-segment compact JWT, got {} segments",
+                receipt.as_str().split('.').count()
             );
             // SLA deadline = submitted + 30 days for GDPR.
             let expected = env.now_ms.saturating_add(30 * 86_400_000);
             assert_eq!(sla_deadline_ms, expected, "GDPR SLA mismatch");
         }
-        other => panic!("expected RequestAccepted; got {other:?}"),
+        other => panic!(
+            "expected RequestAccepted; got decision variant {}",
+            other.as_str()
+        ),
     }
 
     // Status endpoint reports Pending.

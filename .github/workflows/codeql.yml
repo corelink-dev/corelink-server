@@ -62,9 +62,9 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      # Three CodeQL jobs otherwise contend for memory/egress on the fabric;
-      # serializing the matrix preserves all languages without a stampede.
-      max-parallel: 1
+      # Each language uses an independent standard GitHub-hosted runner with
+      # fixed per-job CPU/memory and a 60-minute timeout.
+      max-parallel: 3
       matrix:
         include:
           # `queries` is per-language: the extended suites
@@ -286,15 +286,10 @@ jobs:
           MATRIX_LANGUAGE: ${{ matrix.language }}
           UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
 
-      # -----------------------------------------------------------------
-      # Severity gate — fail the PR if any finding ≥ HIGH (security-severity
-      # >= 7.0 in SARIF) appears in the current run.
-      #
-      # Scheduled runs surface findings in the Security tab; PR and manual
-      # runs fail on HIGH/CRITICAL findings.
-      # -----------------------------------------------------------------
-      - name: Severity gate (fail PR on HIGH/CRITICAL)
-        if: steps.evidence.outputs.evidence_status == 'present' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
+      # Pull requests always use the strict gate. It does not consume the
+      # trusted-main reviewed-disposition manifest.
+      - name: Strict severity gate (fail PR on HIGH/CRITICAL)
+        if: steps.evidence.outputs.evidence_status == 'present' && github.event_name == 'pull_request'
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -304,3 +299,38 @@ jobs:
             exit 1
           fi
           python3 scripts/codeql_severity_gate.py "${sarif_files[@]}"
+
+      # The exact reviewed dispositions are only usable by a completed scan
+      # of trusted main in the canonical repository. The verifier checks this
+      # context again, binds the local SARIF to upload-sarif's output and the
+      # exact uploaded analysis, then re-reads each matching dismissed alert.
+      # A manual dispatch on any other branch/repository fails closed.
+      - name: Reviewed severity gate (trusted main only)
+        if: steps.evidence.outputs.evidence_status == 'present' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SARIF_ID: ${{ steps.upload.outputs.sarif-id }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          MATRIX_LANGUAGE: ${{ matrix.language }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          sarif_files=(codeql-results/*.sarif)
+          if [[ ${#sarif_files[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one local SARIF file for the uploaded language analysis."
+            exit 1
+          fi
+          python3 scripts/codeql_reviewed_dispositions.py \
+            --repository "${REPOSITORY}" \
+            --repository-id "${REPOSITORY_ID}" \
+            --event "${EVENT_NAME}" \
+            --ref "${REF}" \
+            --sha "${SHA}" \
+            --language "${MATRIX_LANGUAGE}" \
+            --sarif-id "${SARIF_ID}" \
+            "${sarif_files[@]}"

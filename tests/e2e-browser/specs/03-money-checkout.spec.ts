@@ -1,4 +1,5 @@
 import { test, expect } from "../fixtures/auth.js";
+import { isStripeCheckoutUrl } from "../stripe-checkout-url.mjs";
 
 /**
  * MONEY JOURNEY — the black-box PAT suite gates this (needs a browser session).
@@ -41,7 +42,7 @@ test("upgrade to Pro → DPA click-through → real Stripe checkout session", as
   const errorBox = page.locator('[data-testid="upgrade-error"]');
   await Promise.race([
     dpaGate.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {}),
-    page.waitForURL(/checkout\.stripe\.com|stripe\.com/, { timeout: 20_000 }).catch(() => {}),
+    page.waitForURL((url) => isStripeCheckoutUrl(url.href), { timeout: 20_000 }).catch(() => {}),
     errorBox.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {}),
   ]);
 
@@ -68,11 +69,11 @@ test("upgrade to Pro → DPA click-through → real Stripe checkout session", as
   }
 
   // After DPA accept the component auto-retries the checkout → Stripe redirect.
-  await page.waitForURL(/checkout\.stripe\.com|stripe\.com/, { timeout: 45_000 });
+  await page.waitForURL((url) => isStripeCheckoutUrl(url.href), { timeout: 45_000 });
   const url = page.url();
   // eslint-disable-next-line no-console
-  console.log(`[money] landed on Stripe checkout: ${url.slice(0, 60)}…`);
-  expect(url, "must reach a real Stripe checkout session").toMatch(/stripe\.com/);
+  console.log("[money] landed on Stripe checkout host: checkout.stripe.com");
+  expect(isStripeCheckoutUrl(url), "must reach a real Stripe checkout session").toBe(true);
   // Sanity: Stripe's hosted checkout renders a pay/submit surface.
   await expect(page.locator("body")).toContainText(/pay|subscribe|corelink|pro/i, {
     timeout: 20_000,
