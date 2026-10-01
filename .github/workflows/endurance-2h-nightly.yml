@@ -41,6 +41,19 @@ on:
         options:
           - '2h'
         default: '2h'
+      workload_profile:
+        description: 'Mixed endurance or controlled run-attributable B-125 CAS demand'
+        required: true
+        type: choice
+        options:
+          - mixed
+          - b125-audit-capacity
+        default: mixed
+      capacity_confirmation:
+        description: 'Type "run-b125-audit-capacity" only for the controlled capacity profile; otherwise use "not-applicable"'
+        required: true
+        type: string
+        default: not-applicable
 
 permissions:
   contents: read
@@ -98,6 +111,16 @@ jobs:
             -e K6_TARGET_DEPLOYMENT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
             -e K6_TARGET_HOST=https://staging.corelink.humangr.com \
             tests/load/k6/scenarios/endurance-24h.js
+          k6 inspect \
+            -e DURATION=2h \
+            -e K6_ENDURANCE_CONFIRM=yes \
+            -e K6_STAGING_LOAD_ADMISSION_KEY=01234567890123456789012345678901 \
+            -e K6_RUN_ID=123 \
+            -e K6_STAGING_LOAD_SCENARIO=endurance-2h \
+            -e K6_B125_AUDIT_CAPACITY_PROFILE=1 \
+            -e K6_TARGET_DEPLOYMENT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            -e K6_TARGET_HOST=https://staging.corelink.humangr.com \
+            tests/load/k6/scenarios/endurance-24h.js
 
       - name: pre-flight target host check
         id: target_host
@@ -106,6 +129,8 @@ jobs:
           K6_TARGET_IDENTITY_RECEIPT: ${{ secrets.K6_TARGET_IDENTITY_RECEIPT }}
           K6_STAGING_LOAD_ADMISSION_KEY: ${{ secrets.CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY }}
           DURATION: ${{ github.event.inputs.duration || '2h' }}
+          WORKLOAD_PROFILE: ${{ github.event.inputs.workload_profile || 'mixed' }}
+          CAPACITY_CONFIRMATION: ${{ github.event.inputs.capacity_confirmation || 'not-applicable' }}
         run: |
           set -euo pipefail
           if [[ -z "${K6_TARGET_HOST:-}" ]]; then
@@ -121,6 +146,17 @@ jobs:
           test "${DURATION}" = '2h' || {
             echo "::error::DURATION must be exactly 2h"; exit 1;
           }
+          if [[ "${WORKLOAD_PROFILE}" == 'b125-audit-capacity' ]]; then
+            test "${CAPACITY_CONFIRMATION}" = 'run-b125-audit-capacity' || {
+              echo "::error::B-125 capacity profile requires its exact second confirmation"; exit 1;
+            }
+          elif [[ "${WORKLOAD_PROFILE}" == 'mixed' ]]; then
+            test "${CAPACITY_CONFIRMATION}" = 'not-applicable' || {
+              echo "::error::mixed profile requires not-applicable capacity confirmation"; exit 1;
+            }
+          else
+            echo "::error::workload profile is not allowlisted"; exit 1;
+          fi
           test -n "${K6_STAGING_LOAD_ADMISSION_KEY:-}" || {
             echo "::error::CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY is required"; exit 1;
           }
@@ -140,6 +176,7 @@ jobs:
         env:
           DURATION: ${{ github.event.inputs.duration || '2h' }}
           VUS: '50'
+          WORKLOAD_PROFILE: ${{ github.event.inputs.workload_profile || 'mixed' }}
         run: |
           set -euo pipefail
           mkdir -p tests/load/results/endurance-2h
@@ -161,6 +198,7 @@ jobs:
             "target": "https://staging.corelink.humangr.com",
             "duration": "${DURATION:-2h}",
             "vus": ${VUS},
+            "workload_profile": "${WORKLOAD_PROFILE}",
             "phase": "prepared"
           }
           EOF
@@ -173,6 +211,7 @@ jobs:
           K6_STAGING_LOAD_ADMISSION_KEY: ${{ secrets.CORELINK_STAGING_LOAD_TEST_ADMISSION_KEY }}
           K6_RUN_ID:                  ${{ github.run_id }}
           K6_STAGING_LOAD_SCENARIO:   endurance-2h
+          K6_B125_AUDIT_CAPACITY_PROFILE: ${{ github.event.inputs.workload_profile == 'b125-audit-capacity' && '1' || '0' }}
           K6_TARGET_DEPLOYMENT_SHA:   ${{ steps.target_host.outputs.deployment_sha }}
           K6_PROMETHEUS_RW_SERVER_URL: ${{ secrets.K6_PROMETHEUS_RW_SERVER_URL }}
           DURATION:                   ${{ github.event.inputs.duration || '2h' }}
@@ -269,6 +308,7 @@ jobs:
           TARGET_HOST: ${{ steps.target_host.outputs.target_host }}
           DURATION: ${{ github.event.inputs.duration || '2h' }}
           VUS: '50'
+          WORKLOAD_PROFILE: ${{ github.event.inputs.workload_profile || 'mixed' }}
           TEARDOWN_STATUS: ${{ steps.teardown.outcome || 'not-run' }}
           TEARDOWN_DELETION_PROVEN: ${{ steps.teardown.outputs.deletion_proven || 'false' }}
         run: |
@@ -282,7 +322,7 @@ jobs:
             SHA_LINES+="$(sha256sum "$artifact")"$'\n'
           done < <(find "$RESULTS_DIR" -maxdepth 1 -type f \( -name 'endurance-2h-summary-*.json' -o -name 'endurance-2h-results-*.json' -o -name 'teardown-receipt-*.json' \) -print)
           printf '%s\n' "$TEARDOWN_STATUS" > "$RESULTS_DIR/checkpoint-teardown"
-          export RECEIPT STATUS TARGET_HOST DURATION SHA_LINES TEARDOWN_STATUS
+          export RECEIPT STATUS TARGET_HOST DURATION SHA_LINES TEARDOWN_STATUS WORKLOAD_PROFILE
           python3 - <<'PY'
           import json, os
           from datetime import datetime, timezone
@@ -308,6 +348,7 @@ jobs:
               "target": os.environ.get("TARGET_HOST", ""),
               "duration": os.environ["DURATION"],
               "vus": int(os.environ["VUS"]),
+              "workload_profile": os.environ["WORKLOAD_PROFILE"],
               "status": os.environ["STATUS"],
               "teardown_status": os.environ["TEARDOWN_STATUS"],
               "teardown_deletion_proven": os.environ["TEARDOWN_DELETION_PROVEN"] == "true",
@@ -334,7 +375,7 @@ jobs:
   baseline-drift-check:
     name: 7-day rolling p99 drift (≤ +20% per SLO)
     # Keep the evidence comparator on the same protected canonical dispatch.
-    if: always() && github.repository == 'HuGR-dev/corelink-server' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: always() && github.repository == 'HuGR-dev/corelink-server' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected && inputs.workload_profile == 'mixed'
     runs-on: ubuntu-24.04
     needs: endurance-2h
     permissions:

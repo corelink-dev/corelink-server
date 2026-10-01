@@ -52,14 +52,9 @@ def test_mutations_fail_closed() -> None:
         ('"artifact_sha256": hashes', '"artifact_sha256": {}'),
         ("corelink.endurance-heartbeat.v1", "corelink.heartbeat.v0"),
         ("checkpoint-teardown", "teardown"),
-        ("if: always() && steps.target_host.outcome == 'success'", "if: always()"),
-        ("K6_STAGING_TEARDOWN_TOKEN is required; refusing unmanaged synthetic state", "cleanup token optional"),
-        (
-            "HTTP_STATUS=$(timeout 30s curl --fail --silent --show-error",
-            "HTTP_STATUS=$(curl --fail --silent --show-error",
-        ),
+        ("admission key is required; refusing unmanaged synthetic state", "cleanup token optional"),
         ("test \"${HTTP_STATUS}\" = '200'", "test \"${HTTP_STATUS}\" = '302'"),
-        ('"run_id":"%s","scenario":"endurance-2h"', '"run_id":"*","scenario":"endurance-2h"'),
+        ('"run_id": "${GITHUB_RUN_ID}"', '"run_id": "*"'),
         ('"teardown_status": os.environ["TEARDOWN_STATUS"]', '"teardown_status": "passed"'),
         (
             '"teardown_deletion_proven": os.environ["TEARDOWN_DELETION_PROVEN"] == "true"',
@@ -72,6 +67,28 @@ def test_mutations_fail_closed() -> None:
         mutated = source.replace(old, new, 1)
         assert old != new and mutated != source
         assert verify_workflow(mutated), f"mutation escaped: {old}"
+
+    # Scope the repeated `if` guard to the teardown step. A first global match
+    # mutates the seal step and does not exercise the verifier's cleanup gate.
+    teardown = source.split("- name: teardown synthetic staging state", 1)[1].split(
+        "- name: write receipt and teardown checkpoint", 1
+    )[0]
+    changed_teardown = teardown.replace(
+        "if: always() && steps.target_host.outcome == 'success'", "if: always()", 1
+    )
+    assert changed_teardown != teardown
+    assert verify_workflow(
+        source.replace(teardown, changed_teardown, 1)
+    ), "run-scoped teardown mutation escaped"
+    changed_teardown = teardown.replace(
+        "HTTP_STATUS=$(timeout 30s curl --silent --show-error --max-redirs 0",
+        "HTTP_STATUS=$(curl --silent --show-error --max-redirs 0",
+        1,
+    )
+    assert changed_teardown != teardown
+    assert verify_workflow(
+        source.replace(teardown, changed_teardown, 1)
+    ), "teardown timeout mutation escaped"
 
 
 def test_arbitrary_target_is_rejected_even_with_a_trailing_slash() -> None:
