@@ -36,6 +36,7 @@ on:
           - i1721
           - i1665
           - i1700
+          - i1700-diagnostics
           - i1687
           - i1688
           - i1663
@@ -58,7 +59,7 @@ on:
           - i2421
           - i2614
       expected_sha:
-        description: Exact commit SHA required by the i1678 focused pack
+        description: Exact commit SHA required by focused campaign packs
         required: false
         type: string
 
@@ -74,6 +75,57 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  i1700-diagnostics:
+    name: campaign i1700 bounded runtime diagnostics
+    if: ${{ inputs.suite == 'i1700-diagnostics' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out exact dispatched tree
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Set up pnpm
+        uses: ./.github/actions/setup-pnpm
+
+      - name: Assert exact dispatched SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install locked worker test dependencies
+        run: pnpm install --frozen-lockfile --filter @corelink/worker... --ignore-scripts
+
+      - name: Run bounded i1700 diagnostics acceptance tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest -v tests.test_issue_1700_completion
+          node --check scripts/issue_1700_runtime_probe.mjs
+          node --test \
+            scripts/tests/issue_1700_probe_window.test.mjs \
+            scripts/tests/issue_1700_runtime_probe.test.mjs \
+            scripts/tests/issue_1700_probe_process.test.mjs
+
   signup-worker-vitest:
     name: campaign i1639 TypeScript entitlement tests
     if: ${{ inputs.suite == 'i1639-ts' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' }}
@@ -138,7 +190,7 @@ jobs:
 
   campaign:
     name: campaign ${{ inputs.suite }}
-    if: ${{ inputs.suite != 'i1639-ts' && inputs.suite != 'i1650-contract' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' }}
+    if: ${{ inputs.suite != 'i1639-ts' && inputs.suite != 'i1650-contract' && inputs.suite != 'i1700-diagnostics' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
