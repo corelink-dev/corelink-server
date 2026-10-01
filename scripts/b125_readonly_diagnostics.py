@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-QUERY_IDS = {"population", "partition", "hourly", "latency", "heads", "burst", "integrity", "replay", "head_tail"}
+QUERY_IDS = {"population", "partition", "hourly", "latency", "heads", "burst", "integrity", "replay", "head_tail", "attribution"}
 ERROR_CLASSES = {
     "D1_ERROR", "SQLITE_BUSY", "SQLITE_CONSTRAINT", "SQLITE_ERROR",
     "WRANGLER_ERROR", "HTTP_ERROR", "PROVIDER_ERROR", "UNKNOWN_ERROR",

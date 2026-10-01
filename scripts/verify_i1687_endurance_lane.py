@@ -90,9 +90,9 @@ def verify_workflow(text: str) -> list[str]:
     ):
         if marker not in text:
             errors.append(f"lifecycle marker missing: {marker}")
-    if "id: teardown" not in text or "if: always() && steps.target_host.outcome == 'success'" not in text:
-        errors.append("run-scoped teardown must run after any load outcome once target identity is accepted")
     teardown = text.split("- name: teardown synthetic staging state", 1)[-1].split("- name: write receipt and teardown checkpoint", 1)[0]
+    if "id: teardown" not in teardown or "if: always() && steps.target_host.outcome == 'success'" not in teardown:
+        errors.append("run-scoped teardown must run after any load outcome once target identity is accepted")
     if (
         "continue-on-error: true" in teardown
         or "admission key is required" not in teardown
@@ -142,6 +142,12 @@ def verify_workflow(text: str) -> list[str]:
         errors.append("dispatch must require the exact bounded endurance confirmation")
     if 'test "${DURATION}" = \'2h\'' not in text:
         errors.append("the dispatch duration must be fixed at two hours")
+    if "b125-audit-capacity" not in text or "run-b125-audit-capacity" not in text:
+        errors.append("the controlled capacity profile must use its separate exact confirmation")
+    if 'K6_B125_AUDIT_CAPACITY_PROFILE: ${{ github.event.inputs.workload_profile == \'b125-audit-capacity\' && \'1\' || \'0\' }}' not in text:
+        errors.append("runtime must derive the capacity profile only from the allowlisted input")
+    if "inputs.workload_profile == 'mixed'" not in text:
+        errors.append("capacity runs must not contaminate the mixed-profile rolling baseline")
     if "sha256sum" not in text:
         errors.append("artifact digest is missing")
     if "K6_TARGET_HOST: ${{ secrets.K6_TARGET_HOST }}" in text and "k6 run" in text:
@@ -172,6 +178,21 @@ def verify_scenario(text: str) -> list[str]:
         errors.append("webhook event ids must be unique to the current run")
     if "${tenant.tenant_id}_endurance_${idx}_" in text:
         errors.append("CAS writes must be namespaced to the current run")
+    for marker in (
+        "K6_B125_AUDIT_CAPACITY_PROFILE",
+        "executor: 'constant-arrival-rate'",
+        "rate: 1",
+        "timeUnit: '1s'",
+        "preAllocatedVUs: MAX_VUS",
+        "maxVUs: MAX_VUS",
+        "_run_${RUN_ID}_endurance_",
+        "function b125CapacityIter",
+        "doCasWrite(tenant)",
+        "b125_capacity_write_non_2xx_total",
+        "res.status >= 200 && res.status < 300",
+    ):
+        if marker not in text:
+            errors.append(f"controlled B-125 load profile marker missing: {marker}")
     return errors
 
 

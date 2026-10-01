@@ -99,7 +99,16 @@ const RUN_ID = __ENV.K6_RUN_ID || '';
 const DURATION = __ENV.DURATION || '24h';
 const VUS = Number(__ENV.VUS || '50');
 const CONFIRM = __ENV.K6_ENDURANCE_CONFIRM || '';
+const B125_AUDIT_CAPACITY_PROFILE = __ENV.K6_B125_AUDIT_CAPACITY_PROFILE || '0';
 const MAX_VUS = 50;
+
+if (!/^(0|1)$/.test(B125_AUDIT_CAPACITY_PROFILE)) {
+  throw new Error('K6_B125_AUDIT_CAPACITY_PROFILE must be 0 or 1');
+}
+const RUN_B125_AUDIT_CAPACITY = B125_AUDIT_CAPACITY_PROFILE === '1';
+if (RUN_B125_AUDIT_CAPACITY && (DURATION !== '2h' || __ENV.K6_STAGING_LOAD_SCENARIO !== 'endurance-2h')) {
+  throw new Error('B-125 capacity profile requires the existing exact 2h staging lane');
+}
 
 if (!Number.isInteger(VUS) || VUS < 1 || VUS > MAX_VUS) {
   throw new Error(`VUS must be an integer between 1 and ${MAX_VUS}, got ${__ENV.VUS || '50'}`);
@@ -215,6 +224,7 @@ const memoryDriftPer = new Gauge('memory_drift_per_hour');
 
 // Failure-budget tracking (3-strike rule).
 const budgetBreachCounter = new Counter('endurance_budget_breach_strikes');
+const b125CapacityNon2xx = new Counter('b125_capacity_write_non_2xx_total');
 
 // Test-run start time (unix seconds). Set in setup().
 let TEST_START_S = 0;
@@ -234,7 +244,27 @@ function hourTags() {
 // k6 options — single closed-loop scenario with ramp-up / steady / ramp-down.
 // ─────────────────────────────────────────────────────────────────────────
 export const options = {
-  scenarios: {
+  scenarios: RUN_B125_AUDIT_CAPACITY ? {
+    // Controlled synthetic demand: exactly one unique CAS write iteration per
+    // second for both hours, spread over the existing 50 staging partitions.
+    // The run ID is embedded in every write digest by doCasWrite(), allowing
+    // a later aggregate-only D1 query to attribute outbox rows to this run.
+    b125_audit_capacity: {
+      executor: 'constant-arrival-rate',
+      rate: 1,
+      timeUnit: '1s',
+      duration: `${TOTAL_SECONDS}s`,
+      preAllocatedVUs: MAX_VUS,
+      maxVUs: MAX_VUS,
+      exec: 'b125CapacityIter',
+    },
+    memory_poller: {
+      executor: 'constant-vus',
+      vus: 1,
+      duration: `${TOTAL_SECONDS}s`,
+      exec: 'pollMemory',
+    },
+  } : {
     endurance: {
       executor: 'ramping-vus',
       startVUs: 0,
@@ -267,10 +297,14 @@ export const options = {
     'endurance_op_latency_ms{op:webhook}':     ['p(99)<400'],
     // 3-strike budget breach tripwire (each strike = 5min window >0.1%).
     'endurance_budget_breach_strikes': ['count<3'],
+    ...(RUN_B125_AUDIT_CAPACITY ? {
+      'dropped_iterations': ['count==0'],
+      'b125_capacity_write_non_2xx_total': ['count==0'],
+    } : {}),
   },
   summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
   // Tag every sample by hour-of-test for Prometheus group-by-hour.
-  tags: { test: 'endurance-24h' },
+  tags: { test: RUN_B125_AUDIT_CAPACITY ? 'b125-audit-capacity' : 'endurance-24h' },
 };
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -429,6 +463,19 @@ export function enduranceIter(data) {
   });
   // Think-time jitter — bounded so total per-VU req/s stays predictable.
   sleep(0.005 + Math.random() * 0.045);
+}
+
+// Run-attributable write-only profile used after the staging target and
+// cleanup lifecycle have passed their independent gates. Exactly one unique
+// digest-bearing CAS write is attempted per scheduled iteration.
+export function b125CapacityIter(data) {
+  if (data && data.start_s) TEST_START_S = data.start_s;
+  const tenant = pickTenant();
+  const res = doCasWrite(tenant);
+  const ok = record('cas_write', res);
+  const accepted = res.status >= 200 && res.status < 300;
+  if (!accepted) b125CapacityNon2xx.add(1);
+  check(res, { 'B-125 CAS write is 2xx': () => accepted && ok });
 }
 
 // ─────────────────────────────────────────────────────────────────────────

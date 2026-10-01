@@ -15,13 +15,14 @@ on:
         required: true
         type: string
       capture_mode:
-        description: 'Use full closure evidence or one bounded hourly-query diagnostic'
+        description: 'Use full closure evidence, one hourly diagnostic, or one aggregate attribution diagnostic'
         required: true
         type: choice
         default: full_capture
         options:
           - full_capture
           - diagnostic_only
+          - attribution_diagnostic
 
 permissions:
   contents: read
@@ -121,6 +122,7 @@ jobs:
           case "$CAPTURE_MODE" in
             full_capture) [[ "$CONFIRM" == "run-b125-read-only" ]] || fail_closed "confirmation_mismatch" ;;
             diagnostic_only) [[ "$CONFIRM" == "diagnose-b125-hourly" ]] || fail_closed "confirmation_mismatch" ;;
+            attribution_diagnostic) [[ "$CONFIRM" == "attribute-b125-history" ]] || fail_closed "confirmation_mismatch" ;;
             *) fail_closed "capture_mode_invalid" ;;
           esac
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || fail_closed "protected_main_ref_required"
@@ -314,6 +316,10 @@ jobs:
           SQL[integrity]='SELECT COUNT(*) AS sealed_rows, SUM(CASE WHEN sequence_number IS NULL OR prev_hash IS NULL OR chain_hash IS NULL OR canonical_jcs IS NULL OR chained_at IS NULL THEN 1 ELSE 0 END) AS malformed_seals, SUM(CASE WHEN emitted_at < enqueued_at THEN 1 ELSE 0 END) AS negative_latency_rows, (SELECT COALESCE(SUM(hash_rows - 1), 0) FROM (SELECT COUNT(*) AS hash_rows FROM audit_outbox WHERE emitted_at IS NOT NULL AND chain_hash IS NOT NULL GROUP BY tenant_id, region, chain_hash HAVING COUNT(*) > 1)) AS duplicate_chain_hash_rows FROM audit_outbox WHERE emitted_at IS NOT NULL'
           SQL[replay]='WITH sequence_groups AS (SELECT tenant_id, region, sequence_number, COUNT(*) AS sequence_rows FROM audit_outbox WHERE emitted_at IS NOT NULL AND sequence_number IS NOT NULL GROUP BY tenant_id, region, sequence_number), ordered_groups AS (SELECT tenant_id, region, sequence_number, sequence_rows, LAG(sequence_number) OVER (PARTITION BY tenant_id, region ORDER BY sequence_number) AS prior_sequence FROM sequence_groups) SELECT COALESCE(SUM(CASE WHEN sequence_rows > 1 THEN sequence_rows ELSE 0 END), 0) AS repeated_sequence_rows, COALESCE(SUM(CASE WHEN prior_sequence IS NOT NULL AND sequence_number > prior_sequence + 1 THEN 1 ELSE 0 END), 0) AS sequence_gap_rows, COALESCE(SUM(CASE WHEN sequence_rows > 1 THEN 1 ELSE 0 END), 0) AS duplicate_sequence_groups FROM ordered_groups'
           SQL[head_tail]='WITH tails AS (SELECT tenant_id, region, sequence_number, chain_hash, ROW_NUMBER() OVER (PARTITION BY tenant_id, region ORDER BY sequence_number DESC) AS tail_rank FROM audit_outbox WHERE emitted_at IS NOT NULL AND sequence_number IS NOT NULL), joined AS (SELECT h.tenant_id, h.region, h.next_sequence, h.head_hash, t.sequence_number AS tail_sequence, t.chain_hash AS tail_hash FROM audit_chain_head h LEFT JOIN tails t ON t.tenant_id = h.tenant_id AND t.region = h.region AND t.tail_rank = 1), tail_without_head AS (SELECT COUNT(*) AS row_count FROM tails t LEFT JOIN audit_chain_head h ON h.tenant_id = t.tenant_id AND h.region = t.region WHERE t.tail_rank = 1 AND h.tenant_id IS NULL) SELECT COUNT(*) AS chain_heads, SUM(CASE WHEN tail_sequence IS NULL OR next_sequence != tail_sequence + 1 OR head_hash != tail_hash THEN 1 ELSE 0 END) + (SELECT row_count FROM tail_without_head) AS head_tail_mismatches, SUM(CASE WHEN tail_sequence IS NOT NULL AND next_sequence < tail_sequence + 1 THEN 1 ELSE 0 END) AS head_behind, SUM(CASE WHEN tail_sequence IS NULL OR next_sequence > tail_sequence + 1 THEN 1 ELSE 0 END) AS head_ahead, SUM(CASE WHEN tail_sequence IS NOT NULL AND head_hash != tail_hash THEN 1 ELSE 0 END) AS head_hash_mismatches FROM joined'
+          SQL[attribution]="$(python3 -B scripts/b125_attribution_query.py --emit-sql)"
+          ATTRIBUTION_SQL_SHA256='2093264114d40f6bcd86171faedfb6adc2eba597ada6974a3bbfb1ea28a9459b'
+          actual_attribution_sql_sha256="$(printf '%s' "${SQL[attribution]}" | sha256sum | cut -d' ' -f1)"
+          [[ "$actual_attribution_sql_sha256" == "$ATTRIBUTION_SQL_SHA256" ]] || fail_closed "attribution_query_hash_mismatch"
 
           run_query() {
             id="$1"
@@ -392,6 +398,9 @@ jobs:
             python3 scripts/b125_d1_api_diagnostic.py \
               "$receipt" "$CF_ACCOUNT_ID" "$D1_DATABASE_ID" "${SQL[hourly]}"
             fail_closed "diagnostic_only_capture_not_closure_evidence"
+          elif [[ "$CAPTURE_MODE" == "attribution_diagnostic" ]]; then
+            run_query attribution
+            fail_closed "attribution_diagnostic_not_closure_evidence"
           else
             for query_id in population partition hourly latency heads burst integrity replay head_tail; do
               run_query "$query_id"
