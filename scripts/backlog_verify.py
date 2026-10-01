@@ -386,6 +386,58 @@ STAGING_I1678_TARGETS = {
     'tests/test_staging_quarantine_apply_contract.py': (0o644, 'e09ee968adbe7149e3e2f0b02b25fcbb4277bcd3ff835fe1ca4275f367d02b0d'),
 }
 
+# One closed diagnostic-only successor on the merged B-216 receiver. The
+# historic 12-path transition above and its 37 exact BASE controls stay fixed.
+STAGING_I1678_TOKEN_DIAGNOSTIC_PREIMAGES = {
+    'apps/dsr-alert-receiver/scripts/readback-route.mjs': (0o644, 'ac2d8b31cf565d00a1e56d5e12b7ca98c098aa743dd1628944ea6ef7b7bd5bf2'),
+    'apps/dsr-alert-receiver/scripts/run-readback-route.mjs': (0o644, 'e389b69a1472a26bf2bf4f21a1aa102f51ab61c023d91c71ebd94fec9d6f6c5f'),
+    'apps/dsr-alert-receiver/tests/readback-route.test.mjs': (0o644, '7bc62f76bfca166c5b192d04f0ac14c9dac07ad8553c136b3e8b264140fb7ea1'),
+}
+STAGING_I1678_TOKEN_DIAGNOSTIC_TARGETS = {
+    'apps/dsr-alert-receiver/scripts/readback-route.mjs': (0o644, '34f2eaef3853107a41599b22000901042825af02788817e5abf99a4df4ad58ec'),
+    'apps/dsr-alert-receiver/scripts/run-readback-route.mjs': (0o644, 'b6e5bfb6a1e532807886cdbfd161269e6a880cf5bffb5296978006973bef00e3'),
+    'apps/dsr-alert-receiver/tests/readback-route.test.mjs': (0o644, '968831b78fabfa125dc3db3abee620b2b608cd8238e54e319904f0285b19809f'),
+}
+STAGING_I1678_TOKEN_DIAGNOSTIC_BASE_CONTROL_PINS = {
+    '.github/workflows/issue-1700-container-staging-deploy.yml': (0o644, '6a209b38e78c1de63b9806fa2fec833a5be4203e9b38e366d2ce1f6303af0502'),
+    '.github/workflows/staging-quarantine-apply.yml': (0o644, '574c37a78fbed91be485fddc98309e464521d99bfc3a5d05c269daa486d4130b'),
+    'crates/corelink-container/src/main.rs': (0o644, '44c28a9a8387212b156ce05aa65918b0c34454453d7fcd85e79fd29f9a5518db'),
+    'crates/corelink-container/src/routes.rs': (0o644, '04a84d7be655fd25ee6d05d1b5c598c169be1aae381a255533ffeda0aad1ec2f'),
+    'crates/corelink-container/src/routes/staging_d1_binding_probe.rs': (0o644, '280727155de8018c8d8d0fb507dde9633948b8e5429d90f9cf21f627956cdb11'),
+    'crates/corelink-container/src/storage.rs': (0o644, 'a21a64dc152eea27354de0b14627fd88213d20e1c43129315b4137eec49b711c'),
+    'crates/corelink-container/src/storage/d1_http.rs': (0o644, '60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d'),
+    'docs/internal/secrets-checklist.md': (0o644, '1e65d3384da6747d319cedafeb07bc131abbadb05a97faf2ec3102ac02d1afc9'),
+    'infra/staging/README.md': (0o644, '5f3daac1edba6320bcfc6663d57bece16a9c63b7977156c0fc3a3b562276a435'),
+    'infra/staging/topology.json': (0o644, 'a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14'),
+    'pnpm-lock.yaml': (0o644, '70506b08928e1514b702daf19d1fc54381fe71c6cc5de2cab93af108a5bd70ba'),
+    'scripts/issue_1700_runtime_probe.mjs': (0o644, '79b94d4fe23e2e69890ce803d0aad950ba36865442917a15f5ba42de499a6fcd'),
+    'scripts/staging_bootstrap_provider.py': (0o644, '4f09213ba0fad99a7433a448f84abc20600e1af9d521b0b15080a7b76cb037fe'),
+    'scripts/tests/issue_1700_runtime_probe.test.mjs': (0o644, 'd6968a3e4da7d788b07a0ca0a76a6845a3da6c7befcf1c78af6116f47e21b079'),
+    'scripts/verify_staging_provider_preflight.py': (0o644, '001d0392e7f8adff0c82d36d9c3a13a9d4fa25e603d6baf415c079185a6f35c9'),
+    'scripts/verify_staging_topology_contract.py': (0o644, '48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9'),
+    'tests/test_issue_1700_route_inventory.py': (0o644, 'a371d50bc84eafad075c9ad943cbe9ab5b90a53a4e1501d19a428d38873a5d4a'),
+    'tests/test_staging_bootstrap_provider.py': (0o644, '6585723899a4cca74d58b1b33c9c816ea7cbc45390274bfa1dd3fea84489b9a2'),
+    'tests/test_staging_custom_domain.py': (0o644, 'cfc063496302c06c8bc879c380c7f24e13088fdf8f2a5412def3e6e60b115afc'),
+    'tests/test_staging_quarantine_apply_contract.py': (0o644, 'e09ee968adbe7149e3e2f0b02b25fcbb4277bcd3ff835fe1ca4275f367d02b0d'),
+    'worker/package.json': (0o644, '96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34'),
+    'worker/src/durable_object.ts': (0o644, '4d94790bb5359a480b18d25a7818e0d2f58cfbf7d3e504148b55279741d985d2'),
+    'worker/src/durable_object_start.ts': (0o644, '7f8c28ac7b93628f4c4767efd1bb68bb75d2df9ea85442e92d9a6097c500ce4c'),
+    'worker/src/index.ts': (0o644, '18b960a74833284f953bd28818cd7260798d9570c17bce459502f7b7ca50f3cd'),
+    'worker/src/index_schedule.ts': (0o644, 'ca2f63cf1564043945c47819082fa7ebf43151c0e4cf68fb1bb6daa18819256a'),
+    'worker/src/lib/devenv_cleanup_route.ts': (0o644, 'e279cb99a585388fbf4483313a80c042df3c14bf1ca5ef52c31dc451e329907c'),
+    'worker/src/lib/runner_credential_routes.ts': (0o644, '6cd7af8c032dd8315c619f6830c3ef63df1a459152f197ca6a7faedf847b5731'),
+    'worker/src/pat_issue_rate_limit.ts': (0o644, 'ff4ca0814c40f128fed4650b2041660670bcc985037b975cb6f29b177d3c1afb'),
+    'worker/src/staging_d1_binding_proxy.ts': (0o644, '1e5d940b240a4bef9daba0e360758793ab7b11a165f5b1bc8ccb7eae658a348d'),
+    'worker/src/staging_d1_binding_proxy_entrypoint.ts': (0o644, 'af759d84e63a2016737c899cfba045f52c1fcf20061678a3612ddeec6c18bdab'),
+    'worker/src/staging_runtime_d1_probe.ts': (0o644, 'e8b6f8e38492593236e1184b9942f6b1ff703942d5f538e901dca6b59af6a6fd'),
+    'worker/tests/cloudflare_workers_node_stub.ts': (0o644, '0237103e747517298fea07261598d250e25edff6f412cd1df33695c1585cfcf7'),
+    'worker/tests/durable_object.test.ts': (0o644, '25c4c4622ed723b1377944d790e7661a60f4a3a04b58b2876c78e01861a4cf1e'),
+    'worker/tests/staging_d1_binding_proxy.test.ts': (0o644, '5710f974898de4c88a1ddca3f9815589d7c805faa4481f44d9005054d10796cc'),
+    'worker/tests/staging_d1_binding_start_gate.test.ts': (0o644, '2377e10e46528888f60f711820a931f8358d214ac53b8c822bfac9c2d9f2da66'),
+    'worker/tests/staging_runtime_d1_probe.test.ts': (0o644, '57b4bce14c4a656a4440a7a5243b16a8666eb74ceae60d9cbfb42f986f933893'),
+    'worker/vitest.config.mts': (0o644, 'e2c2f0e46d4a45d5e789f920f95b73ffd44e6a14a9450e11817426995feda506'),
+}
+
 # Exact protected-main snapshot of the 37-path staging binding control inventory.
 STAGING_I1678_BASE_CONTROL_PINS = {
     '.github/workflows/issue-1700-container-staging-deploy.yml': (0o644, '44a440ce972b52487ff2666c041114d56f10ee738562255d5edfeb9868b94c53'),
@@ -1277,6 +1329,18 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
             (STAGING_I1678_BASE_CONTROL_PINS,),
         )
     )
+    i1678_token_diagnostic_transition = (
+        len(STAGING_I1678_TOKEN_DIAGNOSTIC_PREIMAGES) == 3
+        and set(STAGING_I1678_TOKEN_DIAGNOSTIC_PREIMAGES) == set(STAGING_I1678_TOKEN_DIAGNOSTIC_TARGETS)
+        and len(STAGING_I1678_TOKEN_DIAGNOSTIC_BASE_CONTROL_PINS) == 37
+        and set(STAGING_I1678_TOKEN_DIAGNOSTIC_BASE_CONTROL_PINS) == set(STAGING_I1678_BASE_CONTROL_PINS)
+        and _preauthorized_exact_staging_transition(
+            candidate_root, trusted_root,
+            STAGING_I1678_TOKEN_DIAGNOSTIC_PREIMAGES,
+            STAGING_I1678_TOKEN_DIAGNOSTIC_TARGETS,
+            (STAGING_I1678_TOKEN_DIAGNOSTIC_BASE_CONTROL_PINS,),
+        )
+    )
     i2568_transition = _preauthorized_exact_staging_transition(
         candidate_root, trusted_root, STAGING_I2568_PREIMAGES, STAGING_I2568_TARGETS,
         (STAGING_D1_BINDING_PROXY_TARGETS, STAGING_I1648_TARGETS, STAGING_B216_TARGETS),
@@ -1297,6 +1361,9 @@ def check_candidate_controls(candidate_root: Path, trusted_root: Path, trusted_i
                 relative in STAGING_B216_TARGETS and b216_transition
             ) or (relative in STAGING_I2568_TARGETS and i2568_transition) or (
                 relative in STAGING_I1678_TARGETS and i1678_transition
+            ) or (
+                relative in STAGING_I1678_TOKEN_DIAGNOSTIC_TARGETS
+                and i1678_token_diagnostic_transition
             ) or (relative in B316_PENDING_STATE_TARGETS and b316_transition
             ):
                 continue

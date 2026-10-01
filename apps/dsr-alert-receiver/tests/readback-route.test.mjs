@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { assertReadbackPath, READBACK_TARGET, ReadbackError, readWorkerInventory, validateReadbackContext } from "../scripts/readback-route.mjs";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { assertReadbackPath, READBACK_TARGET, ReadbackError, readTokenPolicyDiagnostic, readWorkerInventory, validateReadbackContext, writeReadbackReceipt } from "../scripts/readback-route.mjs";
 
 const context = {
   repository: READBACK_TARGET.repository,
@@ -44,6 +46,211 @@ describe("B-216 read-only Worker inventory", () => {
     expect(readback).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}");
     expect(readback).not.toContain("B216_DSR_ALERT_RECEIVER_TOKEN");
     expect(readback).not.toContain("run-deploy-route.mjs");
+  });
+
+  it("runs the token diagnostic only through the existing protected readback operator", async () => {
+    const workflow = await readFile(new URL("../../../.github/workflows/b216-receiver-deploy-nonprod.yml", import.meta.url), "utf8");
+    const runner = await readFile(new URL("../scripts/run-readback-route.mjs", import.meta.url), "utf8");
+    expect(workflow).toContain("if: ${{ inputs.readback_only }}");
+    const readback = workflow.split("- name: Read fixed Worker inventory without mutation")[1].split("- name: Deploy exact receiver target")[0];
+    expect(readback).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}");
+    expect(readback).not.toContain("B216_DSR_ALERT_RECEIVER_TOKEN");
+    expect(runner).toContain("includeTokenPolicyDiagnostic: true");
+  });
+
+  it("reads token identity then policy once each and emits only fixed exact-account booleans", async () => {
+    const calls = [];
+    const tokenId = "a".repeat(32);
+    const apiToken = "test-token-never-real";
+    const fetchImpl = async (url, init) => {
+      calls.push({ url: String(url), init });
+      const path = new URL(url).pathname;
+      const result = path.endsWith("/verify")
+        ? { id: tokenId, status: "active" }
+        : { policies: [{
+          effect: "allow",
+          permission_groups: [{ name: "Workers Admin" }],
+          resources: { [`com.cloudflare.api.account.${READBACK_TARGET.accountId}`]: "*" },
+        }] };
+      return Response.json({ success: true, result });
+    };
+    const diagnostic = await readTokenPolicyDiagnostic({ apiToken, fetchImpl });
+    expect(diagnostic).toEqual({
+      status: "details_read",
+      token_active: true,
+      account_5128_scope: true,
+      workers_admin_on_5128: true,
+    });
+    expect(calls.map(({ url }) => new URL(url).pathname)).toEqual([
+      "/client/v4/user/tokens/verify",
+      `/client/v4/user/tokens/${tokenId}`,
+    ]);
+    for (const { init } of calls) {
+      expect(init.method).toBe("GET");
+      expect(init.redirect).toBe("error");
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.headers.authorization).toBe(`Bearer ${apiToken}`);
+    }
+    expect(JSON.stringify(diagnostic)).not.toContain(apiToken);
+    expect(JSON.stringify(diagnostic)).not.toContain(tokenId);
+  });
+
+  it("never treats denied detail access as absent token or missing Workers Admin", async () => {
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (new URL(url).pathname.endsWith("/verify")) {
+        return Response.json({ success: true, result: { id: "b".repeat(32), status: "active" } });
+      }
+      return new Response("private provider message", { status: 403 });
+    };
+    const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
+    expect(diagnostic).toEqual({
+      status: "unknown_access",
+      token_active: true,
+      account_5128_scope: null,
+      workers_admin_on_5128: null,
+    });
+    expect(calls).toHaveLength(2);
+    expect(JSON.stringify(diagnostic)).not.toContain("private provider message");
+  });
+
+  it("does not request token metadata unless the exact verify response is active", async () => {
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url: String(url), init });
+      return Response.json({ success: true, result: { id: "c".repeat(32), status: "expired" } });
+    };
+    const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
+    expect(diagnostic).toEqual({
+      status: "inactive",
+      token_active: false,
+      account_5128_scope: null,
+      workers_admin_on_5128: null,
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("uses one combined 45-second budget without retrying a slow verification", async () => {
+    let clock = 0;
+    const calls = [];
+    const diagnostic = await readTokenPolicyDiagnostic({
+      apiToken: context.apiToken,
+      now: () => clock,
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), init });
+        clock = 45_000;
+        return Response.json({ success: true, result: { id: "1".repeat(32), status: "active" } });
+      },
+    });
+    expect(calls).toHaveLength(1);
+    expect(diagnostic).toEqual({
+      status: "details_unknown",
+      token_active: true,
+      account_5128_scope: null,
+      workers_admin_on_5128: null,
+    });
+  });
+
+  it("keeps account policy unknown for wildcard or unrecognized resources", async () => {
+    const fetchImpl = async (url) => {
+      const path = new URL(url).pathname;
+      const result = path.endsWith("/verify")
+        ? { id: "d".repeat(32), status: "active" }
+        : { policies: [{
+          effect: "allow",
+          permission_groups: [{ name: "Workers Admin" }],
+          resources: { "com.cloudflare.api.account.*": "*" },
+        }] };
+      return Response.json({ success: true, result });
+    };
+    expect(await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl })).toEqual({
+      status: "policy_scope_unknown",
+      token_active: true,
+      account_5128_scope: null,
+      workers_admin_on_5128: null,
+    });
+  });
+
+  it("reports no Workers Admin only when the complete account-scoped detail is readable", async () => {
+    const fetchImpl = async (url) => {
+      const path = new URL(url).pathname;
+      const result = path.endsWith("/verify")
+        ? { id: "f".repeat(32), status: "active" }
+        : { policies: [
+          {
+            effect: "allow",
+            permission_groups: [{ name: "Workers Scripts Write" }],
+            resources: { [`com.cloudflare.api.account.${READBACK_TARGET.accountId}`]: "*" },
+          },
+        ] };
+      return Response.json({ success: true, result });
+    };
+    expect(await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl })).toEqual({
+      status: "details_read",
+      token_active: true,
+      account_5128_scope: true,
+      workers_admin_on_5128: false,
+    });
+  });
+
+  it("keeps a conflicting allow and deny for Workers Admin unknown", async () => {
+    const fetchImpl = async (url) => {
+      const path = new URL(url).pathname;
+      const result = path.endsWith("/verify")
+        ? { id: "a".repeat(32), status: "active" }
+        : { policies: [
+          {
+            effect: "allow",
+            permission_groups: [{ name: "Workers Admin" }],
+            resources: { [`com.cloudflare.api.account.${READBACK_TARGET.accountId}`]: "*" },
+          },
+          {
+            effect: "deny",
+            permission_groups: [{ name: "Workers Admin" }],
+            resources: { [`com.cloudflare.api.account.${READBACK_TARGET.accountId}`]: "*" },
+          },
+        ] };
+      return Response.json({ success: true, result });
+    };
+    expect(await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl })).toEqual({
+      status: "policy_conflict",
+      token_active: true,
+      account_5128_scope: null,
+      workers_admin_on_5128: null,
+    });
+  });
+
+  it("adds a failed policy-detail read as diagnostic-only receipt data", async () => {
+    const runnerTemp = await mkdtemp(join(tmpdir(), "b216-token-diagnostic-"));
+    const { fetchImpl } = apiFixture();
+    try {
+      const receipt = await writeReadbackReceipt({ ...context, runnerTemp }, {
+        fetchImpl: async (url, init) => {
+          const path = new URL(url).pathname;
+          if (path.startsWith("/client/v4/accounts/")) return fetchImpl(url, init);
+          if (path.endsWith("/verify")) return Response.json({ success: true, result: { id: "e".repeat(32), status: "active" } });
+          return new Response("private provider message", { status: 403 });
+        },
+        includeTokenPolicyDiagnostic: true,
+      });
+      expect(receipt.status).toBe("complete");
+      expect(receipt.worker).toEqual({ exists: true, inventory_count: 1 });
+      expect(receipt.token_policy_diagnostic).toEqual({
+        status: "unknown_access",
+        token_active: true,
+        account_5128_scope: null,
+        workers_admin_on_5128: null,
+      });
+      expect(JSON.stringify(receipt)).not.toContain("private provider message");
+      expect(JSON.stringify(receipt)).not.toContain(context.apiToken);
+      expect(JSON.stringify(receipt)).not.toContain("e".repeat(32));
+      const savedReceiptPath = join(runnerTemp, "b216-receiver-readback-receipt.json");
+      expect(JSON.parse(await readFile(savedReceiptPath, "utf8"))).toEqual(receipt);
+      expect((await stat(savedReceiptPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(runnerTemp, { recursive: true, force: true });
+    }
   });
 
   it("reads the exact fixed target using GET only and emits redacted status", async () => {

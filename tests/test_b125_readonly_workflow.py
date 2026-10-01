@@ -96,8 +96,14 @@ def _latency_sql() -> str:
 
 
 def test_hourly_sql_is_one_select_only_aggregate_with_six_offsets() -> None:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    assignment = next(line.strip() for line in source.splitlines() if "SQL[hourly]=" in line)
+    assert assignment.startswith('SQL[hourly]="') and assignment.endswith('"')
     sql = _hourly_sql()
+    assert "$" not in sql and "`" not in sql, "Bash-quoted SQL must not interpolate shell values"
     assert sql.startswith("WITH hour_offsets")
+    assert "hour_offsets(hour_offset) AS (VALUES (0), (1), (2), (3), (4), (5))" in sql
+    assert not re.search(r"\b(?:UNION|INTERSECT|EXCEPT)\b", sql, re.IGNORECASE)
     assert ";" not in sql
     assert not re.search(r"\b(?:INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|PRAGMA|ATTACH|DETACH)\b", sql)
     assert "aggregate_counts AS" in sql
@@ -105,6 +111,41 @@ def test_hourly_sql_is_one_select_only_aggregate_with_six_offsets() -> None:
     assert "enqueued_at < c.anchor_s * 1000 AND (emitted_at IS NULL OR emitted_at >= c.anchor_s * 1000)" in sql
     assert {int(value) for value in re.findall(r"arrivals_(\d)", sql)} == set(range(6))
     assert {int(value) for value in re.findall(r"sealed_(\d)", sql)} == set(range(6))
+
+
+def test_hourly_values_offsets_avoid_compound_select_term_limit() -> None:
+    sql = _hourly_sql()
+    values_offsets = "hour_offsets(hour_offset) AS (VALUES (0), (1), (2), (3), (4), (5))"
+    legacy_offsets = (
+        "hour_offsets(hour_offset) AS (SELECT 0 UNION ALL SELECT 1 UNION ALL SELECT 2 "
+        "UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5)"
+    )
+    assert sql.count(values_offsets) == 1
+    legacy_sql = sql.replace(values_offsets, legacy_offsets, 1)
+
+    connection = sqlite3.connect(":memory:")
+    connection.setlimit(sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, 5)
+    connection.execute("CREATE TABLE audit_outbox (enqueued_at INTEGER, emitted_at INTEGER)")
+    anchor_ms = int(datetime.now(timezone.utc).timestamp()) // 3600 * 3600 * 1000
+    connection.executemany(
+        "INSERT INTO audit_outbox VALUES (?, ?)",
+        [
+            (anchor_ms - 7 * 3600_000, anchor_ms - 5 * 3600_000),
+            (anchor_ms - 3 * 3600_000, anchor_ms),
+            (anchor_ms - 2 * 3600_000, None),
+            (anchor_ms + 1_000, None),
+        ],
+    )
+    try:
+        connection.execute(legacy_sql).fetchall()
+    except sqlite3.OperationalError as error:
+        assert "too many terms in compound SELECT" in str(error)
+    else:
+        raise AssertionError("legacy six-term UNION unexpectedly passed the five-term limit")
+
+    rows = connection.execute(sql).fetchall()
+    assert len(rows) == 6
+    assert all(len(row) == 5 and row[4] == 2 for row in rows)
 
 
 def test_hourly_sql_executes_as_six_row_sqlite_aggregate() -> None:
@@ -503,9 +544,11 @@ def test_all_production_control_queries_are_single_read_only_selects() -> None:
         assert sql.startswith(("SELECT ", "WITH "))
         assert ";" not in sql
         assert not re.search(r"\b(?:INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|PRAGMA|ATTACH|DETACH)\b", sql)
+        assert not re.search(r"\b(?:UNION|INTERSECT|EXCEPT)\b", sql, re.IGNORECASE)
         queries[query_id] = sql
 
     connection = sqlite3.connect(":memory:")
+    connection.setlimit(sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, 5)
     connection.execute(
         "CREATE TABLE audit_outbox (tenant_id TEXT, region TEXT, enqueued_at INTEGER, emitted_at INTEGER, "
         "sequence_number INTEGER, prev_hash TEXT, chain_hash TEXT, canonical_jcs TEXT, chained_at INTEGER)"
