@@ -107,19 +107,22 @@ jobs:
           git diff --name-only "${BASE_SHA}...${CANDIDATE_SHA}" > "${RUNNER_TEMP}/changed-paths.txt"
           cat > "${RUNNER_TEMP}/allowed-paths.txt" <<'EOF'
           .github/workflows/issue-2572-draft-contract.yml
-          .github/workflows/release-cli.yml
-          .github/workflows/release-slsa3.yml
-          scripts/normalize_cli_attestation_bundle.py
           scripts/test_pinned_gh_consumers.py
-          tests/test_cli_attestation_bundle.py
           tests/test_cli_release_draft_contract.py
           tools/cli/tests/release_workflow_contract/assertions.rs
           tools/cli/tests/release_workflow_contract/cases.rs
           EOF
           LC_ALL=C sort -o "${RUNNER_TEMP}/changed-paths.txt" "${RUNNER_TEMP}/changed-paths.txt"
           LC_ALL=C sort -o "${RUNNER_TEMP}/allowed-paths.txt" "${RUNNER_TEMP}/allowed-paths.txt"
-          if ! diff -u "${RUNNER_TEMP}/allowed-paths.txt" "${RUNNER_TEMP}/changed-paths.txt"; then
-            echo 'issue 2572 candidate must match the exact frozen corrective source scope' >&2
+          if ! grep -Fxq '.github/workflows/issue-2572-draft-contract.yml' "${RUNNER_TEMP}/changed-paths.txt"; then
+            echo 'CLI 0.1.7 pinned CLI correction must include its workflow' >&2
+            exit 1
+          fi
+          comm -23 "${RUNNER_TEMP}/changed-paths.txt" "${RUNNER_TEMP}/allowed-paths.txt" \
+            > "${RUNNER_TEMP}/unexpected-paths.txt"
+          if [[ -s "${RUNNER_TEMP}/unexpected-paths.txt" ]]; then
+            cat "${RUNNER_TEMP}/unexpected-paths.txt" >&2
+            echo 'CLI 0.1.7 pinned CLI correction changed an unapproved path' >&2
             exit 1
           fi
 
@@ -184,6 +187,7 @@ jobs:
           set -euo pipefail
           GH_BIN="${RUNNER_TEMP}/corelink-pinned-gh/gh"
           python3 -B scripts/install_pinned_gh.py --output "${GH_BIN}"
+          export PATH="${RUNNER_TEMP}/corelink-pinned-gh:${PATH}"
           python3 -B scripts/verify_pinned_gh.py --binary "${GH_BIN}"
           echo "${RUNNER_TEMP}/corelink-pinned-gh" >> "${GITHUB_PATH}"
       - name: Verify exact draft assets and original SLSA signatures without mutation

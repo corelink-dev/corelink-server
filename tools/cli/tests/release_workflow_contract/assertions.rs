@@ -151,7 +151,11 @@ pub(super) fn assert_pinned_gh_contract(
         "yaml.safe_load",
         "step.get(\"shell\") == \"bash\"",
         "\"if\" not in step",
-        "install(binary)",
+        "def manual_installer_step() -> str:",
+        "def assert_manual_installer_path(runner_temp: Path, python_dir: str) -> None:",
+        "assert_manual_installer_path(runner_temp, python_dir)",
+        "manual setup must reject the runner's earlier system gh PATH",
+        "manual setup must reject a later PATH override that selects system gh",
         "for label, run in consumers",
         "[\"bash\", \"--noprofile\", \"--norc\", \"-e\", \"-o\", \"pipefail\", \"-c\", run]",
         "mutant.returncode == 23",
@@ -207,6 +211,25 @@ pub(super) fn assert_pinned_gh_hosted_smoke(pack: &str) {
     assert!(
         !section.contains("${{ secrets."),
         "pinned gh consumer smoke must not receive repository secrets"
+    );
+
+    let manual = job_section(pack, "verify-preserved-cli-017-draft");
+    let install = manual
+        .find("python3 -B scripts/install_pinned_gh.py --output \"${GH_BIN}\"")
+        .expect("manual verifier must install checksum-pinned gh");
+    let path = manual
+        .find("export PATH=\"${RUNNER_TEMP}/corelink-pinned-gh:${PATH}\"")
+        .expect("manual verifier must prepend pinned gh to its current-step PATH");
+    let verify = manual
+        .find("python3 -B scripts/verify_pinned_gh.py --binary \"${GH_BIN}\"")
+        .expect("manual verifier must validate pinned gh after prepending PATH");
+    assert!(
+        install < path && path < verify,
+        "manual verifier must install, prepend, then verify the pinned CLI"
+    );
+    assert!(
+        manual.contains("${RUNNER_TEMP}/corelink-pinned-gh\" >> \"${GITHUB_PATH}\""),
+        "manual verifier must preserve the pinned CLI PATH for its later steps"
     );
 }
 

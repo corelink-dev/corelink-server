@@ -163,6 +163,29 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
 
     for (mutant, label) in [
         (
+            pack.replace(
+                "          export PATH=\"${RUNNER_TEMP}/corelink-pinned-gh:${PATH}\"\n",
+                "",
+            ),
+            "missing current-step pinned PATH export",
+        ),
+        (
+            pack.replace(
+                "          export PATH=\"${RUNNER_TEMP}/corelink-pinned-gh:${PATH}\"\n          python3 -B scripts/verify_pinned_gh.py --binary \"${GH_BIN}\"\n",
+                "          python3 -B scripts/verify_pinned_gh.py --binary \"${GH_BIN}\"\n          export PATH=\"${RUNNER_TEMP}/corelink-pinned-gh:${PATH}\"\n",
+            ),
+            "pinned PATH export after verifier",
+        ),
+    ] {
+        assert_ne!(mutant, pack, "{label} mutation must take effect");
+        assert!(
+            std::panic::catch_unwind(|| assert_pinned_gh_hosted_smoke(&mutant)).is_err(),
+            "manual pinned CLI acceptance must reject {label}"
+        );
+    }
+
+    for (mutant, label) in [
+        (
             workflow.replacen("default: draft-only", "default: signed-public", 1),
             "draft-only must remain the default",
         ),
