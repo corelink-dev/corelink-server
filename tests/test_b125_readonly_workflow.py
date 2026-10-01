@@ -203,6 +203,35 @@ def test_workflow_keeps_all_required_query_ids_and_remote_only_execution() -> No
     assert "issuecomment-5861728482" in source
 
 
+def test_workflow_database_target_matches_canonical_signup_worker_uuid() -> None:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    config = (ROOT / "apps/signup-worker/wrangler.toml").read_text(encoding="utf-8")
+    canonical_ids = set(
+        re.findall(r'^database_id\s*=\s*"([0-9a-f-]{36})"\s*$', config, re.MULTILINE)
+    )
+    assert len(canonical_ids) == 1
+    canonical_id = next(iter(canonical_ids))
+
+    def matches_canonical_target(workflow_source: str) -> bool:
+        expected_ids = re.findall(
+            r'^\s*expected_database_id="([0-9a-f-]{36})"$',
+            workflow_source,
+            re.MULTILINE,
+        )
+        return len(expected_ids) == 1 and expected_ids[0] == canonical_id
+
+    assert matches_canonical_target(source)
+
+    transposed_id = canonical_id.replace("ff02e3f", "ff02f3e")
+    assert transposed_id != canonical_id
+    transposed_source = source.replace(
+        f'expected_database_id="{canonical_id}"',
+        f'expected_database_id="{transposed_id}"',
+        1,
+    )
+    assert not matches_canonical_target(transposed_source)
+
+
 def test_workflow_pins_the_frozen_b063_repair_across_all_five_prod_images() -> None:
     source = WORKFLOW.read_text(encoding="utf-8")
     config = (ROOT / "wrangler.toml").read_text(encoding="utf-8")
