@@ -3,6 +3,8 @@ name: Issue 2165 real KMS lifecycle
 on:
   pull_request:
     paths:
+      - .actionlint.yaml
+      - .github/workflows/issue-2165-ecr-image-build.yml
       - .github/workflows/issue-2165-kms-real.yml
       - scripts/issue_2165_kms_runtime.py
       - scripts/issue_2165_cf5128_readback.py
@@ -22,6 +24,7 @@ on:
       - requirements-issue-2165-r2-archive.txt
       - scripts/verify_issue_2165_kms_contract.py
       - scripts/verify_issue_2165_kms_cleanup.py
+      - scripts/verify_issue_2165_ecr_image_build.py
       - tests/test_issue_2165_kms_runtime.py
       - tests/test_issue_2165_kms_custodian.py
       - tests/test_issue_2165_kms_cycles.py
@@ -38,6 +41,7 @@ on:
       - tests/test_issue_2165_cf5128_readback.py
       - tests/test_verify_issue_2165_kms_contract.py
       - tests/test_verify_issue_2165_kms_cleanup.py
+      - tests/test_issue_2165_ecr_image_build.py
   workflow_dispatch:
     inputs:
       target_alias:
@@ -101,12 +105,15 @@ jobs:
         run: |
           set -euo pipefail
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -config-file .github/actionlint.yaml .github/workflows/issue-2165-kms-real.yml
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -config-file .github/actionlint.yaml .github/workflows/issue-2165-ecr-image-build.yml
+          python3 -B scripts/verify_issue_2165_ecr_image_build.py --workflow .github/workflows/issue-2165-ecr-image-build.yml --runtime scripts/issue_2165_kms_runtime.py
           for phase in inventory pregrant-deny postgrant-readonly lifecycle cleanup; do
             python3 -B scripts/verify_issue_2165_kms_contract.py --workflow .github/workflows/issue-2165-kms-real.yml --env b083-kms-lifecycle --target-alias "$B083_TARGET_ALIAS" --phase "$phase"
           done
           PYTHONDONTWRITEBYTECODE=1 python3 -B -m pytest -q \
             tests/test_verify_issue_2165_kms_contract.py \
             tests/test_verify_issue_2165_kms_cleanup.py \
+            tests/test_issue_2165_ecr_image_build.py \
             tests/test_verify_issue_2165_cf5128_storage.py \
             tests/test_issue_2165_kms_runtime.py \
             tests/test_issue_2165_kms_custodian.py \
