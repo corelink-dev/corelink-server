@@ -70,6 +70,7 @@ const WRANGLER_FAILURE_ENDPOINTS = new Set([
   "d1_database",
   "user_or_membership",
   "other_endpoint",
+  "ambiguous_report",
   "none_reported",
 ]);
 // How far Wrangler got before it failed: it prints "Total Upload:" once the bundle
@@ -77,6 +78,23 @@ const WRANGLER_FAILURE_ENDPOINTS = new Set([
 // script upload request succeeded.
 const WRANGLER_FAILURE_PROGRESS = new Set(["before_bundle_report", "bundle_reported", "upload_reported"]);
 const MAX_PROVIDER_ERROR_CODES = 8;
+// Bounds on how much Wrangler output is analysed. The first error block sits near
+// the start of stderr (only warnings can precede it) and the progress lines near
+// the start of stdout, so both heads are kept; unstructured output is read from its
+// tail, where a process failure prints its message.
+const MAX_ANALYSED_CHARS = 256 * 1024;
+const MAX_ROOT_BLOCK_LINES = 200;
+const MAX_LINE_CHARS = 4096;
+const AUTHENTICATION_ERROR_CODES = new Set([9106, 10000]);
+const ANSI_SGR = /\u001b\[[0-9;]{0,32}[A-Za-z]/g;
+const CODE_MARKER = /\[code:[ \t]{0,8}([^\]\r\n]{0,16})\]/gi;
+const CODE_PREFIX = /\[code:/gi;
+const ERROR_BANNER = /^✘ \[ERROR\] /m;
+const REQUEST_NOTE = /^ {2}(?:GET|PUT|POST|PATCH|DELETE|HEAD) (\/\S{1,2048}) -> ([1-5]\d\d)(?: |$)/;
+const API_REQUEST_BANNER = /^A request to the Cloudflare API (?:\((\/\S{1,2048})\) )?failed\.$/;
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const UPLOAD_REPORTED = new RegExp(`^Uploaded ${escapeRegExp(TARGET.workerName)} \\(\\d{1,6}(?:\\.\\d{1,3})? sec\\)$`, "m");
+const BUNDLE_REPORTED = /^Total Upload: \d{1,9}(?:\.\d{1,3})? [KM]iB \/ gzip: \d{1,9}(?:\.\d{1,3})? [KM]iB$/m;
 
 function boundedExitCode(value) {
   return Number.isInteger(value) && value >= 0 && value <= 255 ? value : null;
@@ -84,12 +102,13 @@ function boundedExitCode(value) {
 
 function boundedErrorCodes(value) {
   if (!Array.isArray(value)) return [];
-  const codes = [];
+  const codes = new Set();
   for (const code of value) {
     if (!Number.isInteger(code) || code < 0 || code > 999999) return [];
-    if (!codes.includes(code)) codes.push(code);
+    codes.add(code);
+    if (codes.size === MAX_PROVIDER_ERROR_CODES) break;
   }
-  return codes.slice(0, MAX_PROVIDER_ERROR_CODES);
+  return [...codes];
 }
 
 function sanitizeProviderFailure(value) {
@@ -140,20 +159,105 @@ export function labelWranglerEndpoint(resource) {
   return "other_endpoint";
 }
 
-// Wrangler names the failing request in one of two shapes: the coded/uncoded API
-// error header, or the "<METHOD> <path> -> <status>" note it adds to WAF-block and
-// malformed-response errors. The first one in the output is the root failure; any
-// later one comes from Wrangler's own follow-up (for example whoami after a 10000).
-function firstFailedRequest(output) {
-  const found = [];
-  for (const match of output.matchAll(/A request to the Cloudflare API \((\/[^)\s]*)\) failed\./g)) {
-    found.push({ index: match.index, resource: match[1], status: null });
+// Wrangler prints each error as a "✘ [ERROR] <message>" banner at column 0, then
+// note lines indented by two spaces. It indents every line of a note, including a
+// response body it echoes, so a column-0 banner can only come from Wrangler. The
+// first banner in stderr is the root failure; later blocks are Wrangler's own
+// follow-up (for example whoami after a 10000) and must not change the diagnosis.
+function rootErrorBlock(stderr) {
+  const head = stderr.slice(0, MAX_ANALYSED_CHARS).replace(ANSI_SGR, "");
+  const banner = ERROR_BANNER.exec(head);
+  if (!banner) return null;
+  const lines = head.slice(banner.index).split("\n", MAX_ROOT_BLOCK_LINES + 1);
+  const notes = [];
+  for (const line of lines.slice(1)) {
+    if (line.trim() === "") continue;
+    if (!line.startsWith("  ")) break;
+    notes.push(line.slice(0, MAX_LINE_CHARS));
   }
-  for (const match of output.matchAll(/^[ \t]*(?:GET|PUT|POST|PATCH|DELETE|HEAD) (\/\S*) -> (\d{3})\b/gm)) {
-    found.push({ index: match.index, resource: match[1], status: Number(match[2]) });
+  return { message: lines[0].slice(banner[0].length, banner[0].length + MAX_LINE_CHARS), notes };
+}
+
+// Category from free text, checked line by line with linear patterns only. Order
+// keeps the original precedence.
+function categoryFromText(lines) {
+  const tests = [
+    ["first_deploy_required", (line) => {
+      const lower = line.toLowerCase();
+      const at = lower.indexOf("first time");
+      if (at < 0) return false;
+      const after = lower.slice(at + 10);
+      return /upload|worker/.test(after) || (/upload|worker/.test(lower.slice(0, at)) && /fail|must use/.test(after));
+    }],
+    ["authentication_failed", (line) => /invalid api token|authentication (?:failed|error)|unauthorized/i.test(line)],
+    ["permission_denied", (line) => /permission denied|missing permission|not authorized|not permitted/i.test(line)],
+    ["resource_not_found", (line) => /\bnot found\b/i.test(line) && /\b(?:worker|script|resource)\b/i.test(line)],
+    ["rate_limited", (line) => /rate limit|too many requests|\b429\b/i.test(line)],
+    ["invalid_configuration", (line) => /invalid (?:wrangler )?config|configuration (?:is )?invalid|unknown configuration/i.test(line)],
+  ];
+  for (const [category, matches] of tests) {
+    if (lines.some(matches)) return category;
   }
-  found.sort((left, right) => left.index - right.index);
-  return found[0] ?? null;
+  return null;
+}
+
+function codeSummary(lines) {
+  const codes = new Set();
+  let wellFormed = 0;
+  let prefixes = 0;
+  for (const line of lines) {
+    prefixes += (line.match(CODE_PREFIX) ?? []).length;
+    for (const marker of line.matchAll(CODE_MARKER)) {
+      if (!/^\d{1,6}$/.test(marker[1])) continue;
+      wellFormed += 1;
+      if (codes.size < MAX_PROVIDER_ERROR_CODES) codes.add(Number(marker[1]));
+    }
+  }
+  return { codes: [...codes], wellFormed, prefixes };
+}
+
+// A WAF or malformed-response error names its request in a "<METHOD> <path> ->
+// <status>" note, but the malformed case also echoes up to 100 characters of the
+// response body as an earlier note. One request-shaped note is Wrangler's; more
+// than one cannot be told apart, so none of them is believed.
+function reportedRequest(notes) {
+  const requests = [];
+  for (const note of notes) {
+    const match = REQUEST_NOTE.exec(note);
+    if (match) requests.push(match);
+  }
+  if (requests.length === 0) return { endpoint: "none_reported", status: null };
+  if (requests.length > 1) return { endpoint: "ambiguous_report", status: null };
+  return { endpoint: labelWranglerEndpoint(requests[0][1]), status: Number(requests[0][2]) };
+}
+
+function classifyRootBlock({ message, notes }) {
+  if (message.startsWith("The Cloudflare API responded with a WAF block page")) {
+    return { category: "waf_block", ...reportedRequest(notes), codeLines: [] };
+  }
+  if (message === "Received a malformed response from the API") {
+    return { category: "malformed_api_response", ...reportedRequest(notes), codeLines: [] };
+  }
+  if (message === "fetch failed" || message.startsWith("The request to Cloudflare's API timed out")) {
+    return { category: "network_failure", endpoint: "none_reported", status: null, codeLines: [] };
+  }
+  if (message.startsWith("You cannot upload a new version of a Worker that does not yet exist")) {
+    return { category: "first_deploy_required", endpoint: "none_reported", status: null, codeLines: [] };
+  }
+  const apiRequest = API_REQUEST_BANNER.exec(message);
+  if (apiRequest) {
+    const { codes } = codeSummary(notes);
+    return {
+      category: codes.some((code) => AUTHENTICATION_ERROR_CODES.has(code))
+        ? "authentication_failed"
+        : categoryFromText(notes) ?? "api_request_rejected",
+      endpoint: apiRequest[1] ? labelWranglerEndpoint(apiRequest[1]) : "none_reported",
+      status: null,
+      codeLines: notes,
+    };
+  }
+  const lines = [message, ...notes];
+  return { category: categoryFromText(lines) ?? "unknown_cli_failure", endpoint: "none_reported", status: null, codeLines: lines };
 }
 
 export function classifyWranglerFailure(result) {
@@ -161,44 +265,36 @@ export function classifyWranglerFailure(result) {
   if (result?.error) {
     return sanitizeProviderFailure({ provider_failure_class: "spawn_failure", process_exit_code: processExitCode });
   }
-  // Wrangler colours its error banner even when stdout is a pipe. The colour codes
-  // wrap whole messages, never split one, so the patterns below match through them.
-  const output = [result?.stdout, result?.stderr].filter((part) => typeof part === "string").join("\n");
-  let providerErrorCategory = "unknown_cli_failure";
-  if (/first time[^\n]*(?:upload|worker)|(?:upload|worker)[^\n]*first time[^\n]*(?:fail|must use)|cannot upload a new version of a Worker that does not yet exist/i.test(output)) providerErrorCategory = "first_deploy_required";
-  else if (/responded with a WAF block page|firewall \(WAF\) blocked this API request/i.test(output)) providerErrorCategory = "waf_block";
-  else if (/Received a malformed response from the API/i.test(output)) providerErrorCategory = "malformed_api_response";
-  else if (/fetch request failed, likely due to a connectivity issue|request to Cloudflare's API timed out|\bfetch failed\b/i.test(output)) providerErrorCategory = "network_failure";
-  else if (/invalid api token|authentication (?:failed|error)|unauthorized/i.test(output)) providerErrorCategory = "authentication_failed";
-  else if (/permission denied|missing permission|not authorized|not permitted/i.test(output)) providerErrorCategory = "permission_denied";
-  else if (/\b(?:worker|script|resource)\b[^\n]*\bnot found\b|\bnot found\b[^\n]*\b(?:worker|script|resource)\b/i.test(output)) providerErrorCategory = "resource_not_found";
-  else if (/rate limit|too many requests|\b429\b/i.test(output)) providerErrorCategory = "rate_limited";
-  else if (/invalid (?:wrangler )?config|configuration (?:is )?invalid|unknown configuration/i.test(output)) providerErrorCategory = "invalid_configuration";
-  else if (/A request to the Cloudflare API (?:\(\/[^)\s]*\) )?failed\./.test(output)) providerErrorCategory = "api_request_rejected";
-  const failedRequest = firstFailedRequest(output);
+  const stdout = typeof result?.stdout === "string" ? result.stdout : "";
+  const stderr = typeof result?.stderr === "string" ? result.stderr : "";
+  const root = rootErrorBlock(stderr);
+  let diagnosis;
+  if (root) {
+    diagnosis = classifyRootBlock(root);
+  } else {
+    // No Wrangler error banner: keep the unstructured classification, read from the
+    // tail, and never name an endpoint or status from it.
+    const lines = `${stdout}\n${stderr}`.slice(-MAX_ANALYSED_CHARS).replace(ANSI_SGR, "").split("\n");
+    diagnosis = { category: categoryFromText(lines) ?? "unknown_cli_failure", endpoint: "none_reported", status: null, codeLines: lines };
+  }
+  // Progress lines are Wrangler's own stdout lines at column 0, naming the fixed
+  // Worker; an echoed body is on stderr and indented, so it cannot produce them.
+  const stdoutHead = stdout.slice(0, MAX_ANALYSED_CHARS).replace(ANSI_SGR, "");
+  const { codes, wellFormed, prefixes } = codeSummary(diagnosis.codeLines);
   const details = {
     process_exit_code: processExitCode,
-    provider_error_category: providerErrorCategory,
-    provider_failure_endpoint: failedRequest ? labelWranglerEndpoint(failedRequest.resource) : "none_reported",
-    provider_http_status: failedRequest?.status ?? null,
-    provider_progress: /^[ \t]*Uploaded \S+ \(/m.test(output)
+    provider_error_category: diagnosis.category,
+    provider_error_codes: codes,
+    provider_failure_endpoint: diagnosis.endpoint,
+    provider_http_status: diagnosis.status,
+    provider_progress: UPLOAD_REPORTED.test(stdoutHead)
       ? "upload_reported"
-      : /^[ \t]*Total Upload: /m.test(output) ? "bundle_reported" : "before_bundle_report",
+      : BUNDLE_REPORTED.test(stdoutHead) ? "bundle_reported" : "before_bundle_report",
   };
-  const markerPattern = /\[code:\s*([^\]\r\n]*)\]/gi;
-  const markers = [...output.matchAll(markerPattern)];
-  const markerPrefixes = [...output.matchAll(/\[code:/gi)];
-  details.provider_error_codes = markers.filter((marker) => /^\d{1,6}$/.test(marker[1])).map((marker) => Number(marker[1]));
-  if (markers.length === 1 && markerPrefixes.length === 1 && /^\d{1,6}$/.test(markers[0][1])) {
-    return sanitizeProviderFailure({
-      ...details,
-      provider_failure_class: "provider_error_code",
-      provider_error_code: Number(markers[0][1]),
-    });
+  if (wellFormed === 1 && prefixes === 1) {
+    return sanitizeProviderFailure({ ...details, provider_failure_class: "provider_error_code", provider_error_code: codes[0] });
   }
-  if (markerPrefixes.length > 0) {
-    return sanitizeProviderFailure({ ...details, provider_failure_class: "ambiguous_provider_error_code" });
-  }
+  if (prefixes > 0) return sanitizeProviderFailure({ ...details, provider_failure_class: "ambiguous_provider_error_code" });
   return sanitizeProviderFailure({ ...details, provider_failure_class: "process_exit" });
 }
 

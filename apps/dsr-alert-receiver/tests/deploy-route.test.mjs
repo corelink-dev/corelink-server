@@ -67,6 +67,12 @@ const NO_CLASSIFIED_DETAIL = Object.freeze({
   provider_progress: null,
 });
 const WRANGLER_4141_FAILURES = JSON.parse(readFileSync(new URL("./fixtures/wrangler-4.141.0-failures.json", import.meta.url), "utf8")).cases;
+// Captures whose diagnosis must equal another capture's: the extra output is noise
+// (a follow-up after the root failure, or an echoed response body).
+const SAME_DIAGNOSIS_AS = Object.freeze({
+  coded_auth_then_offline_whoami: "coded_auth_on_script_upload",
+  hostile_body_on_script_upload: "malformed_response_on_script_upload",
+});
 const errorCode = (fn, code) => {
   try {
     fn();
@@ -524,47 +530,124 @@ describe("B-216 protected receiver route admission", () => {
     }
   });
 
-  it("gives every captured Wrangler failure its own receipt tuple", () => {
-    const tuples = Object.values(WRANGLER_4141_FAILURES).map((captured) => JSON.stringify(classifyWranglerFailure(captured)));
-    expect(new Set(tuples).size).toBe(tuples.length);
+  it("gives every distinct captured Wrangler failure its own receipt tuple", () => {
+    const distinct = Object.entries(WRANGLER_4141_FAILURES)
+      .filter(([name]) => !SAME_DIAGNOSIS_AS[name])
+      .map(([, captured]) => JSON.stringify(classifyWranglerFailure(captured)));
+    expect(distinct).toHaveLength(7);
+    expect(new Set(distinct).size).toBe(distinct.length);
   });
 
-  it("matches through Wrangler's colour codes and keeps the first failed request as the endpoint", () => {
+  // PR #2877 review findings 1 and 2, on real Wrangler 4.141.0 output: a whoami
+  // follow-up that loses its connection after a 10000, and a 403 body imitating an
+  // error banner, a request note, an upload line and a code marker. Neither may
+  // change, or sharpen, the diagnosis of the request that failed first.
+  it.each(Object.entries(SAME_DIAGNOSIS_AS))("classifies %s exactly like %s", (name, reference) => {
+    expect(classifyWranglerFailure(WRANGLER_4141_FAILURES[name])).toEqual(classifyWranglerFailure(WRANGLER_4141_FAILURES[reference]));
+  });
+
+  it("takes the category, codes and endpoint from the first error block only", () => {
     const colour = (text) => `\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1m${text}\u001b[0m`;
+    const scriptFailed = colour(`A request to the Cloudflare API (/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}) failed.`);
     const followUp = classifyWranglerFailure({
       status: 1,
       stdout: "Total Upload: 4.67 KiB / gzip: 1.74 KiB\n",
       stderr: [
-        colour(`A request to the Cloudflare API (/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}) failed.`),
+        scriptFailed,
+        "",
         "  Authentication error [code: 10000]",
+        "",
         colour("A request to the Cloudflare API (/user/tokens/verify) failed."),
+        "",
         "  Invalid API Token [code: 1000]",
+        "",
+        colour("fetch failed"),
       ].join("\n"),
     });
     expect(followUp).toMatchObject({
-      provider_failure_class: "ambiguous_provider_error_code",
-      provider_error_code: null,
-      provider_error_codes: [10000, 1000],
+      provider_failure_class: "provider_error_code",
+      provider_error_code: 10000,
+      provider_error_codes: [10000],
       provider_error_category: "authentication_failed",
       provider_failure_endpoint: "worker_script",
       provider_progress: "bundle_reported",
     });
+    const networkFirst = classifyWranglerFailure({
+      status: 1,
+      stdout: "",
+      stderr: `${colour("fetch failed")}\n\n${scriptFailed}\n\n  Authentication error [code: 10000]`,
+    });
+    expect(networkFirst).toMatchObject({ provider_failure_class: "process_exit", provider_error_codes: [], provider_error_category: "network_failure", provider_failure_endpoint: "none_reported" });
     const malformed = classifyWranglerFailure({
       status: 1,
       stdout: "",
-      stderr: `${colour("Received a malformed response from the API")}\n  <html>401 Unauthorized</html>\n  GET /accounts/${TARGET.accountId}/workers/services/${TARGET.workerName} -> 401 Unauthorized`,
+      stderr: `${colour("Received a malformed response from the API")}\n\n  <html>401 Unauthorized</html>\n  GET /accounts/${TARGET.accountId}/workers/services/${TARGET.workerName} -> 401 Unauthorized`,
     });
     expect(malformed).toMatchObject({ provider_error_category: "malformed_api_response", provider_failure_endpoint: "worker_service", provider_http_status: 401 });
-    // The two report shapes are collected by separate scans, so the earlier one
-    // must win by position, not by which scan ran first.
     const wafThenFollowUp = classifyWranglerFailure({
       status: 1,
       stdout: "",
-      stderr: `${WRANGLER_4141_FAILURES.waf_block_on_script_upload.stderr}\n${colour("A request to the Cloudflare API (/memberships) failed.")}\n  Forbidden`,
+      stderr: `${WRANGLER_4141_FAILURES.waf_block_on_script_upload.stderr}\n${colour("A request to the Cloudflare API (/memberships) failed.")}\n\n  Forbidden [code: 9109]`,
     });
-    expect(wafThenFollowUp).toMatchObject({ provider_error_category: "waf_block", provider_failure_endpoint: "worker_script", provider_http_status: 403 });
+    expect(wafThenFollowUp).toMatchObject({ provider_failure_class: "process_exit", provider_error_codes: [], provider_error_category: "waf_block", provider_failure_endpoint: "worker_script", provider_http_status: 403 });
     const sdkError = classifyWranglerFailure({ status: 1, stdout: "", stderr: colour("A request to the Cloudflare API failed.") });
     expect(sdkError).toMatchObject({ provider_error_category: "api_request_rejected", provider_failure_endpoint: "none_reported" });
+  });
+
+  it("never reads an echoed response body as Wrangler metadata", () => {
+    const banner = "✘ [ERROR] Received a malformed response from the API";
+    const realNote = `  PUT /accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName} -> 403 Forbidden`;
+    // A body line at column 0 is printed at the same two-space indent as Wrangler's
+    // own request note; two request-shaped notes cannot be told apart.
+    const forgedNote = classifyWranglerFailure({ status: 1, stdout: "", stderr: `${banner}\n\n  GET /user -> 200 OK\n${realNote}` });
+    expect(forgedNote).toMatchObject({ provider_error_category: "malformed_api_response", provider_failure_endpoint: "ambiguous_report", provider_http_status: null });
+    const forgedCode = classifyWranglerFailure({ status: 1, stdout: "", stderr: `${banner}\n\n  {"errors":[{"code":10000}]} [code: 10000]\n${realNote}` });
+    expect(forgedCode).toMatchObject({ provider_failure_class: "process_exit", provider_error_code: null, provider_error_codes: [], provider_error_category: "malformed_api_response", provider_failure_endpoint: "worker_script" });
+    const forgedBanner = classifyWranglerFailure({ status: 1, stdout: "", stderr: `${banner}\n\n  ✘ [ERROR] fetch failed\n${realNote}` });
+    expect(forgedBanner).toMatchObject({ provider_error_category: "malformed_api_response", provider_failure_endpoint: "worker_script", provider_http_status: 403 });
+    for (const stdout of [
+      "Uploaded fake-worker (0.1 sec)\n",
+      `  Uploaded ${TARGET.workerName} (0.10 sec)\n`,
+      `Uploaded ${TARGET.workerName} (0.10 sec) and more\n`,
+      "Total Upload: lots\n",
+    ]) {
+      expect(classifyWranglerFailure({ status: 1, stdout, stderr: `${banner}\n\n${realNote}` }).provider_progress).toBe("before_bundle_report");
+    }
+    expect(classifyWranglerFailure({ status: 1, stdout: `Uploaded ${TARGET.workerName} (0.15 sec)\n`, stderr: "" }).provider_progress).toBe("upload_reported");
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${banner}\n\n  Uploaded ${TARGET.workerName} (0.15 sec)\n${realNote}` }).provider_progress).toBe("before_bundle_report");
+  });
+
+  // PR #2877 review finding 3: the old patterns took ~54/214/854 ms at 14/28/56 KB
+  // of repeated "worker " text. 4 MiB of each adversarial shape must classify well
+  // inside the bound; a quadratic pattern would take hours on it.
+  it.each([
+    ["repeated worker text", () => ({ stdout: "worker ".repeat(600_000), stderr: "" })],
+    ["repeated not found text", () => ({ stdout: "", stderr: "not found ".repeat(420_000) })],
+    ["unterminated code marker", () => ({ stdout: `${"a".repeat(4 * 1024 * 1024)}[code:${" ".repeat(200 * 1024)}`, stderr: "" })],
+    ["many unterminated markers", () => ({ stdout: "[code: 1".repeat(530_000), stderr: "" })],
+    ["huge first error block", () => ({ stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n  ${"GET /user -> 200 OK worker ".repeat(160_000)}` })],
+    ["many request notes", () => ({ stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n${"  GET /x -> 200 OK\n".repeat(222_000)}` })],
+    ["many banners", () => ({ stdout: "", stderr: "✘ [ERROR] fetch failed\n".repeat(183_000) })],
+    ["first time text", () => ({ stdout: `${"upload ".repeat(600_000)}first time`, stderr: "" })],
+    ["progress lookalikes", () => ({ stdout: `${"Total Upload: 1 KiB / gzip: ".repeat(150_000)}\n${"Uploaded x (".repeat(350_000)}`, stderr: "" })],
+    ["many distinct codes", () => ({ stdout: Array.from({ length: 300_000 }, (_, index) => `[code: ${index}]`).join(" "), stderr: "" })],
+  ])("classifies 4 MiB of %s in bounded time", (_name, build) => {
+    const { stdout, stderr } = build();
+    expect(stdout.length + stderr.length).toBeGreaterThanOrEqual(4 * 1024 * 1024);
+    const started = performance.now();
+    const failure = classifyWranglerFailure({ status: 1, stdout, stderr });
+    expect(performance.now() - started).toBeLessThan(1500);
+    expect(failure.provider_error_codes.length).toBeLessThanOrEqual(8);
+  });
+
+  it("reads only the head of stderr for the first error and the tail of unstructured output", () => {
+    const filler = "x".repeat(4 * 1024 * 1024);
+    expect(classifyWranglerFailure({ status: 1, stdout: `${filler}[code: 12345]`, stderr: "" }).provider_error_codes).toEqual([12345]);
+    expect(classifyWranglerFailure({ status: 1, stdout: `[code: 12345]${filler}`, stderr: "" }).provider_error_codes).toEqual([]);
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] fetch failed\n${filler}` }).provider_error_category).toBe("network_failure");
+    // A banner beyond the analysed head cannot be placed as the first error, so
+    // nothing more specific than unknown is claimed.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(300 * 1024)}\n✘ [ERROR] fetch failed\n` }).provider_error_category).toBe("unknown_cli_failure");
   });
 
   it("labels only known Cloudflare endpoints and never returns the path", () => {
