@@ -1,0 +1,36 @@
+name: issue-1651-gc-staging-observation
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  observe:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: staging
+    timeout-minutes: 5
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Invoke production GC observation
+        env:
+          B071_GC_OBSERVATION_IMAGE_REF: ${{ vars.B071_GC_OBSERVATION_IMAGE_REF }}
+          B071_GC_OBSERVATION_SCOPE_JSON: ${{ secrets.B071_GC_OBSERVATION_SCOPE_JSON }}
+          B071_CF_REGISTRY_READ_TOKEN: ${{ secrets.B071_CF_REGISTRY_READ_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          R2_TDK_HEX: ${{ secrets.R2_TDK_HEX }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          B071_SOURCE_REF: ${{ github.ref }}
+          B071_SOURCE_SHA: ${{ github.sha }}
+        run: python3 scripts/run_b071_gc_observation_from_image.py
+      - name: Upload pending owner receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: b071-gc-production-observation
+          path: evidence/owner-actions/B-071/gc-production-dry-run.json
+          if-no-files-found: error
