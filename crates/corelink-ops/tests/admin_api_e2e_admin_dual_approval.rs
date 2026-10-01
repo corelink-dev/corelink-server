@@ -67,7 +67,8 @@ fn e2e_two_admins_success_audit_emitted() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let now = 10_000_000u64;
     let mfa_fresh = now - 5 * 60_000;
 
@@ -107,7 +108,8 @@ fn e2e_two_admins_success_audit_emitted() {
 fn e2e_caller_eq_approver_rejected_403() {
     let user = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let now = 10_000_000u64;
     let mfa_fresh = now - 5 * 60_000;
 
@@ -148,7 +150,8 @@ fn e2e_collusion_3_cycle_third_rejected() {
     let a = Uuid::now_v7();
     let b = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let now = 10_000_000u64;
     let mfa_fresh = now - 5 * 60_000;
 
@@ -216,7 +219,8 @@ fn e2e_empty_payload_schema_400() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let now = 10_000_000u64;
     let mfa_fresh = now - 5 * 60_000;
 

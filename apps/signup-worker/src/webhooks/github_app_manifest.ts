@@ -61,13 +61,19 @@ function presentedSetupToken(url: URL, request: Request): string {
   );
 }
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end -= 1;
+  return value.slice(0, end);
+}
+
 /**
  * Build the GitHub App manifest (the frozen registration shape). Private
  * (org-only) for the dogfood phase; `public: false` is flippable to public
  * later with one settings toggle when runner is sold to external SMBs.
  */
 function buildManifest(baseUrl: string): Record<string, unknown> {
-  const base = baseUrl.replace(/\/+$/, "");
+  const base = trimTrailingSlashes(baseUrl);
   return {
     name: "CoreLink Runners",
     url: "https://humangr.com",

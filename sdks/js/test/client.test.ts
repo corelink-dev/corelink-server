@@ -80,6 +80,25 @@ describe("construction", () => {
     expect(() => new CoreLinkClient({ pat: PAT } as never)).toThrow(CoreLinkError);
   });
 
+  it.each([
+    ["normal trailing slashes", "https://api.example///", "https://api.example"],
+    ["no trailing slash", "https://api.example/path", "https://api.example/path"],
+    ["all slashes", "////", ""],
+    ["empty", "", ""],
+    ["interior slash run", "https://api.example/a//b///", "https://api.example/a//b"],
+    [
+      "long slash run followed by non-slash",
+      `https://api.example${"/".repeat(50_000)}x`,
+      `https://api.example${"/".repeat(50_000)}x`,
+    ],
+  ])("normalizes the request base without changing %s", async (_label, baseUrl, expectedBase) => {
+    const data = new TextEncoder().encode("normalization oracle");
+    const digest = blake3Hex(data);
+    const f = mockFetch(() => new Response(digest, { status: 201 }));
+    await client(f, { baseUrl }).put(data);
+    expect(f.calls[0]!.url).toBe(`${expectedBase}/v1/cas/${TENANT}/${digest}`);
+  });
+
   it("_clientVerifyEnabled defaults true; false logs a warning", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const f = mockFetch(() => new Response(null, { status: 200 }));

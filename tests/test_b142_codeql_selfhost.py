@@ -26,7 +26,7 @@ def _assert_scanner_contract(text: str) -> None:
     """Small lexical contract used by the mutation probes below."""
     assert "runs-on: ubuntu-latest" in text
     assert "runs-on: corelink" not in text
-    assert "max-parallel: 1" in text
+    assert "max-parallel: 3" in text
     assert "dependency-caching: true" in text
     assert "name: Require CodeQL SARIF evidence" in text
     assert "CodeQL emitted no SARIF" in text
@@ -87,7 +87,7 @@ class B142WorkflowContractTest(unittest.TestCase):
     def test_scanner_is_hosted_with_bounded_matrix(self) -> None:
         self.assertIn("runs-on: ubuntu-latest", self.scanner)
         self.assertNotIn("runs-on: corelink", self.scanner)
-        self.assertIn("max-parallel: 1", self.scanner)
+        self.assertIn("max-parallel: 3", self.scanner)
         self.assertIn("group: codeql-${{ github.workflow }}", self.scanner)
         self.assertIn("cancel-in-progress: true", self.scanner)
         self.assertIn("pull_request:", self.scanner)
@@ -140,7 +140,7 @@ class B142WorkflowContractTest(unittest.TestCase):
         runner_mutant = self.scanner.replace("runs-on: ubuntu-latest", "runs-on: self-hosted")
         with self.assertRaises(AssertionError):
             _assert_scanner_contract(runner_mutant)
-        matrix_mutant = self.scanner.replace("max-parallel: 1", "max-parallel: 3")
+        matrix_mutant = self.scanner.replace("max-parallel: 3", "max-parallel: 1")
         with self.assertRaises(AssertionError):
             _assert_scanner_contract(matrix_mutant)
         language_mutant = self.scanner.replace("- language: python", "- language: ruby")

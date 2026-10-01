@@ -143,9 +143,12 @@ class CodeQLSeverityGateTests(unittest.TestCase):
 
     def test_codeql_workflow_uses_the_shared_fail_closed_gate(self) -> None:
         workflow = (ROOT / ".github/workflows/codeql.yml").read_text(encoding="utf-8")
-        gate_step = workflow.split("- name: Severity gate (fail PR on HIGH/CRITICAL)", 1)[1]
+        gate_step = workflow.split("- name: Strict severity gate (fail PR on HIGH/CRITICAL)", 1)[1]
         parser = (ROOT / "scripts/codeql_severity_gate.py").read_text(encoding="utf-8")
         self.assertIn('python3 scripts/codeql_severity_gate.py "${sarif_files[@]}"', gate_step)
+        self.assertIn("github.event_name == 'pull_request'", gate_step)
+        self.assertIn("Reviewed severity gate (trusted main only)", workflow)
+        self.assertIn("python3 scripts/codeql_reviewed_dispositions.py", workflow)
         self.assertIn("THRESHOLD = 7.0", parser)
         self.assertIn('tool.get("extensions", [])', parser)
         self.assertNotIn("rules.get(rule_id, 0.0)", gate_step)

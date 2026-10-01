@@ -28,12 +28,11 @@ jwt-adapter = ["dep:jsonwebtoken"]
 # context that also runs the validate path.
 http-fetcher = ["jwt-adapter", "dep:reqwest"]
 
-# Exposes `fakes::test_keys::TestRsaKey` (RSA keygen + PEM/JWKS
-# projection) so integration tests can craft signed JWTs without
-# requiring a live Clerk staging instance. NEVER enable this in
-# production crates that consume `corelink-clerk` — the surface
-# pulls `rsa` + `rand` and is gated by `forbid(unsafe_code)` but the
-# bytes it emits are non-secret-grade.
+# Exposes test helpers, including `fakes::test_keys::TestRsaKey` and
+# the loopback-only HTTP fetcher constructor, for integration tests.
+# NEVER enable this in production crates that consume `corelink-clerk` —
+# the surface pulls `rsa` + `rand` and the HTTP constructor is intended
+# only for local mock servers.
 test-utils = ["dep:rsa", "dep:rand"]
 
 [dependencies]

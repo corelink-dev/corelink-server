@@ -1,0 +1,389 @@
+{
+  "approved_alerts": [
+    {
+      "alert_number": 3500,
+      "category": "/language:python",
+      "dismissed_reason": "used in tests",
+      "language": "python",
+      "line": 87,
+      "path": "tests/test_verify_b139_prtarget_data_boundary.py",
+      "rule": "py/clear-text-storage-sensitive-data",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "22421aff29c7f3f5:1",
+        "primaryLocationStartColumnFingerprint": "16"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "1b8b89882dfec6c7baaaf3ed19fb52c6c3d72713",
+      "start_column": 29,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3501,
+      "category": "/language:python",
+      "dismissed_reason": "false positive",
+      "language": "python",
+      "line": 62,
+      "path": "scripts/verify_i1658_b102_contract.py",
+      "rule": "py/incomplete-url-substring-sanitization",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "c69dd813dcd3110a:1",
+        "primaryLocationStartColumnFingerprint": "3"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "fc021b226a8365e1cb78df6ba2be14f89abfee56",
+      "start_column": 8,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3502,
+      "category": "/language:python",
+      "dismissed_reason": "false positive",
+      "language": "python",
+      "line": 59,
+      "path": "scripts/verify_i1660_b104_contract.py",
+      "rule": "py/incomplete-url-substring-sanitization",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "a3037d29919cdad9:1",
+        "primaryLocationStartColumnFingerprint": "3"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "1384e1fff559c642c7bcba925ecf939066f809ac",
+      "start_column": 8,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3538,
+      "category": "/language:python",
+      "dismissed_reason": "used in tests",
+      "language": "python",
+      "line": 849,
+      "path": "tests/test_backlog_verify_trust_boundary.py",
+      "rule": "py/clear-text-storage-sensitive-data",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "34f2fe18fd2efa06:1",
+        "primaryLocationStartColumnFingerprint": "20"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "c1c074d93fcc02c9c4f2b52416968d00e2ab00c4",
+      "start_column": 37,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3539,
+      "category": "/language:python",
+      "dismissed_reason": "used in tests",
+      "language": "python",
+      "line": 69,
+      "path": "tests/test_i2478_mutants_baseline.py",
+      "rule": "py/overly-permissive-file",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "d7188499d6d4a4a1:1",
+        "primaryLocationStartColumnFingerprint": "0"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "9200578ebd03b198ec7f1a71ec8ffb3c784afcab",
+      "start_column": 13,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3540,
+      "category": "/language:python",
+      "dismissed_reason": "used in tests",
+      "language": "python",
+      "line": 70,
+      "path": "tests/test_i2478_mutants_baseline.py",
+      "rule": "py/overly-permissive-file",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "33938565ba6c2a8f:1",
+        "primaryLocationStartColumnFingerprint": "0"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "9200578ebd03b198ec7f1a71ec8ffb3c784afcab",
+      "start_column": 13,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3541,
+      "category": "/language:python",
+      "dismissed_reason": "used in tests",
+      "language": "python",
+      "line": 71,
+      "path": "tests/test_i2478_mutants_baseline.py",
+      "rule": "py/overly-permissive-file",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "402abaf23089012c:1",
+        "primaryLocationStartColumnFingerprint": "0"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "9200578ebd03b198ec7f1a71ec8ffb3c784afcab",
+      "start_column": 13,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3542,
+      "category": "/language:python",
+      "dismissed_reason": "used in tests",
+      "language": "python",
+      "line": 110,
+      "path": "tests/test_i2478_mutants_baseline.py",
+      "rule": "py/overly-permissive-file",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "5a1507d3346d81f0:1",
+        "primaryLocationStartColumnFingerprint": "0"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "9200578ebd03b198ec7f1a71ec8ffb3c784afcab",
+      "start_column": 17,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3546,
+      "category": "/language:rust",
+      "dismissed_reason": "used in tests",
+      "language": "rust",
+      "line": 854,
+      "path": "crates/corelink-container/src/storage/staging_load_test_admission.rs",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "b02bce0a5f90b274:1",
+        "primaryLocationStartColumnFingerprint": "20"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "19b4567422e849e9cacf465377a3acb6cdd891ab",
+      "start_column": 25,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3547,
+      "category": "/language:python",
+      "dismissed_reason": "false positive",
+      "language": "python",
+      "line": 366,
+      "path": "scripts/run_i2587_gpg_audit.py",
+      "rule": "py/clear-text-storage-sensitive-data",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "5afe74dfed36f705:1",
+        "primaryLocationStartColumnFingerprint": "0"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "67a49d20ff2020132cba8bfffc06031b203f4d60",
+      "start_column": 9,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3555,
+      "category": "/language:rust",
+      "dismissed_reason": "used in tests",
+      "language": "rust",
+      "line": 44,
+      "path": "crates/corelink-container/src/byok_control_transition_ownership_tests.rs",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "e3d9d01fcf59376c:1",
+        "primaryLocationStartColumnFingerprint": "19"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "365c95b2a37aabf301d001b8ffaa7c5b91bb59a3",
+      "start_column": 20,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3556,
+      "category": "/language:rust",
+      "dismissed_reason": "used in tests",
+      "language": "rust",
+      "line": 45,
+      "path": "crates/corelink-container/src/byok_control_transition_ownership_tests.rs",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "5aa8b28062a9fc9c:1",
+        "primaryLocationStartColumnFingerprint": "22"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "365c95b2a37aabf301d001b8ffaa7c5b91bb59a3",
+      "start_column": 23,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3557,
+      "category": "/language:rust",
+      "dismissed_reason": "used in tests",
+      "language": "rust",
+      "line": 46,
+      "path": "crates/corelink-container/src/byok_control_transition_ownership_tests.rs",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "dbf72ce8c301471:1",
+        "primaryLocationStartColumnFingerprint": "22"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "365c95b2a37aabf301d001b8ffaa7c5b91bb59a3",
+      "start_column": 23,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3558,
+      "category": "/language:rust",
+      "dismissed_reason": "used in tests",
+      "language": "rust",
+      "line": 757,
+      "path": "crates/corelink-container/src/signup_d1_http.rs",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "53560cdec377768b:1",
+        "primaryLocationStartColumnFingerprint": "10"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "f8850047fc0097848705d7eef1e989c41b3a3ce0",
+      "start_column": 19,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3559,
+      "category": "/language:rust",
+      "dismissed_reason": "used in tests",
+      "language": "rust",
+      "line": 695,
+      "path": "crates/corelink-container/src/storage/cas_write_fence.rs",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "b00bd67169b3e41:1",
+        "primaryLocationStartColumnFingerprint": "10"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "20dd416956704a0e30fb92fc848b74b33fdb4a29",
+      "start_column": 19,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3560,
+      "category": "/language:rust",
+      "dismissed_reason": "used in tests",
+      "language": "rust",
+      "line": 1320,
+      "path": "crates/corelink-container/src/webhook_inbox_d1.rs",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "53560cdec377768b:1",
+        "primaryLocationStartColumnFingerprint": "10"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "e7859e780d1db4d6ccbc0a288091ca7b7553c366",
+      "start_column": 19,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3561,
+      "category": "/language:rust",
+      "dismissed_reason": "used in tests",
+      "language": "rust",
+      "line": 1880,
+      "path": "crates/corelink-container/src/routes/dsr/access.rs",
+      "rule": "rust/hard-coded-cryptographic-value",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "1e8d9383389e08c0:1",
+        "primaryLocationStartColumnFingerprint": "10"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "71e4d540a36ff028b88d297de5db51f8999e065d",
+      "start_column": 19,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3562,
+      "category": "/language:python",
+      "dismissed_reason": "used in tests",
+      "language": "python",
+      "line": 1147,
+      "path": "scripts/verify_real_ignored_harnesses.py",
+      "rule": "py/clear-text-storage-sensitive-data",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "430ad05f28f1fff0:1",
+        "primaryLocationStartColumnFingerprint": "0"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "bcde47176779fa9e2ef107eb8ac0bef9ed3eb981",
+      "start_column": 13,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    },
+    {
+      "alert_number": 3564,
+      "category": "/language:python",
+      "dismissed_reason": "false positive",
+      "language": "python",
+      "line": 45,
+      "path": "scripts/probe_b035_tls_handshakes.py",
+      "rule": "py/insecure-protocol",
+      "sarif_partialFingerprints": {
+        "primaryLocationLineHash": "e62cfb32f3ce79fd:1",
+        "primaryLocationStartColumnFingerprint": "5"
+      },
+      "source_analysis_sha": "76455023097b0b5e219579c3618774bedb0a0548",
+      "source_blob_oid": "08884b4807dfa0c07733b6b6e117a6c15cec9653",
+      "start_column": 18,
+      "state": "dismissed",
+      "tool": "CodeQL",
+      "tool_version": "2.27.1"
+    }
+  ],
+  "issue": 1674,
+  "purpose": "Exact reviewed dismissed CodeQL finding identities only; no blanket/path baseline.",
+  "reviewed_source_commit": "5da497051f0b11dbfc8b87d1dfa8e753304e2719",
+  "schema_version": 1,
+  "source_analysis_commit": "76455023097b0b5e219579c3618774bedb0a0548",
+  "source_evidence_sha256": "d26e79b633f24a22ed50c14fbed77fe208153aa0c3fa0366dbc0e9d391cc352a",
+  "source_file_blobs": {
+    "crates/corelink-container/src/byok_control_transition_ownership_tests.rs": "365c95b2a37aabf301d001b8ffaa7c5b91bb59a3",
+    "crates/corelink-container/src/routes/dsr/access.rs": "71e4d540a36ff028b88d297de5db51f8999e065d",
+    "crates/corelink-container/src/signup_d1_http.rs": "f8850047fc0097848705d7eef1e989c41b3a3ce0",
+    "crates/corelink-container/src/storage/cas_write_fence.rs": "20dd416956704a0e30fb92fc848b74b33fdb4a29",
+    "crates/corelink-container/src/storage/staging_load_test_admission.rs": "19b4567422e849e9cacf465377a3acb6cdd891ab",
+    "crates/corelink-container/src/webhook_inbox_d1.rs": "e7859e780d1db4d6ccbc0a288091ca7b7553c366",
+    "scripts/probe_b035_tls_handshakes.py": "08884b4807dfa0c07733b6b6e117a6c15cec9653",
+    "scripts/run_i2587_gpg_audit.py": "67a49d20ff2020132cba8bfffc06031b203f4d60",
+    "scripts/verify_i1658_b102_contract.py": "fc021b226a8365e1cb78df6ba2be14f89abfee56",
+    "scripts/verify_i1660_b104_contract.py": "1384e1fff559c642c7bcba925ecf939066f809ac",
+    "scripts/verify_real_ignored_harnesses.py": "bcde47176779fa9e2ef107eb8ac0bef9ed3eb981",
+    "tests/test_backlog_verify_trust_boundary.py": "c1c074d93fcc02c9c4f2b52416968d00e2ab00c4",
+    "tests/test_i2478_mutants_baseline.py": "9200578ebd03b198ec7f1a71ec8ffb3c784afcab",
+    "tests/test_verify_b139_prtarget_data_boundary.py": "1b8b89882dfec6c7baaaf3ed19fb52c6c3d72713"
+  },
+  "source_sarif_run": 36315432255,
+  "verified_current_source_commit": "63adad693d0ca21992b71cbf9a8d6872bd58269b"
+}

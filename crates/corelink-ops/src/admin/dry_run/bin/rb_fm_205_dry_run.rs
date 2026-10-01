@@ -248,7 +248,8 @@ async fn main() {
     println!("Cadence: annual | Runbook: specs/05_quality/runbooks/RB-FM-205-admin-mistake.md");
     println!();
 
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let steps: Vec<Step> = vec![
         step_missing_approver(&key),
         step_caller_eq_approver(&key),
