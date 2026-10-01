@@ -1,67 +1,118 @@
 #!/usr/bin/env python3
-"""B-315 executable population and mutation guard."""
+"""B-315 executable population, wiring and landing-behaviour guard.
+
+Four layers, each a refusal on its own:
+
+1. wiring — the merge gate plus its helper still carry every token of the
+   PR-API landing design and none of the retired designs (the direct dual-ref
+   push that branch protection declined, the `gh pr merge` CLI). Tokens are a
+   tripwire for an accidental revert, not a proof: a token can sit in a
+   comment. Layer 4 is the proof (its fake `gh` also refuses every call it does
+   not model, so a helper that fetched bytes through the API would fail there).
+2. the allocator's fixture self-test;
+3. the allocator on the real BACKLOG.md population;
+4. behaviour — scripts/b315_merge_harness.py runs the REAL helper against a
+   fake GitHub in throwaway repositories (land, dry run, every race, a 409, a
+   405, a merge on an unvalidated main, a wrong tree, a lost response, a stale
+   lease, a busy lock). It proves the helper against the harness's model of
+   GitHub; that GitHub enforces the model is argued, not proven, here.
+"""
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
-import re
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOCATOR = ROOT / "scripts/backlog_id_alloc.py"
 GATE = ROOT / "scripts/pre-merge-gate-check.sh"
 ATOMIC = ROOT / "scripts/b315_atomic_merge.sh"
+HARNESS = ROOT / "scripts/b315_merge_harness.py"
+
+REQUIRED = (
+    # one authority, crash-safe lock across allocation AND merge
+    "start_backlog_allocation_lock",
+    "backlog_lock_healthy",
+    "--common-dir",
+    # exact base/main/head capture and same-repository ownership
+    "CAPTURED_HEAD",
+    "CAPTURED_BASE",
+    "CAPTURED_MAIN",
+    "CAPTURED_BASE_NAME",
+    "CAPTURED_HEAD_REF",
+    "headRepositoryOwner",
+    "isCrossRepository",
+    "baseRefName",
+    '[ "$CAPTURED_BASE" = "$CAPTURED_MAIN" ]',
+    'git merge-base --is-ancestor "$CAPTURED_MAIN" "$CAPTURED_HEAD"',
+    # revalidation after allocation and at the merge boundary
+    "main_sha_before",
+    "main_sha_after",
+    "main_sha_final",
+    "moved during allocation",
+    "main moved at merge boundary",
+    "candidate force-pushed at merge boundary",
+    # allocator on exact object bytes
+    "backlog_id_alloc.py",
+    "--base",
+    'git cat-file blob "$1:BACKLOG.md"',
+    # cross-machine lease, owner-safe release
+    "REMOTE_LEASE_REF",
+    "REMOTE_LEASE_CONFIRMED",
+    "release_remote_backlog_lease",
+    '--force-with-lease="$REMOTE_LEASE_REF:$REMOTE_LEASE_OID"',
+    # the landing: one head-pinned squash through the PR merge API
+    "MERGE_METHOD=squash",
+    'gh api -X PUT "repos/{owner}/{repo}/pulls/$PR/merge" -f sha="$CAPTURED_HEAD" -f merge_method="$MERGE_METHOD"',
+    "merge endpoint NOT called",
+    # post-merge proof
+    "no false merged claim",
+    "head_tree",
+    "actual_tree",
+    '[ "$parents" = "$merge_oid $CAPTURED_MAIN" ]',
+    "LANDED_UNPROVEN",
+)
+
+# Retired designs. The first three were the pre-B-315 squash CLI; the rest are
+# the direct dual-ref push that branch protection declines on main.
+OBSOLETE = (
+    "--match-head-commit",
+    "gh pr merge",
+    "--squash",
+    "--atomic",
+    'commit-tree "$head_tree"',
+    '--force-with-lease="refs/heads/main',
+)
+
+
+def wiring_problems(text: str) -> list[str]:
+    """Return one line per missing/obsolete token in ``text`` (gate + helper)."""
+    if not text.strip():
+        return ["gate + helper text is EMPTY: nothing to check"]
+    problems = [f"missing: {token}" for token in REQUIRED if token not in text]
+    problems += [f"obsolete: {token}" for token in OBSOLETE if token in text]
+    if re.search(r"gh api -X DELETE[^\n]*corelink-backlog-id-merge-lock", text):
+        problems.append("obsolete: unconditional lease DELETE")
+    # Any push whose refspec names main is the retired design, however spelled
+    # on one line; branch protection would decline it anyway.
+    for line in text.splitlines():
+        if re.search(r"\bgit\b[^\n]*\bpush\b", line) and re.search(r"(?:^|[:\s\"'])(?:refs/heads/)?main\b", line):
+            problems.append(f"direct push to main: {line.strip()[:120]}")
+    return problems
 
 
 def main() -> int:
-    if not ALLOCATOR.is_file() or not GATE.is_file() or not ATOMIC.is_file():
-        print("B-315 instrument broken: allocator or merge gate is missing", file=sys.stderr)
+    missing_files = [str(p.relative_to(ROOT)) for p in (ALLOCATOR, GATE, ATOMIC, HARNESS) if not p.is_file()]
+    if missing_files:
+        print(f"B-315 instrument broken: missing {missing_files}", file=sys.stderr)
         return 2
-    gate = GATE.read_text(encoding="utf-8") + "\n" + ATOMIC.read_text(encoding="utf-8")
-    required = (
-        "start_backlog_allocation_lock",
-        "main_sha_before",
-        "main_sha_after",
-        "main_sha_final",
-        "CAPTURED_HEAD",
-        "CAPTURED_BASE_NAME",
-        "CAPTURED_HEAD_REF",
-        "headRepositoryOwner",
-        "isCrossRepository",
-        "baseRefName",
-        "bk_base_name",
-        "bk_base",
-        "backlog_id_alloc.py",
-        "--common-dir",
-        "--base",
-        "backlog_lock_healthy",
-        "REMOTE_LEASE_REF",
-        "REMOTE_LEASE_CONFIRMED",
-        "release_remote_backlog_lease",
-        "git ls-remote origin",
-        "commit-tree",
-        "-p \"$bk_base\" -p \"$bk_head\"",
-        "--atomic",
-        "--force-with-lease=\"refs/heads/main:$main_sha_before\"",
-        "--force-with-lease=\"$HEAD_REF:$bk_head\"",
-        "neither ref changed",
-        "--force-with-lease=\"$REMOTE_LEASE_REF:$REMOTE_LEASE_OID\"",
-        "head_tree",
-        "actual_tree",
-        "head_oid",
-        "no false merged claim",
-        "cmp -s \"$TMP/main-before.md\" \"$TMP/main-after.md\"",
-    )
-    missing = [token for token in required if token not in gate]
-    obsolete = [token for token in ("--match-head-commit", "gh pr merge", "--squash") if token in gate]
-    if re.search(r"gh api -X DELETE[^\n]*corelink-backlog-id-merge-lock", gate):
-        obsolete.append("unconditional lease DELETE")
-    if obsolete:
-        print(f"B-315 gate retains obsolete merge/race claims: {obsolete}", file=sys.stderr)
-        return 1
-    if missing:
-        print(f"B-315 gate wiring missing: {missing}", file=sys.stderr)
+    text = GATE.read_text(encoding="utf-8") + "\n" + ATOMIC.read_text(encoding="utf-8")
+    problems = wiring_problems(text)
+    if problems:
+        print("B-315 merge wiring:", *problems, sep="\n  ", file=sys.stderr)
         return 1
     result = subprocess.run(
         [sys.executable, str(ALLOCATOR), "--self-test"],
@@ -89,7 +140,18 @@ def main() -> int:
         print("B-315 allocator refuses the real BACKLOG.md population:", file=sys.stderr)
         print(result.stdout + result.stderr, file=sys.stderr)
         return 1
-    print("B-315 dense allocation and merge revalidation: PASS")
+    sys.path.insert(0, str(HARNESS.parent))
+    import b315_merge_harness as harness  # noqa: E402
+
+    with tempfile.TemporaryDirectory(prefix="b315-verify-") as directory:
+        problems = harness.self_test(Path(directory))
+    if problems:
+        print("B-315 landing behaviour:", *problems, sep="\n  ", file=sys.stderr)
+        return 1
+    print(
+        f"B-315 dense allocation, PR-API landing wiring ({len(REQUIRED)} required / "
+        f"{len(OBSOLETE)} retired tokens) and {len(harness.SCENARIOS)} landing scenarios: PASS"
+    )
     return 0
 
 

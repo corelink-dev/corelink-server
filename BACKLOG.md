@@ -1832,22 +1832,24 @@ source-locator: "WP-LEDGER-ID-ALLOC — Dense BACKLOG IDs / concurrent allocatio
 finding-title: "dense BACKLOG id allocation has no merge-time serialization or revalidation"
 problem: "Two merge authorities can read the same main snapshot, choose the same next contiguous id, and both issue a merge; the existing courtesy precheck only reports a collision after the stale merge and accepts a degenerate census."
 evidence: "The merge gate's former BACKLOG block fetched PR/main independently, printed renumber commands, and had no lock or second main-ref/snapshot check; repository merge commits are allowed, while branch-protection/ruleset API checks return GitHub 403 on this plan."
-acceptance: "The single --merge authority holds a crash-safe exclusive lock through allocation and merge, captures exact base/main/head bytes and same-repository head ownership, validates the complete canonical dense candidate population against those bytes, creates a signed DCO merge commit whose parents are base then head and whose tree is exactly head, and performs one --atomic dual-ref push with exact force-with-lease values for main and the head branch so any moved ref rejects both updates."
+acceptance: "The single --merge authority holds a crash-safe exclusive lock through allocation and merge, captures exact base/main/head object ids and same-repository head ownership, requires the PR base snapshot to equal current main and the head to contain main, validates the complete canonical dense candidate population on the exact BACKLOG.md blob bytes of those commits, revalidates main and head after allocation and again at the merge boundary, and lands through one PR merge API call pinned to the captured head sha with merge_method=squash, because branch protection on main declines every direct push. Strict up-to-date protection plus the sha pin refuses the merge if either ref moved. The post-merge proof requires state MERGED and a merge commit whose only parent is the captured main, whose tree is the head's tree, and which is reachable from main; otherwise the merge is reported as landed-but-unproven (exit 3), never as a clean merge."
 verify: python3 scripts/verify_b315_dense_id_allocation.py --self-test
 verify-means: |
-  done — the executable baseline, two-authority same-snapshot race, no-gap/no-silent-disappearance
-  fixture, and malformed/non-positive/non-canonical/duplicate controls all pass. The merge
-  gate uses the allocator under a crash-safe process lock, performs current-main and candidate
-  revalidation, and uses a unique create-only remote lease with owner-safe conditional release.
-  The signed merge commit is parent/tree checked before one atomic dual-ref push with exact
-  main/head leases; GitHub state and resulting main/head OIDs/tree are polled before claiming
-  MERGED. Any missing snapshot,
-  changed main/head, invalid census, signature/DCO mismatch, push rejection, or PR-not-MERGED
-  state is a refusal, never an advisory green result.
-  During the D03 bootstrap, this contract is exercised from the exact
-  `origin/main` gate copy via the authorized exact-SHA contingency; it makes no
-  self-hosting claim before that copy has landed.
-last-verified: 2026-09-06
+  done — the allocator fixture self-test, the real BACKLOG.md population, the wiring
+  tripwire (PR-API landing tokens present; the retired direct dual-ref push and
+  `gh pr merge` designs absent), and every scenario of scripts/b315_merge_harness.py
+  pass. The harness executes the real helper against a fake GitHub whose origin
+  declines every push to main, as branch protection does. Its scenarios: the merge
+  lands through one head-pinned squash API call, with parent = captured main and
+  tree = tree(head); a dry run never calls the merge endpoint or takes the lease;
+  head or main moving at capture, during allocation, at the merge boundary or inside
+  the API call (409/405) is refused with no merged claim; a BEHIND head, a stale base
+  snapshot, an allocation gap, a stale remote lease and a busy local lock are refused
+  before the API; a merge that lands on an unvalidated main or with a wrong tree exits
+  3; a lost API response is still proven from PR state. That GitHub itself enforces
+  strict up-to-date plus the sha pin is argued from its documented semantics, not
+  exercised: no live merge was run to write this record.
+last-verified: 2026-10-01
 ```
 
 ### B-316 — four live sub-processors still lack completed Legal reviews, and effective commitments text is stale

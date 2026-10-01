@@ -5,7 +5,7 @@
 # let it do the merge itself so there is no `&&` for a shell to disarm:
 #
 #   bash scripts/pre-merge-gate-check.sh <PR>              # gate + report only
-#   bash scripts/pre-merge-gate-check.sh --merge <PR>      # gate, then atomic merge IFF green
+#   bash scripts/pre-merge-gate-check.sh --merge <PR>      # gate, then PR-API merge IFF green
 #
 # Exits 0 ONLY when the PR is mergeable AND its real gates ran AND every
 # non-skipping check is green. Exits 1 (and prints why) otherwise — in which
@@ -17,8 +17,14 @@
 # are exactly the fast, load-bearing ones — and they must all be green before
 # merge. This guards against blind `--admin` merges that skip them.
 #
-# ⚠️ Branch protection has `required checks = []` (CLAUDE.md), so THIS SCRIPT is
-# the last line of defense. It must never fail OPEN.
+# ⚠️ Branch protection on main requires exactly TWO checks — `dco` and
+# `cargo fmt --all --check` — and is strict (the PR must be up to date with
+# main), enforce_admins, and linear history. That is what
+# `gh api repos/{owner}/{repo}/branches/main/protection` returned on 2026-10-01;
+# re-read it rather than trusting this line, and note CLAUDE.md's
+# `required checks = []` was already stale then. Every OTHER check on a PR is
+# enforced only by THIS script, so for those it is the last line of defense.
+# It must never fail OPEN.
 #
 # ── The 2026-08-04 hole this closes (PR #1049) ───────────────────────────────
 # The script was correct and it still failed to gate, because gating and merging
@@ -34,7 +40,7 @@
 # thoroughly as the bug the guard was written to catch.
 #
 # The fix is NOT "be more careful". `--merge` puts the gate and the merge in ONE
-# process: the atomic helper is reachable only through a single `if` on the
+# process: the merge helper is reachable only through a single `if` on the
 # gate's own return code, so there is no exit status left for a pipeline to
 # swallow. Piping `--merge`'s output changes nothing — the decision never leaves
 # this process. When stdout is NOT a tty and `--merge` was not used, the script
@@ -92,11 +98,18 @@ usage() {
 usage: bash scripts/pre-merge-gate-check.sh [flags] <PR-number>
 
   (no flags)              gate + report. Exit 0 = green, 1 = DO NOT MERGE.
-  --merge                 gate, then the atomic merge helper IFF the gate went
-                          green, then delete the merged REMOTE branch. Exit
-                          status = did the PR merge. Nothing to chain with `&&`.
-  --dry-run               with --merge: print the merge command, do not run it.
-  --admin-reason "<why>"  with --merge: add `--admin`, and ONLY when the sole
+  --merge                 gate, then the B-315 merge helper IFF the gate went
+                          green: allocation lock, exact-byte BACKLOG check, ONE
+                          merge through the PR API pinned to the gated head,
+                          post-merge proof. Then delete the merged REMOTE
+                          branch. Exit status = did the PR merge; 3 = merged
+                          but NOT proven. Nothing to chain with `&&`.
+  --dry-run               with --merge: run every precondition, print the merge
+                          API call, never call it.
+  --admin-reason "<why>"  with --merge: proceed past this gate's OWN refusal
+                          (GitHub still enforces branch protection, admins
+                          included, so dco/fmt are never bypassed), and
+                          ONLY when the sole
                           reason the gate refused is a failed/cancelled check.
                           Never usable on draft, pending, conflicting, or
                           missing-gate refusals. The reason is echoed into the
@@ -424,7 +437,7 @@ if [ "$checked_head" != "$CAPTURED_HEAD" ]; then
   exit 1
 fi
 
-# ── --merge: the ONLY branch that can reach the atomic merge helper ──────────
+# ── --merge: the ONLY branch that can reach the merge helper ─────────────────
 # There is exactly one call site below and it sits inside this `if`. A non-zero
 # gate returns here; nothing downstream re-evaluates the verdict.
 GATE_VERDICT="$(cat "$VERDICT_FILE" 2>/dev/null || true)"
@@ -563,8 +576,11 @@ PYIDS
 }
 fi
 
-# B-315 uses an explicit signed merge commit. The legacy advisory block above is
-# disabled; allocation and the ref update are delegated to the atomic helper.
+# B-315 lands through the PR merge API pinned to the gated head (squash); the
+# helper's header argues why strict protection plus the sha pin keeps the race
+# guarantee its former direct dual-ref push gave (protection declined that push,
+# so it never landed anything). The legacy advisory block above is disabled;
+# allocation and the merge are delegated to scripts/b315_atomic_merge.sh.
 #
 # `--delete-branch` was DROPPED (it was added because this repo has
 # delete_branch_on_merge=false). Reason: gh deletes the LOCAL branch first — it
@@ -578,7 +594,7 @@ fi
 # branch is deliberately left alone — a worktree may be sitting on it — and is
 # named in the output so the operator can remove it.
 echo
-echo "  ▶ atomic merge commit push for PR #$PR"
+echo "  ▶ B-315 landing for PR #$PR through the PR merge API, pinned to $CAPTURED_HEAD"
 GATED_SHA="$CAPTURED_HEAD"
 merge_rc=0
 bash scripts/b315_atomic_merge.sh "$PR" "$CAPTURED_HEAD" "$DRY_RUN" "$CAPTURED_HEAD_REF" "$CAPTURED_HEAD_OWNER" "$CAPTURED_HEAD_REPO" || merge_rc=$?
@@ -586,12 +602,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit "$merge_rc"
 fi
 
-# ── Did it MERGE? Ask GitHub, do not ask gh's exit code ──────────────────────
-# The helper can exit non-zero for anything that went wrong AFTER the mutation
-# too (local branch cleanup, notably). The only question this script's exit
-# status is allowed to answer is "is PR #N merged", so re-query the PR and
-# decide on that. Retried: the mutation is synchronous, but a transient network
-# error on the read must not be reported as a failed merge.
+# ── Did it MERGE? Ask GitHub, do not ask the helper's exit code alone ────────
+# The question this script's exit status answers is "is PR #N merged", so
+# re-query the PR and decide on that. Retried: the merge API is synchronous,
+# but a transient network error on the read must not be reported as a failed
+# merge. Since B-315 the helper runs no local cleanup that can fail after the
+# merge (the #1051 shape), so a MERGED PR with a non-zero helper exit is a
+# merge the helper did NOT prove: exit 3 below, never "cosmetic".
 post_state="UNKNOWN"; head_ref=""; cross=""
 for attempt in 1 2 3; do
   post="$(gh pr view "$PR" --json state,headRefName,isCrossRepository \
@@ -604,21 +621,21 @@ done
 
 if [ "$post_state" != "MERGED" ]; then
   echo
-  echo "  ⛔ THE MERGE DID NOT LAND — PR #$PR is state=$post_state (gh exited $merge_rc)."
-  echo "     Nothing was merged. Read gh's error above; the PR is unchanged."
+  echo "  ⛔ THE MERGE DID NOT LAND — PR #$PR is state=$post_state (merge helper exited $merge_rc)."
+  echo "     Nothing was merged. Read the helper's refusal above; the PR is unchanged."
   if [ "$merge_rc" -ne 0 ]; then exit "$merge_rc"; fi
   exit 1
 fi
 
 echo
 if [ "$merge_rc" -ne 0 ]; then
-  echo "  ✅ PR #$PR IS MERGED (GitHub says state=MERGED) — the merge LANDED."
-  echo "  ⚠️  …but the merge helper exited $merge_rc AFTER the merge, in post-merge"
-  echo "      cleanup. That is cosmetic: the merge is done and this script exits 0"
-  echo "      because the PR merged. See gh's message above for what it tripped on."
-else
-  echo "  ✅ PR #$PR merged."
+  echo "  ⛔ PR #$PR IS MERGED (GitHub says state=MERGED) but the B-315 landing is"
+  echo "     UNPROVEN: the merge helper exited $merge_rc, so its parent/tree proof"
+  echo "     did not hold or did not run (read its message above). Inspect main now."
+  echo "     Not recording a lane set and not deleting \`$CAPTURED_HEAD_REF\`: they are the evidence."
+  exit 3
 fi
+echo "  ✅ PR #$PR merged."
 
 # ── Record the checked lane set on the PR (WP-1 DoD) ─────────────────────────
 # Runs only after GitHub has confirmed state=MERGED, and only from the lane set

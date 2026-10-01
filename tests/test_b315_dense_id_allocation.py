@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import signal
 import subprocess
 import sys
@@ -8,11 +10,22 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 from backlog_id_alloc import AllocationError, allocation  # noqa: E402
+import b315_merge_harness as harness  # noqa: E402
+import verify_b315_dense_id_allocation as verifier  # noqa: E402
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts/backlog_id_alloc.py"
+SCRIPT = ROOT / "scripts/backlog_id_alloc.py"
+
+
+def _gate_and_helper() -> str:
+    return (
+        (ROOT / "scripts/pre-merge-gate-check.sh").read_text(encoding="utf-8")
+        + "\n"
+        + (ROOT / "scripts/b315_atomic_merge.sh").read_text(encoding="utf-8")
+    )
 
 
 def _backlog(*ids: int) -> str:
@@ -194,37 +207,33 @@ def test_lock_symlink_and_alternate_environment_are_rejected(tmp_path: Path):
     assert result.returncode == 74
     assert not ready.exists()
 
-    root = Path(__file__).resolve().parents[1]
-    gate = (root / "scripts/pre-merge-gate-check.sh").read_text(encoding="utf-8") + "\n" + (root / "scripts/b315_atomic_merge.sh").read_text(encoding="utf-8")
-    lock_section = gate[
-        gate.index("start_backlog_allocation_lock"): gate.index("stop_backlog_allocation_lock")
-    ]
+    helper = (ROOT / "scripts/b315_atomic_merge.sh").read_text(encoding="utf-8")
+    start = helper.index("start_backlog_allocation_lock() {")
+    lock_section = helper[start: helper.index("start_backlog_allocation_lock || exit 1", start)]
+    # This slice used to run from the first `start_…` to the first `stop_…`,
+    # which is defined ABOVE it: an empty string that satisfied every
+    # `not in`. Prove the slice holds the lock code before trusting absences.
+    assert "--git-common-dir" in lock_section and "--hold-lock" in lock_section
     assert "TMPDIR" not in lock_section
     assert "CORELINK_BACKLOG_ALLOC_LOCK" not in lock_section
 
 
 def test_gate_covers_head_base_main_boundary_and_temp_cleanup_fail_closed():
-    root = Path(__file__).resolve().parents[1]
-    gate = (root / "scripts/pre-merge-gate-check.sh").read_text(encoding="utf-8") + "\n" + (root / "scripts/b315_atomic_merge.sh").read_text(encoding="utf-8")
+    gate = _gate_and_helper()
     for marker in (
         'baseRefName',
         '[ "$bk_base_name" = main ]',
         '[ "$CAPTURED_BASE" = "$CAPTURED_MAIN" ]',
         'REMOTE_LEASE_REF=refs/heads/corelink-backlog-id-merge-lock',
-        '--atomic',
-        '--force-with-lease="refs/heads/main:$main_sha_before"',
-        '--force-with-lease="$HEAD_REF:$bk_head"',
-        'neither ref changed',
         'no false merged claim',
         'main_sha_final',
-        'head_oid',
         'backlog_lock_healthy',
         'rm -rf -- "$BACKLOG_TMP"',
         "trap 'exit 130' INT",
         "trap 'exit 143' TERM",
     ):
         assert marker in gate
-    for obsolete in ("--match-head-commit", "gh pr merge", "--squash"):
+    for obsolete in ("--match-head-commit", "gh pr merge", "--squash", "--atomic"):
         assert obsolete not in gate
 
 
@@ -239,38 +248,147 @@ def test_helper_self_test_is_executable():
     assert "PASS" in result.stdout
 
 
-def test_atomic_merge_contract_has_hermetic_race_and_failure_controls():
-    root = Path(__file__).resolve().parents[1]
-    gate = (root / "scripts/pre-merge-gate-check.sh").read_text(encoding="utf-8") + "\n" + (root / "scripts/b315_atomic_merge.sh").read_text(encoding="utf-8")
-    # These controls are intentionally source-level and hermetic: they can run
-    # in CI without a GitHub token while still preventing a regression to the
-    # old squash/CAS shape.
-    controls = (
-        "CAPTURED_HEAD",
-        "CAPTURED_BASE",
-        "CAPTURED_MAIN",
-        "candidate force-pushed",
-        "main moved at push boundary",
-        "atomic main push rejected",
-        "is not MERGED",
-        "lacks a cryptographic signature",
-        "merge commit lacks DCO",
-        "merge parent mismatch",
-        "merge tree mismatch",
-        "refusing to break it automatically",
-        "owner-safe release",
-        "SIGKILL",
+# ── The landing: behaviour, executed against a fake GitHub ───────────────────
+# Each scenario runs the REAL scripts/b315_atomic_merge.sh in a throwaway world
+# whose origin declines every push to main (as branch protection does) and
+# whose `gh` is the harness's model of the PR merge API. See the harness
+# docstring for what that model does and does not prove.
+
+
+@pytest.fixture(scope="module")
+def world_template(tmp_path_factory):
+    root = tmp_path_factory.mktemp("b315-templates")
+    cache: dict = {}
+
+    def template(scenario):
+        key = (scenario.variant, scenario.candidate_ids)
+        if key not in cache:
+            cache[key] = harness.build_world(
+                root / f"t{len(cache)}", candidate_ids=scenario.candidate_ids, variant=scenario.variant
+            )
+        return cache[key]
+
+    return template
+
+
+@pytest.mark.parametrize("scenario", harness.SCENARIOS, ids=lambda scenario: scenario.name)
+def test_landing_scenario(scenario, tmp_path: Path, world_template):
+    run, failures = harness.run_scenario(scenario, tmp_path / "world", world_template(scenario))
+    assert failures == [], f"{failures}\n--- stdout\n{run.out}\n--- stderr\n{run.err}"
+
+
+def test_scenarios_are_named_and_cover_land_dry_run_and_refusal():
+    names = [scenario.name for scenario in harness.SCENARIOS]
+    assert len(names) == len(set(names)) and all(names)
+    outcomes = {(s.rc, s.puts, s.merged, s.dry_run) for s in harness.SCENARIOS}
+    assert (0, 1, True, False) in outcomes  # lands
+    assert (0, 0, False, True) in outcomes  # dry run, endpoint never called
+    assert (1, 0, False, False) in outcomes  # refused before the API
+    assert (1, 1, False, False) in outcomes  # API refused, no merged claim
+    assert (3, 1, True, False) in outcomes  # merged but unproven
+
+
+def _fake_gh(world, *args: str) -> subprocess.CompletedProcess:
+    env = dict(world.env)
+    env["PATH"] = f"{world.bin}{os.pathsep}{env.get('PATH', '')}"
+    env["B315_FAKE_STATE"] = str(world.state)
+    env["B315_FAKE_ORIGIN"] = str(world.origin)
+    return subprocess.run(["gh", *args], cwd=world.work, env=env, capture_output=True, text=True, check=False)
+
+
+def test_fake_github_enforces_the_model_the_scenarios_rely_on(tmp_path: Path):
+    """If the fake accepted these, the refusal scenarios would prove nothing."""
+    world = harness.build_world(tmp_path / "fresh")
+    put = ("api", "-X", "PUT", harness.MERGE_PATH)
+    result = _fake_gh(world, *put, "-f", f"sha={world.head}", "-f", "merge_method=merge")
+    assert result.returncode and "HTTP 405" in result.stderr  # linear history
+    result = _fake_gh(world, *put, "-f", f"sha={world.main0}", "-f", "merge_method=squash")
+    assert result.returncode and "HTTP 409" in result.stderr  # sha pin
+    result = _fake_gh(world, "api", "repos/{owner}/{repo}/contents/BACKLOG.md")
+    assert result.returncode == 2  # anything unmodelled is refused, never faked
+    behind = harness.build_world(tmp_path / "behind", variant="behind")
+    result = _fake_gh(behind, *put, "-f", f"sha={behind.head}", "-f", "merge_method=squash")
+    assert result.returncode and "HTTP 405" in result.stderr  # strict: up to date
+    result = _fake_gh(world, *put, "-f", f"sha={world.head}", "-f", "merge_method=squash")
+    assert result.returncode == 0, result.stderr
+    landed = json.loads(result.stdout)["sha"]
+    git = ["git", "--git-dir", str(world.origin)]
+    parents = subprocess.run([*git, "rev-list", "--parents", "-n", "1", "refs/heads/main"],
+                             env=world.env, capture_output=True, text=True, check=True).stdout.split()
+    trees = [subprocess.run([*git, "rev-parse", f"{oid}^{{tree}}"], env=world.env, capture_output=True,
+                            text=True, check=True).stdout.strip() for oid in (landed, world.head)]
+    assert parents == [landed, world.main0] and trees[0] == trees[1]
+
+
+def test_origin_in_the_harness_declines_a_direct_push_to_main(tmp_path: Path):
+    """The world reproduces production's refusal of the retired design."""
+    world = harness.build_world(tmp_path / "w")
+    result = subprocess.run(
+        ["git", "push", "origin", f"{world.head}:refs/heads/main"],
+        cwd=world.work, env=world.env, capture_output=True, text=True, check=False,
     )
-    for marker in controls:
-        assert marker in gate or marker == "SIGKILL"
+    assert result.returncode and "protected branch hook declined" in result.stderr
 
 
-@pytest.mark.parametrize("mutation", ["--squash", "--match-head-commit", "gh pr merge"])
+# ── The wiring tripwire (scripts/verify_b315_dense_id_allocation.py) ─────────
+
+
+def test_wiring_holds_on_the_real_gate_and_helper():
+    assert verifier.wiring_problems(_gate_and_helper()) == []
+
+
+@pytest.mark.parametrize(
+    ("planted", "named"),
+    [
+        ('git push --atomic --force-with-lease="refs/heads/main:$m" origin "$c:refs/heads/main"',
+         "direct push to main"),
+        ('git push origin "$merge_oid:main"', "direct push to main"),
+        ("gh pr merge \"$PR\" --squash --match-head-commit \"$H\"", "obsolete: gh pr merge"),
+        ('merge_oid="$(git commit-tree "$head_tree" -p "$b" -p "$h")"', 'obsolete: commit-tree "$head_tree"'),
+        ("gh api -X DELETE repos/x/y/git/refs/heads/corelink-backlog-id-merge-lock", "unconditional lease DELETE"),
+    ],
+)
+def test_wiring_names_a_planted_retired_design(planted: str, named: str):
+    problems = verifier.wiring_problems(_gate_and_helper() + "\n" + planted + "\n")
+    assert any(named in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [' -f sha="$CAPTURED_HEAD"', "MERGE_METHOD=squash", 'git merge-base --is-ancestor "$CAPTURED_MAIN" "$CAPTURED_HEAD"'],
+)
+def test_wiring_names_a_removed_guarantee(removed: str):
+    text = _gate_and_helper()
+    mutated = text.replace(removed, "")
+    assert mutated != text, "the mutation did not apply"
+    assert verifier.wiring_problems(mutated), "removing a guarantee left the wiring green"
+
+
+def test_wiring_refuses_empty_text():
+    assert verifier.wiring_problems("   \n") == ["gate + helper text is EMPTY: nothing to check"]
+
+
+# ── The gate wrapper (scripts/pre-merge-gate-check.sh) ──────────────────────
+
+
+def test_gate_header_states_the_real_required_checks():
+    gate = (ROOT / "scripts/pre-merge-gate-check.sh").read_text(encoding="utf-8")
+    header = gate[: gate.index("set -euo pipefail")]
+    assert "Branch protection has `required checks = []`" not in header
+    for fact in ("`dco`", "`cargo fmt --all --check`", "strict", "enforce_admins", "linear history"):
+        assert fact in header, fact
+
+
+def test_gate_reports_a_merged_but_unproven_landing_as_exit_3():
+    gate = (ROOT / "scripts/pre-merge-gate-check.sh").read_text(encoding="utf-8")
+    section = gate[gate.index('if [ "$post_state" != "MERGED" ]; then'): gate.index("# ── Record the checked lane set")]
+    assert "UNPROVEN" in section and "exit 3" in section
+    assert "cosmetic" not in section
+
+
+@pytest.mark.parametrize("mutation", ["--squash", "--match-head-commit", "gh pr merge", "--atomic"])
 def test_obsolete_merge_mutations_are_absent(mutation: str):
-    gate = (Path(__file__).resolve().parents[1] / "scripts/pre-merge-gate-check.sh").read_text(
-        encoding="utf-8"
-    )
-    assert mutation not in gate
+    assert mutation not in _gate_and_helper()
 
 
 def test_head_force_push_after_checks_cannot_replace_expected_h1():
