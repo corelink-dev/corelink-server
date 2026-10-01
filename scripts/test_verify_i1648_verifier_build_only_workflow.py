@@ -38,6 +38,15 @@ class BuildOnlyWorkflowTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             verify(self.source.replace('"workflow": os.environ["GITHUB_WORKFLOW"],', '"token": os.environ["CF_API_TOKEN"],', 1))
 
+    def test_rejects_gha_expression_inside_long_shell_body(self) -> None:
+        with self.assertRaises(AssertionError):
+            verify(self.source.replace(
+                '          BUCKET="${R2_BUCKET:-${AUDIT_R2_BUCKET_DEFAULT}}"',
+                '          DATES="${{ steps.window.outputs.dates }}"\n'
+                '          BUCKET="${R2_BUCKET:-${AUDIT_R2_BUCKET_DEFAULT}}"',
+                1,
+            ))
+
 
 if __name__ == "__main__":
     unittest.main()
