@@ -91,12 +91,12 @@ const AUTHENTICATION_ERROR_CODES = new Set([9106, 10000]);
 const ANSI_SGR = /\u001b\[[0-9;]{0,32}[A-Za-z]/g;
 const CODE_MARKER = /\[code:[ \t]{0,8}([^\]\r\n]{0,16})\]/gi;
 const CODE_PREFIX = /\[code:/gi;
-const ERROR_BANNER = /^✘ \[ERROR\] /m;
+const ERROR_BANNER_PREFIX = "✘ [ERROR] ";
 const REQUEST_NOTE = /^ {2}(?:GET|PUT|POST|PATCH|DELETE|HEAD) (\/\S{1,2048}) -> ([1-5]\d\d)(?: |$)/;
 const API_REQUEST_BANNER = /^A request to the Cloudflare API (?:\((\/\S{1,2048})\) )?failed\.$/;
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const UPLOAD_REPORTED = new RegExp(`^Uploaded ${escapeRegExp(TARGET.workerName)} \\(\\d{1,6}(?:\\.\\d{1,3})? sec\\)$`, "m");
-const BUNDLE_REPORTED = /^Total Upload: \d{1,9}(?:\.\d{1,3})? [KM]iB \/ gzip: \d{1,9}(?:\.\d{1,3})? [KM]iB$/m;
+const UPLOAD_REPORTED_LINE = new RegExp(`^Uploaded ${escapeRegExp(TARGET.workerName)} \\(\\d{1,6}(?:\\.\\d{1,3})? sec\\)$`);
+const BUNDLE_REPORTED_LINE = /^Total Upload: \d{1,9}(?:\.\d{1,3})? [KM]iB \/ gzip: \d{1,9}(?:\.\d{1,3})? [KM]iB$/;
 
 function boundedExitCode(value) {
   return Number.isInteger(value) && value >= 0 && value <= 255 ? value : null;
@@ -178,29 +178,34 @@ export function labelWranglerEndpoint(resource) {
 // read from it.
 const TRUNCATED_BLOCK = Object.freeze({ truncated: true });
 
-function rootErrorBlock(stderr) {
-  const windowCoversStderr = stderr.length <= MAX_ANALYSED_CHARS;
-  const head = stderr.slice(0, MAX_ANALYSED_CHARS).replace(ANSI_SGR, "");
-  const banner = ERROR_BANNER.exec(head);
-  if (!banner) return windowCoversStderr ? null : TRUNCATED_BLOCK;
-  const lines = head.slice(banner.index).split("\n", MAX_ROOT_BLOCK_LINES + 1);
-  if (lines[0].length - banner[0].length > MAX_LINE_CHARS) return TRUNCATED_BLOCK;
+// The single place where Wrangler output is cut to the analysed window, used for
+// stdout and stderr alike. When the output runs past the window, the last line
+// inside it is partial by definition (unless the window ends right after a newline)
+// and is dropped, so no field is ever derived from a partial line. `truncated` says
+// whether the lines stop before the true end of the output.
+export function completeLinesInWindow(text, windowChars = MAX_ANALYSED_CHARS) {
+  if (text.length <= windowChars) return { lines: text.replace(ANSI_SGR, "").split("\n"), truncated: false };
+  const head = text.slice(0, windowChars);
+  return { lines: head.slice(0, head.lastIndexOf("\n") + 1).replace(ANSI_SGR, "").split("\n"), truncated: true };
+}
+
+function rootErrorBlock({ lines, truncated }) {
+  const start = lines.findIndex((line) => line.startsWith(ERROR_BANNER_PREFIX));
+  if (start < 0) return truncated ? TRUNCATED_BLOCK : null;
+  const message = lines[start].slice(ERROR_BANNER_PREFIX.length);
+  if (message.length > MAX_LINE_CHARS) return TRUNCATED_BLOCK;
   const notes = [];
-  let terminated = false;
-  for (let index = 1; index < lines.length; index += 1) {
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (index - start > MAX_ROOT_BLOCK_LINES) return TRUNCATED_BLOCK;
     const line = lines[index];
     if (line.trim() === "") continue;
-    if (!line.startsWith("  ")) {
-      terminated = true;
-      break;
-    }
+    if (!line.startsWith("  ")) return { message, notes };
     if (line.length > MAX_LINE_CHARS) return TRUNCATED_BLOCK;
     notes.push(line);
   }
-  // Without a visible next line the block ends only where stderr itself ends, and
-  // only if the line cap did not stop the split first.
-  if (!terminated && !(windowCoversStderr && lines.length <= MAX_ROOT_BLOCK_LINES)) return TRUNCATED_BLOCK;
-  return { message: lines[0].slice(banner[0].length), notes };
+  // No complete line after the block ends it, so the block runs to the end of the
+  // analysed lines: the end of stderr only when nothing was cut.
+  return truncated ? TRUNCATED_BLOCK : { message, notes };
 }
 
 // The banner messages Wrangler 4.141.0 prints for the failures this route can name,
@@ -282,7 +287,9 @@ function classifyRootBlock({ message, notes }) {
   };
 }
 
-export function classifyWranglerFailure(result) {
+// `windowChars` exists so tests can move the analysed window across small captures;
+// every caller in this route uses the default.
+export function classifyWranglerFailure(result, { windowChars = MAX_ANALYSED_CHARS } = {}) {
   const processExitCode = boundedExitCode(result?.status);
   if (result?.error) {
     return sanitizeProviderFailure({ provider_failure_class: "spawn_failure", process_exit_code: processExitCode });
@@ -292,11 +299,12 @@ export function classifyWranglerFailure(result) {
   // Without a complete Wrangler error block in the analysed head of stderr there is
   // nothing to place as the first failure: no category, code, endpoint or status is
   // read from the remaining text, which may be a later follow-up or an echoed body.
-  const root = rootErrorBlock(stderr);
+  const root = rootErrorBlock(completeLinesInWindow(stderr, windowChars));
   const diagnosis = root && !root.truncated ? classifyRootBlock(root) : UNKNOWN_DIAGNOSIS;
-  // Progress lines are Wrangler's own stdout lines at column 0, naming the fixed
-  // Worker; an echoed body is on stderr and indented, so it cannot produce them.
-  const stdoutHead = stdout.slice(0, MAX_ANALYSED_CHARS).replace(ANSI_SGR, "");
+  // Progress lines are Wrangler's own complete stdout lines, matched whole and
+  // naming the fixed Worker; an echoed body is on stderr and indented, so it cannot
+  // produce them.
+  const stdoutLines = completeLinesInWindow(stdout, windowChars).lines;
   const { codes, wellFormed, prefixes } = codeSummary(diagnosis.codeLines);
   const details = {
     process_exit_code: processExitCode,
@@ -304,9 +312,9 @@ export function classifyWranglerFailure(result) {
     provider_error_codes: codes,
     provider_failure_endpoint: diagnosis.endpoint,
     provider_http_status: diagnosis.status,
-    provider_progress: UPLOAD_REPORTED.test(stdoutHead)
+    provider_progress: stdoutLines.some((line) => UPLOAD_REPORTED_LINE.test(line))
       ? "upload_reported"
-      : BUNDLE_REPORTED.test(stdoutHead) ? "bundle_reported" : "before_bundle_report",
+      : stdoutLines.some((line) => BUNDLE_REPORTED_LINE.test(line)) ? "bundle_reported" : "before_bundle_report",
     provider_output_structure: root?.truncated ? "truncated" : root ? "first_error_block" : "no_structured_error",
   };
   if (wellFormed === 1 && prefixes === 1) {

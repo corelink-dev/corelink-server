@@ -7,6 +7,7 @@ import {
   RouteError,
   TARGET,
   classifyWranglerFailure,
+  completeLinesInWindow,
   labelWranglerEndpoint,
   makeCloudflareApi,
   listNamedD1Databases,
@@ -714,6 +715,80 @@ describe("B-216 protected receiver route admission", () => {
 
   // PR #2877 round-3 finding: a block cut by the window must not be read as complete.
   // Both cases put the cut where the visible part alone would mislead.
+  it("cuts output to whole lines: the last line before a cut window is dropped", () => {
+    expect(completeLinesInWindow("ab\ncd", 5)).toEqual({ lines: ["ab", "cd"], truncated: false });
+    expect(completeLinesInWindow("ab\ncd", 4)).toEqual({ lines: ["ab", ""], truncated: true });
+    expect(completeLinesInWindow("ab\ncd", 3)).toEqual({ lines: ["ab", ""], truncated: true });
+    expect(completeLinesInWindow("ab\ncd", 2)).toEqual({ lines: [""], truncated: true });
+    expect(completeLinesInWindow("\u001b[1mab\u001b[0m\ncd", 13)).toEqual({ lines: ["ab", "cd"], truncated: false });
+    expect(completeLinesInWindow("\u001b[1mab\u001b[0m\ncd", 12)).toEqual({ lines: ["ab", ""], truncated: true });
+    expect(completeLinesInWindow("\u001b[1mab\u001b[0m\ncd", 4)).toEqual({ lines: [""], truncated: true });
+  });
+
+  // PR #2877 round-4 finding, reproduced exactly: the stdout window ending right
+  // after an upload line made a longer, unrecognised line look like progress.
+  it("does not read progress from a stdout line the window cuts", () => {
+    const window = 256 * 1024;
+    const line = `Uploaded ${TARGET.workerName} (0.15 sec)`;
+    const stdout = `${"w".repeat(window - line.length - 1)}\n${line} and more\n`;
+    expect(classifyWranglerFailure({ status: 1, stdout, stderr: "" }).provider_progress).toBe("before_bundle_report");
+    expect(classifyWranglerFailure({ status: 1, stdout: `${"w".repeat(window - line.length - 2)}\n${line}\nmore`, stderr: "" }).provider_progress).toBe("upload_reported");
+    expect(classifyWranglerFailure({ status: 1, stdout: `${"w".repeat(window - line.length - 1)}\n${line}`, stderr: "" }).provider_progress).toBe("upload_reported");
+  });
+
+  // PR #2877 round-4 class fix: no field may be read from a partial line. Each
+  // recognised line of each capture, in stdout and in stderr, is cut by the window
+  // at every offset from its start to two past its end; the cut classification may
+  // keep or lose detail but never claim more than the uncut one.
+  const RECOGNISED_LINE = /^(?:✘ \[ERROR\] |▲ \[WARNING\] |🪵 | {2}\S|Total Upload: |Uploaded )/;
+  const PROGRESS_RANK = { before_bundle_report: 0, bundle_reported: 1, upload_reported: 2 };
+  // The window is moved with classifyWranglerFailure's windowChars option so each cut
+  // costs the size of the capture, not 256 KiB; the 256 KiB default is exercised by
+  // the reproduction above and the window tests below.
+  const sharpenedFields = (cut, full) => [
+    cut.process_exit_code === full.process_exit_code || "process_exit_code",
+    [full.provider_failure_class, "process_exit"].includes(cut.provider_failure_class) || "provider_failure_class",
+    [full.provider_error_code, null].includes(cut.provider_error_code) || "provider_error_code",
+    [JSON.stringify(full.provider_error_codes), "[]"].includes(JSON.stringify(cut.provider_error_codes)) || "provider_error_codes",
+    [full.provider_error_category, "unknown_cli_failure"].includes(cut.provider_error_category) || "provider_error_category",
+    [full.provider_failure_endpoint, "none_reported"].includes(cut.provider_failure_endpoint) || "provider_failure_endpoint",
+    [full.provider_http_status, null].includes(cut.provider_http_status) || "provider_http_status",
+    PROGRESS_RANK[cut.provider_progress] <= PROGRESS_RANK[full.provider_progress] || "provider_progress",
+    [full.provider_output_structure, "truncated"].includes(cut.provider_output_structure) || "provider_output_structure",
+  ].filter((field) => field !== true);
+  it.each(Object.keys(WRANGLER_4141_FAILURES))("never sharpens %s when the window cuts a recognised line", (name) => {
+    const captured = WRANGLER_4141_FAILURES[name];
+    const full = classifyWranglerFailure(captured);
+    const windowChars = Math.max(captured.stdout.length, captured.stderr.length) + 4;
+    const violations = [];
+    let cuts = 0;
+    let truncatedCuts = 0;
+    for (const stream of ["stdout", "stderr"]) {
+      const text = captured[stream];
+      let lineStart = 0;
+      for (const line of text.split("\n")) {
+        const lineEnd = lineStart + line.length;
+        if (RECOGNISED_LINE.test(line.replace(/\u001b\[[0-9;]*m/g, ""))) {
+          for (let offset = lineStart; offset <= lineEnd + 2; offset += 1) {
+            // The padding line puts the window boundary `offset` characters into the
+            // stream; the tail keeps that stream longer than the window, while the
+            // other stream stays inside it.
+            const cutText = `${"w".repeat(windowChars - offset - 1)}\n${text}\nzzzzzzzz`;
+            const cut = classifyWranglerFailure({ ...captured, [stream]: cutText }, { windowChars });
+            const sharpened = sharpenedFields(cut, full);
+            if (sharpened.length > 0) violations.push(`${stream}@${offset}: ${sharpened.join(",")}`);
+            if (cut.provider_output_structure === "truncated") truncatedCuts += 1;
+            cuts += 1;
+          }
+        }
+        lineStart = lineEnd + 1;
+      }
+    }
+    expect(violations).toEqual([]);
+    expect(cuts).toBeGreaterThan(100);
+    expect(truncatedCuts).toBeGreaterThan(0);
+  });
+
   it("reports a first error block cut by the analysed window as truncated", () => {
     const window = 256 * 1024;
     const padTo = (visible) => `${"w".repeat(window - visible.length - 1)}\n${visible}`;
@@ -756,14 +831,22 @@ describe("B-216 protected receiver route admission", () => {
 
   it("reads only the head of stderr for the first error block", () => {
     const filler = "x".repeat(4 * 1024 * 1024);
-    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] fetch failed\n${filler}` })).toMatchObject({
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] fetch failed\n▲ [WARNING] x\n${filler}` })).toMatchObject({
       provider_error_category: "network_failure",
       provider_output_structure: "first_error_block",
     });
+    // The 4 MiB line after the block is cut by the window, so it cannot end the block.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] fetch failed\n${filler}` })).toMatchObject({
+      provider_error_category: "unknown_cli_failure",
+      provider_output_structure: "truncated",
+    });
     // Ending exactly at the window: complete only because stderr ends there too.
     expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 24)}\n✘ [ERROR] fetch failed\n` }).provider_error_category).toBe("network_failure");
-    // Ending before stderr does: complete only because its terminating line starts inside.
-    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 25)}\n✘ [ERROR] fetch failed\n▲ [WARNING] more` }).provider_error_category).toBe("network_failure");
+    // Ending before stderr does: complete only because a whole terminating line is
+    // inside; a terminating line the window cuts is partial and is not read either.
+    const blockThenWarning = "\n✘ [ERROR] fetch failed\n▲ [WARNING] x\n";
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - blockThenWarning.length)}${blockThenWarning}more` }).provider_error_category).toBe("network_failure");
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 25)}\n✘ [ERROR] fetch failed\n▲ [WARNING] more` })).toMatchObject({ provider_error_category: "unknown_cli_failure", provider_output_structure: "truncated" });
     expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 24)}\n✘ [ERROR] fetch failed\n  ` })).toMatchObject({ provider_error_category: "unknown_cli_failure", provider_output_structure: "truncated" });
     expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 23)}\n✘ [ERROR] fetch failed\n` })).toMatchObject({ provider_error_category: "unknown_cli_failure", provider_output_structure: "truncated" });
     // A block past the line cap, or with a line past the line cap, is cut too.
