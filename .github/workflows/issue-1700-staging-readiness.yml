@@ -1,0 +1,139 @@
+name: issue-1700 scoped staging readiness
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/issue-1700-staging-readiness.yml'
+      - 'scripts/issue_1700_staging_readiness.py'
+      - 'scripts/validate_load_target_receipt.py'
+      - 'scripts/verify_staging_target.py'
+      - 'tests/test_verify_staging_target.py'
+      - 'infra/staging/README.md'
+      - 'tests/test_issue_1700_staging_readiness.py'
+      - 'tests/test_issue_1700_staging_readiness_contract.py'
+      - 'docs/operator/issue-1700-scoped-readiness.md'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Verify existing scoped credentials; this workflow never mints or revokes'
+        required: true
+        type: choice
+        options:
+          - readiness
+          - rotation
+          - teardown
+      expected_sha:
+        description: 'Exact protected main operator source SHA'
+        required: true
+        type: string
+      expected_release:
+        description: 'Deployed release from the accepted native and domain custody receipts'
+        required: true
+        type: string
+      confirm:
+        description: 'Type verify-scoped-staging-1700'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('issue-1700-readiness-contract-pr-{0}', github.event.pull_request.number) || 'issue-1700-staging-custom-domain' }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: credentialless scoped readiness contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require a numeric PR identity before checkout
+        if: github.event_name == 'pull_request'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Exercise the actual bounded client and protected workflow contract
+        run: |
+          set -euo pipefail
+          python3 -B -S scripts/verify_staging_target.py
+          python3 -B -S scripts/verify_staging_topology_contract.py --expect ready
+          python3 -B -S -m unittest -v \
+            tests/test_issue_1700_staging_readiness.py \
+            tests/test_issue_1700_staging_readiness_contract.py \
+            tests/test_verify_staging_target.py \
+            tests/test_verify_staging_topology_contract.py
+
+  readiness:
+    name: protected scoped staging readiness
+    if: >-
+      github.repository == 'HuGR-dev/corelink-server' &&
+      github.repository_id == '1232040291' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' && github.ref_protected
+    needs: contract
+    runs-on: ubuntu-24.04
+    environment: staging
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Confirm the protected source and separately attributed deployed release
+        env:
+          MODE: ${{ inputs.mode }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EXPECTED_RELEASE: ${{ inputs.expected_release }}
+          CONFIRM: ${{ inputs.confirm }}
+          K6_TARGET_HOST: ${{ secrets.K6_TARGET_HOST }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_RELEASE" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" = "$GITHUB_SHA"
+          test "$CONFIRM" = verify-scoped-staging-1700
+          test "$K6_TARGET_HOST" = https://staging.corelink.humangr.com
+          case "$MODE" in readiness|rotation|teardown) ;; *) exit 1 ;; esac
+      - name: Checkout the protected dispatch source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Resolve the exact numeric hosted job identity
+        id: job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          jobs="$(gh api "repos/HuGR-dev/corelink-server/actions/runs/$GITHUB_RUN_ID/jobs" \
+            --jq '[.jobs[] | select(.name == "protected scoped staging readiness") | .id] | if length == 1 then .[0] else error("job cardinality") end')"
+          [[ "$jobs" =~ ^[1-9][0-9]*$ ]]
+          echo "job_id=$jobs" >> "$GITHUB_OUTPUT"
+      - name: Verify canonical identity with missing and invalid credential controls
+        env:
+          MODE: ${{ inputs.mode }}
+          EXPECTED_RELEASE: ${{ inputs.expected_release }}
+          JOB_ID: ${{ steps.job.outputs.job_id }}
+          K6_TARGET_IDENTITY_RECEIPT: ${{ secrets.K6_TARGET_IDENTITY_RECEIPT }}
+          K6_STAGING_PAT: ${{ secrets.K6_STAGING_PAT }}
+          K6_STAGING_PREVIOUS_PAT: ${{ secrets.K6_STAGING_PREVIOUS_PAT }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 -B -S scripts/issue_1700_staging_readiness.py \
+            --mode "$MODE" --expected-release "$EXPECTED_RELEASE" \
+            --source-sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" --job-id "$JOB_ID" \
+            --output "$RUNNER_TEMP/i1700-readiness/receipt.json"
+      - name: Retain only the redacted status and attribution receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: issue-1700-scoped-readiness-${{ github.run_id }}
+          path: ${{ runner.temp }}/i1700-readiness/receipt.json
+          retention-days: 30
+          if-no-files-found: warn

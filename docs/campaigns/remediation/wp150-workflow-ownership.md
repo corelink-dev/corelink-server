@@ -4,8 +4,8 @@ Canonical closed ownership map for tracked GitHub Actions workflows.
 Update this manifest with every workflow add, rename or removal. Unknown ownership remains `LEAD-BLOCKED | blocked`.
 Historical owned assignments are preserved from B131-B167.md at immutable base 648ecdccd229bdb5154b86843053c28b9cce9d36; the added workflow rows have no evidence-backed owner and remain blocked.
 
-workflow-count: 274
-workflow-paths-sha256: 5a4fa6c9315c4df862e037b88af775a6d29192d9c87917bfd370ebc920821bfa
+workflow-count: 280
+workflow-paths-sha256: 55e06600071bf412fb393f1e7232b0d9c79de7ba2ea4f6c7a4cbf4510bd36972
 
 ```wp-workflow-ownership
 # workflow path | owner WP or LEAD-BLOCKED | status
@@ -149,8 +149,9 @@ workflow-paths-sha256: 5a4fa6c9315c4df862e037b88af775a6d29192d9c87917bfd370ebc92
 .github/workflows/issue-1690-p12-p14-verifier.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1699-ownership-preparation.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1700-container-staging-deploy.yml | LEAD-BLOCKED | blocked
-.github/workflows/issue-1700-staging-custom-domain.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1700-route-inventory-ci.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1700-staging-custom-domain.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-1700-staging-readiness.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1720-cloudflare-drift-audit.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1720-cloudflare-drift-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-1721-r2-lock-proof.yml | LEAD-BLOCKED | blocked
@@ -171,6 +172,8 @@ workflow-paths-sha256: 5a4fa6c9315c4df862e037b88af775a6d29192d9c87917bfd370ebc92
 .github/workflows/issue-2152-cyclonedx-diagnostic.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2156-ci-bundle-1-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2161-staging-ownership.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2165-ecr-image-build.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2165-kms-real.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2167-b071-owner-packet.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2169-b105-hosted-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2176-grpc-deny-gate.yml | LEAD-BLOCKED | blocked
@@ -187,7 +190,9 @@ workflow-paths-sha256: 5a4fa6c9315c4df862e037b88af775a6d29192d9c87917bfd370ebc92
 .github/workflows/issue-2418-rustup-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2496-b216-verifier.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2568-sla-credit-real.yml | #2568 | owned
+.github/workflows/issue-2572-draft-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2574-staging-grpc-diagnostic.yml | #2574 | owned
+.github/workflows/issue-2575-staging-grpc-probe.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2576-admission.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2579-cas-ownership.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2580-webhook-ownership.yml | LEAD-BLOCKED | blocked
@@ -211,6 +216,7 @@ workflow-paths-sha256: 5a4fa6c9315c4df862e037b88af775a6d29192d9c87917bfd370ebc92
 .github/workflows/issue-2699-cloudflare-handoff-contract.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2702-backlog-policy.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-2730-dsr-alert-receiver.yml | LEAD-BLOCKED | blocked
+.github/workflows/issue-2776-r2-cleanup.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-605-billing-fixture.yml | LEAD-BLOCKED | blocked
 .github/workflows/issue-ci-pack.yml | LEAD-BLOCKED | blocked
 .github/workflows/legal-changes-review.yml | LEAD-BLOCKED | blocked
