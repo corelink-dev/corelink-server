@@ -5,9 +5,37 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
 ) -> Result<(), String> {
     let workflow = release_workflow()?;
     assert_release_contract(&workflow);
+    assert_draft_only_release_contract(&workflow);
     assert_release_tag_shell_boundary(&workflow);
     assert_publication_inventory_contract(&workflow);
     assert_retry_manifest_contract(&workflow);
+
+    for (mutant, label) in [
+        (
+            workflow.replacen("default: draft-only", "default: signed-public", 1),
+            "draft-only must remain the default",
+        ),
+        (
+            workflow.replace(
+                "always() && inputs.release_mode == 'signed-public' &&",
+                "always() && true &&",
+            ),
+            "draft-only must never reach public publication",
+        ),
+        (
+            workflow.replace(
+                "if: inputs.release_mode == 'signed-public'\n    needs: [sign-linux, release]",
+                "if: always()\n    needs: [sign-linux, release]",
+            ),
+            "Windows signer must stay out of draft-only mode",
+        ),
+    ] {
+        assert_ne!(mutant, workflow, "{label} mutation must take effect");
+        assert!(
+            std::panic::catch_unwind(|| assert_draft_only_release_contract(&mutant)).is_err(),
+            "draft-only release contract accepted {label}"
+        );
+    }
 
     for target in [
         "x86_64-unknown-linux-gnu",
@@ -110,7 +138,7 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
         "provenance must directly depend on the staged release"
     );
     let publish_without_release = workflow.replace(
-        "needs: [release-slsa3, release-readiness, final-manifest, release]",
+        "needs: [release-slsa3, release-readiness, final-manifest, release, sign-windows]",
         "needs: [release-slsa3, release-readiness, final-manifest]",
     );
     assert!(
@@ -184,7 +212,7 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
 
     let windows = load_workflow("sign-windows.yml")?;
     assert!(
-        workflow.contains("sign-windows:\n    needs: [sign-linux, release]"),
+        workflow.contains("sign-windows:\n    if: inputs.release_mode == 'signed-public'\n    needs: [sign-linux, release]"),
         "Windows signing must wait for Linux through a release-root needs edge"
     );
     assert!(
@@ -238,13 +266,57 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
         "a signed archive without aggregate checksum refresh must fail the structural control"
     );
     let nested_windows_archive = workflow.replace(
-        "zip -q -X \"$ARCHIVE_PATH\" corelink.exe",
-        "ditto -c -k --sequesterRsrc --keepParent corelink.exe archive.zip",
+        "ZipInfo(\"corelink.exe\", (1980, 1, 1, 0, 0, 0))",
+        "ZipInfo(\"nested/corelink.exe\", (1980, 1, 1, 0, 0, 0))",
     );
     assert!(
         std::panic::catch_unwind(|| assert_release_contract(&nested_windows_archive)).is_err(),
         "a nested ditto Windows archive must fail the structural control"
     );
+    for (mutant, label) in [
+        (
+            workflow.replace(
+                "uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0",
+                "uses: actions/setup-python@v7",
+            ),
+            "unpinned Windows packaging Python setup",
+        ),
+        (
+            workflow.replace("python-version: \"3.12\"", "python-version: \"3.13\""),
+            "changed Windows packaging Python version",
+        ),
+        (
+            workflow.replace("python -c $pythonCode", "python --version"),
+            "missing deterministic Windows packaging invocation",
+        ),
+        (
+            workflow.replace(
+                "Set-Content -LiteralPath $sidecar -Value \"$actual  $([IO.Path]::GetFileName($file))\" -NoNewline -Encoding ascii",
+                "sidecar write removed",
+            ),
+            "missing Windows packaging checksum sidecar write",
+        ),
+        (
+            workflow.replace(
+                "$expected = (Get-Content -LiteralPath $sidecar).Split(' ')[0]",
+                "$expected = '0'",
+            ),
+            "missing Windows packaging checksum sidecar read",
+        ),
+        (
+            workflow.replace(
+                "if ($actual -ne $expected) { throw \"SHA-256 sidecar mismatch: $file\" }",
+                "sidecar verification removed",
+            ),
+            "missing Windows packaging checksum sidecar verification",
+        ),
+    ] {
+        assert_ne!(mutant, workflow, "{label} mutation must take effect");
+        assert!(
+            std::panic::catch_unwind(|| assert_release_contract(&mutant)).is_err(),
+            "release contract accepted {label}"
+        );
+    }
     let workflow_run_signer = load_workflow("notarize-macos.yml")?.replace(
         "workflow_call:",
         "workflow_run:\n    workflows: [\"sign-windows\"]",

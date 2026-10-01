@@ -21,6 +21,9 @@ on:
       manifest_sha256:
         required: true
         type: string
+      release_mode:
+        required: true
+        type: string
     secrets:
       CORELINK_CLI_RELEASE_TOKEN:
         required: true
@@ -48,19 +51,39 @@ jobs:
           TAG: ${{ inputs.release_tag }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
         run: |
           set -euo pipefail
           case "${TAG}" in cli-v*) ;; *) exit 1 ;; esac
           test "${GITHUB_REF}" = "refs/tags/${TAG}"
           test "${GITHUB_SHA}" = "${SOURCE_SHA}"
+          case "${RELEASE_MODE}" in draft-only|signed-public) ;; *) echo "::error::unknown release mode" >&2; exit 1 ;; esac
+          RELEASE_API="${RUNNER_TEMP}/corelink-slsa-release.json"
+          gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${RELEASE_API}"
+          python3 - "${RELEASE_API}" "${TAG}" <<'PY'
+          import json, sys
+          release = json.load(open(sys.argv[1], encoding="utf-8"))
+          if (release.get("tag_name") != sys.argv[2] or release.get("draft") is not True
+                  or release.get("published_at") is not None):
+              raise SystemExit("SLSA may only consume the exact unpublished draft candidate")
+          if any(asset.get("name") == "staging-manifest.json" for asset in release.get("assets", [])):
+              raise SystemExit("private staging manifest remains attached before SLSA")
+          PY
           mkdir release-assets
           gh release download "${TAG}" --repo HuGR-Labs/corelink-cli \
             --dir release-assets --pattern 'corelink-*'
           gh release download "${TAG}" --repo HuGR-Labs/corelink-cli \
-            --dir release-assets --pattern checksums.txt --pattern release-manifest.json --clobber
+            --dir release-assets --pattern checksums.txt --pattern release-manifest.json
           test "$(shasum -a 256 release-assets/release-manifest.json | awk '{print $1}')" = "${MANIFEST_SHA256}"
-          python3 scripts/cli_release_manifest.py verify --directory release-assets \
-            --manifest release-assets/release-manifest.json --tag "${TAG}" --source-sha "${SOURCE_SHA}"
+          if [ "${RELEASE_MODE}" = "draft-only" ]; then
+            python3 scripts/cli_release_draft_manifest.py verify-manifest \
+              --directory release-assets --manifest release-assets/release-manifest.json \
+              --public-key docs/internal/gpg-release-pubkey.asc --tag "${TAG}" \
+              --source-sha "${SOURCE_SHA}" --manifest-sha256 "${MANIFEST_SHA256}"
+          else
+            python3 scripts/cli_release_manifest.py verify --directory release-assets \
+              --manifest release-assets/release-manifest.json --tag "${TAG}" --source-sha "${SOURCE_SHA}"
+          fi
 
       - name: Derive exact manifest subjects
         id: subjects
@@ -122,10 +145,32 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
           TAG: ${{ inputs.release_tag }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
         run: |
           set -euo pipefail
-          gh release upload "${TAG}" --repo HuGR-Labs/corelink-cli --clobber \
-            provenance.intoto.jsonl provenance.intoto.jsonl.bundle
+          case "${RELEASE_MODE}" in
+            draft-only)
+              RELEASE_API="${RUNNER_TEMP}/corelink-slsa-upload-release.json"
+              gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${RELEASE_API}"
+              python3 - "${RELEASE_API}" "${TAG}" <<'PY'
+          import json, sys
+          release = json.load(open(sys.argv[1], encoding="utf-8"))
+          if (release.get("tag_name") != sys.argv[2] or release.get("draft") is not True
+                  or release.get("published_at") is not None):
+              raise SystemExit("provenance upload requires the exact unpublished draft")
+          names = [asset.get("name") for asset in release.get("assets", [])]
+          if any(name in {"provenance.intoto.jsonl", "provenance.intoto.jsonl.bundle"} for name in names):
+              raise SystemExit("draft provenance already exists; refusing to replace it")
+          PY
+              gh release upload "${TAG}" --repo HuGR-Labs/corelink-cli \
+                provenance.intoto.jsonl provenance.intoto.jsonl.bundle
+              ;;
+            signed-public)
+              gh release upload "${TAG}" --repo HuGR-Labs/corelink-cli --clobber \
+                provenance.intoto.jsonl provenance.intoto.jsonl.bundle
+              ;;
+            *) echo "::error::unknown release mode; refusing provenance upload" >&2; exit 1 ;;
+          esac
 
       - name: Verify official identity, issuer, and every exact subject
         env:

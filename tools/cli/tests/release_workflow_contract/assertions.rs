@@ -57,7 +57,7 @@ fn assert_initial_release_target_inventory(workflow: &str) {
 pub(super) fn assert_release_contract(workflow: &str) {
     assert_initial_release_target_inventory(workflow);
     for required in [
-        "description: \"Existing cli-vMAJOR.MINOR.PATCH tag to build and publish\"",
+        "description: \"Existing cli-vMAJOR.MINOR.PATCH tag bound to the exact source commit\"",
         "HuGR-Labs/corelink-cli",
         "EXPECTED_ZIG_VERSION=0.16.0",
         "tool: cargo-zigbuild@0.19.8",
@@ -69,12 +69,25 @@ pub(super) fn assert_release_contract(workflow: &str) {
         "- name: Checkout",
         "corelink-package-${TARGET_NAME}",
         "Validate matrix target values before shell use",
-        "zip -q -X \"$ARCHIVE_PATH\" corelink.exe",
-        "ARCHIVE_MEMBERS=\"$(unzip -Z1 \"$ARCHIVE_PATH\")\"",
-        "Windows signer archive must contain exactly corelink.exe",
+        "- name: Set up pinned Python for deterministic Windows packaging",
+        "uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0",
+        "python-version: \"3.12\"",
+        "shell: pwsh",
+        "python -c $pythonCode",
+        "New-Item -ItemType Directory -Path (Join-Path $PWD 'out') -Force | Out-Null",
+        "ZipInfo(\"corelink.exe\", (1980, 1, 1, 0, 0, 0))",
+        "info.create_system=0",
+        "info.external_attr=0",
+        "info.compress_type=ZIP_STORED",
+        "assert check.namelist()==[\"corelink.exe\"]",
+        "assert hashlib.sha256(archived).digest()==hashlib.sha256(payload).digest()",
+        "Set-Content -LiteralPath $sidecar -Value \"$actual  $([IO.Path]::GetFileName($file))\" -NoNewline -Encoding ascii",
+        "$expected = (Get-Content -LiteralPath $sidecar).Split(' ')[0]",
+        "if ($actual -ne $expected) { throw \"SHA-256 sidecar mismatch: $file\" }",
+        "Get-FileHash -LiteralPath $file -Algorithm SHA256",
         "signer_name: corelink-linux-arm64",
         "${TARGET_SIGNER_NAME}.tar.gz",
-        "${TARGET_SIGNER_NAME}.zip",
+        "$archive = Join-Path $PWD \"out\\${env:TARGET_SIGNER_NAME}.zip\"",
         "(cd dist && shasum -a 256 -c \"$(basename \"$CHECKSUM\")\")",
         "Read back published artifacts and verify release-root digests",
         "--pattern 'corelink-*'",
@@ -86,15 +99,14 @@ pub(super) fn assert_release_contract(workflow: &str) {
         "final-manifest:",
         "RELEASE_API=\"${RUNNER_TEMP}/corelink-final-manifest-release.json\"",
         "case \"${STAGING_ASSET_COUNT}\" in",
-        "re-derive the complete",
         "--pattern 'corelink-*' --pattern checksums.txt --pattern release-manifest.json",
         "cli_release_manifest.py verify --directory final-assets",
         "STAGING_ASSET_ID=\"$(python3 - \"${RELEASE_API}\"",
         "gh api --method DELETE \"repos/HuGR-Labs/corelink-cli/releases/assets/${STAGING_ASSET_ID}\"",
         "STAGING_ASSET_COUNT=\"$(gh api \"repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}\"",
         "release-slsa3:",
-        "release-slsa3:\n    needs: [final-manifest, release-readiness, release]\n    # Called workflows cannot elevate the caller's token permissions. Grant\n    # OIDC only to this provenance call; all other release jobs retain the\n    # workflow-level contents:read default.\n    permissions:\n      attestations: write\n      contents: read\n      id-token: write\n    uses: ./.github/workflows/release-slsa3.yml\n    with:\n      release_tag: ${{ inputs.release_tag }}\n      source_sha: ${{ needs.release.outputs.source_sha }}\n      manifest_sha256: ${{ needs.final-manifest.outputs.sha256 }}",
-        "publish-release:\n    name: publish verified signed release\n    needs: [release-slsa3, release-readiness, final-manifest, release]",
+        "release-slsa3:\n    needs: [final-manifest, release-readiness, release]\n    # Called workflows cannot elevate the caller's token permissions. Grant\n    # OIDC only to this provenance call; all other release jobs retain the\n    # workflow-level contents:read default.\n    permissions:\n      attestations: write\n      contents: read\n      id-token: write\n    uses: ./.github/workflows/release-slsa3.yml\n    with:\n      release_tag: ${{ inputs.release_tag }}\n      source_sha: ${{ needs.release.outputs.source_sha }}\n      manifest_sha256: ${{ needs.final-manifest.outputs.sha256 }}\n      release_mode: ${{ needs.final-manifest.outputs.release_mode }}",
+        "publish-release:\n    name: publish verified signed release\n    needs: [release-slsa3, release-readiness, final-manifest, release, sign-windows]\n    if: >-\n      always() && inputs.release_mode == 'signed-public'",
         "Verify complete authenticated inventory before publication",
         "gh release download \"${TAG}\" --repo HuGR-Labs/corelink-cli --dir \"${PUBLISHED}\" --clobber",
         "scripts/verify_cli_release_inventory.py",
@@ -177,6 +189,27 @@ pub(super) fn assert_release_tag_shell_boundary(workflow: &str) {
             && !workflow.contains("gh release download \"${{ inputs.release_tag }}\""),
         "release commands must consume validated TAG"
     );
+}
+
+pub(super) fn assert_draft_only_release_contract(workflow: &str) {
+    for required in [
+        "release_mode:\n        description: \"Draft-only by default; signed-public requires every production signature gate\"\n        required: true\n        type: choice\n        default: draft-only",
+        "options:\n          - draft-only\n          - signed-public",
+        "if: inputs.release_mode == 'signed-public'\n    needs: [sign-linux, release]",
+        "Linux artifacts have detached GPG signatures. The Windows artifact is unsigned and deferred; no Authenticode or RFC 3161 timestamp is claimed.",
+        "draft-only mode refuses to overwrite or resume a non-empty draft",
+        "draft-only mode requires exactly one staging manifest and refuses retry/replacement",
+        "scripts/cli_release_draft_manifest.py create",
+        "scripts/cli_release_draft_manifest.py verify-manifest",
+        "scripts/verify_cli_release_draft.py",
+        "needs.sign-windows.result == 'skipped'",
+        "always() && inputs.release_mode == 'draft-only'",
+        "always() && inputs.release_mode == 'signed-public' &&\n      needs.release.outputs.release_mode == 'signed-public' &&",
+        "needs.sign-windows.result == 'success'",
+        "GPG_PACKET_READY",
+    ] {
+        assert!(workflow.contains(required), "draft-only release contract missing {required}");
+    }
 }
 
 pub(super) fn assert_downstream_signer_contract(name: &str, workflow: &str) {
@@ -341,9 +374,10 @@ pub(super) fn assert_publication_inventory_contract(workflow: &str) {
 
 pub(super) fn assert_retry_manifest_contract(workflow: &str) {
     let retry = workflow
-        .split("            0)\n")
+        .split("            signed-public)\n")
         .nth(1)
-        .and_then(|rest| rest.split("            1)\n").next());
+        .and_then(|rest| rest.split("                0)\n").nth(1))
+        .and_then(|rest| rest.split("                1)\n").next());
     assert!(
         retry.is_some(),
         "final-manifest retry branch must be present"
