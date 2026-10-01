@@ -28,6 +28,9 @@ def validate_task_snapshots(
         response = listed.get(desired_status)
         if not isinstance(response, Mapping):
             raise TaskSnapshotError(f"missing {desired_status} list response")
+        failures = response.get("failures", [])
+        if not isinstance(failures, list) or failures:
+            raise TaskSnapshotError(f"{desired_status} task list reported failures")
         arns = response.get("taskArns")
         if not isinstance(arns, list) or any(not isinstance(arn, str) or not arn for arn in arns):
             raise TaskSnapshotError(f"invalid {desired_status} task list")
@@ -46,6 +49,17 @@ def validate_task_snapshots(
             raise TaskSnapshotError("DescribeTasks returned a task outside the target cluster")
         if task.get("lastStatus") != "STOPPED":
             raise TaskSnapshotError("target cluster still has a task that is not terminal")
+
+
+def parse_describe_response(response: Mapping[str, object]) -> list[Mapping[str, object]]:
+    """Accept AWS's omitted-or-empty optional failures member, reject failures."""
+    failures = response.get("failures", [])
+    tasks = response.get("tasks")
+    if not isinstance(failures, list) or failures or not isinstance(tasks, list):
+        raise TaskSnapshotError("DescribeTasks reported failures or an invalid task list")
+    if any(not isinstance(task, Mapping) for task in tasks):
+        raise TaskSnapshotError("DescribeTasks returned an invalid task entry")
+    return tasks
 
 
 def _aws_json(*args: str) -> Mapping[str, object]:
@@ -77,11 +91,7 @@ def assert_cluster_idle(cluster_arn: str) -> None:
         response = _aws_json(
             "ecs", "describe-tasks", "--cluster", cluster_arn, "--tasks", *arns[start : start + 100]
         )
-        failures = response.get("failures")
-        tasks = response.get("tasks")
-        if failures != [] or not isinstance(tasks, list):
-            raise TaskSnapshotError("DescribeTasks reported failures or an invalid task list")
-        described.extend(task for task in tasks if isinstance(task, Mapping))
+        described.extend(parse_describe_response(response))
 
     validate_task_snapshots(listed, described, cluster_arn)
     print(f"ECS cluster task snapshot is terminal ({len(arns)} tasks checked)")

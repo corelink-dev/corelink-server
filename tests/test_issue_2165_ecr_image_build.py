@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from issue_2165_image_budget import BudgetError, validate_budget, validate_cleanup_deadline  # noqa: E402
-from issue_2165_cleanup_tasks import TASK_DESIRED_STATUSES, TaskSnapshotError, validate_task_snapshots  # noqa: E402
+from issue_2165_cleanup_tasks import TASK_DESIRED_STATUSES, TaskSnapshotError, parse_describe_response, validate_task_snapshots  # noqa: E402
 from verify_issue_2165_ecr_image_build import ContractError, validate  # noqa: E402
 
 
@@ -87,7 +87,16 @@ class CleanupTaskSnapshotTests(unittest.TestCase):
         self.assertEqual(TASK_DESIRED_STATUSES, ("RUNNING", "STOPPED"))
 
     def test_empty_running_and_stopped_lists_are_idle(self) -> None:
+        # ListTasks' documented response omits failures when there are none.
         validate_task_snapshots({"RUNNING": {"taskArns": []}, "STOPPED": {"taskArns": []}}, [], self.cluster)
+
+    def test_failed_list_or_describe_response_cannot_prove_idleness(self) -> None:
+        listed = {"RUNNING": {"taskArns": [], "failures": [{"reason": "MISSING"}]}, "STOPPED": {"taskArns": []}}
+        with self.assertRaisesRegex(TaskSnapshotError, "reported failures"):
+            validate_task_snapshots(listed, [], self.cluster)
+        with self.assertRaisesRegex(TaskSnapshotError, "reported failures"):
+            parse_describe_response({"tasks": [], "failures": [{"reason": "MISSING"}]})
+        self.assertEqual(parse_describe_response({"tasks": []}), [])
 
     def test_stopped_desired_but_running_last_status_blocks_deletion(self) -> None:
         listed = {"RUNNING": {"taskArns": []}, "STOPPED": {"taskArns": [self.task]}}

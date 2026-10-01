@@ -67,7 +67,8 @@ def validate(workflow: str, runtime: str, cleanup_tasks: str = "") -> None:
         '"ecs", "list-tasks", "--cluster", cluster_arn, "--desired-status", status',
         '"ecs", "describe-tasks"',
         'task.get("lastStatus") != "STOPPED"',
-        'response.get("failures")',
+        'response.get("failures", [])',
+        'not isinstance(failures, list) or failures',
     )
     if any(marker not in cleanup_tasks for marker in required_cleanup_tasks):
         raise ContractError("cleanup task check must describe RUNNING and STOPPED desired-state results and fail closed before deletion")
