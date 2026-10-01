@@ -2,6 +2,7 @@
 """Fail-closed ownership census for signup-family writer changes (#2582)."""
 from pathlib import Path
 import os
+import re
 import subprocess
 import sys
 
@@ -18,11 +19,43 @@ ALLOWED = {
     "crates/corelink-container/src/routes/signup_tests.rs",
     "crates/corelink-container/src/signup_d1_http.rs",
     "scripts/verify_issue_2582_signup_ownership.py",
+    "tests/test_verify_issue_2582_signup_ownership.py",
 }
+# changelog-validate requires an ADDED changelog.d fragment on every feat:/fix:
+# PR, so a signup-writer change may carry exactly one more shape: a flat,
+# lowercase, ADDED fragment. A modified or deleted fragment, a nested or dotted
+# path, CHANGELOG.md and every other path stay out of scope. Added-ness comes
+# from git (--diff-filter=A), never from the path alone. The README exclusion
+# mirrors changelog-validate; the lowercase first character already refuses it.
+CHANGELOG_FRAGMENT = re.compile(r"^changelog\.d/[a-z0-9][a-z0-9._-]*\.md$")
+CHANGELOG_README = "changelog.d/README.md"
 
 
 def source(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
+
+
+def is_added_changelog_fragment(path: str, added: frozenset[str] | set[str]) -> bool:
+    return (
+        path in added
+        and path != CHANGELOG_README
+        and CHANGELOG_FRAGMENT.fullmatch(path) is not None
+    )
+
+
+def out_of_scope_paths(changed: set[str], added: frozenset[str] | set[str]) -> list[str]:
+    return sorted(
+        path for path in changed
+        if path not in ALLOWED and not is_added_changelog_fragment(path, added)
+    )
+
+
+def git_names(*diff_args: str) -> list[str]:
+    return subprocess.check_output(
+        ["git", "diff", "--name-only", *diff_args],
+        cwd=ROOT,
+        text=True,
+    ).splitlines()
 
 
 def verify_diff_scope() -> None:
@@ -30,12 +63,13 @@ def verify_diff_scope() -> None:
     head = os.environ.get("EXPECTED_HEAD")
     if not base or not head:
         raise RuntimeError("EXPECTED_BASE and EXPECTED_HEAD are required")
-    changed = subprocess.check_output(
-        ["git", "diff", "--name-only", f"{base}...{head}"],
-        cwd=ROOT,
-        text=True,
-    ).splitlines()
-    outside = sorted(set(changed) - ALLOWED)
+    changed = git_names(f"{base}...{head}")
+    if not changed:
+        # The workflow only fires on a PR that changes a trigger path, so an
+        # empty diff means the diff was read wrong, not that nothing changed.
+        raise RuntimeError(f"empty changed-path list for {base}...{head}; refusing to pass vacuously")
+    added = frozenset(git_names("--diff-filter=A", f"{base}...{head}"))
+    outside = out_of_scope_paths(set(changed), added)
     if outside:
         raise RuntimeError("out-of-scope changed paths: " + ", ".join(outside))
 
@@ -99,13 +133,19 @@ def verify_census() -> None:
         raise RuntimeError("census/adversarial verification failed: " + "; ".join(missing))
 
 
-try:
-    verify_diff_scope()
-    verify_census()
-except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
-    print(f"issue-2582 signup ownership verification failed: {error}", file=sys.stderr)
-    raise SystemExit(1) from error
+def main() -> int:
+    try:
+        verify_diff_scope()
+        verify_census()
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(f"issue-2582 signup ownership verification failed: {error}", file=sys.stderr)
+        return 1
 
-print("issue-2582 signup ownership census: PASS")
-print("class map: signup pilot / Clerk tenant, PAT, org-map, entitlement / GitHub installation bundle -> signup_artifact (disposable)")
-print("excluded: Clerk provider-state mutation/publishUserMetadata (provider state is explicitly out of scope), provision locks/analytics, GitHub deprovision and audit outbox; sibling writer families remain untouched")
+    print("issue-2582 signup ownership census: PASS")
+    print("class map: signup pilot / Clerk tenant, PAT, org-map, entitlement / GitHub installation bundle -> signup_artifact (disposable)")
+    print("excluded: Clerk provider-state mutation/publishUserMetadata (provider state is explicitly out of scope), provision locks/analytics, GitHub deprovision and audit outbox; sibling writer families remain untouched")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
