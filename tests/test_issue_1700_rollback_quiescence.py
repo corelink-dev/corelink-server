@@ -1,8 +1,14 @@
 import json
 import copy
+import os
 from pathlib import Path
+import socket
+import subprocess
+import tempfile
+import threading
 import unittest
-from scripts.issue_1700_rollback_quiescence import inspect, HTTP_ORIGIN, HTTP_NONCE, HTTP_START_MS, OLD_RELEASES
+from scripts.issue_1700_rollback_quiescence import (inspect, read_broker_status, HTTP_ORIGIN, HTTP_NONCE,
+    HTTP_START_MS, OLD_RELEASES, BROKER_STATUS_CONTRACT)
 
 
 RELEASE = 'a' * 40
@@ -42,7 +48,143 @@ def empty_read(path):
     return {'success': True, 'result': {'schedules': []} if path == '/schedules' else []}
 
 
+def never_execute_fixture(state='enabled'):
+    ids = [f'{digit * 8}-{digit * 4}-4{digit * 3}-8{digit * 3}-{digit * 12}' for digit in '12345678']
+    started, now = HTTP_START_MS, HTTP_START_MS + 15 * 60000
+    candidate = {'operation_id': '123456', 'candidate_deployment_id': ids[2], 'candidate_version_id': ids[3],
+                 'worker_release': RELEASE, 'image_digest': DIGEST}
+    broker = {'contract': 'corelink-staging-http-bootstrap-v1', 'operation_id': '123456', 'worker_release': RELEASE,
+              'started_at_ms': started, 'expires_at_ms': started + 45 * 60000, 'state': state,
+              'secret_name': 'CORELINK_ADMIN_AUTH_KEY', 'secret_put_attempted': True, 'secret_put_confirmed': True,
+              'secret_put_at_ms': started + 500, 'subdomain_enable_attempted': True, 'subdomain_enabled': True,
+              'subdomain_restore_attempted': False, 'subdomain_restored': False, 'secret_delete_attempted': False,
+              'secret_deleted': False, 'rollback_safe': False, 'cleanup_basis': None,
+              'probe_command_seen': False, 'admission_closed': True,
+              'preimage': {'deployment_id': ids[0], 'version_id': ids[1], 'created_at_ms': started - 10000,
+                           'subdomain': {'enabled': False, 'previews_enabled': False}},
+              'post_secret': {'deployment_id': ids[4], 'version_id': ids[5], 'created_at_ms': started + 1000},
+              'post_delete': None, 'candidate': candidate,
+              'preimage_bindings': [{'name': f'BINDING_{index}', 'type': 'plain_text'} for index in range(35)], 'pid': 1234}
+    if state == 'cleaned':
+        broker.update(subdomain_enabled=False, subdomain_restore_attempted=True, subdomain_restored=True,
+                      secret_delete_attempted=True, secret_deleted=True, rollback_safe=True, cleanup_basis='never_execute',
+                      post_delete={'deployment_id': ids[6], 'version_id': ids[7], 'created_at_ms': now - 1000})
+    observation = {'contract': BROKER_STATUS_CONTRACT, 'requested_at_ms': now - 10, 'observed_at_ms': now, 'broker': broker}
+    options = {'http_required': True, 'http_attempt': None, 'http_proof': {'invalid': True},
+               'expected_release': RELEASE, 'expected_image_digest': DIGEST, 'operation_id': '123456',
+               'candidate_deployment_id': ids[2], 'candidate_version_id': ids[3],
+               'preimage_deployment_id': ids[0], 'preimage_version_id': ids[1],
+               'now_ms': now, 'broker_status_reader': lambda: observation}
+    return options, observation
+
+
 class QuiescenceTests(unittest.TestCase):
+    def test_fresh_producer_roundtrip_over_actual_local_status_cli_allows_fenced_reserve_denial(self):
+        options, observation = never_execute_fixture()
+        with tempfile.TemporaryDirectory(prefix='i1700-status-') as directory:
+            os.chmod(directory, 0o700)
+            with socket.socket(socket.AF_UNIX) as server:
+                path = str(Path(directory) / 'broker.sock')
+                server.bind(path); os.chmod(path, 0o600); server.listen(1); server.settimeout(5)
+                requests, errors = [], []
+                def respond():
+                    try:
+                        connection, _ = server.accept()
+                        with connection:
+                            connection.settimeout(5)
+                            data = b''
+                            while b'\n' not in data:
+                                data += connection.recv(1024)
+                            requests.append(json.loads(data))
+                            connection.sendall((json.dumps({'ok': True, 'result': observation['broker']}) + '\n').encode())
+                    except Exception as error:
+                        errors.append(type(error).__name__)
+                thread = threading.Thread(target=respond, daemon=True)
+                thread.start()
+                options['broker_status_reader'] = lambda: read_broker_status(directory, now=lambda: options['now_ms'])
+                result = inspect(empty_read, **options)
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(requests, [{'command': 'status', 'payload': None}])
+                self.assertTrue(result['rollback_allowed'])
+                self.assertTrue(result['http_never_executed'])
+                self.assertFalse(result['http_complete_and_safe'])
+                self.assertEqual(result['_broker_observation']['broker'], observation['broker'])
+
+    def test_never_execute_cleanup_readback_remains_sufficient_for_second_rollback_gate(self):
+        options, observation = never_execute_fixture('cleaned')
+        result = inspect(empty_read, **options)
+        self.assertTrue(result['rollback_allowed'])
+        self.assertTrue(result['http_never_executed'])
+        self.assertEqual(result['_broker_observation']['broker']['cleanup_basis'], 'never_execute')
+        observation['broker']['cleanup_basis'] = 'complete_proof'
+        self.assertFalse(inspect(empty_read, **options)['rollback_allowed'])
+
+    def test_missing_ledger_does_not_replace_positive_live_broker_custody(self):
+        options, _ = never_execute_fixture()
+        options['broker_status_reader'] = None
+        self.assertFalse(inspect(empty_read, **options)['rollback_allowed'])
+        for attempt in [{'invalid': True}, http_fixture()['http_attempt']]:
+            options, _ = never_execute_fixture()
+            options['http_attempt'] = attempt
+            options['broker_status_reader'] = lambda: self.fail('an attempt forbids never_execute admission')
+            self.assertFalse(inspect(empty_read, **options)['rollback_allowed'])
+        options, _ = never_execute_fixture()
+        def unavailable():
+            raise RuntimeError('private-status-error')
+        options['broker_status_reader'] = unavailable
+        result = inspect(empty_read, **options)
+        self.assertFalse(result['rollback_allowed'])
+        self.assertNotIn('private-status-error', json.dumps(result))
+
+    def test_stale_forged_expired_wrong_tuple_or_nonfenced_status_cannot_allow_restore(self):
+        changes = [
+            lambda o, s: s.update(contract='forged'), lambda o, s: s.update(extra='private'),
+            lambda o, s: s.update(requested_at_ms=o['now_ms'] - 5001),
+            lambda o, s: s.update(observed_at_ms=o['now_ms'] + 1),
+            lambda o, s: o.update(now_ms=o['now_ms'] + 5001),
+            lambda o, s: s['broker'].update(operation_id='999'),
+            lambda o, s: s['broker'].update(worker_release='c' * 40),
+            lambda o, s: s['broker'].update(expires_at_ms=o['now_ms']),
+            lambda o, s: s['broker'].update(expires_at_ms=s['broker']['expires_at_ms'] + 1),
+            lambda o, s: s['broker'].update(state='unknown'),
+            lambda o, s: s['broker'].update(state='prepared'),
+            lambda o, s: s['broker'].update(probe_command_seen=True),
+            lambda o, s: s['broker'].update(probe_command_seen=0),
+            lambda o, s: s['broker'].update(admission_closed=False),
+            lambda o, s: s['broker'].update(secret_put_confirmed=False),
+            lambda o, s: s['broker'].update(rollback_safe=True),
+            lambda o, s: s['broker']['candidate'].update(candidate_version_id=s['broker']['preimage']['version_id']),
+            lambda o, s: s['broker']['candidate'].update(operation_id='999'),
+            lambda o, s: s['broker']['candidate'].update(image_digest='sha256:' + 'c' * 64),
+            lambda o, s: s['broker']['preimage']['subdomain'].update(enabled=True),
+            lambda o, s: s['broker']['preimage_bindings'][0].update(name='CORELINK_ADMIN_AUTH_KEY'),
+            lambda o, s: s['broker'].update(extra='private'),
+            lambda o, s: s['broker'].pop('admission_closed'),
+        ]
+        for change in changes:
+            options, observation = never_execute_fixture()
+            change(options, observation)
+            result = inspect(empty_read, **options)
+            self.assertFalse(result['rollback_allowed'])
+            self.assertFalse(result['http_never_executed'])
+            self.assertNotIn('private', json.dumps(result))
+
+    def test_broker_status_producer_is_bounded_scrubbed_and_sanitizes_failure(self):
+        options, observation = never_execute_fixture()
+        def runner(args, **kwargs):
+            self.assertEqual(args[-2:], ['status', '/private/fixture'])
+            self.assertEqual(kwargs['timeout'], 5)
+            self.assertTrue(set(kwargs['env']) <= {'PATH', 'HOME', 'LANG'})
+            return subprocess.CompletedProcess(args, 0, json.dumps(observation['broker']), '')
+        actual = read_broker_status('/private/fixture', runner=runner, now=lambda: options['now_ms'])
+        self.assertEqual(actual['broker'], observation['broker'])
+        for bad in [subprocess.CompletedProcess([], 1, 'private', 'private'),
+                    subprocess.CompletedProcess([], 0, 'x' * 32769, 'private')]:
+            with self.assertRaisesRegex(ValueError, '^broker status unproven$'):
+                read_broker_status('/private/fixture', runner=lambda *a, **k: bad)
+
     def test_attempted_http_requires_complete_proof_in_addition_to_empty_inventory(self):
         fixture = http_fixture()
         accepted = inspect(empty_read, **fixture)
@@ -163,7 +305,8 @@ class QuiescenceTests(unittest.TestCase):
         rollback = deploy.split('        id: runtime_rollback\n', 1)[1]
         self.assertLess(rollback.index('issue_1700_rollback_quiescence.py'), rollback.index('issue_1700_http_bootstrap.mjs cleanup'))
         self.assertLess(rollback.index('issue_1700_http_bootstrap.mjs cleanup'), rollback.index('pnpm exec wrangler deploy ' + chr(92)))
-        self.assertLess(rollback.index('issue_1700_http_bootstrap.mjs close'), rollback.index('pnpm exec wrangler deploy ' + chr(92)))
+        self.assertNotIn('issue_1700_http_bootstrap.mjs close', deploy)
+        self.assertIn('PREIMAGE_DEPLOYMENT_ID: ${{ steps.preimage.outputs.preimage_deployment_id }}', rollback)
         condition = rollback.split('        env:', 1)[0]
         self.assertNotIn('failure()', condition)
         self.assertIn("rollout_state='preimage_restore_required'", deploy)
@@ -171,4 +314,15 @@ class QuiescenceTests(unittest.TestCase):
         self.assertIn("runtime_evidence_scope='historical',active_runtime_claim=False", deploy)
         self.assertLess(deploy.index('id: record_runtime'), deploy.index("rollout_state='preimage_restore_required'"))
         self.assertIn('test "$VERIFY_RESTORE_OUTCOME" = success', deploy)
+        shutdown = deploy.split('        id: http_broker_shutdown\n', 1)[1].split('      - name:', 1)[0]
+        self.assertIn("if: always() && steps.http_bootstrap.outcome != 'skipped'", shutdown)
+        self.assertIn('timeout-minutes: 1', shutdown)
+        self.assertIn('issue_1700_http_bootstrap.mjs shutdown', shutdown)
+        self.assertNotIn("== 'success'", shutdown)
+        self.assertNotIn('continue-on-error', shutdown)
+        self.assertLess(deploy.index('Clean owned bootstrap when candidate execution was never reached'), deploy.index('id: http_broker_shutdown'))
+        self.assertLess(deploy.index('id: http_broker_shutdown'), deploy.index('Require historical native proof'))
+        self.assertIn('test "$BROKER_SHUTDOWN_OUTCOME" = success', deploy)
+        self.assertIn('staging-http-broker-status.json', deploy)
+        self.assertIn('staging-http-broker-shutdown.json', deploy)
         self.assertEqual(deploy.count("assert config.get('workers_dev') is False"), 3)

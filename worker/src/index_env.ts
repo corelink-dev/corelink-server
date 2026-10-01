@@ -155,6 +155,7 @@ export interface Env {
   // these names with the same 32-char resolver and shared fallback.
   CORELINK_TIER_SELECT_AUTH_KEY?: string; // `/v1/onboarding/tier-select`
   CORELINK_DPA_ACCEPT_AUTH_KEY?: string; // `/v1/onboarding/dpa-accept`
+  DPA_ACCEPT_IP_HASH_SALT?: string; // dedicated DPA IP-hash salt; validated by the ordinary Container, omitted from native proof
   DSR_RECEIPT_SIGNING_KEY?: string; // HMAC signer for DSR customer-portal receipt JWTs (union #717; read by dsr/portal.rs, forwarded to the container)
   DPA_RECEIPT_SIGNING_KEY?: string; // RS256 (RSA PKCS#8/PKCS#1 PEM) signer for DPA-acceptance receipt JWTs (read by routes/dpa_accept.rs, forwarded to the container; route unmounts fail-CLOSED when absent)
   CORELINK_RUNNER_MINT_AUTH_KEY?: string; // gate for `/internal/v1/runner/{mint,revoke}` (runner dispatcher; scoped away from signup's pat_mint)

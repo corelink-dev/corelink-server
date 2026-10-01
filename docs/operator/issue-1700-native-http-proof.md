@@ -73,6 +73,26 @@ the disabled preview setting. Only proven quiescence, or a positively fenced
 never-executed broker state, permits restoration of its owned bootstrap changes.
 An absent attempt file alone is not evidence that execution never started.
 
+A probe refused for insufficient remaining broker time remains a failed workflow
+step. Before cleanup, the rollback gate obtains fresh status through the actual
+private IPC command. It accepts this narrow `never_execute` case only when the
+broker has closed admission, has never seen a probe execution command, and still
+owns the exact operation, release, candidate, image and preimages inside its
+original 45-minute expiry. The observation must be no more than five seconds old;
+unknown, expired, mismatched or stale state is rejected. An existing HTTP attempt
+ledger also rejects this case. The second rollback gate reads fresh broker status
+again and requires completed cleanup with `cleanup_basis=never_execute`; the
+broker stays alive until that check. This exception never manufactures native
+proof or changes the failed probe outcome.
+
+After all provider cleanup and rollback branches, an `always()` step performs
+local broker shutdown and verifies that the owned process has exited. It runs
+after unknown status and cleanup failures too. The helper binds PID, owner,
+launch time and exact command before any fallback signal; its shutdown receipt
+does not claim provider cleanup. The workflow cannot report success without this
+verified exit. These fresh status and shutdown operations are local only and do
+not increase the existing ceiling of 28 bootstrap management API calls.
+
 Secret changes can create and deploy a new Worker version. Preserve that revision
 boundary separately from the code candidate and exact preimages; a cleanup-created
 revision is not automatically evidence of the candidate's code identity.

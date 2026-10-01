@@ -3,14 +3,15 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm, chmod, lstat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
 import {
-  BROKER_CONTRACT, BROKER_LEDGER, BROKER_SOCKET, MAX_LIFETIME_MS, PROBE_RESERVE_MS, SECRET_NAME,
+  BROKER_CONTRACT, BROKER_LEDGER, BROKER_SOCKET, BROKER_PROCESS, MAX_LIFETIME_MS, PROBE_RESERVE_MS, SECRET_NAME,
   bindingInventory, deploymentInventory, subdomainState, createBootstrapBroker,
-  serveBroker, brokerCommand, startBroker, privateDirectory,
+  serveBroker, brokerCommand, startBroker, privateDirectory, captureBrokerProcess, shutdownBroker,
 } from "../issue_1700_http_bootstrap.mjs";
 import { APPROVED_ORIGIN, HTTP_CONTRACT, ATTEMPT_CONTRACT } from "../issue_1700_http_probe.mjs";
 import { PROBE_WINDOW } from "../issue_1700_probe_window.mjs";
@@ -18,6 +19,48 @@ import { PROBE_WINDOW } from "../issue_1700_probe_window.mjs";
 const RELEASE = "a".repeat(40), IMAGE = `sha256:${"b".repeat(64)}`;
 const TOKEN = "fixture-api-credential-not-for-output";
 const NOW = Date.parse("2026-10-01T14:00:00Z");
+// Complete sanitized 2026-10-01 settings observation: all 35 names/types, no binding values.
+const OBSERVED_BINDINGS = [
+  ["AC_BUCKET_IAD", "r2_bucket"],
+  ["AUDIT_DRAIN_BATCH_LIMIT", "plain_text"],
+  ["AUDIT_DRAIN_LEASE_ENABLED", "plain_text"],
+  ["CAS_BUCKET", "r2_bucket"],
+  ["CHUNK_BUCKET_IAD", "r2_bucket"],
+  ["CLERK_JWKS_KV", "kv_namespace"],
+  ["CONFIG_DB", "d1"],
+  ["CORELINK_SERVER", "durable_object_namespace"],
+  ["D1_DATABASE_ID", "plain_text"],
+  ["EDGE_ASYNC_METER", "plain_text"],
+  ["EDGE_DO_METER", "plain_text"],
+  ["EDGE_FIND_MISSING", "plain_text"],
+  ["EDGE_PUBLIC_READ", "plain_text"],
+  ["ENVIRONMENT", "plain_text"],
+  ["EVENT_LOG_DO", "durable_object_namespace"],
+  ["MANIFEST_BUCKET_IAD", "r2_bucket"],
+  ["METADATA_KV", "kv_namespace"],
+  ["NEGATIVE_CACHE_KV", "kv_namespace"],
+  ["OCI_PUBLIC_DEDUP_ENABLED", "plain_text"],
+  ["OCI_UPSTREAM_ON_MISS", "plain_text"],
+  ["R2_AC_BUCKET", "plain_text"],
+  ["R2_AC_REGION", "plain_text"],
+  ["R2_CAS_BUCKET", "plain_text"],
+  ["R2_CAS_REGION", "plain_text"],
+  ["R2_CHUNK_BUCKET", "plain_text"],
+  ["R2_CHUNK_REGION", "plain_text"],
+  ["R2_S3_ENDPOINT", "plain_text"],
+  ["REPLICATION_COORDINATOR_DO", "durable_object_namespace"],
+  ["REQUEST_METER_COORDINATOR_DO", "durable_object_namespace"],
+  ["REQUEST_METER_SHARD_DO", "durable_object_namespace"],
+  ["ROLLOUT_DO", "durable_object_namespace"],
+  ["SCHEDULED_DRILL_DELIVERY", "service"],
+  ["SENTRY_RELEASE", "plain_text"],
+  ["SYNTHETIC_DRILL_ENABLED", "plain_text"],
+  ["SYNTHETIC_DRILL_PROVIDER_MODE", "plain_text"],
+].map(([name, type]) => ({ name, type }));
+const bindingFixture = () => OBSERVED_BINDINGS.map(row => row.name === "SENTRY_RELEASE" ? { ...row, text: RELEASE } : { ...row });
+const BOOTSTRAP_SOURCE = fileURLToPath(new URL("../issue_1700_http_bootstrap.mjs", import.meta.url));
+const processIdentity = (directory, pid = 1234) => ({ pid, uid: process.getuid(), started: "Thu Oct 1 14:00:00 2026",
+  command: `${process.execPath} ${BOOTSTRAP_SOURCE} serve ${directory}` });
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const input = () => ({ api_token: TOKEN, operation_id: "36861129068", expected_release: RELEASE,
   preimage_deployment_id: id(1), preimage_version_id: id(11) });
@@ -67,13 +110,13 @@ function fixture(options = {}) {
     }
     if (path === "/deployments") return response({ deployments });
     if (path === "/settings") return response({ bindings: [
-      { name: "SENTRY_RELEASE", type: "plain_text", text: RELEASE },
+      ...bindingFixture(),
       ...(secret ? [{ name: SECRET_NAME, type: "secret_text" }] : options.initialBindings ?? []),
     ] });
     if (path.startsWith("/versions/")) return response({ id: path.slice("/versions/".length),
       metadata: { created_on: new Date(clock).toISOString(), source: "api" },
       annotations: { "workers/message": `issue-1700-route-free-${input().operation_id}-${RELEASE}` },
-      resources: { bindings: [{ name: "SENTRY_RELEASE", type: "plain_text", text: RELEASE },
+      resources: { bindings: [...bindingFixture(),
         ...(secret ? [{ name: SECRET_NAME, type: "secret_text" }] : [])], script: { etag: "fixture-etag" } } });
     if (path === "/secrets" && init.method === "PUT") {
       const body = JSON.parse(init.body);
@@ -108,6 +151,8 @@ function fixture(options = {}) {
 }
 
 test("official API envelope fixtures retain only binding names/types and exact subdomain/deployment identity", () => {
+  assert.equal(OBSERVED_BINDINGS.length, 35);
+  assert.deepEqual(bindingInventory(wrapped({ bindings: bindingFixture() })), OBSERVED_BINDINGS);
   assert.deepEqual(bindingInventory(wrapped({ bindings: [{ name: "PUBLIC_VALUE", type: "plain_text", text: "do-not-retain" }] })),
     [{ name: "PUBLIC_VALUE", type: "plain_text" }]);
   assert.deepEqual(subdomainState(wrapped({ enabled: false, previews_enabled: false })), { enabled: false, previews_enabled: false });
@@ -119,9 +164,12 @@ test("official API envelope fixtures retain only binding names/types and exact s
   assert.throws(() => subdomainState(wrapped({ enabled: false, previews_enabled: false, extra: true })));
   assert.throws(() => deploymentInventory(wrapped({ deployments: [deployment(1, NOW), deployment(2, NOW + 1)] })));
   assert.throws(() => deploymentInventory(wrapped({ deployments: [{ ...deployment(1, NOW), versions: [{ percentage: 50, version_id: id(11) }] }] })));
+  for (const type of ["r2-bucket", "2invalid", "", null, "a".repeat(65)]) {
+    assert.throws(() => bindingInventory(wrapped({ bindings: [{ name: "X", type }] })));
+  }
 });
 
-for (const type of ["secret_text", "plain_text", "json", "service", "secret_key"]) {
+for (const type of ["secret_text", "plain_text", "json", "service", "secret_key", "d1", "r2_bucket"]) {
   test(`existing ${type} admin binding prevents PUT without overwriting`, async () => {
     const f = fixture({ initialBindings: [{ name: SECRET_NAME, type, text: "preexisting-sensitive-value" }] });
     await assert.rejects(f.broker.dispatch("prepare"), /bootstrap_unknown/);
@@ -306,17 +354,20 @@ test("launcher sends API credentials only through stdin and scrubs child environ
   const parent = await mkdtemp(join(tmpdir(), "i1700-launch-")); const directory = join(parent, "private");
   let args, options, stdin = "", killed = false, unref = false;
   const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough();
-  child.kill = () => { killed = true; child.emit("exit", 0); }; child.unref = () => { unref = true; };
+  child.pid = 1234;
+  child.kill = () => { killed = true; child.emit("exit", 0); child.emit("close", 0); }; child.unref = () => { unref = true; };
   child.stdin.on("data", chunk => { stdin += chunk; });
   child.stdin.on("end", () => child.stdout.write(`${JSON.stringify({ state: "prepared", pid: 1234 })}\n`));
   try {
-    await startBroker(directory, input(), { spawnProcess: (_bin, argv, opts) => { args = argv; options = opts; return child; } });
+    await startBroker(directory, input(), { spawnProcess: (_bin, argv, opts) => { args = argv; options = opts; return child; },
+      inspect: async () => processIdentity(directory) });
     assert.equal(JSON.parse(stdin).api_token, TOKEN);
     assert.equal(args.includes(TOKEN), false);
     assert.deepEqual(Object.keys(options.env).sort(), ["LANG", "PATH"]);
     assert.equal(JSON.stringify(options).includes(TOKEN), false);
     assert.equal(options.detached, true); assert.equal(unref, true); assert.equal(killed, false);
-    assert.deepEqual(await readdir(directory), []);
+    assert.deepEqual(await readdir(directory), [BROKER_PROCESS]);
+    assert.equal((await readFile(join(directory, BROKER_PROCESS), "utf8")).includes(TOKEN), false);
     await chmod(directory, 0o755); await assert.rejects(privateDirectory(directory));
   } finally { await rm(parent, { recursive: true, force: true }); }
 });
@@ -341,4 +392,74 @@ test("a real child broker closes its Unix socket, exits and is reaped by its own
     assert.equal((await readdir(directory)).includes(BROKER_SOCKET), false);
     assert.throws(() => process.kill(child.pid, 0), { code: "ESRCH" });
   } finally { clearTimeout(deadline); if (child.exitCode === null) child.kill("SIGKILL"); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("local shutdown does not treat a close acknowledgement as exit and escalates only verified identity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "i1700-stop-")); await chmod(directory, 0o700);
+  const identity = processIdentity(directory), signals = [], commands = [];
+  let alive = true;
+  try {
+    await captureBrokerProcess(directory, identity.pid, async () => identity);
+    const result = await shutdownBroker(directory, { inspect: async () => alive ? identity : null,
+      command: async (...args) => { commands.push(args); return { state: "unknown" }; }, pause: async () => {},
+      signal: (pid, name) => { signals.push([pid, name]); if (name === "SIGKILL") alive = false; } });
+    assert.deepEqual(signals, [[identity.pid, "SIGTERM"], [identity.pid, "SIGKILL"]]);
+    assert.equal(commands.length, 1); assert.equal(commands[0][1], "close");
+    assert.equal(commands[0][3].timeoutMs, 1000);
+    assert.deepEqual(result, { contract: "corelink-staging-http-bootstrap-shutdown-v1", pid: identity.pid,
+      process_exited: true, provider_cleanup_claimed: false });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("local shutdown rejects unrelated or reused PID and never signals an unverified process", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "i1700-stop-owner-")); await chmod(directory, 0o700);
+  const identity = processIdentity(directory);
+  let signals = 0, commands = 0;
+  try {
+    await captureBrokerProcess(directory, identity.pid, async () => identity);
+    for (const changed of [{ command: "/unrelated/worker" }, { started: "Thu Oct 1 14:00:01 2026" }, { uid: identity.uid + 1 }]) {
+      await assert.rejects(shutdownBroker(directory, { inspect: async () => ({ ...identity, ...changed }),
+        command: async () => { commands++; }, signal: () => { signals++; }, pause: async () => {} }));
+    }
+    assert.equal(signals, 0); assert.equal(commands, 0);
+    let reads = 0;
+    await assert.rejects(shutdownBroker(directory, { inspect: async () => ++reads < 13 ? identity : { ...identity, started: "reused" },
+      command: async () => {}, signal: () => { signals++; }, pause: async () => {} }));
+    assert.equal(signals, 0); // identity changed immediately before the first signal
+    const exited = await shutdownBroker(directory, { inspect: async () => null,
+      command: async () => { commands++; }, signal: () => { signals++; } });
+    assert.equal(exited.process_exited, true); assert.equal(signals, 0); assert.equal(commands, 0);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("local shutdown verifies a real broker process exit when its private IPC never became available", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "i1700-stop-real-")); await chmod(directory, 0o700);
+  // No stdin JSON is sent, so the real CLI cannot create a key or make provider calls.
+  const child = spawn(process.execPath, [BOOTSTRAP_SOURCE, "serve", directory],
+    { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C" }, stdio: ["pipe", "pipe", "pipe"] });
+  const exit = once(child, "exit"), deadline = setTimeout(() => child.kill("SIGKILL"), 10_000);
+  try {
+    await once(child, "spawn");
+    await captureBrokerProcess(directory, child.pid);
+    const result = await shutdownBroker(directory);
+    await exit;
+    assert.equal(result.process_exited, true); assert.equal(result.provider_cleanup_claimed, false);
+    assert.throws(() => process.kill(child.pid, 0), { code: "ESRCH" });
+    assert.deepEqual(await readdir(directory), [BROKER_PROCESS]);
+    assert.equal((await readFile(join(directory, BROKER_PROCESS), "utf8")).includes(TOKEN), false);
+  } finally { clearTimeout(deadline); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("local shutdown has a finite inspection ceiling and never reports a still-live broker as exited", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "i1700-stop-bound-")); await chmod(directory, 0o700);
+  const identity = processIdentity(directory), signals = [];
+  let inspections = 0, pauses = 0;
+  try {
+    await captureBrokerProcess(directory, identity.pid, async () => identity);
+    await assert.rejects(shutdownBroker(directory, { inspect: async () => { inspections++; return identity; },
+      command: async () => { throw new Error("IPC unavailable"); },
+      signal: (_pid, name) => signals.push(name), pause: async () => { pauses++; } }), /bootstrap_unknown/);
+    assert.equal(inspections, 36); assert.equal(pauses, 30);
+    assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

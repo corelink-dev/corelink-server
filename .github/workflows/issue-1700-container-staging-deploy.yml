@@ -437,7 +437,6 @@ jobs:
           PY
           node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
             > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"
-          node scripts/issue_1700_http_bootstrap.mjs close "$RUNNER_TEMP/staging-http-broker"
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/rollback.toml" \
             --strict --message "$ROLLBACK_MARKER"
@@ -600,6 +599,7 @@ jobs:
         env:
           ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
           PREIMAGE_VERSION_ID: ${{ steps.preimage.outputs.preimage_version_id }}
+          PREIMAGE_DEPLOYMENT_ID: ${{ steps.preimage.outputs.preimage_deployment_id }}
           PREIMAGE_CONTAINER_IMAGE: ${{ steps.preimage.outputs.preimage_container_image }}
           PREIMAGE_CONTAINER_VERSION: ${{ steps.preimage.outputs.preimage_container_version }}
           CANDIDATE_CONTAINER_VERSION: ${{ steps.candidate_container.outputs.candidate_container_version }}
@@ -663,7 +663,8 @@ jobs:
           python3 scripts/issue_1700_rollback_quiescence.py
           node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
             > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"
-          node scripts/issue_1700_http_bootstrap.mjs close "$RUNNER_TEMP/staging-http-broker"
+          # Keep the cleaned, admission-closed broker available for the second
+          # fresh never_execute status check; always-local shutdown runs below.
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/rollback-runtime.toml" \
             --strict --message "$ROLLBACK_MARKER"
@@ -727,7 +728,17 @@ jobs:
           # an unknown candidate lineage leaves cleanup and rollback blocked.
           node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
             > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"
-          node scripts/issue_1700_http_bootstrap.mjs close "$RUNNER_TEMP/staging-http-broker"
+
+      - name: Always shut down the local broker and verify its process has exited
+        id: http_broker_shutdown
+        if: always() && steps.http_bootstrap.outcome != 'skipped'
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          # Local process custody only, including UNKNOWN and cleanup failure.
+          # This receipt never claims provider cleanup or rollback permission.
+          node scripts/issue_1700_http_bootstrap.mjs shutdown "$RUNNER_TEMP/staging-http-broker" \
+            > "$RUNNER_TEMP/staging-http-broker-shutdown.json"
 
       - name: Require historical native proof and verified restoration of both preimages
         if: always()
@@ -736,12 +747,14 @@ jobs:
           RECORD_OUTCOME: ${{ steps.record_runtime.outcome }}
           RESTORE_OUTCOME: ${{ steps.runtime_rollback.outcome }}
           VERIFY_RESTORE_OUTCOME: ${{ steps.verify_runtime_rollback.outcome }}
+          BROKER_SHUTDOWN_OUTCOME: ${{ steps.http_broker_shutdown.outcome }}
         run: |
           set -euo pipefail
           test "$PROBE_OUTCOME" = success
           test "$RECORD_OUTCOME" = success
           test "$RESTORE_OUTCOME" = success
           test "$VERIFY_RESTORE_OUTCOME" = success
+          test "$BROKER_SHUTDOWN_OUTCOME" = success
 
       - name: Upload redacted route-free deployment receipt
         if: always()
@@ -763,6 +776,9 @@ jobs:
             ${{ runner.temp }}/staging-http-broker/staging-http-probe-attempt.json
             ${{ runner.temp }}/staging-http-broker/staging-http-bootstrap.json
             ${{ runner.temp }}/staging-http-bootstrap-cleanup.json
+            ${{ runner.temp }}/staging-http-broker-status.json
+            ${{ runner.temp }}/staging-http-broker-shutdown.json
+            ${{ runner.temp }}/staging-http-broker/broker-process.json
             ${{ runner.temp }}/staging-rollback-quiescence.json
             ${{ runner.temp }}/staging-runtime-probe-progress.json
             ${{ runner.temp }}/staging-runtime-probe-diagnostic.log

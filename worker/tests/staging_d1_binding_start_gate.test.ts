@@ -45,7 +45,7 @@ describe("staging D1 outbound interception boot gate", () => {
     const originalFetch = globalThis.fetch;
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null, { status: 202 }));
     globalThis.fetch = fetch;
-    const makeContext = (suppressLifecycleTelemetry?: boolean) => {
+    const makeContext = (suppressLifecycleTelemetry?: boolean, withDpaSalt = true) => {
       let lifecycle: StartContainerLifecycleState = {
         containerStatus: "stopped" as const,
         coldStartCount: 0,
@@ -60,7 +60,9 @@ describe("staging D1 outbound interception boot gate", () => {
         context: {
           container,
           env: { ENVIRONMENT: "staging", PAGERDUTY_ROUTING_KEY: "present-only-in-fixture",
-            CORELINK_ADMIN_AUTH_KEY: "ephemeral-http-admin-sentinel-not-for-native" } as Env,
+            CORELINK_ADMIN_AUTH_KEY: "ephemeral-http-admin-sentinel-not-for-native",
+            ...(withDpaSalt ? { DPA_ACCEPT_IP_HASH_SALT: "a1".repeat(32) } : {}),
+          } as Env,
           doIdHash: "test-do",
           getLifecycleState: () => lifecycle,
           setLifecycleState: (state: StartContainerLifecycleState) => { lifecycle = state; },
@@ -83,14 +85,23 @@ describe("staging D1 outbound interception boot gate", () => {
       expect(fetch).not.toHaveBeenCalled();
       expect(probe.context.container!.start).toHaveBeenCalledOnce();
       expect(vi.mocked(probe.context.container!.start).mock.calls[0]?.[0]?.env?.["CORELINK_ADMIN_AUTH_KEY"]).toBe("");
+      expect(vi.mocked(probe.context.container!.start).mock.calls[0]?.[0]?.env)
+        .not.toHaveProperty("DPA_ACCEPT_IP_HASH_SALT");
 
       const ordinary = makeContext();
       await expect(startContainer(ordinary.context, "ordinary-test-start")).resolves.toEqual({ ok: true });
       expect(vi.mocked(ordinary.context.container!.start).mock.calls[0]?.[0]?.env?.["CORELINK_ADMIN_AUTH_KEY"])
         .toBe("ephemeral-http-admin-sentinel-not-for-native");
+      expect(vi.mocked(ordinary.context.container!.start).mock.calls[0]?.[0]?.env?.["DPA_ACCEPT_IP_HASH_SALT"])
+        .toBe("a1".repeat(32));
       expect(fetch).toHaveBeenCalledTimes(2);
       const events = fetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).event_type);
       expect(events).toEqual(["corelink.do.cold_start.v1", "corelink.do.container_started.v1"]);
+
+      const ordinaryWithoutSalt = makeContext(undefined, false);
+      await expect(startContainer(ordinaryWithoutSalt.context, "ordinary-without-dpa-salt")).resolves.toEqual({ ok: true });
+      expect(vi.mocked(ordinaryWithoutSalt.context.container!.start).mock.calls[0]?.[0]?.env)
+        .not.toHaveProperty("DPA_ACCEPT_IP_HASH_SALT");
     } finally {
       globalThis.fetch = originalFetch;
     }

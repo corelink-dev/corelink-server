@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, unlink } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runProof, validateDeploymentProof } from "./issue_1700_http_probe.mjs";
@@ -22,6 +22,7 @@ export const PROBE_RESERVE_MS = 21 * 60_000 + BOOTSTRAP_CLEANUP_MS + 90_000;
 export const SECRET_NAME = "CORELINK_ADMIN_AUTH_KEY";
 export const BROKER_SOCKET = "broker.sock";
 export const BROKER_LEDGER = "staging-http-bootstrap.json";
+export const BROKER_PROCESS = "broker-process.json";
 export const ATTEMPT_LEDGER = "staging-http-probe-attempt.json";
 const API = "https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -48,7 +49,7 @@ export function bindingInventory(value) {
   const names = new Set();
   return result.bindings.map(binding => {
     if (!record(binding) || typeof binding.name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(binding.name) ||
-        typeof binding.type !== "string" || !/^[a-z_]{1,64}$/.test(binding.type) || names.has(binding.name)) throw reject();
+        typeof binding.type !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(binding.type) || names.has(binding.name)) throw reject();
     names.add(binding.name);
     // No binding values (including plaintext fields) leave this extractor.
     return { name: binding.name, type: binding.type };
@@ -406,12 +407,88 @@ export async function brokerCommand(directory, command, payload = null, { timeou
     socket.on("end", () => { if (!data.includes(10)) finish(unknown()); });
   });
 }
+// Local process metadata only. Neither argv nor the ownership record contains credentials.
+// lstart plus exact uid/executable/source/private-directory binds a PID to this launch.
+export async function inspectBrokerProcess(pid) {
+  if (!Number.isSafeInteger(pid) || pid < 2) throw reject();
+  return new Promise((yes, no) => {
+    execFile("/bin/ps", ["-ww", "-p", String(pid), "-o", "pid=,uid=,stat=,lstart=,command="],
+      { timeout: 500, maxBuffer: 16_384, env: { PATH: "/usr/bin:/bin", LC_ALL: "C" } }, (error, stdout) => {
+        if (error && error.code === 1 && stdout.trim() === "") return yes(null);
+        if (error) return no(unknown());
+        const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+([^\r\n]+)\s*$/.exec(stdout);
+        if (!match || Number(match[1]) !== pid) return no(unknown());
+        // An OS-confirmed zombie has exited and has no process memory left;
+        // its changed display command must not be mistaken for a live reused PID.
+        if (match[3].startsWith("Z")) return yes(null);
+        yes({ pid, uid: Number(match[2]), started: match[4].replace(/\s+/g, " "), command: match[5].trim() });
+      });
+  });
+}
+function exactProcess(value, directory) {
+  return exact(value, ["pid", "uid", "started", "command"]) && Number.isSafeInteger(value.pid) && value.pid > 1 &&
+    value.uid === process.getuid() && typeof value.started === "string" && value.started.length > 0 && value.started.length < 64 &&
+    value.command === `${process.execPath} ${SOURCE} serve ${directory}`;
+}
+export async function captureBrokerProcess(directory, pid, inspect = inspectBrokerProcess) {
+  await privateDirectory(directory);
+  const identity = await inspect(pid);
+  if (!exactProcess(identity, directory) || identity.pid !== pid) throw reject();
+  const owner = { contract: "corelink-staging-http-bootstrap-process-v1", directory, ...identity };
+  const handle = await open(join(directory, BROKER_PROCESS), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try { await handle.writeFile(`${JSON.stringify(owner)}\n`); await handle.sync(); }
+  finally { await handle.close(); }
+  return owner;
+}
+export async function shutdownBroker(directory, { inspect = inspectBrokerProcess, signal = (pid, name) => process.kill(pid, name),
+  command = brokerCommand, pause = ms => new Promise(yes => setTimeout(yes, ms)),
+} = {}) {
+  await privateDirectory(directory);
+  const ownerPath = join(directory, BROKER_PROCESS), stat = await lstat(ownerPath);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600 || stat.size > 4096) throw reject();
+  const owner = JSON.parse(await readFile(ownerPath, "utf8"));
+  if (!exact(owner, ["contract", "directory", "pid", "uid", "started", "command"]) ||
+      owner.contract !== "corelink-staging-http-bootstrap-process-v1" || owner.directory !== directory) throw reject();
+  const { contract: _contract, directory: _directory, ...identity } = owner;
+  if (!exactProcess(identity, directory) || identity.pid === process.pid) throw reject();
+  const gone = async () => {
+    const current = await inspect(identity.pid);
+    if (current === null) return true;
+    if (!exactProcess(current, directory) || current.pid !== identity.pid || current.started !== identity.started) throw reject();
+    return false;
+  };
+  const waitGone = async () => {
+    for (let index = 0; index < 10; index++) { if (await gone()) return true; await pause(100); }
+    return gone();
+  };
+  let exited = await gone();
+  if (!exited) {
+    await command(directory, "close", null, { timeoutMs: 1000 }).catch(() => {});
+    exited = await waitGone();
+  }
+  for (const name of ["SIGTERM", "SIGKILL"]) {
+    if (exited) break;
+    // Revalidate immediately before each signal; a missing/reused/unrelated PID is never killed.
+    if (await gone()) { exited = true; break; }
+    try { signal(identity.pid, name); } catch (error) { if (error.code !== "ESRCH") throw unknown(); }
+    exited = await waitGone();
+  }
+  if (!exited) throw unknown();
+  const socketPath = join(directory, BROKER_SOCKET);
+  try {
+    const socket = await lstat(socketPath);
+    if (!socket.isSocket() || socket.uid !== process.getuid() || (socket.mode & 0o777) !== 0o600) throw reject();
+    await unlink(socketPath);
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
+  return { contract: "corelink-staging-http-bootstrap-shutdown-v1", pid: identity.pid,
+    process_exited: true, provider_cleanup_claimed: false };
+}
 async function stdinJson() {
   let data = Buffer.alloc(0);
   for await (const chunk of process.stdin) { data = Buffer.concat([data, chunk]); if (data.length > 16_384) throw reject(); }
   return JSON.parse(data.toString("utf8"));
 }
-export async function startBroker(directory, input, { spawnProcess = spawn } = {}) {
+export async function startBroker(directory, input, { spawnProcess = spawn, inspect = inspectBrokerProcess } = {}) {
   startupInput(input);
   await privateDirectory(directory, true);
   // Do not inherit NODE_OPTIONS, CI credentials, or unrelated workflow secrets.
@@ -431,10 +508,14 @@ export async function startBroker(directory, input, { spawnProcess = spawn } = {
       }
     });
   });
+  ready.catch(() => {});
   const timer = setTimeout(() => child.kill("SIGTERM"), 5 * 60_000);
   child.stdin.on("error", () => {});
-  child.stdin.end(JSON.stringify(input));
-  try { const result = await ready; child.stdout.destroy(); child.unref(); return result; }
+  try {
+    await captureBrokerProcess(directory, child.pid, inspect);
+    child.stdin.end(JSON.stringify(input));
+    const result = await ready; child.stdout.destroy(); child.unref(); return result;
+  }
   catch {
     child.kill("SIGTERM");
     const force = setTimeout(() => child.kill("SIGKILL"), 1000);
@@ -455,6 +536,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.stdout.end(`${JSON.stringify(service.broker.snapshot())}\n`);
     } else if (command === "start") {
       process.stdout.write(`${JSON.stringify(await startBroker(directory, startupInput(await stdinJson())))}\n`);
+    } else if (command === "shutdown") {
+      process.stdout.write(`${JSON.stringify(await shutdownBroker(directory))}\n`);
     } else if (["bind_candidate", "probe", "status", "cleanup", "close"].includes(command)) {
       const result = await brokerCommand(directory, command, command === "bind_candidate" ? await stdinJson() : null);
       process.stdout.write(`${JSON.stringify(result)}\n`);

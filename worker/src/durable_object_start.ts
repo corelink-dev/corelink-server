@@ -179,6 +179,11 @@ export async function startContainer(
           ...(ctx.env.CORELINK_DPA_ACCEPT_AUTH_KEY === undefined
             ? {}
             : { CORELINK_DPA_ACCEPT_AUTH_KEY: ctx.env.CORELINK_DPA_ACCEPT_AUTH_KEY }),
+          // The ordinary DPA route validates this dedicated salt before use.
+          // A native proof must never receive this production secret.
+          ...(ctx.suppressLifecycleTelemetry || ctx.env.DPA_ACCEPT_IP_HASH_SALT === undefined
+            ? {}
+            : { DPA_ACCEPT_IP_HASH_SALT: ctx.env.DPA_ACCEPT_IP_HASH_SALT }),
           // DSR customer portal (union #717): the receipt-JWT signer
           // (`dsr/portal.rs:659`) reads `DSR_RECEIPT_SIGNING_KEY`; forward it or a
           // bound CF secret silently no-ops and the portal falls back to a weak

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 import urllib.request
 
@@ -13,6 +14,108 @@ HTTP_NONCE = 'issue-1700-recovery-20261001-v10'
 HTTP_START_MS, HTTP_LAST_ENTRY_MS, HTTP_EXPIRY_MS = 1790856000000, 1790877600000, 1790882100000
 OLD_RELEASES = {'v8': '7d18bcfc450db97b1b987923050b92971da530a8',
                 'v9': '5da497051f0b11dbfc8b87d1dfa8e753304e2719'}
+BROKER_STATUS_CONTRACT = 'issue1700-broker-status-observation-v1'
+BROKER_LIFETIME_MS = 45 * 60_000
+BROKER_STATUS_MAX_AGE_MS = 5_000
+BROKER_PROBE_RESERVE_MS = 21 * 60_000 + 8 * 60_000 + 90_000
+
+
+def read_broker_status(directory, *, runner=subprocess.run, now=lambda: int(time.time() * 1000)):
+    """Fresh local IPC only; do not read a stale broker ledger as current RAM state."""
+    requested = now()
+    result = runner(['node', str(Path(__file__).with_name('issue_1700_http_bootstrap.mjs').resolve()),
+                     'status', str(directory)], capture_output=True, text=True, timeout=5,
+                    env={key: os.environ[key] for key in ('PATH', 'HOME', 'LANG') if key in os.environ})
+    observed = now()
+    if result.returncode or not isinstance(result.stdout, str) or len(result.stdout.encode()) > 32768:
+        raise ValueError('broker status unproven')
+    return {'contract': BROKER_STATUS_CONTRACT, 'requested_at_ms': requested,
+            'observed_at_ms': observed, 'broker': json.loads(result.stdout)}
+
+
+def never_execute_status(observation, *, operation_id, release, image_digest, candidate_deployment_id,
+                         candidate_version_id, preimage_deployment_id, preimage_version_id, now_ms):
+    """Permit only a live, fenced reserve denial or its completed owned cleanup."""
+    def exact(value, keys):
+        return isinstance(value, dict) and set(value) == set(keys.split())
+
+    def integer(value):
+        return type(value) is int and abs(value) <= 9007199254740991
+
+    def uuid(value):
+        return isinstance(value, str) and re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value)
+
+    keys = ('contract operation_id worker_release started_at_ms expires_at_ms state secret_name '
+            'secret_put_attempted secret_put_confirmed secret_put_at_ms subdomain_enable_attempted subdomain_enabled '
+            'subdomain_restore_attempted subdomain_restored secret_delete_attempted secret_deleted rollback_safe '
+            'cleanup_basis probe_command_seen admission_closed preimage post_secret post_delete candidate preimage_bindings pid')
+    if (not exact(observation, 'contract requested_at_ms observed_at_ms broker') or
+        observation['contract'] != BROKER_STATUS_CONTRACT or
+        not all(integer(value) for value in (now_ms, observation['requested_at_ms'], observation['observed_at_ms']))):
+        return False
+    broker = observation['broker']
+    if (not exact(broker, keys) or broker['contract'] != 'corelink-staging-http-bootstrap-v1' or
+        not isinstance(operation_id, str) or not re.fullmatch(r'[1-9][0-9]{0,19}', operation_id) or
+        not isinstance(release, str) or not re.fullmatch(r'[0-9a-f]{40}', release) or release in OLD_RELEASES.values() or
+        not isinstance(image_digest, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image_digest) or
+        broker['operation_id'] != operation_id or broker['worker_release'] != release or
+        not all(integer(broker[key]) for key in ('started_at_ms', 'expires_at_ms', 'secret_put_at_ms', 'pid')) or broker['pid'] < 2 or
+        broker['expires_at_ms'] != broker['started_at_ms'] + BROKER_LIFETIME_MS or
+        not broker['started_at_ms'] <= observation['requested_at_ms'] <= observation['observed_at_ms'] <= now_ms < broker['expires_at_ms'] or
+        now_ms - observation['observed_at_ms'] > BROKER_STATUS_MAX_AGE_MS or
+        observation['observed_at_ms'] - observation['requested_at_ms'] > BROKER_STATUS_MAX_AGE_MS or
+        not broker['started_at_ms'] <= broker['secret_put_at_ms'] <= observation['observed_at_ms'] or
+        broker['secret_name'] != 'CORELINK_ADMIN_AUTH_KEY' or broker['secret_put_attempted'] is not True or
+        broker['secret_put_confirmed'] is not True or broker['subdomain_enable_attempted'] is not True or
+        broker['admission_closed'] is not True or broker['probe_command_seen'] is not False):
+        return False
+    candidate = broker['candidate']
+    preimage = broker['preimage']
+    post_secret = broker['post_secret']
+    if (not all(uuid(value) for value in (candidate_deployment_id, candidate_version_id, preimage_deployment_id, preimage_version_id)) or
+        candidate_deployment_id == preimage_deployment_id or candidate_version_id == preimage_version_id or
+        not exact(candidate, 'operation_id candidate_deployment_id candidate_version_id worker_release image_digest') or
+        candidate != dict(operation_id=operation_id, candidate_deployment_id=candidate_deployment_id,
+                          candidate_version_id=candidate_version_id, worker_release=release, image_digest=image_digest) or
+        not exact(preimage, 'deployment_id version_id created_at_ms subdomain') or
+        preimage['deployment_id'] != preimage_deployment_id or preimage['version_id'] != preimage_version_id or
+        not integer(preimage['created_at_ms']) or preimage['created_at_ms'] > broker['started_at_ms'] or
+        not exact(preimage['subdomain'], 'enabled previews_enabled') or
+        preimage['subdomain']['enabled'] is not False or preimage['subdomain']['previews_enabled'] is not False or
+        not exact(post_secret, 'deployment_id version_id created_at_ms') or
+        not uuid(post_secret['deployment_id']) or not uuid(post_secret['version_id']) or
+        post_secret['deployment_id'] in (preimage_deployment_id, candidate_deployment_id) or
+        post_secret['version_id'] in (preimage_version_id, candidate_version_id) or
+        not integer(post_secret['created_at_ms']) or
+        not broker['secret_put_at_ms'] // 1000 * 1000 <= post_secret['created_at_ms'] <= observation['observed_at_ms']):
+        return False
+    bindings = broker['preimage_bindings']
+    if not isinstance(bindings, list) or len(bindings) > 128:
+        return False
+    names = set()
+    for binding in bindings:
+        if (not exact(binding, 'name type') or not isinstance(binding['name'], str) or
+            not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}', binding['name']) or
+            not isinstance(binding['type'], str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', binding['type']) or
+            binding['name'] in names or binding['name'] == 'CORELINK_ADMIN_AUTH_KEY'):
+            return False
+        names.add(binding['name'])
+    if broker['state'] == 'enabled':
+        return (broker['expires_at_ms'] - observation['observed_at_ms'] < BROKER_PROBE_RESERVE_MS and
+                broker['subdomain_enabled'] is True and broker['rollback_safe'] is False and
+                broker['cleanup_basis'] is None and broker['post_delete'] is None and
+                all(broker[key] is False for key in ('subdomain_restore_attempted', 'subdomain_restored',
+                                                   'secret_delete_attempted', 'secret_deleted')))
+    if broker['state'] != 'cleaned' or broker['cleanup_basis'] != 'never_execute' or broker['subdomain_enabled'] is not False:
+        return False
+    post_delete = broker['post_delete']
+    return (all(broker[key] is True for key in ('rollback_safe', 'subdomain_restore_attempted', 'subdomain_restored',
+                                              'secret_delete_attempted', 'secret_deleted')) and
+            exact(post_delete, 'deployment_id version_id created_at_ms') and
+            uuid(post_delete['deployment_id']) and uuid(post_delete['version_id']) and
+            post_delete['deployment_id'] not in (preimage_deployment_id, candidate_deployment_id, post_secret['deployment_id']) and
+            post_delete['version_id'] not in (preimage_version_id, candidate_version_id, post_secret['version_id']) and
+            integer(post_delete['created_at_ms']) and post_secret['created_at_ms'] <= post_delete['created_at_ms'] <= observation['observed_at_ms'])
 
 
 def complete_http_proof(attempt, wrapper, expected_release, expected_image_digest, now_ms):
@@ -97,12 +200,14 @@ def read(path):
 
 
 def inspect(read_api=read, *, http_attempt=None, http_proof=None, expected_release=None, expected_image_digest=None,
-            http_required=False, now_ms=None):
+            http_required=False, now_ms=None, broker_status_reader=None, operation_id=None,
+            candidate_deployment_id=None, candidate_version_id=None,
+            preimage_deployment_id=None, preimage_version_id=None):
     receipt = {'contract': 'issue1700-preimage-rollback-quiescence-v1',
                'rollback_allowed': False, 'rollback_attempted': False,
                'schedules_empty': False, 'tails_empty': False,
                'http_proof_required': http_required or http_attempt is not None or http_proof is not None,
-               'http_complete_and_safe': False}
+               'http_complete_and_safe': False, 'http_never_executed': False}
     try:
         schedules = read_api('/schedules')
         tails = read_api('/tails')
@@ -117,8 +222,18 @@ def inspect(read_api=read, *, http_attempt=None, http_proof=None, expected_relea
         receipt['http_complete_and_safe'] = complete_http_proof(
             http_attempt, http_proof, expected_release, expected_image_digest,
             int(time.time() * 1000) if now_ms is None else now_ms)
+        if (receipt['http_proof_required'] and not receipt['http_complete_and_safe'] and
+            http_attempt is None and broker_status_reader is not None):
+            observation = broker_status_reader()
+            receipt['http_never_executed'] = never_execute_status(observation,
+                operation_id=operation_id, release=expected_release, image_digest=expected_image_digest,
+                candidate_deployment_id=candidate_deployment_id, candidate_version_id=candidate_version_id,
+                preimage_deployment_id=preimage_deployment_id, preimage_version_id=preimage_version_id,
+                now_ms=int(time.time() * 1000) if now_ms is None else now_ms)
+            if receipt['http_never_executed']:
+                receipt['_broker_observation'] = observation
         receipt['rollback_allowed'] = inventories_empty and (
-            not receipt['http_proof_required'] or receipt['http_complete_and_safe'])
+            not receipt['http_proof_required'] or receipt['http_complete_and_safe'] or receipt['http_never_executed'])
         receipt['reason'] = ('probe_activity_remains' if not inventories_empty else
                              'http_execution_or_cleanup_unproven' if not receipt['rollback_allowed'] else 'quiescent')
     except Exception:
@@ -143,7 +258,17 @@ def main():
                       http_proof=artifact('staging-runtime-probe-receipt.json'),
                       expected_release=os.environ.get('EXPECTED_SHA'),
                       expected_image_digest=os.environ.get('CANDIDATE_CONTAINER_IMAGE_DIGEST'),
-                      http_required=os.environ.get('HTTP_PROBE_STEP_OUTCOME') not in (None, '', 'skipped'))
+                      http_required=os.environ.get('HTTP_PROBE_STEP_OUTCOME') not in (None, '', 'skipped'),
+                      broker_status_reader=lambda: read_broker_status(directory / 'staging-http-broker'),
+                      operation_id=os.environ.get('GITHUB_RUN_ID'),
+                      candidate_deployment_id=os.environ.get('CANDIDATE_DEPLOYMENT_ID'),
+                      candidate_version_id=os.environ.get('CANDIDATE_VERSION_ID'),
+                      preimage_deployment_id=os.environ.get('PREIMAGE_DEPLOYMENT_ID'),
+                      preimage_version_id=os.environ.get('PREIMAGE_VERSION_ID'))
+    observation = receipt.pop('_broker_observation', None)
+    if observation is not None:
+        (directory / 'staging-http-broker-status.json').write_text(json.dumps(observation, sort_keys=True) + '\n')
+        receipt['broker_status_observed_at_ms'] = observation['observed_at_ms']
     receipt["rollback_attempted"] = os.environ.get("ROLLBACK_CONTAINER_RESTORE_ATTEMPTED") == "1"
     receipt["preimage_worker_restore_attempted"] = False
     path = directory / 'staging-rollback-quiescence.json'
