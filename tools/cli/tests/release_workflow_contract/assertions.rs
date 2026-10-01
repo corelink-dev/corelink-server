@@ -301,6 +301,7 @@ pub(super) fn assert_release_contract(workflow: &str) {
         "--notes-file /tmp/release-notes.md --draft",
         "Bind staged artifacts to the immutable source manifest",
         "staging-manifest.json",
+        "cli_release_draft_manifest.py write-checksums",
         "final-manifest:",
         "RELEASE_API=\"${RUNNER_TEMP}/corelink-final-manifest-release.json\"",
         "case \"${STAGING_ASSET_COUNT}\" in",
@@ -308,9 +309,9 @@ pub(super) fn assert_release_contract(workflow: &str) {
         "cli_release_manifest.py verify --directory final-assets",
         "STAGING_ASSET_ID=\"$(python3 - \"${RELEASE_API}\"",
         "gh api --method DELETE \"repos/HuGR-Labs/corelink-cli/releases/assets/${STAGING_ASSET_ID}\"",
-        "STAGING_ASSET_COUNT=\"$(gh api \"repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}\"",
+        "--release-id \"${RELEASE_ID}\" --expected-state draft",
         "release-slsa3:",
-        "release-slsa3:\n    needs: [final-manifest, release-readiness, release]\n    # Called workflows cannot elevate the caller's token permissions. Grant\n    # OIDC only to this provenance call; all other release jobs retain the\n    # workflow-level contents:read default.\n    permissions:\n      attestations: write\n      contents: read\n      id-token: write\n    uses: ./.github/workflows/release-slsa3.yml\n    with:\n      release_tag: ${{ inputs.release_tag }}\n      source_sha: ${{ needs.release.outputs.source_sha }}\n      manifest_sha256: ${{ needs.final-manifest.outputs.sha256 }}\n      release_mode: ${{ needs.final-manifest.outputs.release_mode }}",
+        "release-slsa3:\n    needs: [final-manifest, release-readiness, release]\n    # Called workflows cannot elevate the caller's token permissions. Grant\n    # OIDC only to this provenance call; all other release jobs retain the\n    # workflow-level contents:read default.\n    permissions:\n      attestations: write\n      contents: read\n      id-token: write\n    uses: ./.github/workflows/release-slsa3.yml\n    with:\n      release_tag: ${{ inputs.release_tag }}\n      source_sha: ${{ needs.release.outputs.source_sha }}\n      manifest_sha256: ${{ needs.final-manifest.outputs.sha256 }}\n      release_mode: ${{ needs.final-manifest.outputs.release_mode }}\n      release_id: ${{ needs.release.outputs.release_id }}",
         "publish-release:\n    name: publish verified signed release\n    needs: [release-slsa3, release-readiness, final-manifest, release, sign-windows]\n    if: >-\n      always() && inputs.release_mode == 'signed-public'",
         "Verify complete authenticated inventory before publication",
         "gh release download \"${TAG}\" --repo HuGR-Labs/corelink-cli --dir \"${PUBLISHED}\" --clobber",
@@ -355,6 +356,57 @@ pub(super) fn assert_release_contract(workflow: &str) {
         longpaths < checkout,
         "Windows long paths must be enabled before checkout"
     );
+}
+
+pub(super) fn assert_stable_release_id_contract(workflow: &str, slsa: &str, helper: &str) {
+    for required in [
+        "release_id: ${{ steps.create-release.outputs.release_id }}",
+        "--expected-state draft --allow-absent --format state",
+        "--expected-state draft --format id",
+        "RELEASE_ID: ${{ needs.release.outputs.release_id }}",
+        "release_id: ${{ needs.release.outputs.release_id }}",
+        "--method PATCH \"repos/HuGR-Labs/corelink-cli/releases/${RELEASE_ID}\"",
+        "--expected-state published",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "stable release-ID contract missing: {required}"
+        );
+    }
+    assert!(
+        !workflow.contains("releases/tags/"),
+        "the production caller must not use tag lookups for cross-repository releases"
+    );
+    for required in [
+        "release_id:",
+        "RELEASE_ID: ${{ inputs.release_id }}",
+        "--release-id \"${RELEASE_ID}\" --expected-state draft",
+    ] {
+        assert!(
+            slsa.contains(required),
+            "SLSA stable release-ID contract missing: {required}"
+        );
+    }
+    assert!(
+        !slsa.contains("releases/tags/"),
+        "the SLSA consumer must not use tag lookups for an unpublished draft"
+    );
+    for required in [
+        "--paginate",
+        "--slurp",
+        "releases?per_page=100",
+        "releases/{release_id}",
+        "expected_state == \"draft\"",
+        "expected_state == \"published\"",
+        "len(matches) != 1",
+        "release ID changed during resolution",
+        "allow_absent and (release_id is not None or expected_state != \"draft\")",
+    ] {
+        assert!(
+            helper.contains(required),
+            "release API resolver missing fail-closed rule: {required}"
+        );
+    }
 }
 
 pub(super) fn assert_release_tag_shell_boundary(workflow: &str) {
@@ -514,7 +566,6 @@ pub(super) fn assert_downstream_signer_contract(name: &str, workflow: &str) {
 pub(super) fn assert_checksum_refresh_contract(name: &str, workflow: &str) {
     for required in [
         "--pattern 'corelink-*.sha256'",
-        "LC_ALL=C sort corelink-*.sha256 > checksums.txt",
         "shasum -a 256 \"${ASSET}\" > \"${ASSET}.sha256\"",
         "./assets/checksums.txt",
         "Read back signer-updated release checksums",
@@ -523,6 +574,27 @@ pub(super) fn assert_checksum_refresh_contract(name: &str, workflow: &str) {
         assert!(
             workflow.contains(required),
             "{name} is missing signed-asset checksum refresh invariant: {required}"
+        );
+    }
+    if name == "sign-linux.yml" {
+        for required in [
+            "Build canonical checksum index from named sidecars",
+            "cli_release_draft_manifest.py write-checksums",
+            "--directory \"${CHECKSUM_DIRECTORY}\"",
+        ] {
+            assert!(
+                workflow.contains(required),
+                "{name} is missing canonical checksum ordering invariant: {required}"
+            );
+        }
+        assert!(
+            !workflow.contains("LC_ALL=C sort corelink-*.sha256 > checksums.txt"),
+            "Linux signer must not sort checksum rows by digest"
+        );
+    } else {
+        assert!(
+            workflow.contains("LC_ALL=C sort corelink-*.sha256 > checksums.txt"),
+            "{name} legacy signer checksum refresh must remain present"
         );
     }
 }
@@ -560,7 +632,7 @@ pub(super) fn assert_publication_inventory_contract(workflow: &str) {
     for required in [
         "Verify complete authenticated inventory before publication",
         "immediately before the irreversible draft=false",
-        "gh api \"repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}\" > \"${API_JSON}\"",
+        "--release-id \"${RELEASE_ID}\" --expected-state draft > \"${API_JSON}\"",
         "FINAL_ASSETS=\"${RUNNER_TEMP}/corelink-publish-assets-final\"",
         "gh release download \"${TAG}\" --repo HuGR-Labs/corelink-cli \\",
         "--dir \"${PUBLISHED}\" --clobber",
@@ -568,7 +640,8 @@ pub(super) fn assert_publication_inventory_contract(workflow: &str) {
         "gh attestation verify",
         "--signer-workflow \"${GITHUB_REPOSITORY}/.github/workflows/release-slsa3.yml\"",
         "--cert-oidc-issuer \"https://token.actions.githubusercontent.com\"",
-        "gh release edit \"${TAG}\" --repo HuGR-Labs/corelink-cli --draft=false",
+        "gh api --method PATCH \"repos/HuGR-Labs/corelink-cli/releases/${RELEASE_ID}\"",
+        "--tag \"${TAG}\" --release-id \"${RELEASE_ID}\" --expected-state published",
     ] {
         assert!(
             workflow.contains(required),

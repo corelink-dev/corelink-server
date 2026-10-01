@@ -15,6 +15,10 @@ on:
       release_tag:
         required: true
         type: string
+      release_id:
+        description: "Stable destination GitHub Release ID for this exact tag"
+        required: true
+        type: string
       source_sha:
         required: true
         type: string
@@ -61,6 +65,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
           TAG: ${{ inputs.release_tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
           RELEASE_MODE: ${{ inputs.release_mode }}
@@ -71,7 +76,8 @@ jobs:
           test "${GITHUB_SHA}" = "${SOURCE_SHA}"
           case "${RELEASE_MODE}" in draft-only|signed-public) ;; *) echo "::error::unknown release mode" >&2; exit 1 ;; esac
           RELEASE_API="${RUNNER_TEMP}/corelink-slsa-release.json"
-          gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${RELEASE_API}"
+          python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli \
+            --tag "${TAG}" --release-id "${RELEASE_ID}" --expected-state draft > "${RELEASE_API}"
           python3 - "${RELEASE_API}" "${TAG}" <<'PY'
           import json, sys
           release = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -157,13 +163,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CORELINK_CLI_RELEASE_TOKEN }}
           TAG: ${{ inputs.release_tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
           RELEASE_MODE: ${{ inputs.release_mode }}
         run: |
           set -euo pipefail
           case "${RELEASE_MODE}" in
             draft-only)
               RELEASE_API="${RUNNER_TEMP}/corelink-slsa-upload-release.json"
-              gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${RELEASE_API}"
+              python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli \
+                --tag "${TAG}" --release-id "${RELEASE_ID}" --expected-state draft > "${RELEASE_API}"
               python3 - "${RELEASE_API}" "${TAG}" <<'PY'
           import json, sys
           release = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -190,11 +198,13 @@ jobs:
           REPO: ${{ github.repository }}
           TAG: ${{ inputs.release_tag }}
           SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_ID: ${{ inputs.release_id }}
           SUBJECT_LIST: ${{ steps.subjects.outputs.subject-list }}
         run: |
           set -euo pipefail
           RELEASE_API="${RUNNER_TEMP}/corelink-attested-release.json"
-          gh api "repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}" > "${RELEASE_API}"
+          python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli \
+            --tag "${TAG}" --release-id "${RELEASE_ID}" --expected-state draft > "${RELEASE_API}"
           STAGING_ASSET_COUNT="$(python3 - "${RELEASE_API}" <<'PY'
           import json, sys
           release = json.load(open(sys.argv[1], encoding="utf-8"))

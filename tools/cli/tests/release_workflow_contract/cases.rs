@@ -25,6 +25,7 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
     let installer = load_script("install_pinned_gh.py")?;
     let verifier = load_script("verify_pinned_gh.py")?;
     let smoke = load_script("test_pinned_gh_consumers.py")?;
+    let release_api = load_script("cli_release_api.py")?;
     let pack = load_workflow("issue-2572-draft-contract.yml")?;
     let checksum_manifest = load_repo_file("scripts/gh_2.79.0_checksums.json")?;
     assert_pinned_gh_contract(
@@ -41,6 +42,57 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
     assert_release_tag_shell_boundary(&workflow);
     assert_publication_inventory_contract(&workflow);
     assert_retry_manifest_contract(&workflow);
+    assert_stable_release_id_contract(&workflow, &slsa, &release_api);
+
+    let missing_release_id = workflow.replace(
+        "release_id: ${{ needs.release.outputs.release_id }}",
+        "release_id input removed",
+    );
+    assert_ne!(
+        missing_release_id, workflow,
+        "release ID mutation must take effect"
+    );
+    assert!(
+        std::panic::catch_unwind(|| assert_stable_release_id_contract(
+            &missing_release_id,
+            &slsa,
+            &release_api
+        ))
+        .is_err(),
+        "the caller must not omit the exact release ID from the SLSA consumer"
+    );
+    let tag_lookup_regression = workflow.replace(
+        "--release-id \"${RELEASE_ID}\" --expected-state draft",
+        "releases/tags/${TAG}",
+    );
+    assert_ne!(
+        tag_lookup_regression, workflow,
+        "tag-lookup mutation must take effect"
+    );
+    assert!(
+        std::panic::catch_unwind(|| assert_stable_release_id_contract(
+            &tag_lookup_regression,
+            &slsa,
+            &release_api
+        ))
+        .is_err(),
+        "the production caller must reject regressions to draft-incompatible tag lookup"
+    );
+    let duplicate_acceptance =
+        release_api.replace("if len(matches) != 1:", "if len(matches) == 0:");
+    assert_ne!(
+        duplicate_acceptance, release_api,
+        "duplicate-match mutation must take effect"
+    );
+    assert!(
+        std::panic::catch_unwind(|| assert_stable_release_id_contract(
+            &workflow,
+            &slsa,
+            &duplicate_acceptance
+        ))
+        .is_err(),
+        "the resolver must reject zero/multiple ambiguous release matches"
+    );
 
     let no_credentialless_smoke = pack.replace(
         "python3 -B scripts/test_pinned_gh_consumers.py",
@@ -344,8 +396,8 @@ fn release_workflow_preserves_the_installer_and_signer_contract_and_rejects_muta
         "late staging reintroduction and unmatched assets must be rejected immediately before publication"
     );
     let api_failure_ignored = workflow.replace(
-        "gh api \"repos/HuGR-Labs/corelink-cli/releases/tags/${TAG}\" > \"${API_JSON}\"",
-        "gh api release inventory || true",
+        "--tag \"${TAG}\" --release-id \"${RELEASE_ID}\" --expected-state draft > \"${API_JSON}\"",
+        "python3 scripts/cli_release_api.py --release-id \"${RELEASE_ID}\" || true",
     );
     assert!(
         std::panic::catch_unwind(|| assert_publication_inventory_contract(&api_failure_ignored))

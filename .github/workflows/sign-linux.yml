@@ -252,10 +252,17 @@ jobs:
           (cd ./assets && shasum -a 256 "${ASSET}" > "${ASSET}.sha256")
           (cd ./assets && shasum -a 256 "${ASSET}.asc" > "${ASSET}.asc.sha256")
           (cd ./assets && shasum -a 256 "${RAW_ASSET}.asc" > "${RAW_ASSET}.asc.sha256")
-          (cd ./assets && LC_ALL=C sort corelink-*.sha256 > checksums.txt)
           (cd ./assets && shasum -a 256 -c "${ASSET}.sha256")
           (cd ./assets && shasum -a 256 -c "${ASSET}.asc.sha256")
           (cd ./assets && shasum -a 256 -c "${RAW_ASSET}.asc.sha256")
+
+      - name: Build canonical checksum index from named sidecars
+        env:
+          CHECKSUM_DIRECTORY: ./assets
+        run: |
+          set -euo pipefail
+          python3 scripts/cli_release_draft_manifest.py write-checksums \
+            --directory "${CHECKSUM_DIRECTORY}"
 
       - name: Attach signature and refreshed checksums to release
         env:

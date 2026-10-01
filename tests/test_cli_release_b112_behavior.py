@@ -99,13 +99,20 @@ def test_b112_root_cause_guard_rejects_fake_done_claim_in_parked_means(tmp_path:
         ("cache export", lambda text: text.replace("CARGO_ZIGBUILD_CACHE_DIR=${ZIGBUILD_CACHE}", "CARGO_ZIGBUILD_CACHE_MUTATED=${ZIGBUILD_CACHE}", 1)),
         ("prebuilt installer", lambda text: text.replace("taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b", "actions/checkout@deadbeef", 1)),
         ("manual trigger", lambda text: text.replace("  workflow_dispatch:", "  # dispatch removed", 1)),
-        ("draft retry classification", lambda text: text.replace("gh api --include --silent", "gh api --silent", 1)),
+        ("draft retry classification", lambda text: text.replace(
+            "--expected-state draft --allow-absent --format state",
+            "--expected-state draft --format state",
+            1,
+        )),
         ("published release refusal", lambda text: text.replace('release.get("published_at") is not None', 'False', 1)),
     ],
 )
 def test_b112_root_cause_guard_rejects_release_mutations(tmp_path: Path, label: str, mutate):
     release, _cosign, _backlog = _b112_fixture(tmp_path)
-    release.write_text(mutate(release.read_text(encoding="utf-8")), encoding="utf-8")
+    source = release.read_text(encoding="utf-8")
+    mutated = mutate(source)
+    assert mutated != source, f"{label} mutation must take effect"
+    release.write_text(mutated, encoding="utf-8")
     result = _run_b112_fixture(tmp_path)
     assert result.returncode != 0, label
 

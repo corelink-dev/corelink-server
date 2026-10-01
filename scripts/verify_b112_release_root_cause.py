@@ -732,20 +732,76 @@ def verify_texts(release: str, cosign: str, backlog: str) -> list[str]:
             errors.append(f"release-cli must not delete packages from shared $HOME/.cargo (line {line})")
     if re.search(r"(?m)^\s*[^#\n]*--repo\s+HumanGuardrail/corelink-cli", release_code):
         errors.append("release-cli contains the forbidden stale release repository")
-    if not any(
-        name == "API_HEADERS"
-        and "gh api --include --silent" in value
-        and "repos/HuGR-Labs/corelink-cli/releases/tags/" in value
-        for _line, name, value in _active_assignments(release)
-    ):
-        errors.append("release-cli must classify an existing draft before create/retry")
-    if not any(
-        args[:2] == ["release", "create"]
+    expected_state_assignment = (
+        '$(python3 scripts/cli_release_api.py --repo HuGR-Labs/corelink-cli '
+        '--tag ${TAG} --expected-state draft --allow-absent --format state)'
+    )
+    active_assignments = _active_assignments(release)
+    state_assignments = [
+        line
+        for line, name, value in active_assignments
+        if name == "RELEASE_STATE" and value == expected_state_assignment
+    ]
+    shell_lines = _logical_shell_lines(release)
+    def next_case_marker(marker: str, after: int) -> int:
+        return next(
+            (line for line, raw in shell_lines if line > after and raw.strip() == marker),
+            -1,
+        )
+
+    state_line = state_assignments[0] if len(state_assignments) == 1 else -1
+    case_line = next_case_marker('case "${RELEASE_STATE}" in', state_line)
+    draft_line = next_case_marker("draft)", case_line)
+    absent_line = next_case_marker("absent)", draft_line)
+    default_line = next_case_marker("*)", absent_line)
+    esac_line = next_case_marker("esac", default_line)
+    create_commands = [
+        line
+        for line, args in _active_commands(release, "gh")
+        if args[:2] == ["release", "create"]
         and "--draft" in args
         and "HuGR-Labs/corelink-cli" in args
-        for _line, args in _active_commands(release, "gh")
+    ]
+    if len(state_assignments) != 1:
+        errors.append(
+            "release-cli must actively classify the exact tag through the stable-ID helper before create/retry"
+        )
+    if min(case_line, draft_line, absent_line, default_line, esac_line) < 0:
+        errors.append("release-cli must classify draft, absent, and unknown states in one explicit case")
+    elif len(create_commands) != 1 or not (
+        state_line
+        < case_line
+        < draft_line
+        < absent_line
+        < create_commands[0]
+        < default_line
+        < esac_line
     ):
-        errors.append("release-cli is missing its exact draft creation command")
+        errors.append("release-cli may create a draft only in the classified absent branch")
+    if default_line >= 0 and esac_line >= 0:
+        if not any(
+            default_line < line < esac_line and args == ["1"]
+            for line, args in _active_commands(release, "exit")
+        ):
+            errors.append("release-cli must fail closed for an unknown release state")
+    draft_guards = (
+        'release.get("tag_name") != sys.argv[2] or release.get("draft") is not True',
+        'release.get("published_at") is not None',
+        'if mode == "draft-only" and release.get("assets"):',
+        'raise SystemExit("draft-only mode refuses to overwrite or resume a non-empty draft")',
+    )
+    if draft_line >= 0 and absent_line >= 0:
+        active_source_lines = release.splitlines()
+        if any(
+            not any(
+                draft_line < index + 1 < absent_line and marker in line
+                for index, line in enumerate(active_source_lines)
+            )
+            for marker in draft_guards
+        ):
+            errors.append(
+                "release-cli must validate the exact empty draft and refuse published or non-empty retries"
+            )
     require(
         release_code,
         'release.get("tag_name") != sys.argv[2] or release.get("draft") is not True',
@@ -868,7 +924,22 @@ def mutation_self_test(release: str, cosign: str, backlog: str) -> None:
         "Cargo target comment bait": (release.replace(CARGO_TARGET_BINDING, '# CARGO_TARGET_DIR="$HOME/target"', 1), cosign, backlog),
         "shared registry deletion": (_inject_run_command(release, 'rm -rf "$HOME/.cargo"'), cosign, backlog),
         "manual Cargo fetch": (_inject_run_command(release, 'cargo fetch --target "${TARGET_TRIPLE}"'), cosign, backlog),
-        "draft retry classification": (release.replace("gh api --include --silent", "gh api --silent", 1), cosign, backlog),
+        "missing stable draft-state classification": (release.replace(
+            "--expected-state draft --allow-absent --format state",
+            "--expected-state draft --format state",
+            1,
+        ), cosign, backlog),
+        "missing exact absent branch": (release.replace("  absent)", "  unknown)", 1), cosign, backlog),
+        "draft create moved to retry branch": (release.replace(
+            "absent)\n              gh release create",
+            "draft)\n              gh release create",
+            1,
+        ), cosign, backlog),
+        "draft-only overwrite allowed": (release.replace(
+            'if mode == "draft-only" and release.get("assets"):',
+            "if False:",
+            1,
+        ), cosign, backlog),
         "published release refusal": (release.replace('release.get("published_at") is not None', 'False', 1), cosign, backlog),
         "wrapped Cargo fetch": (_inject_run_command(release, 'sudo -n cargo fetch --target "${TARGET_TRIPLE}"'), cosign, backlog),
         "wrapped Cargo install": (_inject_run_command(release, "env CARGO_NET_OFFLINE=false cargo install cargo-zigbuild"), cosign, backlog),

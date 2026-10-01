@@ -20,6 +20,7 @@ from pathlib import Path
 
 try:
     from .cli_release_manifest import (
+        BASE_PAYLOADS,
         FINAL_INVENTORY,
         LINUX_PAYLOADS,
         SHA,
@@ -33,6 +34,7 @@ try:
     )
 except ImportError:  # script execution from `python3 scripts/...`
     from cli_release_manifest import (
+        BASE_PAYLOADS,
         FINAL_INVENTORY,
         LINUX_PAYLOADS,
         SHA,
@@ -76,6 +78,60 @@ def _canonical_checksum_map(directory: Path, artifacts: dict[str, str]) -> None:
     checksum_text = (directory / "checksums.txt").read_text(encoding="utf-8")
     if checksum_text != "\n".join(expected_lines) + "\n":
         raise ValueError("draft checksums.txt is not the canonical closed-world index")
+
+
+def write_checksums(directory: Path) -> None:
+    """Write asset-name order; fully hash-check local subjects.
+
+    Signer jobs carry only their two local packages while preserving other
+    architecture sidecars, so absent remote payload bytes are checked later by
+    the complete downloaded final-inventory verifier.
+    """
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("checksum directory is missing, non-directory, or a symlink")
+    signatures = {f"{name}.asc" for name in LINUX_PAYLOADS}
+    allowed_payloads = BASE_PAYLOADS | signatures
+    sidecars = [path for path in directory.glob("*.sha256")]
+    if not sidecars:
+        raise ValueError("checksum directory has no sidecars")
+    rows: list[tuple[str, str]] = []
+    seen_names: set[str] = set()
+    for sidecar in sidecars:
+        if sidecar.is_symlink() or not sidecar.is_file():
+            raise ValueError(f"checksum sidecar is not a regular file: {sidecar.name}")
+        name = sidecar.name[:-len(".sha256")]
+        if name not in allowed_payloads or name in seen_names:
+            raise ValueError(f"checksum sidecar has an unexpected or duplicate subject: {sidecar.name}")
+        payload = directory / name
+        if payload.is_symlink() or (payload.exists() and not payload.is_file()):
+            raise ValueError(f"checksum subject is not a regular file: {name}")
+        lines = sidecar.read_text(encoding="utf-8").splitlines()
+        match = CHECKSUM_LINE.fullmatch(lines[0]) if len(lines) == 1 else None
+        if match is None or match.group(2) != name:
+            raise ValueError(f"checksum sidecar does not name its exact subject: {sidecar.name}")
+        if payload.is_file() and match.group(1) != digest(payload):
+            raise ValueError(f"checksum sidecar does not bind local payload bytes: {sidecar.name}")
+        seen_names.add(name)
+        rows.append((name, lines[0]))
+    if not BASE_PAYLOADS.issubset(seen_names):
+        raise ValueError("checksum index is missing one or more base release payloads")
+    actual_signatures = {path.name for path in directory.iterdir() if path.name in signatures}
+    if not actual_signatures.issubset(seen_names):
+        raise ValueError("checksum directory has an unindexed local Linux signature")
+    checksum_path = directory / "checksums.txt"
+    if checksum_path.is_symlink():
+        raise ValueError("checksums.txt must not be a symlink")
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="ascii", dir=directory, prefix=".checksums-", delete=False
+        ) as temporary:
+            temporary.write("\n".join(line for _, line in sorted(rows)) + "\n")
+            temporary_path = Path(temporary.name)
+        temporary_path.replace(checksum_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def create(directory: Path, output: Path, tag: str, source_sha: str, staging_manifest: Path) -> None:
@@ -237,6 +293,8 @@ def verify_manifest(directory: Path, manifest: Path, public_key: Path, tag: str,
 def main() -> int:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
+    checksums_parser = commands.add_parser("write-checksums")
+    checksums_parser.add_argument("--directory", type=Path, required=True)
     create_parser = commands.add_parser("create")
     create_parser.add_argument("--directory", type=Path, required=True)
     create_parser.add_argument("--output", type=Path, required=True)
@@ -251,7 +309,9 @@ def main() -> int:
     manifest_parser.add_argument("--manifest-sha256", required=True)
     args = parser.parse_args()
     try:
-        if args.command == "create":
+        if args.command == "write-checksums":
+            write_checksums(args.directory)
+        elif args.command == "create":
             create(args.directory, args.output, args.tag, args.source_sha, args.staging_manifest)
         elif args.command == "verify-manifest":
             verify_manifest(args.directory, args.manifest, args.public_key, args.tag,

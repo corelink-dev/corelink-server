@@ -70,7 +70,11 @@ def assert_release_auth(workflows: dict[str, dict[str, Any]]) -> None:
                 run = step.get("run", "")
                 if not isinstance(run, str):
                     continue
-                if "gh api " in run or "gh release " in run:
+                if (
+                    "gh api " in run
+                    or "gh release " in run
+                    or "scripts/cli_release_api.py" in run
+                ):
                     target_counts[workflow_name] += 1
                     token = step.get("env", {}).get("GH_TOKEN")
                     require(token == TARGET_READ_TOKEN,
