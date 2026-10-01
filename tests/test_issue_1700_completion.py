@@ -111,7 +111,14 @@ class CompletionTests(unittest.TestCase):
                 completion.validate_runtime(bad, window['starts_ms'], window['starts_ms'] + 60000)
 
     def test_timeout_preserves_only_safe_partial_diagnostics_and_never_passes(self):
-        message = b'issue-1700 runtime probe failed {"stage":"receipt_wait","code":"receipt_timeout"}\n'
+        counters = dict.fromkeys(('frames_received frames_decoded malformed_frames empty_events unknown_event_metadata scheduled_probe_events known_unmatched_events log_entries probe_markers receipt_markers failed_markers rejected_markers malformed_receipts wrong_nonce_receipts wrong_release_receipts out_of_window_receipts schema_rejected_receipts nonpass_receipts accepted_receipts control_pings control_pongs reconnects').split(), 0)
+        counters.update(frames_received=3, frames_decoded=3, scheduled_probe_events=1,
+                        log_entries=1, probe_markers=1, receipt_markers=1, wrong_nonce_receipts=1,
+                        schema_rejected_receipts=1, control_pings=9, control_pongs=9)
+        tail_evidence = {'counters': counters, 'close': {'code': 1006, 'was_clean': False}}
+        payload = {'stage': 'receipt_wait', 'code': 'receipt_timeout', 'tail_evidence': tail_evidence,
+                   'secret': 'do-not-echo'}
+        message = ('issue-1700 runtime probe failed ' + json.dumps(payload) + '\n').encode()
         def timed_out(*args, **kwargs):
             self.assertEqual(kwargs['timeout'], 22 * 60)
             raise subprocess.TimeoutExpired(args[0], 22 * 60,
@@ -119,7 +126,7 @@ class CompletionTests(unittest.TestCase):
         result = completion.complete(snapshot, lambda: completion.run_runtime_process({}, 0, runner=timed_out), validate)
         self.assertEqual(result['outcome'], 'failed')
         self.assertEqual(result['runtime_failure'], {'code': 'subprocess_timeout', 'timeout_seconds': 1320,
-            'host_diagnostics': [{'stage': 'receipt_wait', 'code': 'receipt_timeout'}]})
+            'host_diagnostics': [{'stage': 'receipt_wait', 'code': 'receipt_timeout', 'tail_evidence': tail_evidence}]})
         self.assertNotIn('do-not-echo', json.dumps(result))
         self.assertEqual(result['residual_state'], 'current_readback_candidate_route_free_no_schedule_or_tail')
         self.assertEqual(result['queued_event_state'], 'unresolved')
@@ -133,6 +140,14 @@ class CompletionTests(unittest.TestCase):
             [{'stage': 'tail_cleanup', 'code': 'api_failure', 'http_status': 503}])
         self.assertEqual(completion.host_diagnostics('issue-1700 runtime probe failed {"stage":"secret","code":"secret"}'), [])
         self.assertEqual(completion.host_diagnostics(b'issue-1700 runtime probe failed broken'), [])
+
+    def test_tail_diagnostic_parser_rejects_unbounded_or_noninteger_counters(self):
+        counters = dict.fromkeys(('frames_received frames_decoded malformed_frames empty_events unknown_event_metadata scheduled_probe_events known_unmatched_events log_entries probe_markers receipt_markers failed_markers rejected_markers malformed_receipts wrong_nonce_receipts wrong_release_receipts out_of_window_receipts schema_rejected_receipts nonpass_receipts accepted_receipts control_pings control_pongs reconnects').split(), 0)
+        counters['frames_received'] = 1_000_001
+        line = 'issue-1700 runtime probe failed ' + json.dumps({'stage': 'receipt_wait', 'code': 'receipt_timeout',
+            'tail_evidence': {'counters': counters, 'close': {'code': None, 'was_clean': None}}})
+        diagnostic = completion.host_diagnostics(line)[0]
+        self.assertNotIn('tail_evidence', diagnostic)
 
     def test_fixed_v5_window_requires_full_75_minute_reserve(self):
         completion.require_completion_budget(1790791200000)
