@@ -132,7 +132,7 @@ preflight_r2() {
   require_env \
     CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN D1_DATABASE_ID \
     R2_S3_ENDPOINT R2_S3_ACCESS_KEY_ID R2_S3_SECRET_ACCESS_KEY \
-    R2_TEST_BUCKET
+    R2_S3_SESSION_TOKEN R2_TEST_BUCKET
   require_https R2_S3_ENDPOINT
   [[ "$R2_TEST_BUCKET" == *-staging ]] || \
     die "R2_TEST_BUCKET must be a dedicated *-staging bucket"

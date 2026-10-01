@@ -9,6 +9,8 @@ on:
       - ".github/workflows/campaign-ci.yml"
       - ".github/workflows/real-ignored-harnesses.yml"
       - "scripts/run-real-ignored-harnesses.sh"
+      - "scripts/issue_2564_r2_temp_credentials.py"
+      - "scripts/test_issue_2564_r2_temp_credentials.py"
       - "scripts/real-ignored-harness-manifest.json"
       - "scripts/verify_real_ignored_harnesses.py"
       - "scripts/probe_i2563_d1_token_scope.py"
@@ -17,6 +19,8 @@ on:
       - "crates/corelink-pat/tests/emit_e2e_seed.rs"
       - "crates/corelink-container/src/routes/tier_select_store.rs"
       - "crates/corelink-container/src/storage/d1_http.rs"
+      - "crates/corelink-container/src/storage.rs"
+      - "crates/corelink-container/src/storage/r2_s3_parts/client_impl.rs"
       - "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs"
       - "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs"
       - "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs"
@@ -36,7 +40,7 @@ jobs:
   contract:
     name: validate credentialless real integration pack
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - name: Checkout exact pull request head without write credentials
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
@@ -59,6 +63,18 @@ jobs:
         uses: arduino/setup-protoc@f4d5893b897028ff5739576ea0409746887fa536 # v3.0.0
         with:
           repo-token: ${{ github.token }}
+      - name: Build and test CoreLink R2 session-token seam
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          session_log="${RUNNER_TEMP}/r2-session-token-tests.log"
+          cargo test --locked --package corelink-server --lib session_token -- --nocapture 2>&1 | tee "$session_log"
+          grep -F "optional_session_token_preserves_static_credential_compatibility ... ok" "$session_log"
+          grep -F "r2_credentials_forward_optional_session_token ... ok" "$session_log"
+          redaction_log="${RUNNER_TEMP}/r2-storage-env-redaction-test.log"
+          cargo test --locked --package corelink-server --lib storage_env_debug_and_display_redact_all_credentials -- --nocapture 2>&1 | tee "$redaction_log"
+          grep -F "storage_env_debug_and_display_redact_all_credentials ... ok" "$redaction_log"
       - name: Audit exact harness inventory and readiness packet
         env:
           CLOUDFLARE_ACCOUNT_ID: ""
@@ -67,6 +83,7 @@ jobs:
           R2_S3_ENDPOINT: ""
           R2_S3_ACCESS_KEY_ID: ""
           R2_S3_SECRET_ACCESS_KEY: ""
+          R2_S3_SESSION_TOKEN: ""
           HUGR_WALLET_TOKEN: ""
           NEON_TEST_DSN: ""
         run: |

@@ -86,6 +86,9 @@ pub struct StorageEnv {
     pub(crate) r2_access_key_id: String,
     /// R2 S3 secret access key (from `R2_S3_SECRET_ACCESS_KEY`).
     pub(crate) r2_secret_access_key: String,
+    /// Optional R2 temporary-credential session token (from
+    /// `R2_S3_SESSION_TOKEN`). Static R2 credentials omit this value.
+    pub(crate) r2_session_token: Option<String>,
     /// Cloudflare Account ID (from `CLOUDFLARE_ACCOUNT_ID`).
     pub(crate) cloudflare_account_id: String,
     /// CF API token for D1 HTTP API access (from `CF_API_TOKEN`).
@@ -103,6 +106,7 @@ impl core::fmt::Debug for StorageEnv {
             .field("r2_endpoint", &self.r2_endpoint)
             .field("r2_access_key_id", &"[REDACTED]")
             .field("r2_secret_access_key", &"[REDACTED]")
+            .field("r2_session_token", &"[REDACTED]")
             .field("cloudflare_account_id", &"[REDACTED]")
             .field("cf_api_token", &"[REDACTED]")
             .field("d1_database_id", &"[REDACTED]")
@@ -131,6 +135,7 @@ impl StorageEnv {
         let r2_endpoint = non_empty_env("R2_S3_ENDPOINT")?;
         let r2_access_key_id = non_empty_env("R2_S3_ACCESS_KEY_ID")?;
         let r2_secret_access_key = non_empty_env("R2_S3_SECRET_ACCESS_KEY")?;
+        let r2_session_token = optional_non_empty_env("R2_S3_SESSION_TOKEN");
         let cloudflare_account_id = non_empty_env("CLOUDFLARE_ACCOUNT_ID")?;
         let binding_proxy = staging_d1_binding_proxy_enabled().ok()?;
         if binding_proxy && non_empty_env("CF_API_TOKEN").is_some() {
@@ -148,6 +153,7 @@ impl StorageEnv {
             r2_endpoint,
             r2_access_key_id,
             r2_secret_access_key,
+            r2_session_token,
             cloudflare_account_id,
             cf_api_token,
             d1_database_id,
@@ -185,6 +191,13 @@ pub(crate) fn non_empty_env(var: &str) -> Option<String> {
     } else {
         Some(v)
     }
+}
+
+/// Read an optional credential, treating absent, empty, and whitespace-only
+/// values as no session token. The static access ID/secret remain required.
+fn optional_non_empty_env(var: &str) -> Option<String> {
+    let raw = std::env::var(var).ok();
+    optional_non_empty_env_value(raw.as_deref())
 }
 
 /// Read `var`, treating ABSENT **and EMPTY** as "use the default".
@@ -228,6 +241,18 @@ fn pick_non_empty(raw: Option<String>, default: &str) -> String {
 mod tests {
     use super::*;
 
+    fn storage_env(session: Option<String>) -> StorageEnv {
+        StorageEnv {
+            r2_endpoint: "https://account.r2.cloudflarestorage.com".to_owned(),
+            r2_access_key_id: "R2_ACCESS_ID_SENTINEL".to_owned(),
+            r2_secret_access_key: "R2_SECRET_SENTINEL".to_owned(),
+            r2_session_token: session,
+            cloudflare_account_id: "CF_ACCOUNT_SENTINEL".to_owned(),
+            cf_api_token: "CF_TOKEN_SENTINEL".to_owned(),
+            d1_database_id: "D1_ID_SENTINEL".to_owned(),
+        }
+    }
+
     #[test]
     fn from_env_returns_none_when_vars_absent() {
         // Deliberately does NOT set any env vars — should return None.
@@ -244,6 +269,45 @@ mod tests {
         }
         // If None — correct: vars are absent.
     }
+
+    #[test]
+    fn optional_session_token_preserves_static_credential_compatibility() {
+        assert_eq!(optional_non_empty_env_value(None), None);
+        assert_eq!(optional_non_empty_env_value(Some("")), None);
+        assert_eq!(optional_non_empty_env_value(Some("  \t")), None);
+        assert_eq!(
+            optional_non_empty_env_value(Some(" session-value ")),
+            Some("session-value".to_owned())
+        );
+        assert!(storage_env(None).r2_session_token.is_none());
+    }
+
+    #[test]
+    fn storage_env_debug_and_display_redact_all_credentials() {
+        let env = storage_env(Some("R2_SESSION_SENTINEL".to_owned()));
+        let debug = format!("{env:?}");
+        let display = format!("{env}");
+        for secret in [
+            "R2_ACCESS_ID_SENTINEL",
+            "R2_SECRET_SENTINEL",
+            "R2_SESSION_SENTINEL",
+            "CF_ACCOUNT_SENTINEL",
+            "CF_TOKEN_SENTINEL",
+            "D1_ID_SENTINEL",
+        ] {
+            assert!(!debug.contains(secret));
+            assert!(!display.contains(secret));
+        }
+        assert!(debug.contains("r2_session_token"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(display.contains("[REDACTED]"));
+    }
+}
+
+fn optional_non_empty_env_value(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 #[cfg(test)]

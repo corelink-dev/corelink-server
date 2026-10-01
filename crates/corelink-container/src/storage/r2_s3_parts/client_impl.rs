@@ -1,3 +1,39 @@
+fn r2_credentials(env: &StorageEnv) -> Credentials {
+    Credentials::new(
+        &env.r2_access_key_id,
+        &env.r2_secret_access_key,
+        env.r2_session_token.clone(),
+        None, // expiry — the signed R2 session token carries its own expiry
+        "corelink-r2-s3-adapter",
+    )
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    fn env(session: Option<&str>) -> StorageEnv {
+        StorageEnv {
+            r2_endpoint: "https://account.r2.cloudflarestorage.com".to_owned(),
+            r2_access_key_id: "access-sentinel".to_owned(),
+            r2_secret_access_key: "secret-sentinel".to_owned(),
+            r2_session_token: session.map(str::to_owned),
+            cloudflare_account_id: "account-sentinel".to_owned(),
+            cf_api_token: "cf-sentinel".to_owned(),
+            d1_database_id: "d1-sentinel".to_owned(),
+        }
+    }
+
+    #[test]
+    fn r2_credentials_forward_optional_session_token() {
+        assert_eq!(r2_credentials(&env(None)).session_token(), None);
+        assert_eq!(
+            r2_credentials(&env(Some("session-sentinel"))).session_token(),
+            Some("session-sentinel")
+        );
+    }
+}
+
 impl R2S3Client {
     /// Construct an [`R2S3Client`] from a validated [`StorageEnv`].
     ///
@@ -8,13 +44,7 @@ impl R2S3Client {
     ///
     /// Returns a descriptive `String` if the S3 config cannot be built.
     pub async fn new(env: &StorageEnv, bucket: impl Into<String>) -> Result<Self, String> {
-        let credentials = Credentials::new(
-            &env.r2_access_key_id,
-            &env.r2_secret_access_key,
-            None, // session token — not used for R2 static credentials
-            None, // expiry
-            "corelink-r2-s3-adapter",
-        );
+        let credentials = r2_credentials(env);
         // R2 uses `auto` as the region pseudo-value; the real routing
         // is done by the endpoint URL.
         let region = Region::new("auto");
@@ -454,5 +484,4 @@ impl R2S3Client {
         }
         Ok(keys)
     }
-
 }

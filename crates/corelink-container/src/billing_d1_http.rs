@@ -573,6 +573,7 @@ mod tests {
             r2_endpoint: "https://example.r2.cloudflarestorage.com".to_owned(),
             r2_access_key_id: "test-akid".to_owned(),
             r2_secret_access_key: "test-secret".to_owned(),
+            r2_session_token: None,
             cloudflare_account_id: "test-account".to_owned(),
             cf_api_token: "test-token-never-sent".to_owned(),
             d1_database_id: "test-db".to_owned(),

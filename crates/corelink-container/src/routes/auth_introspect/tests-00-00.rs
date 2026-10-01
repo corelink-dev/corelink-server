@@ -92,6 +92,7 @@
             r2_endpoint: "http://127.0.0.1:1".to_owned(),
             r2_access_key_id: "x".to_owned(),
             r2_secret_access_key: "x".to_owned(),
+            r2_session_token: None,
             cloudflare_account_id: "acct".to_owned(),
             cf_api_token: "tok".to_owned(),
             d1_database_id: "db".to_owned(),
