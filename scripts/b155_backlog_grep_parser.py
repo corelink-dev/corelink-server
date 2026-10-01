@@ -56,6 +56,7 @@ COMMENT_PREFIXES = ("//", "#", "/*", "<!--", "*", "--")
 MAX_BACKLOG_BYTES = 2_000_000
 MAX_NESTED_SHELL_DEPTH = 8
 MAX_NESTED_PAYLOAD_BYTES = 200_000
+MAX_VERIFY_LINE_BYTES = 8_192
 POSIX_CLASSES = {
     "[[:space:]]": r"\s",
     "[[:digit:]]": r"\d",
@@ -567,6 +568,8 @@ def _grep_checks_text(
         raise InstrumentError("nested shell depth exceeds bounded census limit")
     if len(verify.encode("utf-8")) > MAX_NESTED_PAYLOAD_BYTES:
         raise InstrumentError("nested shell payload exceeds bounded census limit")
+    if any(len(line.encode("utf-8")) > MAX_VERIFY_LINE_BYTES for line in verify.splitlines()):
+        raise InstrumentError("verify line exceeds bounded parser limit")
     masked, nested = _mask_nested_shells(verify)
     checks: list[GrepCheck] = []
     indeterminate: list[GrepCheck] = []

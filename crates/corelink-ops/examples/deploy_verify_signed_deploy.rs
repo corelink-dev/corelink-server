@@ -16,7 +16,10 @@ use std::sync::Arc;
 
 use corelink_ops::deploy::{
     audit::InMemoryDeployAuditSink,
-    types::{CfDeployWebhook, CosignIdentityPattern, DeployTarget, GitHubActor, OciImageRef},
+    types::{
+        CfDeployWebhook, CosignIdentityPattern, DeployPropagated, DeployTarget, GitHubActor,
+        OciImageRef,
+    },
     verifier::InMemoryDeployVerifier,
     DeployVerifier,
 };
@@ -57,24 +60,7 @@ fn main() {
 
     match verifier.verify_and_propagate(&webhook, &image_ref, &identity) {
         Ok(propagated) => {
-            println!("Deploy PROPAGATED:");
-            println!("  release_tag:              {}", propagated.release_tag);
-            println!(
-                "  cosign_signature_verified: {}",
-                propagated.cosign_signature_verified
-            );
-            println!(
-                "  rekor_log_index:           {}",
-                propagated.rekor_log_index
-            );
-            println!(
-                "  fulcio_cert_san:           {}",
-                propagated.fulcio_cert_san
-            );
-            println!(
-                "  cf_deployment_id:          {}",
-                propagated.cf_deployment_id
-            );
+            print!("{}", propagated_summary(&propagated));
         }
         Err(e) => {
             eprintln!("Deploy BLOCKED: {e}");
@@ -88,5 +74,61 @@ fn main() {
             "  [{}] type={} outcome={:?} tag={}",
             event.event_id, event.event_type, event.outcome, event.release_tag
         );
+    }
+}
+
+fn propagated_summary(propagated: &DeployPropagated) -> String {
+    format!(
+        "Deploy PROPAGATED:\n  release_tag:              {}\n  cosign_signature_verified: {}\n  rekor_log_index:           {}\n  cf_deployment_id:          {}\n",
+        propagated.release_tag,
+        propagated.cosign_signature_verified,
+        propagated.rekor_log_index,
+        propagated.cf_deployment_id,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use corelink_ops::deploy::{
+        audit::InMemoryDeployAuditSink,
+        types::{CfDeployWebhook, CosignIdentityPattern, DeployTarget, GitHubActor, OciImageRef},
+        verifier::InMemoryDeployVerifier,
+        DeployVerifier,
+    };
+
+    use super::propagated_summary;
+
+    #[test]
+    fn propagated_summary_keeps_outcome_and_metadata_without_certificate_san() {
+        let sink = Arc::new(InMemoryDeployAuditSink::new());
+        let verifier = InMemoryDeployVerifier::new_signed_from(Arc::clone(&sink));
+        let webhook = CfDeployWebhook::new(
+            "v0.1.0",
+            "abc123def456abc123def456abc123def456abc1",
+            "refs/tags/v0.1.0",
+            DeployTarget::new(
+                "corelink-worker",
+                "00000000000000000000000000000001",
+                "api.corelink.humangr.com/*",
+            ),
+            GitHubActor::new(
+                "github-actions[bot]",
+                "HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0",
+            ),
+        );
+        let image_ref = OciImageRef::from_tag("ghcr.io/HumanGuardrail/corelink-worker:v0.1.0");
+        let identity = CosignIdentityPattern::corelink_release();
+        let propagated = verifier
+            .verify_and_propagate(&webhook, &image_ref, &identity)
+            .expect("signed test deploy should propagate");
+        let summary = propagated_summary(&propagated);
+
+        assert!(!summary.contains(&propagated.fulcio_cert_san));
+        assert!(summary.contains("Deploy PROPAGATED:"));
+        assert!(summary.contains("cosign_signature_verified: true"));
+        assert!(summary.contains("release_tag:              v0.1.0"));
+        assert!(summary.contains("cf_deployment_id:"));
     }
 }

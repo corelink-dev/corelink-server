@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -58,11 +59,35 @@ class B098VerifierTests(unittest.TestCase):
         self.assertTrue(any("specs_total_count" in issue for issue in result.issues))
 
     def test_semver_classifier_does_not_confuse_cli_tags_with_release_tags(self) -> None:
-        self.assertTrue(verifier.SEMVER_TAG.fullmatch("v1.0.0"))
-        self.assertTrue(verifier.SEMVER_TAG.fullmatch("v1.2.3-rc.1"))
-        self.assertFalse(verifier.SEMVER_TAG.fullmatch("cli-v0.1.0"))
-        self.assertFalse(verifier.SEMVER_TAG.fullmatch("v1.0"))
-        self.assertFalse(verifier.SEMVER_TAG.fullmatch("v01.2.3"))
+        self.assertTrue(verifier._is_semver_tag("v1.0.0"))
+        self.assertTrue(verifier._is_semver_tag("v1.2.3-rc.1"))
+        self.assertFalse(verifier._is_semver_tag("cli-v0.1.0"))
+        self.assertFalse(verifier._is_semver_tag("v1.0"))
+        self.assertFalse(verifier._is_semver_tag("v01.2.3"))
+        self.assertFalse(verifier._is_semver_tag("v1.2.3-" + "0" * 100_000))
+        self.assertFalse(verifier._is_semver_tag("v1.2.3-" + "0" * 253))
+        self.assertTrue(verifier._is_semver_tag("v1.2.3-rc.1+build.7"))
+
+    def test_census_parser_bounds_adversarial_line_and_keeps_valid_census(self) -> None:
+        census_path = ROOT / verifier.OPS_CENSUS.relative_to(ROOT)
+        source = census_path.read_text()
+        self.assertEqual(verifier._check_census(ROOT, census_text=source), [])
+        self.assertEqual(
+            verifier._check_census(ROOT, census_text=source + "\n" + "x" * 20_000),
+            ["B-098 Ops authority census has an overlong line"],
+        )
+
+    def test_census_file_reader_rejects_oversized_bytes_before_decoding(self) -> None:
+        class OversizedBytes(io.BytesIO):
+            def read(self, size: int = -1) -> bytes:
+                self.requested_size = size
+                return b"x" * size
+
+        source = OversizedBytes()
+        with patch.object(Path, "open", return_value=source):
+            issues = verifier._check_census(ROOT)
+        self.assertEqual(issues, ["B-098 Ops authority census exceeds bounded input size"])
+        self.assertEqual(source.requested_size, verifier.MAX_CENSUS_BYTES + 1)
 
     def test_only_canonical_ga_tag_can_change_closure_status(self) -> None:
         base = verifier.Audit(95, 75, 173, 488, 11, ("v0.1.0",), ())

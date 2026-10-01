@@ -66,6 +66,12 @@ export interface InstallCallbackEnv {
 
 const GH_API = "https://api.github.com";
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end -= 1;
+  return value.slice(0, end);
+}
+
 /** base64url (no padding) of raw bytes. */
 function b64url(bytes: Uint8Array): string {
   let bin = "";
@@ -221,7 +227,11 @@ export async function userControlsInstallation(
 
 /** Redirect the browser back to the admin-ui (or a plain 200) with a result. */
 function done(env: InstallCallbackEnv, ok: boolean, detail: string): Response {
-  const base = env.ADMIN_UI_PUBLIC_URL?.replace(/\/+$/, "");
+  const configuredBase = env.ADMIN_UI_PUBLIC_URL;
+  const base =
+    configuredBase === undefined || configuredBase === null
+      ? undefined
+      : trimTrailingSlashes(configuredBase);
   if (base) {
     const q = ok ? "runner_install=ok" : `runner_install=error&reason=${encodeURIComponent(detail)}`;
     return new Response(null, { status: 302, headers: { location: `${base}/settings/runners?${q}` } });

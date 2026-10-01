@@ -12,10 +12,37 @@ import {
   userControlsInstallation,
   type InstallCallbackEnv,
 } from "../src/webhooks/github_install_callback.js";
+import { handleAppManifestForm } from "../src/webhooks/github_app_manifest.js";
 
 const KEY = "test-install-state-signing-key-0123456789";
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const NOW = 1_800_000_000_000;
+
+describe("GitHub App manifest URL normalization", () => {
+  const longNonTrailingBase = `https://signup.example${"/".repeat(50_000)}x`;
+  const cases = [
+    ["normal trailing slashes", "https://signup.example///", "https://signup.example"],
+    ["no trailing slash", "https://signup.example/path", "https://signup.example/path"],
+    ["all slashes", "////", ""],
+    ["empty", "", ""],
+    ["interior slash run", "https://signup.example/a//b///", "https://signup.example/a//b"],
+    ["long slash run followed by non-slash", longNonTrailingBase, longNonTrailingBase],
+  ] as const;
+
+  it.each(cases)(
+    "preserves manifest base semantics for %s",
+    async (_label, baseUrl, expectedBase) => {
+      const response = handleAppManifestForm(
+        new Request("https://signup.example/install/github/app/new?setup_token=fixture"),
+        { GITHUB_APP_SETUP_TOKEN: "fixture", SIGNUP_WORKER_PUBLIC_URL: baseUrl },
+      );
+      const body = await response.text();
+      expect(response.status).toBe(200);
+      expect(body).toContain(`${expectedBase}/install/github/callback`);
+      expect(body).toContain(`${expectedBase}/install/github/app/created`);
+    },
+  );
+});
 
 describe("install state sign/verify", () => {
   it("round-trips the tenant id within the TTL", async () => {
@@ -281,6 +308,42 @@ describe("handleInstallGithubCallback — public-flip structural gate", () => {
       CONFIG_DB: db,
     };
   }
+
+  it.each([
+    ["trailing slashes", "https://admin.example///", "https://admin.example"],
+    ["no trailing slash", "https://admin.example/path", "https://admin.example/path"],
+    ["interior slash run", "https://admin.example/a//b///", "https://admin.example/a//b"],
+    ["all slashes", "////", ""],
+    ["empty", "", ""],
+  ])("preserves redirect base semantics for %s", async (_label, configuredBase, expectedBase) => {
+    const { db } = makeDbStub();
+    const env = { ...baseEnv(db), ADMIN_UI_PUBLIC_URL: configuredBase };
+    const response = await handleInstallGithubCallback(
+      new Request("https://signup.example/install/github/callback"),
+      env,
+    );
+
+    if (expectedBase) {
+      expect(response.status).toBe(302);
+      const expectedLocation =
+        `${expectedBase}/settings/runners?` +
+        "runner_install=error&reason=missing%20installation_id%20or%20state";
+      expect(response.headers.get("location")).toBe(expectedLocation);
+    } else {
+      expect(response.status).toBe(502);
+      expect(response.headers.get("location")).toBeNull();
+    }
+  });
+
+  it("keeps an absent redirect base undefined", async () => {
+    const { db } = makeDbStub();
+    const response = await handleInstallGithubCallback(
+      new Request("https://signup.example/install/github/callback"),
+      baseEnv(db),
+    );
+    expect(response.status).toBe(502);
+    expect(response.headers.get("location")).toBeNull();
+  });
 
   it("(a) public + OAuth creds UNBOUND → 403 (fail-CLOSED, no bind)", async () => {
     const installationId = "500000001";

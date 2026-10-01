@@ -39,6 +39,18 @@ class B155VerifierTests(unittest.TestCase):
         self.assertEqual(len(result.unsafe), 0)
         self.assertEqual(len(result.indeterminate), 0)
 
+    def test_long_malformed_verify_line_fails_closed_with_bounded_work(self) -> None:
+        with self.assertRaises(verifier.InstrumentError):
+            verifier._grep_checks({"id": "B-155", "verify": "grep '" + "\\" * 20_000})
+
+    def test_valid_verify_line_within_limit_remains_supported(self) -> None:
+        checks, invocations, indeterminate = verifier._grep_checks(
+            {"id": "B-155", "verify": 'grep -q "safe" README.md'}
+        )
+        self.assertEqual(invocations, 1)
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(indeterminate, [])
+
     def test_source_kind_uses_grep_operands_not_pattern_text(self) -> None:
         bait = 'grep -q "^[^/*]*foo.rs" BACKLOG.md'
         self.assertEqual(verifier._source_kind(bait, bait, bait.find("grep"))[0], "markdown")

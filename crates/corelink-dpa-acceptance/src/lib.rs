@@ -68,6 +68,7 @@
 
 pub mod audit;
 pub mod error;
+pub mod ip_hash_salt;
 pub mod jwt;
 pub mod locale;
 pub mod notify;
@@ -79,6 +80,7 @@ pub use audit::{
     canonical_dpa_audit_event_names, DpaAuditEvent, DpaAuditSink, InMemoryDpaAuditSink,
 };
 pub use error::DpaAcceptanceError;
+pub use ip_hash_salt::IpHashSalt;
 pub use jwt::{sign_receipt, verify_receipt, JwtReceiptClaims, RsaPrivateKeyPem, RsaPublicKeyPem};
 pub use locale::{enforce_locale_match, notice_text_hash, LocaleNoticeRegistry};
 pub use notify::{InMemoryNotificationSink, NotificationEnvelope, NotificationSink};
@@ -95,10 +97,3 @@ pub use store::{DpaAcceptanceRecord, DpaAcceptanceStore, InMemoryDpaAcceptanceSt
 pub const fn dpa_schema_version() -> u32 {
     1
 }
-
-/// Content-addressable salt used for `accepted_ip_hash` derivation.
-///
-/// In production the salt is provisioned per-region via the secret
-/// rotation worker (S-13). Tests inject a deterministic value via
-/// [`service::DpaAcceptanceService::with_ip_salt`].
-pub const DEFAULT_IP_HASH_SALT: &[u8] = b"corelink/v1/dpa-accepted-ip-hash";

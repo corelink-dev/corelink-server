@@ -140,7 +140,8 @@ proptest! {
     /// INV-ADMIN-DUAL-APPROVAL: caller==approver always rejects SecretRotationStart.
     #[test]
     fn prop_cross_wi_dual_approval_gates_rotation_start(seed in 0u64..u64::MAX) {
-        let key = AdminSigningKey::test_zero();
+        // Explicit deterministic test fixture; never use as production key material.
+        let key = AdminSigningKey::new([0xA5; 32]);
         let user = Uuid::from_u64_pair(seed, seed ^ 0xdead);
         let tenant = Uuid::from_u64_pair(seed ^ 1, 0);
         let now = BASE_NOW;
@@ -159,7 +160,8 @@ proptest! {
     /// INV-ADMIN-MFA-FRESHNESS: stale MFA rejects SecretRotationStart.
     #[test]
     fn prop_cross_wi_mfa_stale_blocks_rotation_start(stale_extra_min in 1u32..360u32) {
-        let key = AdminSigningKey::test_zero();
+        // Explicit deterministic test fixture; never use as production key material.
+        let key = AdminSigningKey::new([0xA5; 32]);
         let caller = Uuid::now_v7();
         let approver = Uuid::now_v7();
         let tenant = Uuid::now_v7();
@@ -180,7 +182,8 @@ proptest! {
     /// INV-ADMIN-DUAL-APPROVAL: caller==approver always rejects FeatureFlagDisable.
     #[test]
     fn prop_cross_wi_dual_approval_gates_rollout_start(seed in 0u64..u64::MAX) {
-        let key = AdminSigningKey::test_zero();
+        // Explicit deterministic test fixture; never use as production key material.
+        let key = AdminSigningKey::new([0xA5; 32]);
         let user = Uuid::from_u64_pair(seed ^ 0xbeef, seed);
         let tenant = Uuid::from_u64_pair(seed ^ 2, 0);
         let now = BASE_NOW;
@@ -200,7 +203,8 @@ proptest! {
     /// INV-ADMIN-DUAL-APPROVAL: caller==approver always rejects ConfigRollback.
     #[test]
     fn prop_cross_wi_dual_approval_gates_config_rollback(seed in 0u64..u64::MAX) {
-        let key = AdminSigningKey::test_zero();
+        // Explicit deterministic test fixture; never use as production key material.
+        let key = AdminSigningKey::new([0xA5; 32]);
         let user = Uuid::from_u64_pair(seed ^ 0xcafe, seed);
         let tenant = Uuid::from_u64_pair(seed ^ 3, 0);
         let now = BASE_NOW;
@@ -224,7 +228,8 @@ proptest! {
 #[test]
 fn prop_cross_wi_atomic_batch_composition() {
     let cases = proptest_cases();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
 
     for i in 0u64..cases as u64 {
         let caller = Uuid::from_u64_pair(i, i ^ 0x1);
@@ -396,7 +401,8 @@ fn prop_cross_wi_collusion_rotation_blocks_all_op_types() {
 #[test]
 fn prop_cross_wi_mfa_freshness_blocks_all_destructive_ops() {
     let cases = proptest_cases();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
 
     let destructive_ops = [
         AdminOpType::ConfigRollback,

@@ -75,10 +75,9 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq as _;
 use uuid::Uuid;
 
-use corelink_dpa_acceptance::locale::accepted_ip_hash;
 use corelink_dpa_acceptance::{
-    sign_receipt, Jurisdiction, JwtReceiptClaims, LocaleBcp47, RsaPrivateKeyPem, TenantId,
-    DEFAULT_IP_HASH_SALT,
+    sign_receipt, IpHashSalt, Jurisdiction, JwtReceiptClaims, LocaleBcp47, RsaPrivateKeyPem,
+    TenantId,
 };
 
 use crate::routes::tier_select::{INTERNAL_AUTH_HEADER, TENANT_HEADER};
@@ -398,7 +397,7 @@ async fn orchestrate_dpa_accept<S: DpaAcceptStore>(
     store: &S,
     signing_key: &RsaPrivateKeyPem,
     kid: &str,
-    ip_salt: &[u8],
+    ip_salt: &IpHashSalt,
     tenant_id: &str,
     req: &ValidatedDpaRequest,
     now_ms: i64,
@@ -442,7 +441,7 @@ async fn orchestrate_dpa_accept<S: DpaAcceptStore>(
     let _jwt = sign_receipt(signing_key, kid, &claims).map_err(|_| DpaAcceptHttpError::Internal)?;
 
     // (4) Build + persist the real row.
-    let ip_hash = accepted_ip_hash(&req.client_ip, ip_salt);
+    let ip_hash = ip_salt.hash_ip(&req.client_ip);
     let row = AcceptanceRow {
         signup_id: signup_id.clone(),
         tenant_id: tenant_id.to_owned(),
@@ -509,7 +508,7 @@ pub struct DpaAcceptRouteState {
     signing_key: Arc<RsaPrivateKeyPem>,
     kid: Arc<str>,
     current_dpa_version: Arc<str>,
-    ip_salt: Arc<[u8]>,
+    ip_salt: Arc<IpHashSalt>,
 }
 
 impl std::fmt::Debug for DpaAcceptRouteState {
@@ -520,6 +519,7 @@ impl std::fmt::Debug for DpaAcceptRouteState {
             .field("signing_key", &"[REDACTED RSA PRIVATE KEY]")
             .field("kid", &self.kid)
             .field("current_dpa_version", &self.current_dpa_version)
+            .field("ip_salt", &self.ip_salt)
             .finish()
     }
 }
@@ -591,6 +591,8 @@ fn parse_signing_key(pem: &str) -> Option<RsaPrivateKeyPem> {
 
 /// Dedicated environment name for the DPA acceptance credential.
 const DPA_ACCEPT_AUTH_KEY_ENV: &str = "CORELINK_DPA_ACCEPT_AUTH_KEY";
+/// Dedicated 32-byte IP-hash salt, provisioned as 64 hexadecimal characters.
+const DPA_ACCEPT_IP_HASH_SALT_ENV: &str = "DPA_ACCEPT_IP_HASH_SALT";
 
 /// Resolve the DPA acceptance credential through the common 32-character
 /// fail-closed gate. The shared key remains a documented migration fallback;
@@ -599,11 +601,32 @@ fn dpa_accept_auth_key_from_env() -> Option<Arc<str>> {
     super::admin::resolve_internal_auth_key(DPA_ACCEPT_AUTH_KEY_ENV)
 }
 
+/// Resolve and validate the dedicated IP-hash salt. No development or
+/// deterministic fallback is allowed in mounted production state.
+fn dpa_accept_ip_hash_salt_from_env() -> Option<Arc<IpHashSalt>> {
+    let value = std::env::var(DPA_ACCEPT_IP_HASH_SALT_ENV).ok()?;
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        tracing::warn!("DPA_ACCEPT_IP_HASH_SALT invalid; /v1/onboarding/dpa-accept NOT mounted");
+        return None;
+    }
+    let bytes = hex::decode(value).ok()?;
+    match IpHashSalt::new(Some(&bytes)) {
+        Ok(salt) => Some(Arc::new(salt)),
+        Err(_) => {
+            tracing::warn!(
+                "DPA_ACCEPT_IP_HASH_SALT invalid; /v1/onboarding/dpa-accept NOT mounted"
+            );
+            None
+        }
+    }
+}
+
 /// Assemble the production [`DpaAcceptRouteState`] from the environment, or
 /// `None` when the route must NOT be mounted (fail-CLOSED). Mounted ONLY when
 /// the dedicated internal-auth secret (or its documented shared fallback), the
 /// DPA version, the RS256 signing key (`DPA_RECEIPT_SIGNING_KEY`, valid PEM),
-/// AND the D1 config are all present.
+/// the valid `DPA_ACCEPT_IP_HASH_SALT` (32 bytes encoded as hex), AND the D1
+/// config are all present.
 #[must_use]
 pub fn build_state_from_env() -> Option<DpaAcceptRouteState> {
     let auth_key = dpa_accept_auth_key_from_env()?;
@@ -624,6 +647,12 @@ pub fn build_state_from_env() -> Option<DpaAcceptRouteState> {
         );
         return None;
     };
+    let Some(ip_salt) = dpa_accept_ip_hash_salt_from_env() else {
+        tracing::warn!(
+            "DPA_ACCEPT_IP_HASH_SALT unset/invalid; /v1/onboarding/dpa-accept NOT mounted"
+        );
+        return None;
+    };
 
     let storage_env = crate::storage::StorageEnv::from_env()?;
     let d1 = match crate::storage::d1_http::D1HttpClient::new(&storage_env) {
@@ -638,6 +667,7 @@ pub fn build_state_from_env() -> Option<DpaAcceptRouteState> {
         auth_key,
         Arc::from(dpa_version),
         signing_key,
+        ip_salt,
         d1,
     ))
 }
@@ -646,6 +676,7 @@ fn build_state_with_d1(
     auth_key: Arc<str>,
     dpa_version: Arc<str>,
     signing_key: RsaPrivateKeyPem,
+    ip_salt: Arc<IpHashSalt>,
     d1: Arc<crate::storage::d1_http::D1HttpClient>,
 ) -> DpaAcceptRouteState {
     DpaAcceptRouteState {
@@ -654,7 +685,7 @@ fn build_state_with_d1(
         signing_key: Arc::new(signing_key),
         kid: Arc::from(RECEIPT_KID),
         current_dpa_version: dpa_version,
-        ip_salt: Arc::from(DEFAULT_IP_HASH_SALT),
+        ip_salt,
     }
 }
 
@@ -680,6 +711,7 @@ pub fn build_state_from_env_for_loopback_test(query_url: &str) -> Option<DpaAcce
         );
         return None;
     };
+    let ip_salt = dpa_accept_ip_hash_salt_from_env()?;
     let storage_env = crate::storage::StorageEnv::from_env()?;
     let d1 = match crate::storage::d1_http::D1HttpClient::new_for_loopback_test(
         &storage_env,
@@ -695,6 +727,7 @@ pub fn build_state_from_env_for_loopback_test(query_url: &str) -> Option<DpaAcce
         auth_key,
         Arc::from(dpa_version),
         signing_key,
+        ip_salt,
         d1,
     ))
 }

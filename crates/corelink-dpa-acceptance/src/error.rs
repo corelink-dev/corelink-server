@@ -9,6 +9,11 @@ use thiserror::Error;
 #[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum DpaAcceptanceError {
+    /// The server-provisioned IP-hash salt is absent, all zeroes, or not
+    /// exactly 32 bytes.
+    #[error("invalid IP-hash salt: expected a non-zero 32-byte secret")]
+    InvalidIpHashSalt,
+
     /// Locale mismatch — `corelink_locale` cookie vs payload locale
     /// differ. Returns HTTP 400 at the wiring layer and emits
     /// `dpa.locale_mismatch` audit. Lote 10.16 canonical enforcement

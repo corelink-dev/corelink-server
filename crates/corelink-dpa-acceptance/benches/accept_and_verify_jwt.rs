@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use corelink_dpa_acceptance::{
     service::{Clock, DpaAcceptanceService, JtiMinter},
     verify_receipt, ConsentProofPayload, DpaAcceptanceRequest, InMemoryDpaAcceptanceStore,
-    InMemoryDpaAuditSink, InMemoryNotificationSink, Jurisdiction, LocaleBcp47,
+    InMemoryDpaAuditSink, InMemoryNotificationSink, IpHashSalt, Jurisdiction, LocaleBcp47,
     LocaleNoticeRegistry, RsaPrivateKeyPem, RsaPublicKeyPem, SignupId, TenantCtx, TenantId,
 };
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -93,6 +93,7 @@ fn build_service(now_ms: i64, private: RsaPrivateKeyPem) -> BenchService {
         registry(),
         private,
         "kid-bench-01",
+        IpHashSalt::new(Some(&[0x52; 32])).expect("valid benchmark salt"),
     )
 }
 

@@ -17,12 +17,12 @@
 
 use crate::audit::{DpaAuditEvent, DpaAuditSink};
 use crate::error::DpaAcceptanceError;
+use crate::ip_hash_salt::IpHashSalt;
 use crate::jwt::{sign_receipt, JwtReceiptClaims, RsaPrivateKeyPem};
-use crate::locale::{accepted_ip_hash, enforce_locale_match, LocaleNoticeRegistry};
+use crate::locale::{enforce_locale_match, LocaleNoticeRegistry};
 use crate::notify::{NotificationEnvelope, NotificationSink};
 use crate::schema::{ConsentProofPayload, DpaAcceptanceReceipt, DpaAcceptanceRequest, TenantCtx};
 use crate::store::{DpaAcceptanceRecord, DpaAcceptanceStore};
-use crate::DEFAULT_IP_HASH_SALT;
 
 /// JTI mint surface (deterministic in tests via injection; UUID v7 in
 /// production via the wiring layer).
@@ -48,7 +48,7 @@ pub struct DpaAcceptanceService<S, A, N, J, C> {
     notice_registry: LocaleNoticeRegistry,
     signing_key: RsaPrivateKeyPem,
     kid: String,
-    ip_salt: Vec<u8>,
+    ip_salt: IpHashSalt,
 }
 
 impl<S, A, N, J, C> DpaAcceptanceService<S, A, N, J, C>
@@ -59,8 +59,9 @@ where
     J: JtiMinter,
     C: Clock,
 {
-    /// Build a new service. The orchestrator owns the registry,
-    /// signing key, and `kid`.
+    /// Build a new service with an explicitly provisioned, validated
+    /// IP-hash salt. The orchestrator owns the registry, signing key,
+    /// and `kid`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: S,
@@ -71,6 +72,7 @@ where
         notice_registry: LocaleNoticeRegistry,
         signing_key: RsaPrivateKeyPem,
         kid: impl Into<String>,
+        ip_salt: IpHashSalt,
     ) -> Self {
         Self {
             store,
@@ -81,15 +83,8 @@ where
             notice_registry,
             signing_key,
             kid: kid.into(),
-            ip_salt: DEFAULT_IP_HASH_SALT.to_vec(),
+            ip_salt,
         }
-    }
-
-    /// Override the IP-hash salt (S-13 secret rotation hook).
-    #[must_use]
-    pub fn with_ip_salt(mut self, salt: impl Into<Vec<u8>>) -> Self {
-        self.ip_salt = salt.into();
-        self
     }
 
     /// Audit sink accessor (for test assertions).
@@ -178,7 +173,7 @@ where
             &jti,
         );
         let jwt = sign_receipt(&self.signing_key, &self.kid, &claims)?;
-        let ip_hash = accepted_ip_hash(&ctx.client_ip, &self.ip_salt);
+        let ip_hash = self.ip_salt.hash_ip(&ctx.client_ip);
 
         // (5) Audit FIRST — charter audit fail-CLOSED ordering:
         //     lookup → emit_audit → mutate_state (INV-AUDIT-APPEND-ONLY).

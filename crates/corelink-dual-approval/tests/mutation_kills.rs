@@ -284,7 +284,8 @@ fn make_gate(admins: Vec<Uuid>) -> (DualApprovalGateImpl, Arc<InMemoryAdminOpAud
     let sink = Arc::new(InMemoryAdminOpAuditSink::new());
     let role_store = Arc::new(InMemoryAdminRoleStore::new(admins));
     let gate = DualApprovalGateImpl::new(
-        AdminSigningKey::test_zero(),
+        // Explicit deterministic test fixture; never use as production key material.
+        AdminSigningKey::new([0xA5; 32]),
         role_store,
         InMemoryCollusionStore::new(),
         InMemoryNonceStore::new(),
@@ -299,7 +300,8 @@ fn gate_clock_skew_max_const_is_60_seconds_precisely() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let (gate, _sink) = make_gate(vec![caller, approver]);
 
     let now_ms = 100_000_000u64;
@@ -343,7 +345,8 @@ fn gate_audit_payload_hash_reflects_real_sha256() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
 
     let (gate_a, sink_a) = make_gate(vec![caller, approver]);
     let mut req_a = make_signed_request(caller, approver, tenant, 1_000_000, &key);
@@ -386,7 +389,8 @@ fn gate_mfa_stale_reports_age_min_via_division() {
     let caller = Uuid::now_v7();
     let approver = Uuid::now_v7();
     let tenant = Uuid::now_v7();
-    let key = AdminSigningKey::test_zero();
+    // Explicit deterministic test fixture; never use as production key material.
+    let key = AdminSigningKey::new([0xA5; 32]);
     let (gate, _sink) = make_gate(vec![caller, approver]);
 
     let now_ms = 100_000_000u64;

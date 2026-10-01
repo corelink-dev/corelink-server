@@ -15,6 +15,10 @@ use rsa::RsaPrivateKey;
 const TEST_SHARED_KEY: &str = "shared-key-000000000000000000000";
 const TEST_DEDICATED_KEY: &str = "dedicated-key-000000000000000000";
 
+fn test_ip_hash_salt() -> IpHashSalt {
+    IpHashSalt::new(Some(&[0x54; 32])).expect("valid route test salt")
+}
+
 fn clear_auth_env() {
     std::env::remove_var(DPA_ACCEPT_AUTH_KEY_ENV);
     std::env::remove_var("CORELINK_INTERNAL_AUTH_KEY");
@@ -54,6 +58,24 @@ fn dpa_accept_auth_resolution_is_dedicated_first_and_32_char_fail_closed() {
     std::env::set_var("CORELINK_INTERNAL_AUTH_KEY", TEST_SHARED_KEY);
     assert!(dpa_accept_auth_key_from_env().is_none());
     clear_auth_env();
+}
+
+#[test]
+fn dpa_accept_ip_salt_is_required_and_validated_before_state_construction() {
+    let _guard = super::super::admin::INTERNAL_AUTH_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    std::env::remove_var(DPA_ACCEPT_IP_HASH_SALT_ENV);
+    assert!(dpa_accept_ip_hash_salt_from_env().is_none());
+
+    std::env::set_var(DPA_ACCEPT_IP_HASH_SALT_ENV, hex::encode([0; 32]));
+    assert!(dpa_accept_ip_hash_salt_from_env().is_none());
+    std::env::set_var(DPA_ACCEPT_IP_HASH_SALT_ENV, "not-hex");
+    assert!(dpa_accept_ip_hash_salt_from_env().is_none());
+    std::env::set_var(DPA_ACCEPT_IP_HASH_SALT_ENV, hex::encode([0x55; 32]));
+    let salt = dpa_accept_ip_hash_salt_from_env().expect("valid configured salt");
+    assert_eq!(salt.hash_ip("203.0.113.7").len(), 64);
+    std::env::remove_var(DPA_ACCEPT_IP_HASH_SALT_ENV);
 }
 
 /// In-memory `DpaAcceptStore` that also exposes the tier-select gate query
@@ -139,7 +161,7 @@ async fn accept_writes_row_and_gate_reads_true() {
         &store,
         &key,
         RECEIPT_KID,
-        DEFAULT_IP_HASH_SALT,
+        &test_ip_hash_salt(),
         tenant,
         &valid_req(LocaleBcp47::EnUs),
         now,
@@ -177,7 +199,7 @@ async fn reaccept_is_idempotent_no_new_row() {
         &store,
         &key,
         RECEIPT_KID,
-        DEFAULT_IP_HASH_SALT,
+        &test_ip_hash_salt(),
         tenant,
         &valid_req(LocaleBcp47::PtBr),
         1_700_000_000_000,
@@ -189,7 +211,7 @@ async fn reaccept_is_idempotent_no_new_row() {
         &store,
         &key,
         RECEIPT_KID,
-        DEFAULT_IP_HASH_SALT,
+        &test_ip_hash_salt(),
         tenant,
         &valid_req(LocaleBcp47::PtBr),
         1_700_000_999_000,
