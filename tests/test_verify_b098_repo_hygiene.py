@@ -28,8 +28,8 @@ class B098VerifierTests(unittest.TestCase):
         self.assertEqual(result.semver_tags, ())
         self.assertEqual(result.package_count, 95)
         self.assertEqual(result.crate_dir_count, 75)
-        self.assertEqual(result.okf_count, 173)
-        self.assertEqual((result.specs_schema_count, result.specs_yaml_only_count), (488, 11))
+        self.assertEqual(result.okf_count, 174)
+        self.assertEqual((result.specs_schema_count, result.specs_yaml_only_count), (490, 11))
 
     def test_lint_inheritance_mutation_reopens_the_guard(self) -> None:
         tracker = (ROOT / "crates/corelink-runbook-tracker/Cargo.toml").read_text()
@@ -44,13 +44,13 @@ class B098VerifierTests(unittest.TestCase):
 
     def test_each_documented_population_count_is_mutation_sensitive(self) -> None:
         claude = (ROOT / "CLAUDE.md").read_text()
-        mutated = claude.replace("**173 OKF concepts**", "**172 OKF concepts**", 1)
+        mutated = claude.replace("**174 OKF concepts**", "**173 OKF concepts**", 1)
         result = verifier.audit(ROOT, claude_text=mutated)
         self.assertTrue(any("okf_count" in issue for issue in result.issues))
 
         mutated = claude.replace(
-            "**488 full-schema + 11 YAML-only (499 total)",
-            "**487 full-schema + 11 YAML-only (498 total)",
+            "**490 full-schema + 11 YAML-only (501 total)",
+            "**489 full-schema + 11 YAML-only (500 total)",
             1,
         )
         result = verifier.audit(ROOT, claude_text=mutated)
@@ -315,7 +315,7 @@ class B098VerifierTests(unittest.TestCase):
 
     def test_duplicate_spec_population_guard_fails_closed(self) -> None:
         claude = (ROOT / "CLAUDE.md").read_text()
-        census = "**488 full-schema + 11 YAML-only (499 total)"
+        census = "**490 full-schema + 11 YAML-only (501 total)"
         mutated = claude.replace(census, f"{census}\n{census}", 1)
         with self.assertRaises(verifier.VerificationError):
             verifier.audit(ROOT, claude_text=mutated)

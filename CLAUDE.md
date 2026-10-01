@@ -44,7 +44,7 @@ for bodies), or invoke the **`okf-context`** skill.
 
 ## Gates (must stay green before merge)
 
-- `python3 scripts/validate_specs.py` → **488 full-schema + 11 YAML-only (499 total), 0 failures** (counts are produced by the validator, not a hand-maintained gate).
+- B-098 spec population → **490 full-schema + 11 YAML-only (501 total)**. `python3 scripts/validate_specs.py` currently reports 488 schema-valid, 11 YAML-only, and 2 missing-front-matter failures.
 - Secrets matrix: `bash scripts/secrets-checklist-verify.sh` (OK, no drift) +
   `python3 scripts/validate_secrets_matrix.py` (code_only=0). Both exclude build output
   (`.open-next`/`.wrangler`) — don't let them scan generated bundles.
