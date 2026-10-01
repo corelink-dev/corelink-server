@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
+import os
+import stat
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -129,6 +134,101 @@ def assess(
 
 
 class StagingCustomDomainTests(unittest.TestCase):
+    def test_cli_stdout_is_allowlisted_and_receipt_file_is_unchanged(self) -> None:
+        token = "CLI_TOKEN_SENTINEL"
+        receipt = {
+            "action": "published-and-health-verified",
+            "mode": "publish",
+            "provider_mutation_performed": True,
+            "runtime_secret_bindings_ready": True,
+            "created_by_run": True,
+            "custom_domain_count": 1,
+            "dns_record_count": 1,
+            "route_count": 0,
+            "canonical_route_count": 0,
+            "hostname": "PROVIDER_HOST_SENTINEL",
+            "worker": "PROVIDER_WORKER_SENTINEL",
+            "account_id": "PROVIDER_ACCOUNT_SENTINEL",
+            "zone_id": "PROVIDER_ZONE_SENTINEL",
+            "custom_domain_id": "PROVIDER_DOMAIN_ID_SENTINEL",
+            "certificate_id": "PROVIDER_CERTIFICATE_ID_SENTINEL",
+            "health_result": "PROVIDER_HEALTH_RESPONSE_SENTINEL",
+            "provider_response": "PROVIDER_RESPONSE_SENTINEL",
+            "token": token,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            receipt_path = Path(temp_dir) / "receipt.json"
+
+            def fake_run(
+                mode: str,
+                received_token: str,
+                account_id: str,
+                zone_id: str,
+                output_path: Path,
+            ) -> dict:
+                self.assertEqual(mode, "publish")
+                self.assertEqual(received_token, token)
+                self.assertEqual(account_id, "CLI_ACCOUNT_SENTINEL")
+                self.assertEqual(zone_id, "CLI_ZONE_SENTINEL")
+                self.assertEqual(output_path, receipt_path)
+                previous_umask = os.umask(0o077)
+                try:
+                    domain._write_receipt(output_path, receipt)
+                finally:
+                    os.umask(previous_umask)
+                return receipt
+
+            stdout = io.StringIO()
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "CF_API_TOKEN": token,
+                        "STAGING_CF_ACCOUNT_ID": "CLI_ACCOUNT_SENTINEL",
+                        "CF_ZONE_ID": "CLI_ZONE_SENTINEL",
+                    },
+                ),
+                patch.object(domain, "run", side_effect=fake_run),
+                redirect_stdout(stdout),
+            ):
+                result = domain.main(["--mode", "publish", "--receipt", str(receipt_path)])
+
+            self.assertEqual(result, 0)
+            output = json.loads(stdout.getvalue())
+            self.assertEqual(
+                output,
+                {
+                    "canonical_route_count": 0,
+                    "created_by_run": True,
+                    "custom_domain_count": 1,
+                    "dns_record_count": 1,
+                    "health_verified": True,
+                    "mode": "publish",
+                    "operation": "staging_custom_domain",
+                    "provider_mutation_performed": True,
+                    "route_count": 0,
+                    "runtime_secret_bindings_ready": True,
+                    "status": "published-and-health-verified",
+                },
+            )
+            for sentinel in (
+                token,
+                "CLI_ACCOUNT_SENTINEL",
+                "CLI_ZONE_SENTINEL",
+                "PROVIDER_HOST_SENTINEL",
+                "PROVIDER_WORKER_SENTINEL",
+                "PROVIDER_ACCOUNT_SENTINEL",
+                "PROVIDER_ZONE_SENTINEL",
+                "PROVIDER_DOMAIN_ID_SENTINEL",
+                "PROVIDER_CERTIFICATE_ID_SENTINEL",
+                "PROVIDER_HEALTH_RESPONSE_SENTINEL",
+                "PROVIDER_RESPONSE_SENTINEL",
+            ):
+                self.assertNotIn(sentinel, stdout.getvalue())
+            self.assertEqual(json.loads(receipt_path.read_text(encoding="utf-8")), receipt)
+            self.assertEqual(stat.S_IMODE(receipt_path.stat().st_mode), 0o600)
+
     def test_empty_state_is_a_preview_only_exact_attach_candidate(self) -> None:
         plan = assess()
         self.assertEqual(plan["action"], "attach-custom-domain")
