@@ -187,8 +187,8 @@ jobs:
       #   <package> <distinct diagnostic count>
       # A listed package is left out of the `-D warnings` run, so the rest of
       # the workspace stays strict. The ratchet step then lints it with every
-      # lint capped at warn and counts its distinct diagnostics (code, primary
-      # span, message). The count must EQUAL the entry: more means a new lint
+      # lint capped at warn and counts its distinct diagnostics by rendered
+      # text, the way cargo dedupes them. The count must EQUAL the entry: more means a new lint
       # failure, which is red; fewer means the entry must come down in the same
       # PR, also red. An entry that reaches zero must be deleted. Shrink-only.
       #   corelink-server
@@ -324,10 +324,13 @@ jobs:
                   primary = [span for span in message.get("spans", []) if span.get("is_primary")]
                   if message.get("level") not in ("warning", "error") or not primary:
                       continue
+                  # The rendered text, as cargo itself dedupes: identical for a lib
+                  # diagnostic repeated by lib-test, but distinct for two invocations
+                  # of one macro, which share a primary span.
                   span = primary[0]
-                  key = ((message.get("code") or {}).get("code"), span["file_name"],
-                         span["line_start"], span["column_start"], message["message"])
-                  seen.setdefault(key, message.get("rendered") or message["message"])
+                  text = message.get("rendered") or "{}:{}:{}: {}".format(
+                      span["file_name"], span["line_start"], span["column_start"], message["message"])
+                  seen.setdefault(text, text)
           with open(sys.argv[3], "w", encoding="utf-8") as sink:
               sink.write("".join(seen.values()))
           print(len(seen))

@@ -670,14 +670,18 @@ PKGID = "path+file:///w/crates/corelink-container#corelink-server@0.1.2"
 
 
 def diagnostic(line: int, *, package_id: str = PKGID, code: str = "clippy::indexing_slicing",
-               primary: bool = True, level: str = "warning", text: str = "indexing may panic") -> str:
+               primary: bool = True, level: str = "warning", text: str = "indexing may panic",
+               invoked_at: int | None = None) -> str:
     spans = [{"file_name": "crates/corelink-container/src/x.rs", "line_start": line,
               "column_start": 5, "is_primary": primary}]
+    rendered = f"{level}: {text} at x.rs:{line}\n"
+    if invoked_at is not None:
+        rendered += f"  in this macro invocation at x.rs:{invoked_at}\n"
     return json.dumps({
         "reason": "compiler-message",
         "package_id": package_id,
         "message": {"level": level, "message": text, "code": {"code": code}, "spans": spans,
-                    "rendered": f"{level}: {text} at x.rs:{line}\n"},
+                    "rendered": rendered},
     })
 
 
@@ -721,6 +725,14 @@ class ClippyDebt(FakeCargoStep):
     def test_the_same_span_in_lib_and_lib_test_counts_once(self) -> None:
         code, log = self.run_debt(stream(diagnostic(1), diagnostic(1), diagnostic(2), diagnostic(3)))
         self.assertEqual(code, 0, log)
+
+    def test_two_macro_invocations_sharing_a_span_count_twice(self) -> None:
+        # A new call of an existing macro is new debt even though the lint's
+        # primary span (inside the macro body) is unchanged.
+        code, log = self.run_debt(stream(diagnostic(1), diagnostic(2), diagnostic(3, invoked_at=40),
+                                         diagnostic(3, invoked_at=41)))
+        self.assertEqual(code, 1, log)
+        self.assertIn("GREW from 3 to 4", log)
 
     def test_other_packages_and_spanless_summaries_do_not_count(self) -> None:
         other = diagnostic(9, package_id="path+file:///w/crates/corelink-billing#0.1.2")
