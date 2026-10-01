@@ -107,11 +107,16 @@ grep -rEn 'card_number|cvv|cvc|\bpan\b' \
 #  leaked card numbers before logs leave our infrastructure — see the
 #  note in the SAQ-A doc).
 
-# 2. Inspect the live checkout page's Content-Security-Policy header.
-curl -sI https://billing.corelink.humangr.com/checkout | grep -i content-security-policy
+# 2. Inspect the Content-Security-Policy every CoreLink console page carries,
+#    including the public pricing page where an upgrade to a paid tier starts.
+#    Card entry itself happens on Stripe-hosted Checkout, not on our pages.
+curl -sI https://humangr.com/corelink/pricing | grep -i content-security-policy
 
-# Expected: script-src 'self' https://js.stripe.com
-# (no analytics, no tag managers, no chat widgets on the payment page)
+# Expected (source: apps/admin-ui/src/lib/csp.ts): script-src allows 'self',
+# a per-request nonce, and exactly four third-party hosts — Clerk
+# (clerk.corelink-app.humangr.com), Cloudflare Turnstile
+# (challenges.cloudflare.com), Plausible analytics (plausible.io) and Stripe
+# (js.stripe.com). No tag manager and no chat widget is allowed.
 ```
 
 ## What we share with auditors and procurement

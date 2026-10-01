@@ -52,7 +52,7 @@ pub const TOKEN_HMAC_LEN: usize = 32;
 /// Plaintext token payload, serialized into the URL.
 ///
 /// Field names are short (1-3 chars) to keep the URL compact when
-/// rendered as `https://survey.corelink.humangr.com/r?t=<token>`.
+/// rendered as the `t` query parameter of a survey-invite URL (`/r?t=<token>`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TokenPayload {
     /// Wire version. Validated to equal [`TOKEN_WIRE_VERSION`].

@@ -178,7 +178,7 @@ production version to upgrade from.
 ### §2.9 Public docs + pricing
 
 - **Docusaurus 3** documentation site at `apps/docs/`
-  (`docs.corelink.humangr.com`) with the Diátaxis taxonomy
+  (`humangr.com/corelink/docs`) with the Diátaxis taxonomy
   (tutorial / how-to / reference / explanation), a 5-minute
   Bazel / Buck2 / native quickstart, auto-generated REAPI v2
   reference, and i18n in **en / pt-BR / es**.
@@ -373,7 +373,7 @@ at any wave boundary since wave-19 SEAL.
 | **Enterprise** | Regulated / >250 users | Custom seats, custom storage, all 4 regions, **BYOK required**, **DPA + DPIA**, dedicated CSM, 24/7 P1 response, audit-log retention extensions, contractual SLA | Custom (annual contract) |
 
 > Detailed pricing, the feature matrix, and the pricing calculator live
-> on the docs site (`docs.corelink.humangr.com/pricing`). Final-approver
+> on the docs site (`humangr.com/corelink/docs/pricing`). Final-approver
 > review (Finance + Legal + Security) per the S-18 cross-functional
 > anti-scope gate is required before any pricing change publishes.
 
@@ -415,14 +415,14 @@ were not offered as production-supported builds.
 
 New customers begin from a clean tenant:
 
-1. Sign up at `app.corelink.humangr.com` (S-19 self-service signup; DPA
+1. Sign up at `humangr.com/corelink/sign-up` (S-19 self-service signup; DPA
    click-through with cryptographic receipt).
 2. Pick a tier (§7) and complete Stripe Checkout (or the
    Enterprise inquiry path).
 3. Provision a region (defaulting to the rendered-locale cookie).
 4. Generate a scoped PAT and wire it into your Bazel / Buck2 / CI
    runner via the credential-helper-protocol (CLI quickstart in
-   `docs.corelink.humangr.com/quickstart`).
+   `humangr.com/corelink/docs/quickstart`).
 
 Migration from competing remote caches (BuildBuddy, EngFlow, Bazel
 Remote Cache, Buildless, NativeLink) is supported via the REAPI v2

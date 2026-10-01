@@ -25,7 +25,7 @@ pub struct DeployTarget {
     pub script_name: String,
     /// Cloudflare zone ID (32-hex-char string).
     pub zone_id: String,
-    /// Route pattern (e.g. `"api.corelink.humangr.com/*"`).
+    /// Route pattern (e.g. `"corelink-api.humangr.com/*"`).
     pub route_pattern: String,
 }
 

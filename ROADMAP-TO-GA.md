@@ -36,7 +36,7 @@ The retired enterprise plan (R-1..R-8) is preserved at the bottom of this docume
 
 | # | Item | Owner | Effort | Done when |
 |---|---|---|---|---|
-| L1 | **Landing page live** at `corelink.humangr.com` explaining what CoreLink is + 30-sec demo + signup CTA | Gustavo | 4-8h | Public URL serves; first-visitor-can-understand test passes (5/5 friends "get it") |
+| L1 | **Landing page live** at `humangr.com/corelink` explaining what CoreLink is + 30-sec demo + signup CTA | Gustavo | 4-8h | Public URL serves; first-visitor-can-understand test passes (5/5 friends "get it") |
 | L2 | **Signup flow end-to-end working** — Clerk auth → DPA accept → first cache write within 5 min | Gustavo + agent for fixes | 6-12h | One stranger can complete onboarding without help |
 | L3 | **Pricing page** — free tier + 1 paid tier ($X/GB or $Y/month), Stripe Checkout integration | Gustavo + agent | 2-4h | Pricing visible; "Subscribe" button charges real card |
 | L4 | **Privacy Policy + Terms of Service** posted (template via Termly/Iubenda ~$10/mo OR one-time lawyer review ~$200-500) | Gustavo | 1-2h | Both pages live + linked from footer |
@@ -69,7 +69,7 @@ Trigger: a customer explicitly says they need X to commit. Then (and only then):
 | "Do you have SOC 2 Type II?" | Start SOC 2 with Drata/Vanta ($15-30k, 3-6 months); you have most controls already via charter |
 | "Can you sign our DPA?" | Use a template DPA (Iubenda $10/mo includes; or copy from competitor public DPA; or $500 lawyer review) |
 | "Have you been pentested?" | Hire small firm $5-15k; turnaround 2-3 weeks |
-| "Where's your security page?" | Write `trust.corelink.humangr.com` listing your charter controls (you ALREADY have them; just expose) |
+| "Where's your security page?" | Publish a trust page (now `humangr.com/corelink/docs/trust/overview`) listing your charter controls (you ALREADY have them; just expose) |
 
 DO NOT do any of this preemptively. Cost without revenue = founder death.
 
@@ -106,7 +106,7 @@ Active Human Track for Phase 1 (Launch Readiness):
 
 | # | Action | Phase | Cost (USD) | Blocks |
 |---|---|---|---|---|
-| H-L1 | **Domain + DNS** for `corelink.humangr.com` (apex + landing) | Phase 1 | ~$10/yr | L1 |
+| H-L1 | **Domain + DNS** for the flat `corelink-*.humangr.com` hosts + the `humangr.com/corelink` landing | Phase 1 | ~$10/yr | L1 |
 | H-L2 | **Stripe account** — already set up + Live keys obtained | Phase 1 (done) | $0 | L3 |
 | H-L3 | **Clerk account** + production app + publishable+secret keys | Phase 1 | $25/mo Pro | L2 |
 | H-L4 | **Privacy/ToS template** — Termly or Iubenda subscription OR one-time lawyer pass | Phase 1 | $10/mo OR $200-500 one-time | L4 |
@@ -119,7 +119,7 @@ Phase 3 triggers (only when a paying customer explicitly asks):
 | "Do you have SOC 2?" | Start Drata or Vanta + Schellman audit | $15-30k + $10k/yr |
 | "Can you sign our DPA?" | Iubenda or $500 lawyer template review | $10/mo or $500 |
 | "Have you been pentested?" | Hire small firm; 2-3 week turnaround | $5-15k |
-| "Trust page?" | Write `trust.corelink.humangr.com` (controls already exist via charter) | $0 (your time) |
+| "Trust page?" | Publish a trust page (now `humangr.com/corelink/docs/trust/overview`; controls already exist via charter) | $0 (your time) |
 | "Apple notarization / Windows EV cert?" | Apple Developer Program + DigiCert/Sectigo | $99/yr + $300-500/yr |
 
 **Estimated Phase 1 spend: <$1k.** Phase 3 spend variable; gated on customer revenue.
@@ -190,7 +190,7 @@ For Phase 3 (Enterprise-When-Asked):
 
 Phase 1 (Launch Readiness) done when:
 
-- ✅ Landing page live at `corelink.humangr.com` and a friend who hasn't seen the product can explain it back after 60 seconds
+- ✅ Landing page live at `humangr.com/corelink` and a friend who hasn't seen the product can explain it back after 60 seconds
 - ✅ One stranger completes signup → first cache write unaided
 - ✅ Pricing page live; Stripe Checkout charges a real card; webhook signature verify passes against real Stripe
 - ✅ Privacy Policy + ToS posted + footer-linked
@@ -292,9 +292,9 @@ Replaces InMemory fakes with real HTTP/CF/KMS clients. Tracked via Wave 32 produ
 
 | # | Work item | Owner | Notes |
 |---|---|---|---|
-| R4-1 | **admin-ui CF Pages deploy** with real Clerk publishable key | 1 Sonnet + Gustavo (Clerk dashboard) | Custom domain `admin.corelink.humangr.com` |
-| R4-2 | **docs CF Pages deploy** to `docs.corelink.humangr.com` | 1 Sonnet + Gustavo (DNS) | Algolia DocSearch registration |
-| R4-3 | **DNS setup**: corelink.humangr.com apex + 3 subdomains + email DKIM/SPF/DMARC | Gustavo (registrar) | 24h propagation |
+| R4-1 | **admin-ui CF Pages deploy** with real Clerk publishable key | 1 Sonnet + Gustavo (Clerk dashboard) | Path mount `humangr.com/corelink` (no custom subdomain) |
+| R4-2 | **docs CF Pages deploy** to `humangr.com/corelink/docs` | 1 Sonnet + Gustavo (DNS) | Algolia DocSearch registration |
+| R4-3 | **DNS setup**: flat `corelink-*.humangr.com` hosts + email DKIM/SPF/DMARC | Gustavo (registrar) | 24h propagation |
 | R4-4 | **Cookie consent UI live** — Cookiebot or equivalent + integration with consent ledger (WI-S11-003) | 1 Sonnet | LGPD + GDPR + ePrivacy |
 | R4-5 | **Privacy/legal pages real content** | 1 Sonnet | (Now handled via Phase 1 L4 template) |
 | R4-6 | **4-locale stub translations replaced with real translations** | Translators (hired contractors) | (Deferred to Phase 3 enterprise demand) |

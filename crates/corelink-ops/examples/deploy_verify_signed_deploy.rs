@@ -42,7 +42,7 @@ fn main() {
             "corelink-worker",
             // 32-hex-char Cloudflare zone ID
             "00000000000000000000000000000001",
-            "api.corelink.humangr.com/*",
+            "corelink-api.humangr.com/*",
         ),
         GitHubActor::new(
             "github-actions[bot]",
@@ -111,7 +111,7 @@ mod tests {
             DeployTarget::new(
                 "corelink-worker",
                 "00000000000000000000000000000001",
-                "api.corelink.humangr.com/*",
+                "corelink-api.humangr.com/*",
             ),
             GitHubActor::new(
                 "github-actions[bot]",

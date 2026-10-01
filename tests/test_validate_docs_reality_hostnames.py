@@ -32,6 +32,11 @@ The regression targets, one test each:
   * a suppression that matched NOTHING is reported ([suppression-hygiene]), and a
     suppression with a missing or past `expires` is fatal — an expiring
     suppression that never expires is a permanent mute wearing a date;
+  * a suppression is scoped to the exact `files` it names: a missing `files`
+    list is fatal, a mention of the suppressed host in any OTHER file fails,
+    and a declared file that no longer mentions the host is reported — so a
+    renewal justified by one historical record cannot mute the same dead host
+    on a customer page;
   * the gate performs NO network I/O (DNS/TLS live only in the opt-in
     `--verify-dns` mode), because CI here runs on the founder's own Mac and a
     networked gate is a flaky gate.
@@ -270,10 +275,12 @@ def test_the_real_repo_scan_clears_both_floors():
 # --- suppression machinery ----------------------------------------------------
 
 
-def _tracked(host: str, expires: str = "2099-01-01") -> dict:
+def _tracked(host: str, expires: str = "2099-01-01",
+             files: list[str] | None = None) -> dict:
     return {**BASE_CFG, "tracked_dead": {
         host: {"reason": "TODO(dead-host-sweep): fixture",
-               "added": "2026-08-22", "owner": "fixture", "expires": expires}}}
+               "added": "2026-08-22", "owner": "fixture", "expires": expires,
+               "files": ["README.md"] if files is None else files}}}
 
 
 def test_tracked_dead_host_is_suppressed_but_visible(tmp_path: Path):
@@ -318,6 +325,54 @@ def test_expired_suppression_is_fatal(tmp_path: Path):
     assert res.total_fail > 0
 
 
+@pytest.mark.parametrize(
+    "files",
+    [None, [], [""], ["README.md", 7], "README.md"],
+    ids=["missing", "empty", "blank", "non-string", "not-a-list"],
+)
+def test_suppression_without_a_file_scope_is_fatal(tmp_path: Path, files):
+    """[suppression-scope]: an entry that does not name the files it covers is a
+    host-wide mute. Every malformed spelling of `files` is a hard failure that
+    names the host — never a silently unscoped suppression."""
+    _write(tmp_path, "README.md", f"https://{DEAD}/\n")
+    cfg = _tracked(DEAD)
+    meta = dict(cfg["tracked_dead"][DEAD])
+    if files is None:
+        del meta["files"]
+    else:
+        meta["files"] = files
+    cfg = {**cfg, "tracked_dead": {DEAD: meta}}
+    res = _run(tmp_path, cfg=cfg)
+    assert any(DEAD in m and "`files`" in m for m in res.scope_errors), res.scope_errors
+    assert res.total_fail > 0
+
+
+def test_tracked_host_in_an_undeclared_file_fails(tmp_path: Path):
+    """The defect the scope exists for: a dead host renewed because ONE file
+    legitimately keeps it must still FAIL the moment it reappears anywhere else
+    — here a customer quickstart — and the failure names that file and line."""
+    _write(tmp_path, "README.md", f"history: https://{DEAD}/ was retired\n")
+    _write(tmp_path, "apps/docs/docs/quickstart.md", f"\nVisit https://{DEAD}/\n")
+    res = _run(tmp_path, cfg=_tracked(DEAD, files=["README.md"]))
+    assert [(h, r.file, r.line) for h, r in res.scope_failures] == \
+        [(DEAD, "apps/docs/docs/quickstart.md", 2)]
+    assert [(h, r.file) for h, r in res.tracked] == [(DEAD, "README.md")]
+    assert res.failures == []
+    assert res.total_fail == 1
+
+
+def test_declared_file_that_no_longer_mentions_the_host_is_reported(tmp_path: Path):
+    """[suppression-hygiene] one level down: a stale file in `files` stands armed
+    to re-silence that file later, so it is reported by name (non-fatal, like the
+    whole-entry hygiene warning)."""
+    _write(tmp_path, "README.md", f"https://{DEAD}/\n")
+    _write(tmp_path, "marketing/swept.md", f"https://{LIVE}/\n")
+    res = _run(tmp_path, cfg=_tracked(DEAD, files=["README.md", "marketing/swept.md"]))
+    stale = [w for w in res.warnings if "[suppression-hygiene]" in w]
+    assert len(stale) == 1 and DEAD in stale[0] and "marketing/swept.md" in stale[0]
+    assert res.total_fail == 0
+
+
 def test_suppression_expiry_is_evaluated_against_today(tmp_path: Path):
     """Frozen `today` so the test does not drift into failing on a calendar."""
     _write(tmp_path, "README.md", f"https://{DEAD}/\n")
@@ -337,10 +392,13 @@ def test_shipped_allowlist_hostname_section_is_wellformed():
     assert cfg["live_allow"], "live_allow must not be empty"
     for host, meta in cfg["tracked_dead"].items():
         assert isinstance(meta, dict), f"{host}: suppression must be an object"
-        for key in ("reason", "added", "owner", "expires"):
+        for key in ("reason", "added", "owner", "expires", "files"):
             assert meta.get(key), f"{host}: suppression is missing `{key}`"
         assert SCRIPT._parse_iso_date(meta["expires"]), \
             f"{host}: `expires` must be an ISO date"
+        # A declared file that does not exist is a typo that scopes nothing.
+        for rel in meta["files"]:
+            assert (REPO_ROOT / rel).is_file(), f"{host}: declared file {rel} is missing"
 
 
 def test_status_host_suppression_records_the_real_root_cause():

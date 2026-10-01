@@ -469,7 +469,9 @@ def _example_payload(schema: dict[str, Any] | None, spec: Spec, seen: set[str] |
         if fmt == "email":
             return "test-tenant@example.com"
         if fmt == "uri":
-            return "https://corelink.humangr.com/example"
+            # Live apex: the tier-select redirect allowlist accepts exactly
+            # `humangr.com`, so this placeholder is also a VALID example.
+            return "https://humangr.com/corelink/example"
         if fmt == "date-time":
             return "2026-01-01T00:00:00Z"
         pattern = schema.get("pattern")
