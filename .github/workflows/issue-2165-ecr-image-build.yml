@@ -531,10 +531,7 @@ jobs:
         run: |
           set -euo pipefail
           cluster="$(cat "$RUNNER_TEMP/i2165-cleanup-cluster")"
-          for status in RUNNING PENDING; do
-            aws ecs list-tasks --cluster "$cluster" --desired-status "$status" --output json > "$RUNNER_TEMP/tasks-$status.json"
-            jq -e '.taskArns | length == 0' "$RUNNER_TEMP/tasks-$status.json" >/dev/null
-          done
+          python3 scripts/issue_2165_cleanup_tasks.py "$cluster"
 
       - name: Final read-only task check, assume cleanup role, and delete exact SHA tags
         id: delete
@@ -543,10 +540,7 @@ jobs:
           umask 077
           cluster="$(cat "$RUNNER_TEMP/i2165-cleanup-cluster")"
           date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/active-task-readback-at"
-          for status in RUNNING PENDING; do
-            aws ecs list-tasks --cluster "$cluster" --desired-status "$status" --output json > "$RUNNER_TEMP/tasks-final-$status.json"
-            jq -e '.taskArns | length == 0' "$RUNNER_TEMP/tasks-final-$status.json" >/dev/null
-          done
+          python3 scripts/issue_2165_cleanup_tasks.py "$cluster"
 
           test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
           test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"

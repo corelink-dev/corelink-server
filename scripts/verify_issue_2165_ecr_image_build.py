@@ -12,7 +12,7 @@ class ContractError(ValueError):
     pass
 
 
-def validate(workflow: str, runtime: str) -> None:
+def validate(workflow: str, runtime: str, cleanup_tasks: str = "") -> None:
     required_workflow = (
         "workflow_dispatch:",
         "environment: b083-kms-lifecycle",
@@ -51,7 +51,7 @@ def validate(workflow: str, runtime: str) -> None:
         'lease["app_digest"] == os.environ["APP_DIGEST"]',
         'lease["operator_digest"] == os.environ["OPERATOR_DIGEST"]',
         "Final read-only task check, assume cleanup role, and delete exact SHA tags",
-        'aws ecs list-tasks --cluster "$cluster" --desired-status "$status"',
+        'python3 scripts/issue_2165_cleanup_tasks.py "$cluster"',
         "aws sts assume-role-with-web-identity",
         "readback_times_utc",
         "postread:$postread_at",
@@ -59,6 +59,19 @@ def validate(workflow: str, runtime: str) -> None:
     )
     if any(marker not in workflow for marker in required_workflow):
         raise ContractError("image build workflow is missing a bounded cap, isolated cleanup role, exact-tag cleanup, or retention receipt control")
+    if workflow.count('python3 scripts/issue_2165_cleanup_tasks.py "$cluster"') != 2:
+        raise ContractError("both pre-delete checks must validate RUNNING and STOPPED task lifecycle states")
+    required_cleanup_tasks = (
+        'TASK_DESIRED_STATUSES = ("RUNNING", "STOPPED")',
+        'PENDING is a lastStatus',
+        '"ecs", "list-tasks", "--cluster", cluster_arn, "--desired-status", status',
+        '"ecs", "describe-tasks"',
+        'task.get("lastStatus") != "STOPPED"',
+        'response.get("failures", [])',
+        'not isinstance(failures, list) or failures',
+    )
+    if any(marker not in cleanup_tasks for marker in required_cleanup_tasks):
+        raise ContractError("cleanup task check must describe RUNNING and STOPPED desired-state results and fail closed before deletion")
     if workflow.count("aws ecr batch-delete-image") != 2:
         raise ContractError("failed-build and successful-image cleanup must each have one exact-tag delete command")
     if workflow.index("aws ecr get-lifecycle-policy") > workflow.index("aws ecr put-lifecycle-policy"):
@@ -77,7 +90,7 @@ def validate(workflow: str, runtime: str) -> None:
     if cleanup_job.index("Read back both exact SHA tags") > cleanup_job.index("aws sts assume-role-with-web-identity"):
         raise ContractError("exact digest preimage must pass before cleanup credentials are assumed")
     if not (
-        delete_step.index('aws ecs list-tasks --cluster "$cluster" --desired-status "$status"')
+        delete_step.index('python3 scripts/issue_2165_cleanup_tasks.py "$cluster"')
         < delete_step.index("aws sts assume-role-with-web-identity")
         < delete_step.index("cleanup_aws ecr batch-delete-image")
     ):
@@ -106,9 +119,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workflow", type=Path, required=True)
     parser.add_argument("--runtime", type=Path, required=True)
+    parser.add_argument("--cleanup-tasks", type=Path, required=True)
     args = parser.parse_args()
     try:
-        validate(args.workflow.read_text(encoding="utf-8"), args.runtime.read_text(encoding="utf-8"))
+        validate(
+            args.workflow.read_text(encoding="utf-8"),
+            args.runtime.read_text(encoding="utf-8"),
+            args.cleanup_tasks.read_text(encoding="utf-8"),
+        )
     except (OSError, ContractError) as exc:
         print(f"Issue #2165 ECR/runtime contract failed: {exc}", file=sys.stderr)
         return 1
