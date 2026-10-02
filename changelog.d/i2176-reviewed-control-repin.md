@@ -10,9 +10,9 @@
   PRs had moved pinned paths. #2876 moved two #2565 paths: its issue-1650
   path filter and the B068 verifier. #2882 moved eight i1700 paths with its
   V15 probe window, including `durable_object.ts`. #2884 moved the i1700
-  deploy workflow again, to swap its deploy token. #2885 and #2886 (main
-  `3e7080062`) moved no pinned path. Both verifiers accept that tree,
-  merged with this PR, as their own BASE.
+  deploy workflow again, to swap its deploy token. #2885, #2886, #2870 and
+  #2887 (main `0284fdf14`) moved no pinned path. Both verifiers accept that
+  tree, merged with this PR, as their own BASE.
 
   Every moved pin was reviewed first. The per-file ledger is
   `REBASELINE_LEDGER` in `scripts/verify_i2176_grpc_deny_gate.py`: 47 rows,
