@@ -2,7 +2,7 @@
 
 - **A committed clippy-debt baseline can no longer admit a new diagnostic.** The
   `rust-affected-tests` baseline step used to trust the baseline in the change under
-  test, so a change that added a clippy warning to `corelink-server` passed once it
+  test, so a change that added a clippy warning to a ledger package passed once it
   also committed the regenerated baseline. `scripts/rust_clippy_debt.py` now also
   receives the same baseline file as committed at the base revision. The committed
   baseline must be a sub-multiset of it: an entry the base does not list, or lists

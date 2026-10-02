@@ -42,12 +42,11 @@
 # the tests in the test job's SKIP_TESTS ledger, each with its reason. Every
 # other test must pass: a real failure on main is fixed, or bounded inside the
 # test itself as declared debt (B-126's main.rs line count is the example),
-# never skipped by the lane while it can still fail for a new reason. Packages
-# in the clippy job's CLIPPY_DEBT ledger are left out of the `-D warnings` run.
-# They are linted instead against a reviewed baseline, diagnostic by
-# diagnostic: any diagnostic the baseline does not list is red, however many
-# listed ones were fixed in the same change, and the committed baseline may
-# not list anything the base revision's copy of it does not.
+# never skipped by the lane while it can still fail for a new reason. Clippy
+# runs with `-D warnings` on every selected package. The clippy job's
+# CLIPPY_DEBT ledger, which would take a package out of that run and hold it
+# to a reviewed baseline instead, is empty: an entry narrows this lane's gate,
+# so it needs the owner's explicit scope amendment.
 #
 # THE VERDICT JOB is the single check to depend on. It fails unless the
 # selection succeeded AND either clippy and every test shard succeeded, or the
@@ -73,7 +72,7 @@ on:
       - '**/clippy.toml'  # path-filter-allow: no clippy.toml today; a future one changes what clippy reports
       - '**/.clippy.toml'  # path-filter-allow: no .clippy.toml today; a future one changes what clippy reports
       - '.github/workflows/rust-affected-tests.yml'
-      - '.github/rust-affected-tests/**'
+      - '.github/rust-affected-tests/**'  # path-filter-allow: empty while CLIPPY_DEBT is; a future baseline is lane input
       - 'scripts/rust_affected_packages.py'
       - 'scripts/rust_clippy_debt.py'
       - 'tests/test_rust_affected_packages.py'
@@ -95,7 +94,7 @@ on:
       - '**/clippy.toml'  # path-filter-allow: mirrors the pull_request filter above
       - '**/.clippy.toml'  # path-filter-allow: mirrors the pull_request filter above
       - '.github/workflows/rust-affected-tests.yml'
-      - '.github/rust-affected-tests/**'
+      - '.github/rust-affected-tests/**'  # path-filter-allow: mirrors the pull_request filter above
       - 'scripts/rust_affected_packages.py'
       - 'scripts/rust_clippy_debt.py'
       - 'tests/test_rust_affected_packages.py'
@@ -233,33 +232,30 @@ jobs:
     # 36930929982 through 36942836179).
     timeout-minutes: 15
     env:
-      # DECLARED CLIPPY DEBT — packages whose `-D warnings` failures on main
-      # cannot be fixed in the lane's own PR. One package name per line; each
-      # has a reviewed baseline at $CLIPPY_DEBT_DIR/<package>.txt listing every
-      # diagnostic it is allowed, one per line. A listed package is left out of
-      # the `-D warnings` run, so the rest of the workspace stays strict. The
-      # baseline step then lints it with every lint capped at warn and compares
-      # what clippy reports with the baseline, diagnostic by diagnostic
-      # (scripts/rust_clippy_debt.py): any diagnostic the baseline does not
-      # list is red, and so is any listed one that is gone, until the baseline
-      # drops it. Shrink-only, and enforced as such: the committed baseline
-      # must be a sub-multiset of the same file at the select job's debt_base
-      # revision, so committing a regenerated baseline cannot admit a new
-      # diagnostic. Only a package with no baseline at that revision is a
-      # bootstrap, and its run warns. A package whose baseline empties is
-      # deleted here.
-      #   corelink-server
-      #     Its baseline holds the 347 diagnostics run 36950363647 measured
-      #     (2026-10-02) across 26 files: indexing/slicing 178, expect/unwrap
-      #     129, too_many_arguments 11, and 29 others. (The strict run on main,
-      #     36939536126, printed 349, counted by rendered text.) They stay debt
-      #     because fixing them edits src/grpc_staging_probe.rs and
-      #     src/storage/d1_http.rs, whose sha256 are pinned by
-      #     scripts/verify_i2176_grpc_deny_gate.py and
-      #     scripts/verify_i2574_grpc_diagnostic_policy.py, and adds test-only
-      #     lint allowances, which this repo reviews one by one (B-324).
-      CLIPPY_DEBT: |
-        corelink-server
+      # DECLARED CLIPPY DEBT — EMPTY. Every selected package is linted with
+      # `-D warnings`, which is this lane's specified gate. A package listed
+      # here (one name per line, as a `|` block) would be left out of that run
+      # and linted instead with every lint capped at warn, its diagnostics
+      # compared one by one with a reviewed baseline at
+      # $CLIPPY_DEBT_DIR/<package>.txt (scripts/rust_clippy_debt.py): any
+      # diagnostic the baseline does not list is red, and so is any listed one
+      # that is gone, until the baseline drops it. The committed baseline must
+      # be a sub-multiset of the same file at the select job's debt_base
+      # revision; only a package with no baseline there is a bootstrap, and its
+      # run warns. However strict, that accepts every listed diagnostic, so an
+      # entry needs the owner's explicit scope amendment, not only the review
+      # of the PR that adds it. tests/test_rust_affected_packages.py
+      # (StrictClippy) fails while this ledger names any package.
+      #   corelink-server fails the strict run: run 36939536126 (2026-10-01,
+      #   this lane's PR with main 12cb082ca merged in) stopped its lib at 39
+      #   errors and its lib test at 345. The baseline that 3490e15e1 had
+      #   committed for it lists 347 distinct diagnostics in 26 files, 178
+      #   indexing/slicing and 129 expect/unwrap among them, including in
+      #   src/grpc_staging_probe.rs and src/storage/d1_http.rs, whose sha256
+      #   other gates pin. This job is red whenever corelink-server is
+      #   selected, until that is fixed or the scope is amended. No package
+      #   depends on it, so its failure hides no other package's lints.
+      CLIPPY_DEBT: ''
       CLIPPY_DEBT_DIR: .github/rust-affected-tests/clippy-debt
     steps:
       # Depth 2 brings a pull_request merge commit's first parent, the usual

@@ -764,14 +764,72 @@ class DebtIdentity(unittest.TestCase):
         self.assertFalse(ok, report)
         self.assertIn("check!(b)", report)
 
-    def test_other_packages_notes_and_spanless_summaries_do_not_count(self) -> None:
+    def test_other_packages_notes_and_rustc_summaries_do_not_count(self) -> None:
         other = diagnostic(line=9, package_id="path+file:///w/crates/corelink-billing#0.1.2")
-        summary = diagnostic(spans=[], message="3 warnings emitted", code="")
         note = diagnostic(line=11, level="note")
-        not_primary = diagnostic(spans=[span(12, "    let z = v[0];", "v[0]", primary=False)])
-        ok, report = check(self.baseline, diagnostic(**A), diagnostic(**B), diagnostic(**C), other, summary,
-                           note, not_primary)
+        summaries = [diagnostic(spans=[], message="1 warning emitted", code=""),
+                     diagnostic(spans=[], message="349 warnings emitted", code=""),
+                     diagnostic(spans=[], message="aborting due to 1 previous error", code="", level="error"),
+                     diagnostic(spans=[], message="aborting due to 39 previous errors", code="", level="error"),
+                     diagnostic(spans=[], message="aborting due to previous error", code="", level="error"),
+                     diagnostic(spans=[], message="aborting due to 2 previous errors; 3 warnings emitted", code="",
+                                level="error")]
+        ok, report = check(self.baseline, diagnostic(**A), diagnostic(**B), diagnostic(**C), other, note,
+                           *summaries)
         self.assertTrue(ok, report)
+        self.assertIn("3 distinct diagnostics, baseline lists 3", report)
+
+    def test_a_new_coded_spanless_warning_is_red(self) -> None:
+        # A crate-level lint has no span at all. Dropping it as a summary let
+        # it pass beside unchanged debt.
+        crate_level = diagnostic(spans=[], code="clippy::multiple_crate_versions",
+                                 message="multiple versions for dependency `windows-sys`: 0.52.0, 0.59.0")
+        ok, report = check(self.baseline, diagnostic(**A), diagnostic(**B), diagnostic(**C), crate_level)
+        self.assertFalse(ok, report)
+        self.assertIn("1 NEW diagnostic(s)", report)
+        self.assertIn(f"at {rcd.NO_SPAN}:", report)
+        self.assertIn("clippy::multiple_crate_versions", report)
+        self.assertNotIn("lost", report)
+
+    def test_only_an_exact_uncoded_spanless_summary_is_dropped(self) -> None:
+        near_misses = {
+            "uncoded session warning": diagnostic(spans=[], code="",
+                                                  message="unstable feature specified for `-Ctarget-feature`: `x`"),
+            "summary text with a lint code": diagnostic(spans=[], code="clippy::style", message="3 warnings emitted"),
+            "summary text with more after it": diagnostic(spans=[], code="", message="3 warnings emitted, see above"),
+            "summary text with a span": diagnostic(code="", message="3 warnings emitted"),
+        }
+        for name, extra in near_misses.items():
+            with self.subTest(name):
+                ok, report = check(self.baseline, diagnostic(**A), diagnostic(**B), diagnostic(**C), extra)
+                self.assertFalse(ok, report)
+                self.assertIn("1 NEW diagnostic(s)", report)
+
+    def test_a_warning_without_a_primary_span_is_red(self) -> None:
+        not_primary = diagnostic(spans=[span(12, "    let z = v[0];", "v[0]", primary=False)])
+        ok, report = check(self.baseline, diagnostic(**A), diagnostic(**B), diagnostic(**C), not_primary)
+        self.assertFalse(ok, report)
+        self.assertIn("1 NEW diagnostic(s)", report)
+
+    def test_a_listed_spanless_diagnostic_is_debt_like_any_other(self) -> None:
+        crate_level = diagnostic(spans=[], code="clippy::multiple_crate_versions",
+                                 message="multiple versions for dependency `rand`: 0.8.5, 0.9.0")
+        baseline = baseline_of(diagnostic(**A), crate_level)
+        self.assertEqual(rcd.read_baseline(baseline),
+                         Counter(o.identity for o in rcd.occurrences(stream(diagnostic(**A), crate_level), PKGID)))
+        # Reported by the lib and by its test target: one diagnostic.
+        ok, report = check(baseline, diagnostic(**A), crate_level, crate_level)
+        self.assertTrue(ok, report)
+        ok, report = check(baseline, diagnostic(**A))
+        self.assertFalse(ok, report)
+        self.assertIn("lost 1 diagnostic(s)", report)
+
+    def test_reports_without_a_primary_span_at_two_places_are_two(self) -> None:
+        first = diagnostic(spans=[span(12, "    let z = v[0];", "v[0]", primary=False)])
+        second = diagnostic(spans=[span(13, "    let z = v[0];", "v[0]", primary=False)])
+        ok, report = check(baseline_of(diagnostic(**A), first), diagnostic(**A), first, second)
+        self.assertFalse(ok, report)
+        self.assertIn("NEW x1 (occurs 2, baseline lists 1)", report)
 
     def test_machine_specific_paths_are_normalised(self) -> None:
         here = "/home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.1/src/de.rs"
@@ -1079,12 +1137,22 @@ class ClippyDebtStep(FakeCargoStep):
                 self.assertIn("malformed CLIPPY_DEBT entry", log)
 
 
-def workflow_env_block(name: str) -> list[str]:
-    """The lines of a `<name>: |` block scalar in the workflow, stripped."""
-    match = re.search(rf"^(?P<indent> +){name}: \|\n(?P<body>(?:(?P=indent)  \S.*\n)+)",
-                      WORKFLOW.read_text(encoding="utf-8"), re.M)
+def workflow_debt_ledger(text: str | None = None) -> list[str]:
+    """The package names in the clippy job's CLIPPY_DEBT ledger.
+
+    Two spellings parse: `CLIPPY_DEBT: ''` (empty) and a `|` block scalar with
+    one name per line. Anything else, or a second definition, is a ValueError —
+    never an empty ledger.
+    """
+    text = WORKFLOW.read_text(encoding="utf-8") if text is None else text
+    definitions = re.findall(r"^ +CLIPPY_DEBT:.*$", text, re.M)
+    if len(definitions) != 1:
+        raise ValueError(f"expected one CLIPPY_DEBT definition, got {definitions}")
+    if definitions[0].strip() == "CLIPPY_DEBT: ''":
+        return []
+    match = re.search(r"^(?P<indent> +)CLIPPY_DEBT: \|\n(?P<body>(?:(?P=indent)  \S.*\n)+)", text, re.M)
     if match is None:
-        raise ValueError(f"{name} block not found")
+        raise ValueError(f"unrecognised CLIPPY_DEBT definition {definitions[0].strip()!r}")
     return [line.strip() for line in match.group("body").splitlines()]
 
 
@@ -1095,23 +1163,71 @@ def workflow_scalar(name: str) -> str:
     return matches[0]
 
 
+class StrictClippy(FakeCargoStep):
+    """The lane's gate is `-D warnings` on every selected package. A
+    CLIPPY_DEBT entry would take a package out of it and accept every
+    diagnostic its baseline lists, which needs the owner's explicit scope
+    amendment, so the committed ledger is empty and the committed steps lint
+    every selected package strictly."""
+
+    MARKER = "rust-affected-clippy-scope"
+
+    def committed_debt(self) -> str:
+        return "".join(f"{name}\n" for name in workflow_debt_ledger())
+
+    def test_no_package_is_excused_from_strict_clippy(self) -> None:
+        self.assertEqual(workflow_debt_ledger(), [],
+                         "CLIPPY_DEBT narrows the -D warnings gate; an entry needs the owner's scope amendment")
+
+    def test_the_committed_ledger_lints_every_selected_package_strictly(self) -> None:
+        for scope in ("--workspace", "-p corelink-hash -p corelink-server"):
+            with self.subTest(scope=scope):
+                self.log.unlink(missing_ok=True)
+                code, log = self.run_step(scope=scope, debt=self.committed_debt())
+                self.assertEqual(code, 0, log)
+                self.assertEqual([c for c in self.cargo_calls() if c.startswith("clippy ")],
+                                 [f"clippy --locked --keep-going --all-targets {scope} -- -D warnings"])
+
+    def test_the_committed_ledger_caps_no_lint(self) -> None:
+        self.script = marked_script(WORKFLOW.read_text(encoding="utf-8"), "rust-affected-clippy-debt")
+        self.commit_base({})
+        code, log = self.run_step(scope="--workspace", debt=self.committed_debt(), pkgid=PKGID)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(self.cargo_calls(), [])
+        self.assertIn("clippy debt entries run: 0", log)
+
+    def test_teeth_the_ledger_parser(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        empty = "      CLIPPY_DEBT: ''\n"
+        self.assertEqual(text.count(empty), 1)
+        listed = text.replace(empty, "      CLIPPY_DEBT: |\n        corelink-server\n        corelink-hash\n")
+        self.assertEqual(workflow_debt_ledger(listed), ["corelink-server", "corelink-hash"])
+        for name, planted in (("bare scalar", text.replace(empty, "      CLIPPY_DEBT: corelink-server\n")),
+                              ("second definition", text.replace(empty, empty + empty)),
+                              ("no definition", text.replace(empty, ""))):
+            with self.subTest(name):
+                with self.assertRaises(ValueError):
+                    workflow_debt_ledger(planted)
+
+
 class CommittedDebtLedger(unittest.TestCase):
     """CLIPPY_DEBT and the baseline directory name the same packages, and every
     committed baseline is canonical and non-empty."""
 
     def test_ledger_and_baselines_agree(self) -> None:
-        packages = workflow_env_block("CLIPPY_DEBT")
+        packages = workflow_debt_ledger()
         directory = ROOT / workflow_scalar("CLIPPY_DEBT_DIR")
-        self.assertTrue(packages)
         for name in packages:
             self.assertRegex(name, r"^[a-z0-9][a-z0-9_-]*$")
-        self.assertEqual(sorted(p.name for p in directory.iterdir()), sorted(f"{n}.txt" for n in packages))
+        present = sorted(p.name for p in directory.iterdir()) if directory.exists() else []
+        self.assertEqual(present, sorted(f"{n}.txt" for n in packages))
         for name in packages:
             with self.subTest(package=name):
                 baseline = rcd.read_baseline((directory / f"{name}.txt").read_text(encoding="utf-8"))
                 self.assertGreater(sum(baseline.values()), 0)
                 files = {identity[2] for identity in baseline}
-                self.assertTrue(all(f.startswith("crates/") for f in files), files)
+                # "" is a diagnostic without a primary span.
+                self.assertTrue(all(f == "" or f.startswith("crates/") for f in files), files)
 
 
 class Shards(Fixture):
