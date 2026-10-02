@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   RouteError,
@@ -1391,6 +1392,31 @@ describe("B-216 receiver on the shared main account", () => {
       "deploy",
     ]) {
       errorCode(() => assertWranglerCommand(args), "wrangler_command_refused");
+    }
+  });
+
+  // The namespace and protected-name checks matter most when the pinned constants
+  // themselves drift. Load a copy of the target module with a drifted constant and
+  // require it to refuse to load.
+  it.each([
+    ["workerName", "corelink-dsr-b216-alert-receiver-6a", "corelink-other-alert-receiver-6a", "receiver_resource_name_refused"],
+    ["databaseName", "corelink-dsr-b216-alert-receipts-6a", "corelink-dsr-b216-alert-receipts-7b", "receiver_resource_name_refused"],
+    ["workerName", "corelink-dsr-b216-alert-receiver-6a", "corelink-staging", "protected_resource_name_refused"],
+    ["databaseName", "corelink-dsr-b216-alert-receipts-6a", "corelink-config-prod", "protected_resource_name_refused"],
+  ])("refuses to load when %s drifts from %s to %s", async (field, from, to, code) => {
+    const source = await readFile(new URL("../scripts/receiver-target.mjs", import.meta.url), "utf8");
+    const pinned = `${field}: "${from}",`;
+    expect(source.split(pinned)).toHaveLength(2);
+    const dir = await mkdtemp(join(tmpdir(), "b216-target-drift-"));
+    try {
+      const drifted = join(dir, "receiver-target.mjs");
+      await writeFile(drifted, source.replace(pinned, `${field}: "${to}",`));
+      await expect(import(`${pathToFileURL(drifted).href}?${field}-${to}`)).rejects.toMatchObject({ code });
+      const intact = join(dir, "receiver-target-intact.mjs");
+      await writeFile(intact, source);
+      await expect(import(`${pathToFileURL(intact).href}?intact-${field}-${to}`)).resolves.toHaveProperty("RECEIVER_TARGET");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 
