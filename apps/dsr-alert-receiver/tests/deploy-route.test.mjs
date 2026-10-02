@@ -51,6 +51,7 @@ import {
 } from "../scripts/deploy-route.mjs";
 import { PROTECTED_RESOURCE_NAMES, RECEIVER_TARGET, assertReceiverResourceName } from "../scripts/receiver-target.mjs";
 import { ReadbackError, versionTag } from "../scripts/readback-route.mjs";
+import { d1SchemaRows } from "./fixtures/d1-schema.mjs";
 
 // The UUID the provider reports for the receiver D1; routes adopt it by exact name.
 const DATABASE_ID = "c0ffee00-0b16-4000-8000-0000000006a1";
@@ -127,7 +128,7 @@ const routeOwnedBindings = () => [
 // routesField: what the Workers script list says about a script without routes.
 // "null" is what Cloudflare returns (126 of 139 scripts on account 6a, read
 // 2026-10-02); "missing" is the field left out.
-function routeHarness({ migration, sha, existing = false, foreignPreimage = null, wrongInitialDatabase = false, failInitialDeploy = false, malformedRoutes = false, failFinalDeploymentReadback = false, failFinalSubdomainReadback = false, ingress = {}, routesField = "null" } = {}) {
+function routeHarness({ migration, sha, existing = false, foreignPreimage = null, wrongInitialDatabase = false, failInitialDeploy = false, malformedRoutes = false, failFinalDeploymentReadback = false, failFinalSubdomainReadback = false, ingress = {}, routesField = "null", schemaExtraSql = "" } = {}) {
   const {
     domains = [], zoneRoutes = [], serviceRoutes = [], routesAfterDeploy = null,
     domainsStatus = 200, zonesStatus = 200, zoneRoutesStatus = 200, serviceRoutesStatus = 200,
@@ -163,12 +164,8 @@ function routeHarness({ migration, sha, existing = false, foreignPreimage = null
     failFinalSubdomainReadback,
   };
   if (existing) state.details.set(originalId, { id: originalId, annotations: { "workers/tag": preimageTag }, resources: { bindings: preimageBindings } });
-  const receiptSql = migration.trim().replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE");
-  const tables = [
-    { name: "_cf_KV", sql: "CREATE TABLE _cf_KV (key TEXT PRIMARY KEY, value BLOB)" },
-    { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)" },
-    { name: "dsr_alert_receipts", sql: receiptSql },
-  ];
+  // The receiver D1 as real SQLite stores it: migration applied, ledger written.
+  const tables = d1SchemaRows({ migration, extraSql: schemaExtraSql });
   const scriptRows = () => state.script
     ? [{ id: TARGET.workerName, ...(state.routeFixture ? { routes: state.routeFixture } : routesField === "null" ? { routes: null } : {}) }]
     : [];
@@ -1179,16 +1176,8 @@ describe("B-216 protected receiver route admission", () => {
   // accepts non-hex event IDs) or an uppercased case-sensitive literal compared
   // equal, and a retry adopted that schema as exact_migration_applied.
   it("accepts the exact text SQLite stores for the migration, and refuses any byte change inside a literal", async () => {
-    const { DatabaseSync } = await import("node:sqlite");
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
-    const stored = (sql) => {
-      const db = new DatabaseSync(":memory:");
-      db.exec(sql);
-      return [
-        ...db.prepare("SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name").all().map(({ name, sql: text }) => ({ name, sql: text })),
-        { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (name TEXT)" },
-      ];
-    };
+    const stored = (sql) => d1SchemaRows({ migration: sql });
     expect(validateReceiptSchema(stored(migration), migration)).toBe("applied");
     // Whitespace and keyword case outside literals are not schema changes.
     const relaxed = migration
@@ -1210,6 +1199,62 @@ describe("B-216 protected receiver route admission", () => {
     }
   });
 
+  // PR #2890 review round 2, reproduced: an exact receipt table and ledger plus a
+  // BEFORE INSERT trigger that discards every receipt (RAISE(IGNORE)) was adopted
+  // as exact_migration_applied, and the route deployed and enabled workers.dev.
+  it("refuses a trigger on the receipt table before any Worker mutation", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const trigger = "CREATE TRIGGER drop_receipts BEFORE INSERT ON dsr_alert_receipts BEGIN SELECT RAISE(IGNORE); END;";
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: trigger }), migration), "database_schema_unknown");
+    const harness = routeHarness({ migration, sha: goodContext.sha, schemaExtraSql: trigger });
+    const receiptDir = await mkdtemp(join(tmpdir(), "b216-route-trigger-"));
+    const receiptPath = join(receiptDir, "receipt.json");
+    let receipt;
+    try {
+      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, receiptPath, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "database_schema_unknown" });
+      receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+    } finally {
+      await rm(receiptDir, { recursive: true, force: true });
+    }
+    expect(receipt.failed_stage).toBe("database_schema_preimage");
+    expect(harness.state.commands).toEqual([]);
+    expect(harness.state.requests.filter(({ method, path }) => method !== "GET" && !path.endsWith("/query"))).toEqual([]);
+  });
+
+  it("refuses an index the migration does not create", async () => {
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE INDEX receipts_by_time ON dsr_alert_receipts(received_at_ms);" }), migration), "database_schema_unknown");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE UNIQUE INDEX migrations_by_time ON d1_migrations(applied_at);" }), migration), "database_schema_unknown");
+  });
+
+  it("refuses a view the migration does not create", async () => {
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE VIEW receipts_view AS SELECT event_id FROM dsr_alert_receipts;" }), migration), "database_schema_unknown");
+    // A view in place of the ledger table is not the ledger table.
+    const viewLedger = d1SchemaRows({ migration }).map((row) => (row.name === "d1_migrations" ? { ...row, type: "view" } : row));
+    errorCode(() => validateReceiptSchema(viewLedger, migration), "database_schema_unknown");
+  });
+
+  it("refuses a trigger whose name only looks internal or reserved", async () => {
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    // `LIKE 'sqlite_%'` reads `_` as any character, so it hid this one.
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE TRIGGER sqliteX_hidden BEFORE INSERT ON dsr_alert_receipts BEGIN SELECT RAISE(IGNORE); END;" }), migration), "database_schema_unknown");
+    // Only the reserved D1 table named _cf_KV is skipped, not a trigger with that name.
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE TRIGGER _cf_KV BEFORE INSERT ON dsr_alert_receipts BEGIN SELECT RAISE(IGNORE); END;" }), migration), "database_schema_unknown");
+    // Before the migration too: an empty D1 with a trigger is not empty.
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ extraSql: "CREATE TRIGGER kv_watch AFTER INSERT ON _cf_KV BEGIN SELECT 1; END;" }), migration), "database_schema_unknown");
+  });
+
+  it("refuses a schema row it cannot read, and a migration that would create more than its table", async () => {
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const rows = d1SchemaRows({ migration });
+    for (const broken of [{ ...rows[0], type: "trigger " }, { ...rows[0], tbl_name: undefined }, { ...rows[0], name: null }]) {
+      errorCode(() => validateReceiptSchema([broken, ...rows.slice(1)], migration), "database_schema_ambiguous");
+    }
+    errorCode(() => validateReceiptSchema(rows, `${migration}\nCREATE INDEX extra ON dsr_alert_receipts(received_at_ms);`), "migration_shape_unexpected");
+  });
+
   it("splits schema SQL into tokens where whitespace or quotes separate them", () => {
     expect(sqlTokens("CHECK (a = 'it''s')")).toEqual(["check", "(", "a", "=", "'it''s'", ")"]);
     expect(sqlTokens('"Mixed Case" [Br]acket')).toEqual(['"Mixed Case"', "[Br]", "acket"]);
@@ -1224,28 +1269,16 @@ describe("B-216 protected receiver route admission", () => {
   it("accepts only the exact empty or migrated schema and rejects unknown/partial state", async () => {
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
     expect(validateReceiptSchema([], migration)).toBe("empty");
-    const reservedD1Table = { name: "_cf_KV", sql: "CREATE TABLE _cf_KV (key TEXT PRIMARY KEY, value BLOB)" };
-    expect(validateReceiptSchema([reservedD1Table], migration)).toBe("empty");
-    expect(validateReceiptSchema([
-      reservedD1Table,
-      { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" },
-      { name: "dsr_alert_receipts", sql: migration.trim().replace(/;$/, "") },
-    ], migration)).toBe("applied");
-    errorCode(() => validateReceiptSchema([
-      reservedD1Table,
-      { name: "unexpected_internal_table", sql: "CREATE TABLE unexpected_internal_table (id TEXT)" },
-    ], migration), "database_schema_unknown");
-    errorCode(() => validateReceiptSchema([
-      reservedD1Table,
-      { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" },
-      { name: "dsr_alert_receipts", sql: migration.replace("schema_version INTEGER", "schema_version TEXT").trim().replace(/;$/, "") },
-    ], migration), "database_schema_drift");
-    errorCode(() => validateReceiptSchema([{ name: "unknown_table", sql: "CREATE TABLE unknown_table (id TEXT)" }], migration), "database_schema_unknown");
-    errorCode(() => validateReceiptSchema([{ name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" }], migration), "database_migration_state_unknown");
-    errorCode(() => validateReceiptSchema([
-      { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" },
-      { name: "dsr_alert_receipts", sql: "CREATE TABLE dsr_alert_receipts (event_id TEXT)" },
-    ], migration), "database_schema_drift");
+    expect(validateReceiptSchema(d1SchemaRows(), migration)).toBe("empty");
+    expect(validateReceiptSchema(d1SchemaRows({ migration }), migration)).toBe("applied");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ extraSql: "CREATE TABLE unexpected_internal_table (id TEXT);" }), migration), "database_schema_unknown");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration: migration.replace("schema_version INTEGER", "schema_version TEXT") }), migration), "database_schema_drift");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE TABLE unknown_table (id TEXT);" }), migration), "database_schema_unknown");
+    const ledgerOnly = d1SchemaRows({ migration }).filter((row) => row.tbl_name !== "dsr_alert_receipts");
+    errorCode(() => validateReceiptSchema(ledgerOnly, migration), "database_migration_state_unknown");
+    const noLedger = d1SchemaRows({ migration }).filter((row) => row.name !== "d1_migrations");
+    errorCode(() => validateReceiptSchema(noLedger, migration), "database_schema_drift");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration: "CREATE TABLE dsr_alert_receipts (event_id TEXT);" }), migration), "database_schema_drift");
     expect(validateMigrationLedger([{ name: TARGET.migration }])).toBe(true);
     errorCode(() => validateMigrationLedger([{ name: TARGET.migration }, { name: "0002_extra.sql" }]), "database_migration_ledger_drift");
     errorCode(() => validateMigrationLedger([{ name: "0002_extra.sql" }]), "database_migration_ledger_drift");
@@ -2050,6 +2083,21 @@ describe("B-216 receiver on the shared main account", () => {
     }
     expect(capturedVersionId(`\u2728 Success! Created version ${id} with secret ${TARGET.workerSecret}.\n`, SECRET_VERSION_LINE, "unbound")).toBe(id);
     errorCode(() => capturedVersionId(`\u2728 Success! Created version ${id} with secret OTHER_SECRET.\n`, SECRET_VERSION_LINE, "unbound"), "unbound");
+  });
+
+  it("refuses and rolls back when the provider activates any version other than this run's", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha });
+    const otherActive = { ...harness, command: (args, commandOptions) => {
+      const out = harness.command(args, commandOptions);
+      if (args[1] === "deploy" && args[0] === "versions") {
+        harness.state.deployments = [{ id: "c23e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: harness.sourceId, percentage: 100 }] }];
+      }
+      return out;
+    } };
+    const receipt = await runForReceipt(otherActive, config, migration, "worker_revision_readback_mismatch");
+    expect(receipt).toMatchObject({ failed_stage: "worker_readback", rollback_status: "created_worker_deleted" });
   });
 
   it("refuses a secret version whose code is not this run's upload", async () => {

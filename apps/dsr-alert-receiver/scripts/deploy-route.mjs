@@ -538,19 +538,36 @@ function storedTableTokens(sql) {
   return tokens;
 }
 
+// Every schema object, not only tables: a trigger, index or view on the receipt
+// table changes what an insert does (a BEFORE INSERT trigger with RAISE(IGNORE)
+// stored nothing while the route reported exact_migration_applied; PR #2890
+// review). No WHERE clause: `LIKE 'sqlite_%'` treats `_` as a wildcard and would
+// hide a user object named e.g. `sqliteX_trigger`; internal names are filtered
+// below instead.
+export const SCHEMA_OBJECTS_SQL = "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name";
+const SCHEMA_OBJECT_TYPES = new Set(["table", "index", "trigger", "view"]);
+
 export function validateReceiptSchema(rows, migration) {
   if (!Array.isArray(rows)) fail("database_schema_ambiguous");
-  // Cloudflare D1 exposes this reserved internal table in sqlite_master; do not
-  // generalize the exclusion to other provider-looking names.
-  const userTables = rows.filter((row) => typeof row?.name === "string" && !row.name.startsWith("sqlite_") && row.name !== "_cf_KV");
-  const migrationTable = userTables.find((row) => row.name === "d1_migrations");
-  const receiptTable = userTables.find((row) => row.name === "dsr_alert_receipts");
-  if (userTables.some((row) => !["d1_migrations", "dsr_alert_receipts"].includes(row.name))) fail("database_schema_unknown");
+  if (rows.some((row) => !SCHEMA_OBJECT_TYPES.has(row?.type) || typeof row.name !== "string" || typeof row.tbl_name !== "string")) fail("database_schema_ambiguous");
+  // The migration (hash-pinned in validateTrackedInputs) creates exactly one
+  // object, the receipt table; its TEXT PRIMARY KEY index is SQLite's own.
+  const expected = storedTableTokens(migration);
+  if (expected.filter((token) => token === "create").length !== 1 || expected[2] !== "dsr_alert_receipts") fail("migration_shape_unexpected");
+  // Skipped: names SQLite reserves for itself (`sqlite_autoindex_…`,
+  // `sqlite_sequence`; SQLite refuses a user object named `sqlite_…` in any
+  // case, while `sqliteX_…` is an ordinary user name), and the reserved D1 table
+  // `_cf_KV`. A trigger may also be named `_cf_KV`, so only the table is
+  // skipped. Do not generalize the D1 exclusion to other provider-looking names.
+  const userObjects = rows.filter((row) => !row.name.startsWith("sqlite_") && !(row.type === "table" && row.name === "_cf_KV"));
+  const isTable = (row, name) => row.type === "table" && row.name === name;
+  const migrationTable = userObjects.find((row) => isTable(row, "d1_migrations"));
+  const receiptTable = userObjects.find((row) => isTable(row, "dsr_alert_receipts"));
+  if (userObjects.some((row) => !isTable(row, "d1_migrations") && !isTable(row, "dsr_alert_receipts"))) fail("database_schema_unknown");
   if (!receiptTable) {
     if (migrationTable) fail("database_migration_state_unknown");
     return "empty";
   }
-  const expected = storedTableTokens(migration);
   const actual = typeof receiptTable.sql === "string" ? storedTableTokens(receiptTable.sql) : [];
   if (actual.length === 0 || actual.length !== expected.length || actual.some((token, index) => token !== expected[index]) || !migrationTable) fail("database_schema_drift");
   return "applied";
@@ -1095,7 +1112,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       receipt.database_adoption = "exact_name_unique_on_pinned_account";
       receipt.database_preimage = "existing_exact_target";
       stage = "database_schema_preimage";
-      const tables = await queryDatabase(api, receipt.database_id, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+      const tables = await queryDatabase(api, receipt.database_id, SCHEMA_OBJECTS_SQL);
       receipt.database_schema_preimage = validateReceiptSchema(tables, migration);
       if (receipt.database_schema_preimage === "applied") {
         validateMigrationLedger(await queryDatabase(api, receipt.database_id, "SELECT name FROM d1_migrations ORDER BY name"));
@@ -1128,13 +1145,13 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     await writeRunConfig(tempConfig, prepareFinalReceiverConfig(config, migration, receipt.database_id, appDir), "final");
 
     stage = "migration_apply";
-    const beforeMigration = await queryDatabase(api, receipt.database_id, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+    const beforeMigration = await queryDatabase(api, receipt.database_id, SCHEMA_OBJECTS_SQL);
     const migrationState = validateReceiptSchema(beforeMigration, migration);
     if (migrationState !== "applied") {
       command(["d1", "migrations", "apply", TARGET.databaseName, "--remote", "--config", tempConfig], { cwd: appDir, home: wranglerHome, apiToken: context.apiToken });
     }
     stage = "migration_readback";
-    const afterMigration = await queryDatabase(api, receipt.database_id, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+    const afterMigration = await queryDatabase(api, receipt.database_id, SCHEMA_OBJECTS_SQL);
     if (validateReceiptSchema(afterMigration, migration) !== "applied") fail("migration_readback_mismatch");
     validateMigrationLedger(await queryDatabase(api, receipt.database_id, "SELECT name FROM d1_migrations ORDER BY name"));
     receipt.database_schema_postflight = "exact_migration_applied";

@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import {
   TARGET,
   RouteError,
+  SCHEMA_OBJECTS_SQL,
   failureCodeOf,
   isExternalIngressError,
   listNamedD1Databases,
@@ -109,7 +110,7 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
     const database = selectNamedResource(await listNamedD1Databases(api), TARGET.databaseName, "database");
     const databaseId = api.adoptDatabase(validateDatabaseIdentity(database));
     receipt.database_id = databaseId;
-    const tables = await queryReadOnlyDatabase(api, databaseId, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+    const tables = await queryReadOnlyDatabase(api, databaseId, SCHEMA_OBJECTS_SQL);
     if (validateReceiptSchema(tables, migration) !== "applied") fail("database_schema_not_applied");
     validateMigrationLedger(await queryReadOnlyDatabase(api, databaseId, "SELECT name FROM d1_migrations ORDER BY name"));
 

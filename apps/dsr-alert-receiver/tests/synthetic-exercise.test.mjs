@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { TARGET } from "../scripts/deploy-route.mjs";
 import { disableWorkersDev, runSyntheticReceiverExercise, safeWorkersDevUrl } from "../scripts/synthetic-exercise.mjs";
 import { ReadbackError } from "../scripts/readback-route.mjs";
+import { d1SchemaRows } from "./fixtures/d1-schema.mjs";
 
 // The UUID the provider reports for the receiver D1; routes adopt it by exact name.
 const DATABASE_ID = "c0ffee00-0b16-4000-8000-0000000006a1";
@@ -34,13 +35,10 @@ const inventory = {
 
 const ZONE_ID = "f".repeat(32);
 
-function exerciseHarness({ receiverStatus = 202, readbackRows, version = activeVersion, ingress = {} } = {}) {
+function exerciseHarness({ receiverStatus = 202, readbackRows, version = activeVersion, ingress = {}, schemaExtraSql = "" } = {}) {
   const { domains = [], zoneRoutes = [], serviceRoutes = [], zonesStatus = 200, serviceRoutesStatus = 200 } = ingress;
   const state = { workersDev: true, preview: false, receiverCalls: [], providerCalls: [], receiptRow: null };
-  const tables = [
-    { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)" },
-    { name: "dsr_alert_receipts", sql: migration.replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE") },
-  ];
+  const tables = d1SchemaRows({ migration, extraSql: schemaExtraSql });
   const fetchProvider = async (url, options = {}) => {
     const parsed = new URL(url);
     const path = parsed.pathname.replace(/^\/client\/v4(?=\/)/, "");
@@ -224,6 +222,13 @@ describe("B-216 receiver-only synthetic operator", () => {
     const harness = exerciseHarness({ ingress });
     const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
     expect(receipt).toMatchObject({ status: "failed_closed", failure_code: code, workers_dev_cleanup: "disabled", read_failure: readFailure, cleanup_failures: [] });
+    expect(harness.state.receiverCalls).toHaveLength(0);
+  });
+
+  it("sends nothing when the receipt table has a trigger the migration does not create", async () => {
+    const harness = exerciseHarness({ schemaExtraSql: "CREATE TRIGGER drop_receipts BEFORE INSERT ON dsr_alert_receipts BEGIN SELECT RAISE(IGNORE); END;" });
+    const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
+    expect(receipt).toMatchObject({ status: "failed_closed", failure_code: "database_schema_unknown" });
     expect(harness.state.receiverCalls).toHaveLength(0);
   });
 
