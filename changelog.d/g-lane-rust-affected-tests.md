@@ -14,5 +14,9 @@
   every selected package. The clippy job's `CLIPPY_DEBT` ledger, which would hold a
   package to a reviewed baseline diagnostic by diagnostic instead, is empty: an entry
   narrows the gate and needs the owner's explicit scope amendment. `corelink-server`
-  fails the strict run today (39 lib and 345 lib-test errors in run 36939536126), so the
-  lane is red whenever it is selected until that backlog is fixed or the scope is amended.
+  fails both jobs today, so the lane is red whenever it is selected until those failures
+  are fixed or the scope is amended. Its strict clippy run fails in nine source files that
+  other gates pin, freeze or bind to reviewed CodeQL alerts, and on one production slice
+  in a tenth file, whose fix would change behavior. Its B-126 test fails because `main.rs` has 1047 lines
+  against a 1000-line ceiling. The workflow header lists each failure and why this lane
+  leaves it unfixed.

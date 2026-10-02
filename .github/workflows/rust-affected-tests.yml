@@ -40,13 +40,42 @@
 # combinations beyond the defaults; `PROPTEST_CASES` above 32 — full-intensity
 # property runs are not this lane's job, only the iteration count changes; and
 # the tests in the test job's SKIP_TESTS ledger, each with its reason. Every
-# other test must pass: a real failure on main is fixed, or bounded inside the
-# test itself as declared debt (B-126's main.rs line count is the example),
-# never skipped by the lane while it can still fail for a new reason. Clippy
+# other test must pass: a real failure on main is fixed here when the fix is
+# trivially safe, and otherwise stays red and is listed under EXPOSED FAILURES
+# below. The lane never skips it, and never bounds it inside the test. Clippy
 # runs with `-D warnings` on every selected package. The clippy job's
 # CLIPPY_DEBT ledger, which would take a package out of that run and hold it
 # to a reviewed baseline instead, is empty: an entry narrows this lane's gate,
 # so it needs the owner's explicit scope amendment.
+#
+# EXPOSED FAILURES ON MAIN — red whenever corelink-server is selected (any
+# change in its closure, a change to this lane, a manual dispatch). Each one
+# is left unfixed here for the reason given; none is skipped or capped.
+#   cargo test: corelink-server's b126_t1_files_remain_below_the_1000_line_ceiling.
+#     crates/corelink-container/src/main.rs has 1047 lines against the
+#     1000-line ceiling. Splitting it changes its sha256, which
+#     scripts/verify_i2176_grpc_deny_gate.py, scripts/verify_i2574_grpc_diagnostic_policy.py
+#     and scripts/backlog_verify.py pin.
+#   cargo clippy -D warnings, corelink-server, in these files of
+#   crates/corelink-container/src/ only:
+#     grpc_staging_probe.rs, storage/d1_http.rs, routes/staging_d1_binding_probe.rs
+#       sha256-pinned or frozen by scripts/verify_i2176_grpc_deny_gate.py
+#       (d1_http.rs also by scripts/verify_i2574_grpc_diagnostic_policy.py).
+#     routes/dsr/access.rs, signup_d1_http.rs, storage/cas_write_fence.rs,
+#     storage/staging_load_test_admission.rs, webhook_inbox_d1.rs
+#       each file's git blob id binds reviewed CodeQL alerts in
+#       specs/_audits/2026-10-01-i1674-reviewed-codeql-dispositions.json;
+#       any edit unbinds them.
+#     routes/tier_select_store.rs
+#       sha256-pinned by scripts/verify_real_ignored_harnesses.py, a file the
+#       i2176 gate freezes in its i2565 delivery group.
+#     reapi_bytestream.rs
+#       one production slice whose bound rests on the size check in
+#       ReapiIngress::cas_read; replacing its panic is a behavior change, not
+#       a trivially safe fix.
+#   While corelink-server's lib fails, clippy cannot lint its bins and
+#   integration tests, which build on that lib. The cap-lints baseline of run
+#   36950363647 found no diagnostic in them.
 #
 # THE VERDICT JOB is the single check to depend on. It fails unless the
 # selection succeeded AND either clippy and every test shard succeeded, or the
@@ -246,15 +275,10 @@ jobs:
       # entry needs the owner's explicit scope amendment, not only the review
       # of the PR that adds it. tests/test_rust_affected_packages.py
       # (StrictClippy) fails while this ledger names any package.
-      #   corelink-server fails the strict run: run 36939536126 (2026-10-01,
-      #   this lane's PR with main 12cb082ca merged in) stopped its lib at 39
-      #   errors and its lib test at 345. The baseline that 3490e15e1 had
-      #   committed for it lists 347 distinct diagnostics in 26 files, 178
-      #   indexing/slicing and 129 expect/unwrap among them, including in
-      #   src/grpc_staging_probe.rs and src/storage/d1_http.rs, whose sha256
-      #   other gates pin. This job is red whenever corelink-server is
-      #   selected, until that is fixed or the scope is amended. No package
-      #   depends on it, so its failure hides no other package's lints.
+      #   corelink-server fails the strict run in the files listed under
+      #   EXPOSED FAILURES at the top of this file, so this job is red whenever
+      #   it is selected, until those are fixed or the scope is amended. No
+      #   package depends on it, so its failure hides no other package's lints.
       CLIPPY_DEBT: ''
       CLIPPY_DEBT_DIR: .github/rust-affected-tests/clippy-debt
     steps:
