@@ -189,7 +189,8 @@ fn b071_owner_packet_names_truthful_observation_metrics() {
 fn image_inspection_runs_gc_as_a_measurable_dry_run() {
     for required in [
         "Gate 4 — embedded GC binary is forced dry-run",
-        "[ -x \"$B/rootfs/usr/local/bin/gc_sweep\" ]",
+        // #2762 moved the probe under sudo: the exported rootfs is root-owned.
+        "sudo test -x \"$B/rootfs/usr/local/bin/gc_sweep\" || { echo \"::error::gc_sweep is absent or not executable in the runtime image\"; exit 1; }",
         "GC_LIVE_DELETE=false",
         "reclaimable_count         = 1",
         "reclaimable_bytes         = 4096",

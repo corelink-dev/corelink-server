@@ -161,7 +161,7 @@ fn validate_action_digest(digest: Option<&Digest>) -> Result<(&str, i64), Status
     validate_digest(&digest.hash, digest.size_bytes)?;
     if usize::try_from(digest.size_bytes)
         .ok()
-        .is_none_or(|size| size > REAPI_ACTION_RESULT_MAX_SERIALIZED_BYTES)
+        .map_or(true, |size| size > REAPI_ACTION_RESULT_MAX_SERIALIZED_BYTES)
     {
         return Err(Status::new(
             Code::ResourceExhausted,
@@ -202,12 +202,16 @@ fn validate_action_result(result: &ActionResult) -> Result<(), Status> {
             validate_digest(&root_digest.hash, root_digest.size_bytes)?;
         }
     }
-    for output in result
+    #[expect(
+        deprecated,
+        reason = "REAPI v2.1 deprecated these two lists for `output_symlinks`, but v2.0 \
+                  clients still send them, so their paths are validated too"
+    )]
+    let legacy_symlinks = result
         .output_file_symlinks
         .iter()
-        .chain(&result.output_directory_symlinks)
-        .chain(&result.output_symlinks)
-    {
+        .chain(&result.output_directory_symlinks);
+    for output in legacy_symlinks.chain(&result.output_symlinks) {
         validate_output_path(&output.path)?;
     }
     validate_stdio(&result.stdout_raw, result.stdout_digest.as_ref(), "stdout")?;

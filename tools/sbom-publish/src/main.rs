@@ -255,6 +255,22 @@ async fn run(cli: Cli) -> Result<(), SbomError> {
     Ok(())
 }
 
+fn exit_code_for_error(e: &SbomError) -> ExitCode {
+    match e {
+        SbomError::GenerationFailed(_)
+        | SbomError::SchemaInvalid(_)
+        | SbomError::Json(_)
+        | SbomError::Io(_) => ExitCode::from(1),
+        SbomError::NtiaValidationFailed(_) => ExitCode::from(2),
+        SbomError::TsaRequestFailed(_) => ExitCode::from(3),
+        SbomError::DtIngestionFailed { .. }
+        | SbomError::DtRetryExhausted(_)
+        | SbomError::ApiKeyMissing(_) => ExitCode::from(4),
+        SbomError::Http(_) => ExitCode::from(4),
+        _ => ExitCode::from(1),
+    }
+}
+
 fn ingestion_summary(_project_uuid: &str) -> serde_json::Value {
     serde_json::json!({ "ingested": true })
 }
@@ -272,21 +288,5 @@ mod tests {
         assert!(output.contains("\"ingested\":true"));
         assert!(!output.contains(secret_uuid));
         assert!(summary.get("project_uuid").is_none());
-    }
-}
-
-fn exit_code_for_error(e: &SbomError) -> ExitCode {
-    match e {
-        SbomError::GenerationFailed(_)
-        | SbomError::SchemaInvalid(_)
-        | SbomError::Json(_)
-        | SbomError::Io(_) => ExitCode::from(1),
-        SbomError::NtiaValidationFailed(_) => ExitCode::from(2),
-        SbomError::TsaRequestFailed(_) => ExitCode::from(3),
-        SbomError::DtIngestionFailed { .. }
-        | SbomError::DtRetryExhausted(_)
-        | SbomError::ApiKeyMissing(_) => ExitCode::from(4),
-        SbomError::Http(_) => ExitCode::from(4),
-        _ => ExitCode::from(1),
     }
 }

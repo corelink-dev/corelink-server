@@ -1,7 +1,15 @@
 //! Shared D02/D03 provenance operation. The hosted collector copies this
 //! source into the immutable D02 checkout and the protected-main checkout,
 //! then hashes the actual checker outcomes and state snapshots.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr,
+    clippy::indexing_slicing,
+    reason = "test fixture: the stderr markers are the B-251 collector's protocol, and \
+              `hex` indexes a 16-entry table with a nibble"
+)]
 
 use std::sync::Arc;
 
@@ -22,9 +30,9 @@ fn operation_emits_transcript() {
     let mut transcript = String::new();
     let mut failures = String::new();
     for ordinal in 0..1_000u32 {
-        let used = (next(&mut state_rng) % 900) as u64;
-        let quota = 1_000 + (next(&mut state_rng) % 1_000) as u64;
-        let request = 1 + (next(&mut state_rng) % 49) as u64;
+        let used = next(&mut state_rng) % 900;
+        let quota = 1_000 + (next(&mut state_rng) % 1_000);
+        let request = 1 + (next(&mut state_rng) % 49);
         let state = Arc::new(InMemoryAtomicCasState::new());
         state
             .seed_row(AtomicTenantBytesState {

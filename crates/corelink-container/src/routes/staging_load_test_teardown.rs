@@ -121,6 +121,10 @@ fn parse_scenario(value: &str) -> Option<StagingLoadTestScenario> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "test assertions intentionally surface failures"
+)]
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request};

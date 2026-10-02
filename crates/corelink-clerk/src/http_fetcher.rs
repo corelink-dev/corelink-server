@@ -140,7 +140,6 @@ impl HttpJwksFetcher {
     /// HTTPS is enforced both at URL validation and in the client, and
     /// redirects are disabled so credentials or JWKS requests cannot be
     /// forwarded to another scheme or host.
-    #[must_use]
     pub fn from_client(builder: ClientBuilder) -> Result<Self, HttpFetcherBuildError> {
         let client = builder
             .https_only(true)

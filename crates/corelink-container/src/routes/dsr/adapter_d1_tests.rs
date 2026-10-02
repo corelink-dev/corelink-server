@@ -413,7 +413,7 @@ fn runner_billing_migration_tables_remain_classified() {
         for table in tables {
             assert!(sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")));
             assert!(sql.contains("tenant_id TEXT NOT NULL"));
-            assert!(ALL_TENANT_KEYED_TABLES.contains(&table));
+            assert!(ALL_TENANT_KEYED_TABLES.contains(table));
             assert_eq!(classification_count(table), 1);
         }
     }
