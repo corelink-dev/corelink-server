@@ -3,11 +3,14 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RECEIVER_TARGET } from "./receiver-target.mjs";
 
+// Account, Worker and repository come from the one pinned receiver target, which
+// refuses to load if they drift onto a production or staging name.
 export const READBACK_TARGET = Object.freeze({
-  repository: "HuGR-dev/corelink-server",
-  accountId: "51284495e71acdb5a7677e7383ab026b",
-  workerName: "corelink-dsr-b216-alert-receiver-20260927",
+  repository: RECEIVER_TARGET.repository,
+  accountId: RECEIVER_TARGET.accountId,
+  workerName: RECEIVER_TARGET.workerName,
 });
 
 const API = "https://api.cloudflare.com/client/v4";
@@ -57,9 +60,17 @@ export function assertReadbackPath(path) {
   fail("provider_path_rejected");
 }
 
-function assertTokenDiagnosticPath(path) {
+// Cloudflare verifies user-owned tokens under /user/tokens and account-owned
+// tokens under /accounts/{account_id}/tokens. An account-owned token gets 401
+// from /user/tokens/verify, so the account pair is allowed for the fixed target
+// account only; every other account ID is rejected.
+const ACCOUNT_TOKENS_PATH = `/accounts/${READBACK_TARGET.accountId}/tokens`;
+
+export function assertTokenDiagnosticPath(path) {
   if (path === "/user/tokens/verify") return true;
   if (/^\/user\/tokens\/[0-9a-f]{32}$/i.test(path)) return true;
+  if (path === `${ACCOUNT_TOKENS_PATH}/verify`) return true;
+  if (path.startsWith(`${ACCOUNT_TOKENS_PATH}/`) && TOKEN_ID.test(path.slice(ACCOUNT_TOKENS_PATH.length + 1))) return true;
   fail("token_diagnostic_path_rejected");
 }
 
@@ -190,15 +201,50 @@ export async function readWorkerInventory({ context, fetchImpl = fetch, now = ()
   return receipt;
 }
 
-function unknownTokenPolicyDiagnostic(status = "unknown_response", tokenActive = null) {
+const TOKEN_KINDS = Object.freeze(["user", "account", "unknown"]);
+
+function allowlistedHttpStatus(httpStatus) {
+  return Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? httpStatus : null;
+}
+
+// One verify exchange: the numeric status and an error class, never the body.
+function verifyExchangeDiagnostic({ httpStatus = null, errorClass = "not_attempted" } = {}) {
+  return Object.freeze({ http_status: allowlistedHttpStatus(httpStatus), error_class: errorClass });
+}
+
+function tokenVerificationDiagnostic({
+  httpStatus = null,
+  errorClass = "not_attempted",
+  activeStatus = "unknown",
+  tokenIdShape = "not_checked",
+  tokenKind = "unknown",
+  userVerify = verifyExchangeDiagnostic(),
+  accountVerify = verifyExchangeDiagnostic(),
+} = {}) {
   return Object.freeze({
-    status,
-    token_active: tokenActive,
-    account_5128_scope: null,
-    workers_admin_on_5128: null,
+    http_status: allowlistedHttpStatus(httpStatus),
+    error_class: errorClass,
+    active_status: activeStatus,
+    token_id_shape: tokenIdShape,
+    token_kind: TOKEN_KINDS.includes(tokenKind) ? tokenKind : "unknown",
+    user_verify: userVerify,
+    account_verify: accountVerify,
   });
 }
 
+function unknownTokenPolicyDiagnostic(status = "unknown_response", tokenActive = null, verification = tokenVerificationDiagnostic()) {
+  return Object.freeze({
+    status,
+    token_active: tokenActive,
+    target_account_scope: null,
+    workers_admin_on_target_account: null,
+    verification,
+  });
+}
+
+// User- and account-owned token details share one policy shape: account-level
+// resources are keyed `com.cloudflare.api.account.<account_id>`, so the same
+// summary applies to both token kinds.
 function summarizeTokenPolicies(policies) {
   if (!Array.isArray(policies)) return unknownTokenPolicyDiagnostic("policy_unknown", true);
   let accountScoped = false;
@@ -240,8 +286,8 @@ function summarizeTokenPolicies(policies) {
   return Object.freeze({
     status: "details_read",
     token_active: true,
-    account_5128_scope: accountScoped,
-    workers_admin_on_5128: accountScoped ? adminOnTargetAccount : false,
+    target_account_scope: accountScoped,
+    workers_admin_on_target_account: accountScoped ? adminOnTargetAccount : false,
   });
 }
 
@@ -251,7 +297,7 @@ export async function readTokenPolicyDiagnostic({ apiToken, fetchImpl = fetch, n
   const request = async (path) => {
     assertTokenDiagnosticPath(path);
     const remaining = deadline - now();
-    if (remaining <= 0) return { kind: "timeout" };
+    if (remaining <= 0) return { kind: "timeout", exchange: verifyExchangeDiagnostic({ errorClass: "timeout" }) };
     let response;
     try {
       response = await fetchImpl(`${API}${path}`, {
@@ -260,30 +306,69 @@ export async function readTokenPolicyDiagnostic({ apiToken, fetchImpl = fetch, n
         signal: AbortSignal.timeout(remaining),
         headers: { authorization: `Bearer ${apiToken}`, accept: "application/json" },
       });
-    } catch {
-      return { kind: "transport_unknown" };
+    } catch (error) {
+      const timedOut = error instanceof Error && error.name === "TimeoutError";
+      return { kind: timedOut ? "timeout" : "transport_unknown", exchange: verifyExchangeDiagnostic({ errorClass: timedOut ? "timeout" : "transport_error" }) };
     }
-    if (response.status !== 200) return { kind: response.status === 403 ? "unknown_access" : "http_unknown" };
+    if (response.status !== 200) {
+      return {
+        kind: response.status === 403 ? "unknown_access" : "http_unknown",
+        exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "http_response" }),
+      };
+    }
     let payload;
-    try { payload = await response.json(); } catch { return { kind: "response_unknown" }; }
+    try { payload = await response.json(); } catch {
+      return { kind: "response_unknown", exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "malformed_json" }) };
+    }
     return payload?.success === true && payload.result && typeof payload.result === "object" && !Array.isArray(payload.result)
-      ? { kind: "ok", result: payload.result }
-      : { kind: "response_unknown" };
+      ? { kind: "ok", result: payload.result, exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "none" }) }
+      : { kind: "response_unknown", exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "malformed_payload" }) };
   };
 
-  const verification = await request("/user/tokens/verify");
+  // A user-owned token verifies at /user/tokens/verify. An account-owned token
+  // is rejected there with 401, so only a 401 or 403 earns one retry at the
+  // fixed account's verify endpoint. Whichever endpoint succeeds decides the
+  // token kind and therefore which details path is read.
+  const userVerification = await request("/user/tokens/verify");
+  const accountVerification = userVerification.kind !== "ok" && [401, 403].includes(userVerification.exchange.http_status)
+    ? await request(`${ACCOUNT_TOKENS_PATH}/verify`)
+    : null;
+  const verification = accountVerification ?? userVerification;
+  const tokenKind = verification.kind !== "ok" ? "unknown" : verification === accountVerification ? "account" : "user";
+  const exchanges = {
+    tokenKind,
+    userVerify: userVerification.exchange,
+    accountVerify: accountVerification?.exchange ?? verifyExchangeDiagnostic(),
+  };
   if (verification.kind !== "ok") {
-    return unknownTokenPolicyDiagnostic(verification.kind === "unknown_access" ? "unknown_access" : "verify_unknown");
+    const denied = [userVerification, accountVerification].some((attempt) => attempt?.kind === "unknown_access");
+    return unknownTokenPolicyDiagnostic(denied ? "unknown_access" : "verify_unknown", null, tokenVerificationDiagnostic({
+      httpStatus: verification.exchange.http_status,
+      errorClass: verification.exchange.error_class,
+      ...exchanges,
+    }));
   }
   const tokenStatus = verification.result.status;
-  if (["disabled", "expired"].includes(tokenStatus)) return unknownTokenPolicyDiagnostic("inactive", false);
-  if (tokenStatus !== "active" || typeof verification.result.id !== "string" || !TOKEN_ID.test(verification.result.id)) {
-    return unknownTokenPolicyDiagnostic("verify_unknown");
+  const activeStatus = tokenStatus === "active" ? "active" : ["disabled", "expired"].includes(tokenStatus) ? "inactive" : "other";
+  const tokenIdShape = typeof verification.result.id !== "string" ? "missing" : TOKEN_ID.test(verification.result.id) ? "valid_32_hex" : "malformed";
+  const verificationDiagnostic = tokenVerificationDiagnostic({
+    httpStatus: verification.exchange.http_status,
+    errorClass: ["active", "disabled", "expired"].includes(tokenStatus) && (activeStatus !== "active" || tokenIdShape === "valid_32_hex")
+      ? "none"
+      : "malformed_verification_fields",
+    activeStatus,
+    tokenIdShape,
+    ...exchanges,
+  });
+  if (["disabled", "expired"].includes(tokenStatus)) return unknownTokenPolicyDiagnostic("inactive", false, verificationDiagnostic);
+  if (tokenStatus !== "active" || tokenIdShape !== "valid_32_hex") {
+    return unknownTokenPolicyDiagnostic("verify_unknown", null, verificationDiagnostic);
   }
-  const details = await request(`/user/tokens/${encodeURIComponent(verification.result.id)}`);
-  if (details.kind === "unknown_access") return unknownTokenPolicyDiagnostic("unknown_access", true);
-  if (details.kind !== "ok") return unknownTokenPolicyDiagnostic("details_unknown", true);
-  return summarizeTokenPolicies(details.result.policies);
+  const tokensPath = tokenKind === "account" ? ACCOUNT_TOKENS_PATH : "/user/tokens";
+  const details = await request(`${tokensPath}/${encodeURIComponent(verification.result.id)}`);
+  if (details.kind === "unknown_access") return unknownTokenPolicyDiagnostic("unknown_access", true, verificationDiagnostic);
+  if (details.kind !== "ok") return unknownTokenPolicyDiagnostic("details_unknown", true, verificationDiagnostic);
+  return Object.freeze({ ...summarizeTokenPolicies(details.result.policies), verification: verificationDiagnostic });
 }
 
 export async function writeReadbackReceipt(context, options = {}) {

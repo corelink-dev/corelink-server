@@ -258,8 +258,8 @@ mod tests {
         assert!(block.contains("--remote_cache=https://corelink-api.humangr.com/bazel/v2"));
         assert!(block.contains("--remote_instance_name=tenant-123"));
         assert!(block.contains("Authorization=Bearer ${CORELINK_PAT}"));
-        // The dead grpcs host must NOT be emitted.
-        assert!(!block.contains("grpcs://cas.corelink.humangr.com"));
+        // No grpcs:// endpoint (the retired dotted CAS host was gRPC-only) may be emitted.
+        assert!(!block.contains("grpcs://"));
         assert!(block.contains(MARKER_START));
         assert!(block.contains(MARKER_END));
     }

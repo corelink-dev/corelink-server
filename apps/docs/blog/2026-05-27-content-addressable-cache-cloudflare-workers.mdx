@@ -631,7 +631,7 @@ honest. If you have answers, write us — `engineering@humangr.com`.
 CoreLink is in the final pre-GA push. Production data plane is
 deployed. The Wave 32 production-deploy campaign sealed on
 2026-05-22 with all customer endpoints live behind
-`corelink.humangr.com`; the Wave 33-36 reorg sealed on 2026-05-27
+the flat `corelink-*.humangr.com` hosts; the Wave 33-36 reorg sealed on 2026-05-27
 with the 149 → 87 crate consolidation and the cargo-deny boundary
 lockdown. The remaining path to GA is the human-driven
 external-engagement work (pentest, SOC 2, legal, lighthouse
@@ -644,8 +644,8 @@ If you want to try it, the 60-second demo is:
 # Install the CLI (macOS shown; Linux/Windows in the quickstart).
 curl -fsSL https://corelink-get.humangr.com | sh -s -- --token=<PAT>
 
-# Sign in to the sandbox. 24h scratch tenant, no credit card.
-# Visit https://app.corelink.humangr.com/sandbox to grab a PAT.
+# Sign up, then mint a PAT in the console:
+# https://humangr.com/corelink/en/customer/keys
 export CORELINK_PAT="corelink_pat_0123456789ABCDEF.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBA"
 corelink doctor                    # 8/8 checks PASS
 

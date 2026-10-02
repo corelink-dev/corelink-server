@@ -100,7 +100,7 @@ pub enum VerificationMode {
 ///     "v0.1.0",
 ///     "deadbeef".repeat(5),
 ///     "refs/tags/v0.1.0",
-///     DeployTarget::new("corelink-worker", "a".repeat(32), "api.corelink.humangr.com/*"),
+///     DeployTarget::new("corelink-worker", "a".repeat(32), "corelink-api.humangr.com/*"),
 ///     GitHubActor::new(
 ///         "github-actions[bot]",
 ///         "HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0",
@@ -551,7 +551,7 @@ mod tests {
             tag,
             "abc123def456abc123def456abc123def456abc1",
             format!("refs/tags/{tag}"),
-            DeployTarget::new("corelink-worker", "a".repeat(32), "api.corelink.humangr.com/*"),
+            DeployTarget::new("corelink-worker", "a".repeat(32), "corelink-api.humangr.com/*"),
             GitHubActor::new(
                 "github-actions[bot]",
                 format!("HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/{tag}"),

@@ -14,7 +14,7 @@ RENDERER = Path("scripts/render_staging_wrangler.py")
 # provider/renderer source drift must receive explicit preflight safety review
 # and updated pins.
 CANONICAL_PROVIDER_SOURCE_SHA256 = (
-    "4f09213ba0fad99a7433a448f84abc20600e1af9d521b0b15080a7b76cb037fe"
+    "0861056f2377057909be7771ea7ee92cb90bc9c1839fc1cc6859a738b792ec80"
 )
 CANONICAL_RENDERER_SOURCE_SHA256 = (
     "4dc4f24bf2e3d62f6ebd386567ec92490d90701f04fcfd4ecb752568f1ec8e9f"
@@ -45,7 +45,7 @@ def main() -> int:
         'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
         "persist-credentials: false",
         "timeout-minutes: 10",
-        "scripts/staging_bootstrap_provider.py --phase preflight",
+        "scripts/staging_bootstrap_provider.py --phase preflight --existing-worker-plan",
         "actions/upload-artifact@",
         "retention-days: 30",
     )

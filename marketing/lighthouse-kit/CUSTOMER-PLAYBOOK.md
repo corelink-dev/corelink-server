@@ -86,7 +86,7 @@ Print this. Tick it. Bring questions to the D+0 call or to your Slack Connect ch
 - [ ] One designated "ops/SRE" identified — receives the daily SLA samples and is paged on incidents.
 
 ### During the call
-- [ ] CLI installed — **your Customer Success engineer gives you the current install command on the call.** Do not use `https://corelink.humangr.com/install.sh`: that hostname does not resolve (verified 2026-08-02; prod hostnames are flat, see `docs/operator/host-scheme-canonical-2026-06-09.md`), and no replacement one-liner has been verified to serve a script, so this checklist will not print a guess. Whatever command you are given, the binary verifies its signature against our Sigstore bundle.
+- [ ] CLI installed — **your Customer Success engineer gives you the current install command on the call.** Do not use an `install.sh` URL under the dotted `corelink.` subdomain: that hostname does not resolve (verified 2026-08-02; prod hostnames are flat, see `docs/operator/host-scheme-canonical-2026-06-09.md`), and no replacement one-liner has been verified to serve a script, so this checklist will not print a guess. Whatever command you are given, the binary verifies its signature against our Sigstore bundle.
 - [ ] First PAT minted in the dashboard (`https://humangr.com/corelink/customer/keys`) and saved locally with `corelink login --token {your-pat}`.
 - [ ] First CAS write: `corelink put ./README.md` returns a `blake3:` digest.
 - [ ] First CAS read: `corelink cas get blake3:{digest}` returns the same bytes.

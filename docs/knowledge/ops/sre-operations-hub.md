@@ -41,7 +41,7 @@ source_blobs:
   - "crates/corelink-rotation-adapters/src/adapter.rs@9b6d65475731e4fec5b9371afba3534b7324244a"
   - "crates/corelink-slack-real/src/http.rs@db2683fc141c34e2a39fa353f1e5ff423603abb4"
   - "crates/corelink-statuspage-real/src/http.rs@be4475b1f217211050f0f99c06690ba67556e375"
-  - "crates/corelink-statuspage-real/src/lib.rs@36268b916b8ebe88116b9584e6083679b4297c10"
+  - "crates/corelink-statuspage-real/src/lib.rs@b294a82298c3713dda726e823e3e111fa553471b"
   - "crates/corelink-dt-webhook/src/handler.rs@3aa0cba9ea6f44f190365c8a9e6684c6639d67dc"
   - "crates/corelink-terraform-drift-consumer/src/consumer.rs@c62022ee9b81fe4fa54472c0957459f4f5b7acb5"
   - "crates/corelink-runbook-tracker/src/lib.rs@c3c770e37961eef6451c51f047a28c669dc017c0"

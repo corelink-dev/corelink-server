@@ -242,7 +242,7 @@ export default async function WelcomePage(props: {
           <h2 id="welcome-next-h">Next steps</h2>
           <div className="lin-mt lin-checklist" data-testid="next-steps-cards">
             <Link
-              href="https://docs.humangr.com/corelink/quickstart"
+              href="https://humangr.com/corelink/docs/quickstart"
               data-testid="next-step-quickstart"
               target="_blank"
               rel="noopener noreferrer"
@@ -256,7 +256,7 @@ export default async function WelcomePage(props: {
             </Link>
 
             <Link
-              href="https://docs.humangr.com/corelink/bazel"
+              href="https://humangr.com/corelink/docs/integrations/bazel"
               data-testid="next-step-bazel"
               target="_blank"
               rel="noopener noreferrer"
@@ -270,7 +270,7 @@ export default async function WelcomePage(props: {
             </Link>
 
             <Link
-              href="https://docs.humangr.com/corelink/turborepo"
+              href="https://humangr.com/corelink/docs/integrations/turborepo"
               data-testid="next-step-turbo"
               target="_blank"
               rel="noopener noreferrer"

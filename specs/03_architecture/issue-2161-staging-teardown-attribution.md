@@ -1,3 +1,19 @@
+---
+id: "ISSUE-2161-STAGING-TEARDOWN-ATTRIBUTION"
+type: "architecture"
+doc_status: "DRAFT"
+audit_status: "ACTIVE"
+version: "1.0.0"
+created: "2026-09-25"
+updated: "2026-10-01"
+owner: "Gustavo Schneiter"
+final_approver: "Gustavo Schneiter"
+reviewers: []
+supersedes: null
+superseded_by: null
+tags: ["architecture", "staging", "load-test", "teardown", "issue-2161"]
+---
+
 # Issue 2161: staging teardown attribution contract
 
 `0147_staging_load_test_run_ownership.sql` is the frozen server-side

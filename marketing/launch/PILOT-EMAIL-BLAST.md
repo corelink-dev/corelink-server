@@ -53,7 +53,7 @@ Body: 158 words (target was 150; the procurement-honesty bullet adds ~10 words a
 
 ## Send-side notes (Owner-only — do not paste)
 
-- **Volume cap:** 30 sends / day per Owner address. Higher volume requires a dedicated outbound domain (e.g. `pilot.corelink.humangr.com`) with proper SPF/DKIM/DMARC; do NOT send from `humangr.com/corelink` primary at >30/day or you risk the launch-day domain reputation.
+- **Volume cap:** 30 sends / day per Owner address. Higher volume requires a dedicated outbound domain (e.g. a `pilot.` sending subdomain — none is provisioned today) with proper SPF/DKIM/DMARC; do NOT send from `humangr.com/corelink` primary at >30/day or you risk the launch-day domain reputation.
 - **Sequence:** 1 initial + 1 follow-up at day 4 + 1 break-up at day 10. Do not exceed 3 touches.
 - **Follow-up template:** one-line "still interested?" — do not re-pitch.
 - **Break-up template:** "closing the loop — no response means I'll de-prioritise; reply with a 'next quarter' if you want a reminder."
