@@ -13,6 +13,12 @@
 //!
 //! - CF API token is loaded from env via [`StorageEnv`] and never
 //!   logged.
+//! - The query URL is never configuration text. The account and database
+//!   ids must each be 1-64 characters from `[0-9A-Za-z_-]`; they are parsed
+//!   into symbol codes when the client is built, and the URL is re-rendered
+//!   for every request from fixed literals plus characters looked up from a
+//!   fixed table. No configured byte is copied into the URL (#1674,
+//!   `rust/request-forgery`).
 //! - No `unwrap()` / `expect()` / `panic!()` outside `#[cfg(test)]`.
 //! - `#![forbid(unsafe_code)]` inherited from crate root.
 //!
@@ -47,8 +53,10 @@ fn runtime_d1_credential() -> Result<String, String> {
 /// (`D1HttpCustomerDb` etc.) already redact, but the root type must too.
 pub struct D1HttpClient {
     http: reqwest::Client,
-    /// Base URL: `https://api.cloudflare.com/client/v4/accounts/{account_id}/d1/database/{db_id}/query`.
-    query_url: String,
+    /// Parsed query target. The URL
+    /// (`https://api.cloudflare.com/client/v4/accounts/{account_id}/d1/database/{db_id}/query`)
+    /// is rendered from it per request by [`D1Endpoint::query_url`].
+    endpoint: D1Endpoint,
     /// Bearer token for the `Authorization` header (CF API token).
     /// Never logged — stored as a plain `String` but treated as a secret.
     api_token: String,
@@ -59,7 +67,7 @@ pub struct D1HttpClient {
 impl core::fmt::Debug for D1HttpClient {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("D1HttpClient")
-            .field("query_url", &self.query_url)
+            .field("query_url", &self.endpoint.query_url())
             .field("api_token", &"[REDACTED]")
             .field("read_only", &self.read_only)
             .finish_non_exhaustive()
@@ -135,15 +143,16 @@ impl D1HttpClient {
     ///
     /// # Errors
     ///
-    /// Returns an error when any D1 scope/credential is absent or the HTTP
-    /// client cannot be built.
+    /// Returns an error when any D1 scope/credential is absent, an id is
+    /// malformed (see [`D1HttpClient::new`]), or the HTTP client cannot be
+    /// built.
     pub fn from_d1_env() -> Result<Self, String> {
         let account_id = super::non_empty_env("CLOUDFLARE_ACCOUNT_ID")
             .ok_or_else(|| "CLOUDFLARE_ACCOUNT_ID is required".to_owned())?;
         let database_id = super::non_empty_env("D1_DATABASE_ID")
             .ok_or_else(|| "D1_DATABASE_ID is required".to_owned())?;
         let api_token = runtime_d1_credential()?;
-        Self::from_d1_parts(account_id, database_id, api_token, true)
+        Self::from_d1_parts(&account_id, &database_id, api_token, true)
     }
 
     /// Construct a writable D1 client from the D1-only integration inputs.
@@ -157,7 +166,7 @@ impl D1HttpClient {
         let database_id = super::non_empty_env("D1_DATABASE_ID")
             .ok_or_else(|| "D1_DATABASE_ID is required".to_owned())?;
         let api_token = runtime_d1_credential()?;
-        Self::from_d1_parts(account_id, database_id, api_token, false)
+        Self::from_d1_parts(&account_id, &database_id, api_token, false)
     }
 
     /// Construct the narrow staging load-test ledger writer without requiring
@@ -170,39 +179,41 @@ impl D1HttpClient {
         let database_id = super::non_empty_env("D1_DATABASE_ID")
             .ok_or_else(|| "D1_DATABASE_ID is required".to_owned())?;
         let api_token = runtime_d1_credential()?;
-        Self::from_d1_parts(account_id, database_id, api_token, false)
+        Self::from_d1_parts(&account_id, &database_id, api_token, false)
     }
 
     /// Construct a new [`D1HttpClient`] from a validated [`StorageEnv`].
     ///
     /// # Errors
     ///
-    /// Returns `Err(String)` if `reqwest::Client` cannot be built (in
-    /// practice this only fails on platforms that lack TLS support).
+    /// Returns `Err(String)` if `CLOUDFLARE_ACCOUNT_ID` or `D1_DATABASE_ID`
+    /// is not 1-64 characters from `[0-9A-Za-z_-]`, or if `reqwest::Client`
+    /// cannot be built (in practice this only fails on platforms that lack
+    /// TLS support). A refused id never yields a client, so no request can be
+    /// sent with it.
     pub fn new(env: &StorageEnv) -> Result<Self, String> {
         Self::from_d1_parts(
-            env.cloudflare_account_id.clone(),
-            env.d1_database_id.clone(),
+            &env.cloudflare_account_id,
+            &env.d1_database_id,
             env.cf_api_token.clone(),
             false,
         )
     }
 
     fn from_d1_parts(
-        account_id: String,
-        database_id: String,
+        account_id: &str,
+        database_id: &str,
         api_token: String,
         read_only: bool,
     ) -> Result<Self, String> {
-        let (scheme, host) = if api_token.is_empty() {
-            ("http", "corelink-d1-proxy.invalid")
+        // Parse both ids before anything else. Only their symbol codes
+        // survive; the configured text is dropped here and never reaches a URL.
+        let scope = D1Scope::parse(account_id, database_id)?;
+        let endpoint = if api_token.is_empty() {
+            D1Endpoint::StagingBindingProxy(scope)
         } else {
-            ("https", "api.cloudflare.com")
+            D1Endpoint::CloudflareApi(scope)
         };
-        let query_url = format!(
-            "{scheme}://{host}/client/v4/accounts/{}/d1/database/{}/query",
-            account_id, database_id,
-        );
         // Bound EVERY D1-over-HTTP call. A single erase drives ~15 serial D1
         // round-trips (legitimacy + idempotency ledger + audit envelope + the
         // D1/R2 adapters), and the CF D1 REST API rate-limits + slows under a
@@ -218,7 +229,7 @@ impl D1HttpClient {
         let http = build_http_client()?;
         Ok(Self {
             http,
-            query_url,
+            endpoint,
             api_token,
             read_only,
         })
@@ -228,13 +239,14 @@ impl D1HttpClient {
     ///
     /// This seam is intentionally named and constrained for integration tests:
     /// it cannot redirect requests to a hostname, a non-loopback address, or
-    /// an URL carrying credentials or hidden query/fragment components.
+    /// an URL carrying credentials or hidden query/fragment components. Its
+    /// path must be empty (`/`) or `/d1`, the only two its tests use.
     pub fn new_for_loopback_test(env: &StorageEnv, query_url: &str) -> Result<Self, String> {
-        let query_url = validate_loopback_query_url(query_url)?;
+        let endpoint = D1Endpoint::Loopback(parse_loopback_query_url(query_url)?);
         let http = build_http_client()?;
         Ok(Self {
             http,
-            query_url,
+            endpoint,
             api_token: env.cf_api_token.clone(),
             read_only: false,
         })
@@ -265,7 +277,7 @@ impl D1HttpClient {
             params: params.to_vec(),
         };
 
-        let mut request = self.http.post(&self.query_url).json(&body);
+        let mut request = self.http.post(self.endpoint.query_url()).json(&body);
         if !self.api_token.is_empty() {
             request = request.bearer_auth(&self.api_token);
         }
@@ -313,7 +325,7 @@ impl D1HttpClient {
         }
         debug!(statements = expected, "D1HttpClient::batch");
         let body = D1BatchRequest { batch: statements };
-        let mut request = self.http.post(&self.query_url).json(&body);
+        let mut request = self.http.post(self.endpoint.query_url()).json(&body);
         if !self.api_token.is_empty() {
             request = request.bearer_auth(&self.api_token);
         }
@@ -472,7 +484,284 @@ fn build_http_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("D1HttpClient: reqwest build failed: {e}"))
 }
 
-fn validate_loopback_query_url(query_url: &str) -> Result<String, String> {
+/// Origin of the Cloudflare D1 REST API: the only HTTPS host a D1 query goes to.
+const CLOUDFLARE_API_ORIGIN: &str = "https://api.cloudflare.com";
+/// Origin of the staging D1 binding proxy. RFC 2606 reserves `.invalid`, so a
+/// request that the Worker does not intercept fails DNS instead of reaching a
+/// provider.
+const STAGING_D1_PROXY_ORIGIN: &str = "http://corelink-d1-proxy.invalid";
+
+/// Where a [`D1HttpClient`] sends its queries.
+///
+/// The query URL is never stored as text. [`D1Endpoint::query_url`] renders
+/// it for each request from fixed origin and path literals plus characters
+/// looked up from fixed tables ([`segment_char`], [`decimal_digit`]). No byte
+/// of configuration text is copied into it, so no configured value can add a
+/// host, userinfo, query, fragment, path segment, dot segment or percent
+/// escape. This is the property CodeQL's `rust/request-forgery` asks for
+/// (#1674): no character of a configured or request-derived string is copied
+/// into the URL.
+#[derive(Clone, Copy)]
+enum D1Endpoint {
+    /// `https://api.cloudflare.com/client/v4/accounts/{account}/d1/database/{database}/query`.
+    CloudflareApi(D1Scope),
+    /// The same path on [`STAGING_D1_PROXY_ORIGIN`] (tokenless staging mode).
+    StagingBindingProxy(D1Scope),
+    /// An explicitly supplied loopback endpoint (integration tests only).
+    Loopback(LoopbackEndpoint),
+}
+
+impl D1Endpoint {
+    /// Render the request URL. Every accepted id produces the same bytes as
+    /// the former
+    /// `format!("{scheme}://{host}/client/v4/accounts/{account_id}/d1/database/{database_id}/query")`.
+    fn query_url(self) -> String {
+        match self {
+            Self::CloudflareApi(scope) => scope.render(CLOUDFLARE_API_ORIGIN),
+            Self::StagingBindingProxy(scope) => scope.render(STAGING_D1_PROXY_ORIGIN),
+            Self::Loopback(endpoint) => endpoint.render(),
+        }
+    }
+}
+
+/// The account and database a client is bound to.
+#[derive(Clone, Copy)]
+struct D1Scope {
+    /// `CLOUDFLARE_ACCOUNT_ID`.
+    account: IdSegment,
+    /// `D1_DATABASE_ID`.
+    database: IdSegment,
+}
+
+impl D1Scope {
+    /// Parse both ids or refuse. The error names the variable but never echoes
+    /// its value (`StorageEnv` redacts both ids, and a hostile value could
+    /// carry a newline into the log).
+    fn parse(account_id: &str, database_id: &str) -> Result<Self, String> {
+        let account = IdSegment::parse(account_id).ok_or_else(|| {
+            "CLOUDFLARE_ACCOUNT_ID must be 1-64 characters from [0-9A-Za-z_-]".to_owned()
+        })?;
+        let database = IdSegment::parse(database_id).ok_or_else(|| {
+            "D1_DATABASE_ID must be 1-64 characters from [0-9A-Za-z_-]".to_owned()
+        })?;
+        Ok(Self { account, database })
+    }
+
+    fn render(self, origin: &'static str) -> String {
+        // origin + "/client/v4/accounts/" (20) + account + "/d1/database/"
+        // (13) + database + "/query" (6).
+        let mut url = String::with_capacity(origin.len() + 39 + 2 * MAX_ID_LEN);
+        url.push_str(origin);
+        url.push_str("/client/v4/accounts/");
+        self.account.push_to(&mut url);
+        url.push_str("/d1/database/");
+        self.database.push_to(&mut url);
+        url.push_str("/query");
+        url
+    }
+}
+
+/// The longest id accepted. Cloudflare account ids are 32 characters and D1
+/// database ids 36.
+const MAX_ID_LEN: usize = 64;
+
+/// One id, held as codes into the 64-symbol table of [`segment_char`].
+///
+/// The table is RFC 3986's unreserved set without `.` and `~`, so a rendered
+/// id is always exactly one path segment and never a dot segment, a percent
+/// escape, a delimiter or a control character. Cloudflare account ids (32 hex
+/// digits) and D1 database ids (hyphenated UUIDs) both fit.
+#[derive(Clone, Copy)]
+struct IdSegment {
+    len: usize,
+    symbols: [u8; MAX_ID_LEN],
+}
+
+impl IdSegment {
+    /// Accept 1-[`MAX_ID_LEN`] bytes, each from `[0-9A-Za-z_-]`.
+    fn parse(text: &str) -> Option<Self> {
+        let len = text.len();
+        if len == 0 || len > MAX_ID_LEN {
+            return None;
+        }
+        let mut symbols = [0_u8; MAX_ID_LEN];
+        for (slot, byte) in symbols.iter_mut().zip(text.bytes()) {
+            *slot = segment_symbol(byte)?;
+        }
+        Some(Self { len, symbols })
+    }
+
+    fn push_to(&self, out: &mut String) {
+        for &symbol in self.symbols.iter().take(self.len) {
+            out.push(segment_char(symbol));
+        }
+    }
+}
+
+/// The code of an id byte in [`segment_char`]'s table, or `None` for any
+/// byte outside `[0-9A-Za-z_-]`.
+fn segment_symbol(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'A'..=b'Z' => Some(byte - b'A' + 10),
+        b'a'..=b'z' => Some(byte - b'a' + 36),
+        b'-' => Some(62),
+        b'_' => Some(63),
+        _ => None,
+    }
+}
+
+/// The character for the low six bits of `symbol`, taken from a fixed table
+/// (never from the input). Inverse of [`segment_symbol`].
+const fn segment_char(symbol: u8) -> char {
+    match symbol & 0x3f {
+        0 => '0',
+        1 => '1',
+        2 => '2',
+        3 => '3',
+        4 => '4',
+        5 => '5',
+        6 => '6',
+        7 => '7',
+        8 => '8',
+        9 => '9',
+        10 => 'A',
+        11 => 'B',
+        12 => 'C',
+        13 => 'D',
+        14 => 'E',
+        15 => 'F',
+        16 => 'G',
+        17 => 'H',
+        18 => 'I',
+        19 => 'J',
+        20 => 'K',
+        21 => 'L',
+        22 => 'M',
+        23 => 'N',
+        24 => 'O',
+        25 => 'P',
+        26 => 'Q',
+        27 => 'R',
+        28 => 'S',
+        29 => 'T',
+        30 => 'U',
+        31 => 'V',
+        32 => 'W',
+        33 => 'X',
+        34 => 'Y',
+        35 => 'Z',
+        36 => 'a',
+        37 => 'b',
+        38 => 'c',
+        39 => 'd',
+        40 => 'e',
+        41 => 'f',
+        42 => 'g',
+        43 => 'h',
+        44 => 'i',
+        45 => 'j',
+        46 => 'k',
+        47 => 'l',
+        48 => 'm',
+        49 => 'n',
+        50 => 'o',
+        51 => 'p',
+        52 => 'q',
+        53 => 'r',
+        54 => 's',
+        55 => 't',
+        56 => 'u',
+        57 => 'v',
+        58 => 'w',
+        59 => 'x',
+        60 => 'y',
+        61 => 'z',
+        62 => '-',
+        // The mask leaves exactly 63 here.
+        _ => '_',
+    }
+}
+
+/// Write `value` in decimal without leading zeros.
+fn push_decimal(out: &mut String, value: u16) {
+    let mut started = false;
+    for divisor in [10_000_u16, 1_000, 100, 10, 1] {
+        let digit = (value / divisor) % 10;
+        if started || digit != 0 || divisor == 1 {
+            started = true;
+            out.push(decimal_digit(digit));
+        }
+    }
+}
+
+/// The decimal digit for `digit % 10`, taken from a fixed table.
+const fn decimal_digit(digit: u16) -> char {
+    match digit % 10 {
+        0 => '0',
+        1 => '1',
+        2 => '2',
+        3 => '3',
+        4 => '4',
+        5 => '5',
+        6 => '6',
+        7 => '7',
+        8 => '8',
+        // `% 10` leaves exactly 9 here.
+        _ => '9',
+    }
+}
+
+/// A validated loopback test endpoint: `http://{loopback ip}:{port}{path}`.
+#[derive(Clone, Copy)]
+struct LoopbackEndpoint {
+    host: LoopbackHost,
+    port: u16,
+    path: LoopbackPath,
+}
+
+#[derive(Clone, Copy)]
+enum LoopbackHost {
+    /// An address in `127.0.0.0/8`.
+    V4([u8; 4]),
+    /// `::1`, the only IPv6 loopback address.
+    V6,
+}
+
+#[derive(Clone, Copy)]
+enum LoopbackPath {
+    /// `/` (also the path of a URL written without one).
+    Root,
+    /// `/d1`.
+    D1,
+}
+
+impl LoopbackEndpoint {
+    fn render(self) -> String {
+        let mut url = String::with_capacity(32);
+        url.push_str("http://");
+        match self.host {
+            LoopbackHost::V4(octets) => {
+                for (index, octet) in octets.into_iter().enumerate() {
+                    if index > 0 {
+                        url.push('.');
+                    }
+                    push_decimal(&mut url, u16::from(octet));
+                }
+            }
+            LoopbackHost::V6 => url.push_str("[::1]"),
+        }
+        url.push(':');
+        push_decimal(&mut url, self.port);
+        url.push_str(match self.path {
+            LoopbackPath::Root => "/",
+            LoopbackPath::D1 => "/d1",
+        });
+        url
+    }
+}
+
+fn parse_loopback_query_url(query_url: &str) -> Result<LoopbackEndpoint, String> {
     let parsed =
         reqwest::Url::parse(query_url).map_err(|e| format!("D1 loopback URL parse failed: {e}"))?;
     if parsed.scheme() != "http" {
@@ -501,10 +790,19 @@ fn validate_loopback_query_url(query_url: &str) -> Result<String, String> {
     if !ip.is_loopback() {
         return Err("D1 loopback URL host must be loopback".to_owned());
     }
-    if parsed.port().is_none() {
-        return Err("D1 loopback URL must contain an explicit port".to_owned());
-    }
-    Ok(query_url.to_owned())
+    let host = match ip {
+        IpAddr::V4(v4) => LoopbackHost::V4(v4.octets()),
+        IpAddr::V6(_) => LoopbackHost::V6,
+    };
+    let port = parsed
+        .port()
+        .ok_or_else(|| "D1 loopback URL must contain an explicit port".to_owned())?;
+    let path = match parsed.path() {
+        "/" => LoopbackPath::Root,
+        "/d1" => LoopbackPath::D1,
+        _ => return Err("D1 loopback URL path must be / or /d1".to_owned()),
+    };
+    Ok(LoopbackEndpoint { host, port, path })
 }
 
 /// Metadata record for a CAS blob, sourced from D1.
@@ -993,6 +1291,213 @@ impl D1HttpClient {
 mod tests {
     use super::*;
     use crate::storage::StorageEnv;
+    use proptest::prelude::*;
+
+    /// The staging ids the Worker's D1 binding proxy accepts
+    /// (`worker/src/staging_d1_binding_proxy.ts`).
+    const STAGING_ACCOUNT: &str = "6a1fc1c626fc2628823e60b9db01f5cd";
+    const STAGING_DATABASE: &str = "d72a6b39-6a48-4338-bfda-1111dda98604";
+    /// The production CONFIG_DB id (`wrangler.toml`).
+    const PROD_DATABASE: &str = "d64742ea-e102-40b2-a844-ff02e3f94562";
+
+    /// The exact URL expression `from_d1_parts` used before #1674.
+    fn former_query_url(scheme: &str, host: &str, account_id: &str, database_id: &str) -> String {
+        format!(
+            "{scheme}://{host}/client/v4/accounts/{}/d1/database/{}/query",
+            account_id, database_id,
+        )
+    }
+
+    fn storage_env(account_id: &str, database_id: &str) -> StorageEnv {
+        StorageEnv {
+            r2_endpoint: "https://localhost:1".to_owned(),
+            r2_access_key_id: "test".to_owned(),
+            r2_secret_access_key: "test".to_owned(),
+            r2_session_token: None,
+            cloudflare_account_id: account_id.to_owned(),
+            cf_api_token: "tok".to_owned(),
+            d1_database_id: database_id.to_owned(),
+        }
+    }
+
+    #[test]
+    fn accepted_ids_render_the_same_query_url_as_before() {
+        for (account, database) in [
+            // Deployed values.
+            (STAGING_ACCOUNT, STAGING_DATABASE),
+            (STAGING_ACCOUNT, PROD_DATABASE),
+            // Case is preserved, not normalized.
+            (
+                "6A1FC1C626FC2628823E60B9DB01F5CD",
+                "D72A6B39-6A48-4338-BFDA-1111DDA98604",
+            ),
+            // Placeholder ids the crate's test fixtures pass to `new`.
+            ("acct123", "db456"),
+            ("account", "database"),
+            ("test-account", "test-db"),
+            ("test-account-id", "test-database-id"),
+            ("definitely-not-a-real-account", "definitely-not-a-real-db"),
+            ("a", "_"),
+        ] {
+            let cloudflare =
+                D1HttpClient::from_d1_parts(account, database, "token".to_owned(), false)
+                    .expect("accepted ids build a Cloudflare client");
+            assert_eq!(
+                cloudflare.endpoint.query_url(),
+                former_query_url("https", "api.cloudflare.com", account, database)
+            );
+            let proxy = D1HttpClient::from_d1_parts(account, database, String::new(), false)
+                .expect("accepted ids build a staging proxy client");
+            assert_eq!(
+                proxy.endpoint.query_url(),
+                former_query_url("http", "corelink-d1-proxy.invalid", account, database)
+            );
+        }
+        // The one path the staging Worker proxy admits, byte for byte.
+        let staging =
+            D1HttpClient::from_d1_parts(STAGING_ACCOUNT, STAGING_DATABASE, String::new(), true)
+                .expect("staging ids build");
+        assert_eq!(
+            staging.endpoint.query_url(),
+            "http://corelink-d1-proxy.invalid/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/d1/database/d72a6b39-6a48-4338-bfda-1111dda98604/query"
+        );
+    }
+
+    /// Values that would change the URL's host, userinfo, path, query or
+    /// fragment, add a dot segment or percent escape, or inject a header line,
+    /// if they reached it as text. Each one is refused as either id.
+    const HOSTILE_IDS: &[&str] = &[
+        "",
+        ".",
+        "..",
+        "../",
+        "@evil.com",
+        "%2F",
+        "%2e%2e",
+        "evil.com",
+        "api.cloudflare.com@evil.com",
+        "//evil.com/",
+        "https://evil.com/",
+        "\\evil",
+        "\n",
+        "\r\n",
+        "a b",
+        "a\tb",
+        "~",
+        "x:y",
+        "\u{0}",
+        "é",
+        "6a1fc1c626fc2628823e60b9db01f5cd\n",
+        "6a1fc1c626fc2628823e60b9db01f5cd/../../evil",
+        "6a1fc1c626fc2628823e60b9db01f5cd@evil.com",
+        "6a1fc1c626fc2628823e60b9db01f5cd%2F",
+        "6a1fc1c626fc2628823e60b9db01f5cd?x=1",
+        "6a1fc1c626fc2628823e60b9db01f5cd#fragment",
+        "6a1fc1c626fc2628823e60b9db01f5cd.",
+        "6a1fc1c626fc2628\r\nHost: evil.com",
+        "d72a6b39/6a48-4338-bfda-1111dda98604",
+        "d72a6b39-6a48-4338-bfda-1111dda98604\n",
+        "../../evil.com/client/v4/accounts/x",
+        // 65 bytes: one past the length cap.
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ];
+
+    #[test]
+    fn hostile_d1_ids_are_refused_before_a_client_exists() {
+        for &hostile in HOSTILE_IDS {
+            for (account, database) in [(hostile, STAGING_DATABASE), (STAGING_ACCOUNT, hostile)] {
+                for token in ["token", ""] {
+                    let error =
+                        D1HttpClient::from_d1_parts(account, database, token.to_owned(), false)
+                            .expect_err("a hostile id must not build a client");
+                    assert!(
+                        error.contains("CLOUDFLARE_ACCOUNT_ID") || error.contains("D1_DATABASE_ID"),
+                        "refusal must name the variable: {error}"
+                    );
+                    if hostile.len() > 1 {
+                        assert!(
+                            !error.contains(hostile),
+                            "refusal must not echo the value: {error:?}"
+                        );
+                    }
+                }
+                // The StorageEnv constructor every route uses refuses it too.
+                assert!(D1HttpClient::new(&storage_env(account, database)).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn id_segment_accepts_exactly_the_unreserved_subset_and_round_trips() {
+        for byte in 0_u8..=0x7f {
+            let text = char::from(byte).to_string();
+            let allowed = byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_';
+            match IdSegment::parse(&text) {
+                Some(segment) => {
+                    assert!(allowed, "accepted byte {byte:#04x}");
+                    let mut rendered = String::new();
+                    segment.push_to(&mut rendered);
+                    assert_eq!(rendered, text);
+                }
+                None => assert!(!allowed, "refused byte {byte:#04x}"),
+            }
+        }
+        let longest = "a".repeat(MAX_ID_LEN);
+        assert!(IdSegment::parse(&longest).is_some());
+        assert!(IdSegment::parse(&format!("{longest}a")).is_none());
+        for &hostile in HOSTILE_IDS {
+            assert!(IdSegment::parse(hostile).is_none(), "accepted {hostile:?}");
+        }
+    }
+
+    proptest! {
+        /// Every Cloudflare-shaped id pair (32 hex digits, hyphenated UUID)
+        /// renders exactly the former URL.
+        #[test]
+        fn cloudflare_shaped_ids_render_the_former_url(account in any::<u128>(), database in any::<u128>()) {
+            let account_text = format!("{account:032x}");
+            let database_text = format!(
+                "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+                database >> 96,
+                (database >> 80) & 0xffff,
+                (database >> 64) & 0xffff,
+                (database >> 48) & 0xffff,
+                database & 0xffff_ffff_ffff,
+            );
+            let scope = D1Scope::parse(&account_text, &database_text).expect("Cloudflare ids parse");
+            prop_assert_eq!(
+                D1Endpoint::CloudflareApi(scope).query_url(),
+                former_query_url("https", "api.cloudflare.com", &account_text, &database_text)
+            );
+        }
+
+        /// Whatever text is offered as an account id, a client exists only
+        /// for 1-64 characters of `[0-9A-Za-z_-]`, and its URL keeps the fixed
+        /// origin and path shape with the id as exactly one segment.
+        #[test]
+        fn only_unreserved_ids_are_accepted(account in "\\PC{0,70}|[0-9A-Za-z_-]{1,64}|[0-9A-Za-z_./@%?#:~-]{1,70}") {
+            let allowed = (1..=MAX_ID_LEN).contains(&account.len())
+                && account.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+            match D1Scope::parse(&account, STAGING_DATABASE) {
+                Ok(scope) => {
+                    prop_assert!(allowed, "accepted {account:?}");
+                    let url = reqwest::Url::parse(&D1Endpoint::CloudflareApi(scope).query_url())
+                        .expect("rendered URL parses");
+                    prop_assert_eq!(url.scheme(), "https");
+                    prop_assert_eq!(url.host_str(), Some("api.cloudflare.com"));
+                    prop_assert_eq!(url.username(), "");
+                    prop_assert_eq!(url.query(), None);
+                    prop_assert_eq!(url.fragment(), None);
+                    let segments: Vec<&str> = url.path_segments().expect("path").collect();
+                    prop_assert_eq!(
+                        segments,
+                        vec!["client", "v4", "accounts", account.as_str(), "d1", "database", STAGING_DATABASE, "query"]
+                    );
+                }
+                Err(_) => prop_assert!(!allowed, "refused {account:?}"),
+            }
+        }
+    }
 
     #[test]
     fn read_only_sql_gate_accepts_one_select_and_rejects_mutation_or_stacking() {
@@ -1006,13 +1511,8 @@ mod tests {
 
     #[tokio::test]
     async fn read_only_client_rejects_mutations_before_network_io() {
-        let client = D1HttpClient::from_d1_parts(
-            "account".to_owned(),
-            "database".to_owned(),
-            "token".to_owned(),
-            true,
-        )
-        .expect("build read-only client");
+        let client = D1HttpClient::from_d1_parts("account", "database", "token".to_owned(), true)
+            .expect("build read-only client");
         let err = client
             .query("DELETE FROM gc_candidates", &[])
             .await
@@ -1076,37 +1576,20 @@ mod tests {
         // returns None so this path never constructs D1HttpClient;
         // here we construct directly with stub values to test the URL
         // format only.
-        let stub_env = StorageEnv {
-            r2_endpoint: "https://localhost:1".to_owned(),
-            r2_access_key_id: "test".to_owned(),
-            r2_secret_access_key: "test".to_owned(),
-            r2_session_token: None,
-            cloudflare_account_id: "acct123".to_owned(),
-            cf_api_token: "tok".to_owned(),
-            d1_database_id: "db456".to_owned(),
-        };
+        let stub_env = storage_env("acct123", "db456");
         let client = D1HttpClient::new(&stub_env).expect("build client");
-        assert!(
-            client.query_url.contains("acct123"),
-            "URL must include account_id"
-        );
-        assert!(
-            client.query_url.contains("db456"),
-            "URL must include database_id"
+        assert_eq!(
+            client.endpoint.query_url(),
+            "https://api.cloudflare.com/client/v4/accounts/acct123/d1/database/db456/query",
         );
     }
 
     #[test]
     fn empty_runtime_token_selects_non_routable_proxy_host() {
-        let client = D1HttpClient::from_d1_parts(
-            "account".to_owned(),
-            "database".to_owned(),
-            String::new(),
-            false,
-        )
-        .expect("build tokenless staging proxy client");
+        let client = D1HttpClient::from_d1_parts("account", "database", String::new(), false)
+            .expect("build tokenless staging proxy client");
         assert_eq!(
-            client.query_url,
+            client.endpoint.query_url(),
             "http://corelink-d1-proxy.invalid/client/v4/accounts/account/d1/database/database/query",
         );
         assert!(client.api_token.is_empty());
@@ -1127,7 +1610,9 @@ mod tests {
             let read = stream
                 .read(&mut request_bytes)
                 .expect("read request headers");
-            let headers = String::from_utf8_lossy(&request_bytes[..read]).to_ascii_lowercase();
+            let headers =
+                String::from_utf8_lossy(request_bytes.get(..read).expect("read fits the buffer"))
+                    .to_ascii_lowercase();
             assert!(!headers.contains("authorization:"));
             assert!(headers.starts_with("post /d1 http/1.1"));
             let body = r#"{"result":[{"results":[{"value":1}],"success":true}],"success":true,"errors":[]}"#;
@@ -1157,15 +1642,11 @@ mod tests {
 
     #[tokio::test]
     async fn missing_staging_interceptor_cannot_fall_back_to_cloudflare() {
-        let client = D1HttpClient::from_d1_parts(
-            "account".to_owned(),
-            "database".to_owned(),
-            String::new(),
-            false,
-        )
-        .expect("build tokenless staging proxy client");
+        let client = D1HttpClient::from_d1_parts("account", "database", String::new(), false)
+            .expect("build tokenless staging proxy client");
         assert!(client
-            .query_url
+            .endpoint
+            .query_url()
             .starts_with("http://corelink-d1-proxy.invalid/"));
         // RFC 2606 reserves .invalid; with no Container host interception the
         // request must fail DNS rather than reach Cloudflare over the internet.
@@ -1178,9 +1659,26 @@ mod tests {
 
     #[test]
     fn loopback_query_url_validation_accepts_explicit_loopback_endpoint() {
-        let url = "http://127.0.0.1:8787/d1";
-        assert_eq!(validate_loopback_query_url(url).as_deref(), Ok(url));
-        assert!(validate_loopback_query_url("http://[::1]:8787/d1").is_ok());
+        for (input, rendered) in [
+            ("http://127.0.0.1:8787/d1", "http://127.0.0.1:8787/d1"),
+            ("http://[::1]:8787/d1", "http://[::1]:8787/d1"),
+            ("http://127.0.0.1:41000", "http://127.0.0.1:41000/"),
+            ("http://127.0.0.1:41000/", "http://127.0.0.1:41000/"),
+            (
+                "http://127.10.200.3:65535/d1",
+                "http://127.10.200.3:65535/d1",
+            ),
+            ("http://127.0.0.1:1", "http://127.0.0.1:1/"),
+        ] {
+            let endpoint = parse_loopback_query_url(input)
+                .unwrap_or_else(|e| panic!("loopback URL {input} refused: {e}"));
+            assert_eq!(endpoint.render(), rendered);
+            // The rendered URL addresses exactly what the caller configured.
+            assert_eq!(
+                reqwest::Url::parse(&endpoint.render()).expect("rendered URL parses"),
+                reqwest::Url::parse(input).expect("input URL parses"),
+            );
+        }
     }
 
     #[test]
@@ -1188,16 +1686,30 @@ mod tests {
         for url in [
             "http://localhost:8787/d1",
             "http://192.0.2.1:8787/d1",
+            "http://0.0.0.0:8787/d1",
+            "http://[::ffff:127.0.0.1]:8787/d1",
             "https://127.0.0.1:8787/d1",
             "http://127.0.0.1/d1",
             "http://user:pass@127.0.0.1:8787/d1",
+            "http://evil.com@127.0.0.1:8787/d1",
+            "http://127.0.0.1:8787@evil.com/d1",
             "http://127.0.0.1:8787/d1?query=hidden",
             "http://127.0.0.1:8787/d1#fragment",
+            "http://127.0.0.1:8787/../evil",
+            "http://127.0.0.1:8787/d1/../../evil",
+            "http://127.0.0.1:8787/%2F",
+            "http://127.0.0.1:8787/d1%2F..",
+            "http://127.0.0.1:8787/@evil.com",
+            "http://127.0.0.1:8787/d1/",
+            "http://127.0.0.1:8787/client/v4/accounts/x/d1/database/y/query",
+            "",
         ] {
             assert!(
-                validate_loopback_query_url(url).is_err(),
+                parse_loopback_query_url(url).is_err(),
                 "unsafe D1 loopback URL accepted: {url}"
             );
+            let env = storage_env(STAGING_ACCOUNT, STAGING_DATABASE);
+            assert!(D1HttpClient::new_for_loopback_test(&env, url).is_err());
         }
     }
 
