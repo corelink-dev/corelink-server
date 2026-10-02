@@ -579,25 +579,29 @@ class ReviewedBaselineLedgerTests(unittest.TestCase):
     def test_ledger_names_exactly_the_moved_pins(self) -> None:
         policy = verify.load_trusted_delivery_policy()
         self.assertEqual(list(PRE_REBASELINE_CONTROLS), [str(path) for path in verify.WAVE_BASE_CONTROLS])
-        moved = {
-            Path(path) for path, pin in PRE_REBASELINE_CONTROLS.items()
-            if verify.WAVE_BASE_CONTROLS[Path(path)] != pin
-        }
+        # Every pin map whose pin moved, per path, in a fixed map order.
+        moved: dict[Path, list[str]] = {}
+        for path, pin in PRE_REBASELINE_CONTROLS.items():
+            if verify.WAVE_BASE_CONTROLS[Path(path)] != pin:
+                moved.setdefault(Path(path), []).append("WAVE_BASE_CONTROLS")
         if verify.WAVE_MATRIX_SHA256 != PRE_REBASELINE_MATRIX_SHA256:
-            moved.add(MATRIX)
-        for successors in verify.WAVE_GROUP_SUCCESSOR_PINS.values():
-            moved.update(successors)
-        moved.update(
-            Path(name) for name, (_mode, digest) in policy.REVIEWED_SURFACE.items()
-            if digest != policy.EXPECTED[name]
-        )
+            moved.setdefault(MATRIX, []).append("WAVE_MATRIX_SHA256")
+        for group, successors in verify.WAVE_GROUP_SUCCESSOR_PINS.items():
+            for path in successors:
+                moved.setdefault(path, []).append(f"WAVE_GROUP_SUCCESSOR_PINS[{group}]")
+        for name, (_mode, digest) in policy.REVIEWED_SURFACE.items():
+            if digest != policy.EXPECTED[name]:
+                moved.setdefault(Path(name), []).append("REVIEWED_SURFACE")
         self.assertEqual(sorted(map(str, verify.REBASELINE_LEDGER)), sorted(map(str, moved)))
-        for path, (prs, kind, reason) in verify.REBASELINE_LEDGER.items():
+        for path, (prs, kind, disposition, reason) in verify.REBASELINE_LEDGER.items():
             with self.subTest(str(path)):
                 self.assertRegex(prs, r"^#\d{4}(, #\d{4})*$")
                 numbers = [int(number) for number in re.findall(r"\d{4}", prs)]
                 self.assertEqual(numbers, sorted(set(numbers)))
                 self.assertIn(kind, {"transport-reviewed", "not-transport"})
+                # The disposition names exactly the maps re-pinned for this
+                # path: a stale, missing or invented map entry fails here.
+                self.assertEqual(disposition, tuple(moved[path]))
                 self.assertTrue(reason.strip())
 
     def test_successor_pins_extend_history_without_rewriting_it(self) -> None:
