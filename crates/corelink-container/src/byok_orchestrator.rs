@@ -181,6 +181,49 @@ pub const fn active_provider() -> ActiveProvider {
     }
 }
 
+// ── Provisioning check ───────────────────────────────────────────────
+
+/// Whether the operator has provisioned the compiled provider's credentials.
+///
+/// `false` is a configuration state: the deployment never supplied the
+/// credential pair. It is distinct from a provisioned but broken provider
+/// (bad values, SDK init failure), which [`make_provider`] still reports as
+/// an error. Only the AWS provider's credentials can be checked here without
+/// I/O, using the same names and the same empty-is-absent rule as
+/// `corelink_byok::aws::AwsKmsRealProvider::with_fips`. Every other real
+/// provider reports `true`, so its constructor keeps deciding.
+#[must_use]
+pub fn provider_credentials_configured() -> bool {
+    provider_credentials_configured_with(active_provider(), |name| std::env::var(name).ok())
+}
+
+/// Pure core of [`provider_credentials_configured`]; `lookup` reads one
+/// environment variable.
+#[must_use]
+pub fn provider_credentials_configured_with<F>(provider: ActiveProvider, lookup: F) -> bool
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let present = |primary: &str, fallback: &str| {
+        [primary, fallback]
+            .into_iter()
+            .any(|name| lookup(name).is_some_and(|value| !value.is_empty()))
+    };
+    match provider {
+        ActiveProvider::Unavailable => false,
+        ActiveProvider::AwsKms => {
+            present("CORELINK_BYOK_KMS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+                && present(
+                    "CORELINK_BYOK_KMS_SECRET_ACCESS_KEY",
+                    "AWS_SECRET_ACCESS_KEY",
+                )
+        }
+        ActiveProvider::GcpKms | ActiveProvider::AzureKeyVault | ActiveProvider::HashicorpVault => {
+            true
+        }
+    }
+}
+
 // ── Dispatch ─────────────────────────────────────────────────────────
 
 /// Construct the singleton BYOK provider for this binary.
@@ -277,5 +320,95 @@ async fn build_active() -> Result<Arc<dyn KmsProvider>, BYOKError> {
         Err(BYOKError::Provider(
             "no real KMS provider compiled (enable exactly one byok-*-real feature)".to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, reason = "tests are allowed to use these primitives")]
+mod tests {
+    use super::{provider_credentials_configured_with, ActiveProvider};
+
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    }
+
+    #[test]
+    fn aws_needs_both_halves_of_the_dedicated_pair() {
+        let both = [
+            ("CORELINK_BYOK_KMS_ACCESS_KEY_ID", "access-id"),
+            ("CORELINK_BYOK_KMS_SECRET_ACCESS_KEY", "secret"),
+        ];
+        assert!(provider_credentials_configured_with(
+            ActiveProvider::AwsKms,
+            env(&both)
+        ));
+        for half in [&both[..1], &both[1..]] {
+            assert!(
+                !provider_credentials_configured_with(ActiveProvider::AwsKms, env(half)),
+                "one half of the pair is not a provisioned provider: {half:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn aws_accepts_the_generic_fallback_names_like_the_provider_does() {
+        let generic = [
+            ("AWS_ACCESS_KEY_ID", "access-id"),
+            ("AWS_SECRET_ACCESS_KEY", "secret"),
+        ];
+        assert!(provider_credentials_configured_with(
+            ActiveProvider::AwsKms,
+            env(&generic)
+        ));
+        let mixed = [
+            ("CORELINK_BYOK_KMS_ACCESS_KEY_ID", ""),
+            ("AWS_ACCESS_KEY_ID", "access-id"),
+            ("CORELINK_BYOK_KMS_SECRET_ACCESS_KEY", "secret"),
+        ];
+        assert!(provider_credentials_configured_with(
+            ActiveProvider::AwsKms,
+            env(&mixed)
+        ));
+    }
+
+    #[test]
+    fn aws_treats_forwarded_empty_strings_as_unprovisioned() {
+        // The Worker forwards every unset secret as "" (durable_object_start.ts).
+        let forwarded_unset = [
+            ("CORELINK_BYOK_KMS_ACCESS_KEY_ID", ""),
+            ("CORELINK_BYOK_KMS_SECRET_ACCESS_KEY", ""),
+            ("CORELINK_BYOK_KMS_SESSION_TOKEN", ""),
+        ];
+        assert!(!provider_credentials_configured_with(
+            ActiveProvider::AwsKms,
+            env(&forwarded_unset)
+        ));
+        assert!(!provider_credentials_configured_with(
+            ActiveProvider::AwsKms,
+            env(&[])
+        ));
+    }
+
+    #[test]
+    fn other_providers_keep_constructor_authority() {
+        for provider in [
+            ActiveProvider::GcpKms,
+            ActiveProvider::AzureKeyVault,
+            ActiveProvider::HashicorpVault,
+        ] {
+            assert!(provider_credentials_configured_with(provider, env(&[])));
+        }
+        assert!(!provider_credentials_configured_with(
+            ActiveProvider::Unavailable,
+            env(&[
+                ("AWS_ACCESS_KEY_ID", "access-id"),
+                ("AWS_SECRET_ACCESS_KEY", "s")
+            ])
+        ));
     }
 }

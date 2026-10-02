@@ -166,6 +166,14 @@ impl DataPlaneByok {
     /// not migrate legacy plaintext objects: `partial` remains fail-closed and
     /// the existing Mode-B reconciliation-intent path remains the recovery
     /// authority for an ambiguous R2/D1 commit.
+    ///
+    /// One state is not "half-wired": a real-provider binary deployed where
+    /// the operator has not provisioned KMS credentials at all. No tenant can
+    /// become BYOK-active there (the activation route needs the same provider
+    /// and returns 501 before any D1 write), so when no tenant is already
+    /// engaged the process serves exactly like the no-provider build. If any
+    /// tenant IS engaged, boot is still refused. Before #1648 this case also
+    /// refused boot, and every production container exited with code 1.
     pub async fn from_env() -> Result<Option<Self>, String> {
         if crate::byok_orchestrator::active_provider()
             == crate::byok_orchestrator::ActiveProvider::Unavailable
@@ -175,6 +183,22 @@ impl DataPlaneByok {
         let Some(env) = crate::storage::StorageEnv::from_env() else {
             return Ok(None);
         };
+        if !crate::byok_orchestrator::provider_credentials_configured() {
+            let d1 = D1HttpClient::new(&env)
+                .map_err(|error| format!("BYOK D1 client init failed: {error}"))?;
+            let engaged = byok_tenants_engaged(&d1)
+                .await
+                .map_err(|error| format!("BYOK engagement probe failed: {error}"))?;
+            unprovisioned_provider_boot(engaged)?;
+            tracing::warn!(
+                event = "byok_data_plane_unarmed",
+                provider = crate::byok_orchestrator::active_provider().as_str(),
+                reason = "kms_credentials_unprovisioned",
+                "BYOK KMS credentials are not provisioned and no tenant has BYOK engaged; \
+                 serving without the BYOK data plane (activation returns 501 until provisioned)"
+            );
+            return Ok(None);
+        }
         let provider = crate::byok_orchestrator::make_provider()
             .await
             .map_err(|error| format!("BYOK provider init failed: {error}"))?;
@@ -257,6 +281,48 @@ impl DataPlaneByok {
             ))
         })?;
         ByokOperationPin::new(tenant, plaintext_len, guard).map(|pin| Some(Arc::new(pin)))
+    }
+}
+
+/// Tenant states whose objects need the BYOK collaborators: ciphertext is
+/// being written or read (`active`, `partial`), or reads must fail closed
+/// after a crypto-shred (`shredded`). `inactive` and `pending` tenants are
+/// served in plaintext by the data plane in every build.
+const BYOK_ENGAGED_STATES_SQL: &str = "SELECT EXISTS(SELECT 1 FROM tenant_byok_config \
+     WHERE state IN ('active','partial','shredded')) AS engaged";
+
+/// Whether any tenant currently needs the BYOK collaborators (see
+/// [`BYOK_ENGAGED_STATES_SQL`]). An unreadable answer is an error, never "no".
+async fn byok_tenants_engaged(d1: &D1HttpClient) -> Result<bool, String> {
+    let rows = d1.query(BYOK_ENGAGED_STATES_SQL, &[]).await?;
+    let row = rows
+        .first()
+        .ok_or_else(|| "BYOK engagement probe returned no row".to_owned())?;
+    engaged_flag(row.get("engaged"))
+}
+
+/// Decode the engagement probe's `EXISTS` column. Only an exact 0 or 1 is an
+/// answer; anything else refuses boot.
+fn engaged_flag(value: Option<&Value>) -> Result<bool, String> {
+    match value.and_then(Value::as_i64) {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err("BYOK engagement probe returned an invalid flag".to_owned()),
+    }
+}
+
+/// Boot decision for a real-provider binary whose KMS credentials are not
+/// provisioned. Serving an engaged tenant without its keys would either store
+/// plaintext for it or skip its shred fence, so that case still refuses boot.
+fn unprovisioned_provider_boot(engaged: bool) -> Result<(), String> {
+    if engaged {
+        Err(
+            "BYOK KMS credentials are not provisioned while a tenant has BYOK \
+             active, partial or shredded; refusing to boot without its keys"
+                .to_owned(),
+        )
+    } else {
+        Ok(())
     }
 }
 

@@ -631,5 +631,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unprovisioned_kms_boots_only_while_no_tenant_is_engaged() {
+        assert_eq!(unprovisioned_provider_boot(false), Ok(()));
+        let refused = unprovisioned_provider_boot(true).unwrap_err();
+        assert!(refused.contains("refusing to boot"), "{refused}");
+    }
+
+    #[test]
+    fn engagement_probe_covers_every_state_that_needs_keys() {
+        for state in [ByokState::Active, ByokState::Partial, ByokState::Shredded] {
+            let quoted = format!("'{}'", state.as_str());
+            assert!(
+                BYOK_ENGAGED_STATES_SQL.contains(&quoted),
+                "{quoted} must keep an unprovisioned boot refused"
+            );
+        }
+        for state in [ByokState::Inactive, ByokState::Pending] {
+            let quoted = format!("'{}'", state.as_str());
+            assert!(
+                !BYOK_ENGAGED_STATES_SQL.contains(&quoted),
+                "{quoted} is plaintext in every build and must not block boot"
+            );
+        }
+        assert!(BYOK_ENGAGED_STATES_SQL.contains("FROM tenant_byok_config"));
+        assert!(BYOK_ENGAGED_STATES_SQL.trim_start().starts_with("SELECT"));
+    }
+
+    #[test]
+    fn engagement_flag_accepts_only_an_exact_zero_or_one() {
+        assert_eq!(engaged_flag(Some(&json!(0))), Ok(false));
+        assert_eq!(engaged_flag(Some(&json!(1))), Ok(true));
+        for unreadable in [json!(2), json!(-1), json!("0"), json!(null), json!(0.5)] {
+            assert!(
+                engaged_flag(Some(&unreadable)).is_err(),
+                "{unreadable} must refuse boot, not read as \"no tenant engaged\""
+            );
+        }
+        assert!(engaged_flag(None).is_err());
+    }
+
     include!("part-02-tail.rs");
 }
