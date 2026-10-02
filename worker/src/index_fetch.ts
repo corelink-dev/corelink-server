@@ -20,12 +20,15 @@ let requestCounter = 0;
 export const baseHandler: ExportedHandler<Env> = {
   scheduled: runScheduled,
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const stagingD1Proof = await handleStagingD1HttpProof(request, env);
-    if (stagingD1Proof !== null) return stagingD1Proof;
+    // #2176: the gRPC deny and its two protected diagnostic exceptions run
+    // first. The staging D1 proof (#2853) runs after them, so it never sees a
+    // gRPC-shaped request and cannot select a Durable Object for one.
     const grpcTransportGate = rejectUnprovenGrpcTransport(request);
     if (grpcTransportGate !== null) return grpcTransportGate;
     const stagingGrpcResponse = await forwardStagingGrpcDiagnostic(request, env);
     if (stagingGrpcResponse !== null) return stagingGrpcResponse;
+    const stagingD1Proof = await handleStagingD1HttpProof(request, env);
+    if (stagingD1Proof !== null) return stagingD1Proof;
     const requestStart = Date.now();
     const requestId = resolveRequestId(request);
     requestCounter = (requestCounter + 1) | 0;

@@ -6,6 +6,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import verify_i2574_grpc_diagnostic_policy as policy
@@ -78,6 +79,62 @@ class PolicyTests(unittest.TestCase):
 
     def test_closed_world_and_self_alteration_fail(self) -> None:
         policy.self_test()
+
+    def test_reviewed_surface_is_a_base_state_not_a_transition(self) -> None:
+        # EXPECTED stays the historical delivery target the fixtures prove.
+        fixtures = Path(__file__).resolve().parents[1] / "tests/fixtures"
+        for name, pinned in policy.EXPECTED.items():
+            fixture = fixtures / "i2574_delivery_bytes" / name
+            if not fixture.exists():
+                fixture = fixtures / "i2574_old_base_bytes" / name
+            self.assertEqual(hashlib.sha256(fixture.read_bytes()).hexdigest(), pinned, name)
+        self.assertEqual(set(policy.REVIEWED_SURFACE), set(policy.EXPECTED))
+
+        delivered = {name: f"delivered {name}\n".encode() for name in policy.EXPECTED}
+        reviewed = {name: f"reviewed {name}\n".encode() for name in policy.EXPECTED}
+        expected = {name: hashlib.sha256(value).hexdigest() for name, value in delivered.items()}
+        surface = {name: (0o644, hashlib.sha256(value).hexdigest()) for name, value in reviewed.items()}
+
+        def tree(root: Path, surface_bytes: dict[str, bytes]) -> None:
+            for name in policy.POLICY | policy.POLICY_FIXTURES:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("protected")
+            for name, value in surface_bytes.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(value)
+            (root / ".github").mkdir(exist_ok=True)
+            (root / ".github/actionlint.yaml").symlink_to("../.actionlint.yaml")
+
+        moved = "worker/src/index_fetch.ts"
+        with patch.object(policy, "EXPECTED", expected), patch.object(policy, "REVIEWED_SURFACE", surface):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                for name, base_bytes, candidate_bytes, admitted in (
+                    ("reviewed base accepts itself", reviewed, reviewed, True),
+                    ("reviewed base refuses a downgrade to the delivery bytes",
+                     reviewed, {**reviewed, moved: delivered[moved]}, False),
+                    ("reviewed base refuses an unreviewed edit",
+                     reviewed, {**reviewed, moved: reviewed[moved] + b"edit\n"}, False),
+                    ("delivery base keeps its historical self-acceptance", delivered, delivered, True),
+                    ("delivery base cannot jump to the reviewed bytes",
+                     delivered, {**delivered, moved: reviewed[moved]}, False),
+                    ("partial reviewed base holds the historical bytes",
+                     {**reviewed, moved: delivered[moved]}, reviewed, False),
+                ):
+                    with self.subTest(name):
+                        base, candidate = root / name / "base", root / name / "candidate"
+                        tree(base, base_bytes)
+                        tree(candidate, candidate_bytes)
+                        if admitted:
+                            policy.validate(base, candidate)
+                        else:
+                            with self.assertRaisesRegex(policy.ContractError, "unexpected bytes"):
+                                policy.validate(base, candidate)
+            with patch.object(policy, "REVIEWED_SURFACE", {**surface, "worker/src/extra.ts": surface[moved]}):
+                with self.assertRaisesRegex(policy.ContractError, "reviewed #2574 surface"):
+                    policy.at_reviewed_surface(Path("/nonexistent"))
 
     def test_wallet_route_dispatch_loads_trusted_base_checker_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
