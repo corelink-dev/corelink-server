@@ -36,6 +36,30 @@ EXPECTED = {
     "worker/tests/grpc_staging_transport.test.ts": "ab3748063dda62d241c4c0cfdd482261514a2b8fd8a6f427d5ef4023c7fe4f96",
     "worker/src/lib/internal_auth.ts": "e773fa80db1ffd97ccdd20ae08e60e662482eea7e55bef6f19a3d61644b43acf",
 }
+# EXPECTED above is the historical #2574 delivery target; the delivery
+# fixtures still prove it. Main has since moved four of these paths. This is
+# the reviewed successor of the same twelve paths at main da2d3f8db, with
+# durable_object.ts re-reviewed at main 3891e88f5 after #2882, and
+# index_fetch.ts repaired by #2868 so the gRPC deny runs before the #2853
+# staging D1 proof handler (#2868; the causing PRs and the per-path review are
+# the REBASELINE_LEDGER rows in
+# verify_i2176_grpc_deny_gate.py). A BASE whose surface is exactly these bytes holds every
+# candidate to them: an ordinary candidate cannot move the surface, and cannot
+# downgrade it to EXPECTED. Any other BASE keeps the historical behavior.
+REVIEWED_SURFACE = {
+    "specs/03_architecture/issue-2176-grpc-transport-contract.md": (0o644, "351aa666c129c7dbc87db4f69f476f8bcdf522d0ba35223dca7eb507c8a926b3"),
+    "worker/src/grpc_transport_gate.ts": (0o644, "68b14c5537100733ff467d8beb80f3cadce07f9b3b5f43339ab323e8ca1cfcfd"),
+    "worker/src/grpc_staging_authorization.ts": (0o644, "6b8e2f6eb6cc42d0b0d7404950d068bab9da47c4bb1bb4c4fa0a0073c3f48400"),
+    "worker/src/grpc_staging_transport.ts": (0o644, "b3c0b471790ed7fd64138d99c0976b63c4fb620b0ce588f8c9852ea2de900f72"),
+    "worker/src/index_fetch.ts": (0o644, "dfaa633e712fdffd8276a7c75010672df690826be7b441999b4684e7e844c38f"),
+    "worker/src/index_env.ts": (0o644, "a6242775bc4a315db4fd8574f842498a54f2b63993e42ec178b50adb9a299daa"),
+    "worker/src/index_env_contract.ts": (0o644, "ec259cf4d4f4c6bab582375b88a449c3d5a3d8d53c7680afdcb8e7728710eb9d"),
+    "worker/src/durable_object.ts": (0o644, "f3dc2b18aa7f659c650c8c95394e8857ca01426bf1f2ba00a58c42d1a743caca"),
+    "worker/src/durable_object_probes.ts": (0o644, "3b1a67b3c6883d23dfd29bd0a8cf18de9e9c3848b4e79e1d3d04539944081f78"),
+    "worker/src/durable_object_start.ts": (0o644, "461bf03e2d3f3b5aafb7f9cc33fb4a83f1c278d80db562c10f26e5d0dbe77fcd"),
+    "worker/tests/grpc_staging_transport.test.ts": (0o644, "ab3748063dda62d241c4c0cfdd482261514a2b8fd8a6f427d5ef4023c7fe4f96"),
+    "worker/src/lib/internal_auth.ts": (0o644, "e773fa80db1ffd97ccdd20ae08e60e662482eea7e55bef6f19a3d61644b43acf"),
+}
 POLICY = {
     "docs/campaigns/remediation/wp150-workflow-ownership.md",
     "docs/internal/secrets-checklist.md",
@@ -466,6 +490,17 @@ def validate_wallet_route_transition(base: Path, candidate: Path) -> bool:
         raise ContractError(str(error)) from error
 
 
+def at_reviewed_surface(root: Path) -> bool:
+    """True only when every #2574 surface path holds its reviewed mode and bytes."""
+    if set(REVIEWED_SURFACE) != set(EXPECTED):
+        raise ContractError("reviewed #2574 surface does not cover exactly the delivery paths")
+    for name, (mode, pinned) in REVIEWED_SURFACE.items():
+        path = root / name
+        if path.is_symlink() or not path.is_file() or stat.S_IMODE(path.lstat().st_mode) != mode or digest(path) != pinned:
+            return False
+    return True
+
+
 def validate(base: Path, candidate: Path) -> None:
     require_regular_tree(base)
     require_regular_tree(candidate, base)
@@ -508,8 +543,11 @@ def validate(base: Path, candidate: Path) -> None:
             continue
         if (base / name).read_bytes() != (candidate / name).read_bytes():
             raise ContractError(f"policy self-alteration: {name}")
+    reviewed_base = at_reviewed_surface(base)
     for name, expected in EXPECTED.items():
         target = candidate / name
+        if reviewed_base:
+            expected = REVIEWED_SURFACE[name][1]
         if (native_transition or i1648_transition or b216_transition or i2568_transition) and name in {"worker/src/durable_object.ts", "worker/src/durable_object_start.ts"}:
             expected = STAGING_D1_PROXY_TARGETS[name][1]
         if i1678_transition and name in {"worker/src/durable_object.ts", "worker/src/durable_object_start.ts"}:

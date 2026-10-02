@@ -819,15 +819,25 @@ WAVE_GROUPS: dict[str, dict[Path, tuple[tuple[int, str] | None, tuple[int, str] 
         Path('scripts/verify_real_ignored_harnesses.py'): ((0o0644, "d2ec122fea6fcb6f7b7504ebe00dfcad32bf692c6e959141433ce59d7dc1eb6b"), (0o0644, "377bcacb98e7e936bc812babc781a1fc50e68c4da8760c0bf25910f1e16e283a")),
     },
 }
+# Reviewed snapshot of the transport control surface. First taken at d2f1
+# (#2786, c55d24560); re-baselined by #2868 to the exact bytes of main
+# da2d3f8db after every moved pin was reviewed, then re-checked against main
+# e845feb68, where #2876 had moved two #2565 successor paths and #2882/#2884
+# eight i1700 successor paths (all reviewed below), and against main
+# 3e7080062 and 0284fdf14, where #2885/#2886/#2870/#2887 moved no pinned path.
+# REBASELINE_LEDGER below holds one row per moved pin: the PRs that moved it,
+# its transport class, its disposition and the reason its bytes are admitted.
+# The path set and the all-or-nothing predicate are unchanged; only reviewed
+# digests changed.
 WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('.github/workflows/container-build-push-prod.yml'): (0o0644, "8ee0d29eff20ef5d473e4a712279a727fcdc6c881ba2bb46433f7659802f598f"),
     Path('.github/workflows/issue-2183-reapi-composition.yml'): (0o0644, "bb382d6898ce95fb690c62bfc50334e94889dbf371fa7a0871dd7bac5e24b431"),
     Path('.github/workflows/issue-2568-sla-credit-real.yml'): (0o0644, "1376e1b9eb4136ef1faba62abbe3e051bcf9c9df837351697e0b3048bac55390"),
     Path('.github/workflows/issue-2730-dsr-alert-receiver.yml'): (0o0644, "00ed5dab40391114b3a3a5bc299f98568e78c2dfcd14a05ccf5bac4276a6a235"),
-    Path('.github/workflows/staging-quarantine-apply.yml'): (0o0644, "24d901a61e2b45af71fc5ec0632455956690725f8f05f9959c0baf213deb1594"),
-    Path('Cargo.lock'): (0o0644, "e161aa27d6994badb497a9c881b99d9ee0255a4c2796b7f345e8a81c1bb9e707"),
+    Path('.github/workflows/staging-quarantine-apply.yml'): (0o0644, "574c37a78fbed91be485fddc98309e464521d99bfc3a5d05c269daa486d4130b"),
+    Path('Cargo.lock'): (0o0644, "02dd662ecdf7bcd6836c9ae18384b9f964c52dc739f63661de2d1a6e8b99929e"),
     Path('Cargo.toml'): (0o0644, "6012612bdd15b83e906f9a870049e137a9f2b947af1dd1105ee9aa6a460bfb0a"),
-    Path('Dockerfile'): (0o0644, "884f577834cfb8ef3c357afee884ac02f27c9c6031a139db04a0523fc07d5472"),
+    Path('Dockerfile'): (0o0644, "17fba21cc46ef543bd85fa90221ba4b84db1922486bd0c4f7e665c4250dfe212"),
     Path('crates/corelink-container/build.rs'): (0o0644, "b7d1b11510f0bf00a21f2f83a97a43389b0d288167f6b9c5516da57ffda9ce4d"),
     Path('crates/corelink-container/proto/staging_transport_probe.proto'): (0o0644, "b243732e58ba3ced040e9181befd4f3c2bd995e0b23eb750889c93629245970c"),
     Path('crates/corelink-container/src/grpc_staging_probe.rs'): (0o0644, "bab9a3dd5fea718e4e384e2fabe9145fadf9233bd9b41522c267ea02019d8e3d"),
@@ -835,47 +845,235 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('crates/corelink-container/src/main.rs'): (0o0644, "44c28a9a8387212b156ce05aa65918b0c34454453d7fcd85e79fd29f9a5518db"),
     Path('crates/corelink-container/src/reapi_composition.rs'): (0o0644, "57b3e2c730cf2f326b7f8bdb99df04b9423179524dc830805c3dbb8e62a5f337"),
     Path('crates/corelink-container/src/routes.rs'): (0o0644, "04a84d7be655fd25ee6d05d1b5c598c169be1aae381a255533ffeda0aad1ec2f"),
-    Path('crates/corelink-container/src/storage.rs'): (0o0644, "ee16e0155fae72ddfe01fedb4b7d29bff087467b2a23c42c830a42f3aeb9b78e"),
-    Path('crates/corelink-container/src/storage/d1_http.rs'): (0o0644, "258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5"),
-    Path('infra/staging/README.md'): (0o0644, "5f3daac1edba6320bcfc6663d57bece16a9c63b7977156c0fc3a3b562276a435"),
-    Path('infra/staging/topology.json'): (0o0644, "a55b4e72f63569b74539e9b42a8c0b34bd964f9213a5696b535fb2eb4ca24b14"),
-    Path('scripts/staging_bootstrap_provider.py'): (0o0644, "8a77837893f2bd094f1fd834042361e69375e1453ec1d4dde9c20c605d00ccdb"),
+    Path('crates/corelink-container/src/storage.rs'): (0o0644, "a21a64dc152eea27354de0b14627fd88213d20e1c43129315b4137eec49b711c"),
+    Path('crates/corelink-container/src/storage/d1_http.rs'): (0o0644, "60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d"),
+    Path('infra/staging/README.md'): (0o0644, "9a6b64adb090de17cc753fcb05c514998a14bccc487d4c66c5c6783c56aa1de6"),
+    Path('infra/staging/topology.json'): (0o0644, "4855688905257f05c174d0f02c71bc1a9ffb23c2506a6bd00531d7b655eecd52"),
+    Path('scripts/staging_bootstrap_provider.py'): (0o0644, "0861056f2377057909be7771ea7ee92cb90bc9c1839fc1cc6859a738b792ec80"),
     Path('scripts/verify_i2183_reapi_composition.py'): (0o0644, "532408187817e4ff508e9b2f5776e1646f7f304235ab697cf2e28fbab49a1b6c"),
-    Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "28023901b65dd1046af666fb26c8d862a389b94cafc11e3870a2794d869a6743"),
-    Path('scripts/verify_staging_provider_preflight.py'): (0o0644, "ddc9d57aa31cbee273dabc923b23a3ef33fb11b40bbd3b746ad7dcaca0633b62"),
+    Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "0191626216bec198d5b470d70e0cb1ee9c9260bccfc83c99a425b5a19c09bcc6"),
+    Path('scripts/verify_staging_provider_preflight.py'): (0o0644, "2eeb30c175611229aab6717e37c72e25ac425cabf2a348dc286d4a85ff33a7b8"),
     Path('scripts/verify_staging_topology_contract.py'): (0o0644, "48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9"),
     Path('specs/03_architecture/issue-2176-grpc-transport-contract.md'): (0o0644, "351aa666c129c7dbc87db4f69f476f8bcdf522d0ba35223dca7eb507c8a926b3"),
     Path('tests/test_issue_1700_route_inventory.py'): (0o0644, "a371d50bc84eafad075c9ad943cbe9ab5b90a53a4e1501d19a428d38873a5d4a"),
-    Path('tests/test_staging_bootstrap_provider.py'): (0o0644, "ec4633c038fd4ae1553464e00ba2ce6dfe79e10562f79243e0fb629d1d93e219"),
-    Path('tests/test_staging_custom_domain.py'): (0o0644, "cfc063496302c06c8bc879c380c7f24e13088fdf8f2a5412def3e6e60b115afc"),
-    Path('tests/test_staging_quarantine_apply_contract.py'): (0o0644, "b90d143271b96038ce2f51a23bc62b3be3fee546a231f003b9bcfbfb79a497bf"),
+    Path('tests/test_staging_bootstrap_provider.py'): (0o0644, "bad65b59188844c2b27a6ee9253d4b24c81f7b3e85e84c496408ca4480391468"),
+    Path('tests/test_staging_custom_domain.py'): (0o0644, "7fbbd59861b99a6b2ecdeb49bb726da48dde2323bc18004c4867c884edccf02f"),
+    Path('tests/test_staging_quarantine_apply_contract.py'): (0o0644, "cbd53025a72586932b89b268100f628da983e9c0718d254c4eaf14c94698e78f"),
     Path('worker/package.json'): (0o0644, "96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34"),
     Path('worker/src/durable_object_probes.ts'): (0o0644, "3b1a67b3c6883d23dfd29bd0a8cf18de9e9c3848b4e79e1d3d04539944081f78"),
-    Path('worker/src/durable_object_start.ts'): (0o0644, "7f8c28ac7b93628f4c4767efd1bb68bb75d2df9ea85442e92d9a6097c500ce4c"),
+    Path('worker/src/durable_object_start.ts'): (0o0644, "461bf03e2d3f3b5aafb7f9cc33fb4a83f1c278d80db562c10f26e5d0dbe77fcd"),
     Path('worker/src/grpc_staging_authorization.ts'): (0o0644, "6b8e2f6eb6cc42d0b0d7404950d068bab9da47c4bb1bb4c4fa0a0073c3f48400"),
     Path('worker/src/grpc_staging_transport.ts'): (0o0644, "b3c0b471790ed7fd64138d99c0976b63c4fb620b0ce588f8c9852ea2de900f72"),
     Path('worker/src/grpc_transport_gate.ts'): (0o0644, "68b14c5537100733ff467d8beb80f3cadce07f9b3b5f43339ab323e8ca1cfcfd"),
     Path('worker/src/index.ts'): (0o0644, "18b960a74833284f953bd28818cd7260798d9570c17bce459502f7b7ca50f3cd"),
     Path('worker/src/index_common.ts'): (0o0644, "dadbd05f00c855febed2266eb0ef308e2aaa80a909c4c8e463c400ed2d6bb4de"),
-    Path('worker/src/index_env.ts'): (0o0644, "ae733fad5467d839b0983f5b0df306fe8ad4c7bee68822e66e1d5b4f028886cf"),
+    Path('worker/src/index_env.ts'): (0o0644, "a6242775bc4a315db4fd8574f842498a54f2b63993e42ec178b50adb9a299daa"),
     Path('worker/src/index_env_contract.ts'): (0o0644, "ec259cf4d4f4c6bab582375b88a449c3d5a3d8d53c7680afdcb8e7728710eb9d"),
-    Path('worker/src/index_fetch.ts'): (0o0644, "d8619985ea28485792198c8f0e8607c108d82af66a76c0fbfc5253f2e2c3ab07"),
+    Path('worker/src/index_fetch.ts'): (0o0644, "dfaa633e712fdffd8276a7c75010672df690826be7b441999b4684e7e844c38f"),
     Path('worker/src/lib/devenv_cleanup_route.ts'): (0o0644, "e279cb99a585388fbf4483313a80c042df3c14bf1ca5ef52c31dc451e329907c"),
     Path('worker/src/lib/internal_auth.ts'): (0o0644, "e773fa80db1ffd97ccdd20ae08e60e662482eea7e55bef6f19a3d61644b43acf"),
     Path('worker/src/lib/runner_credential_routes.ts'): (0o0644, "6cd7af8c032dd8315c619f6830c3ef63df1a459152f197ca6a7faedf847b5731"),
     Path('worker/src/pat_issue_rate_limit.ts'): (0o0644, "ff4ca0814c40f128fed4650b2041660670bcc985037b975cb6f29b177d3c1afb"),
-    Path('worker/src/staging_d1_binding_proxy.ts'): (0o0644, "1e5d940b240a4bef9daba0e360758793ab7b11a165f5b1bc8ccb7eae658a348d"),
-    Path('worker/src/staging_d1_binding_proxy_entrypoint.ts'): (0o0644, "af759d84e63a2016737c899cfba045f52c1fcf20061678a3612ddeec6c18bdab"),
+    Path('worker/src/staging_d1_binding_proxy.ts'): (0o0644, "6c9dfdc830c4cfe765aee5175367da814e1675b91dfd703f18acd04468952df8"),
+    Path('worker/src/staging_d1_binding_proxy_entrypoint.ts'): (0o0644, "e22bd0624dbec27c32cfb0f9efa254121ecefe16e61ea481058f4fe7c4d6f558"),
     Path('worker/tests/cloudflare_workers_node_stub.ts'): (0o0644, "0237103e747517298fea07261598d250e25edff6f412cd1df33695c1585cfcf7"),
     Path('worker/tests/grpc_staging_transport.test.ts'): (0o0644, "ab3748063dda62d241c4c0cfdd482261514a2b8fd8a6f427d5ef4023c7fe4f96"),
-    Path('worker/tests/staging_d1_binding_proxy.test.ts'): (0o0644, "5710f974898de4c88a1ddca3f9815589d7c805faa4481f44d9005054d10796cc"),
-    Path('worker/tests/staging_d1_binding_start_gate.test.ts'): (0o0644, "2377e10e46528888f60f711820a931f8358d214ac53b8c822bfac9c2d9f2da66"),
+    Path('worker/tests/staging_d1_binding_proxy.test.ts'): (0o0644, "3928991ec958ba8b22d6758823df35519b2821bc9f09219b9deced0acd2e1ce8"),
+    Path('worker/tests/staging_d1_binding_start_gate.test.ts'): (0o0644, "b82ffeecb8b937d80ea9a696886bc2a57a844643c331f2d363a4182e5b333641"),
     Path('worker/tsconfig.json'): (0o0644, "98bfdb3e20a22fe1433a82c1cb04bd3522fa74445a61524a4f2a7263f01a93b3"),
     Path('worker/tsconfig.test.json'): (0o0644, "7dded910aa967755433a54655f915ba7cf35e271afce2d9f47dffa32ad6f3f79"),
     Path('worker/vitest.config.mts'): (0o0644, "e2c2f0e46d4a45d5e789f920f95b73ffd44e6a14a9450e11817426995feda506"),
     Path('worker/vitest.miniflare.config.mts'): (0o0644, "da43009c6edc93f9ca3b626e29371b84d5125de0645c10ba7f3b6bbf3751a12a"),
 }
-WAVE_MATRIX_SHA256 = "323917e9f4cb3c67ace170b59cd548034a7af1d17759f81ab5ccd9e300f9b8aa"
+WAVE_MATRIX_SHA256 = "06e13899bd841edcea335ed54989fdbd09e785e5f2a482cb206862c80d816475"
+# All four WAVE_GROUPS were delivered and then edited by later PRs, so main
+# matched neither their old nor their new pins and every BASE failed as
+# "partial". WAVE_GROUPS stays the historical old -> new record. These are the
+# reviewed successor bytes of the paths that moved after delivery (every other
+# path keeps its new pin), recorded in REBASELINE_LEDGER. A group in this
+# "successor" state is a BASE state only: no candidate may move a group into
+# or out of it, and old -> new remains the one admitted transition.
+WAVE_GROUP_SUCCESSOR_PINS: dict[str, dict[Path, tuple[int, str]]] = {
+    "i1652": {
+        Path('worker/src/index_schedule.ts'): (0o0644, "09978695620521d709692bbfc4b98fec450bf3a8465e20367caec52bdc626465"),
+    },
+    "i1648": {
+        Path('scripts/issue_1648_image_only.py'): (0o0644, "ae9e315d92b64018bd26835091af52b3c50e74e17dd9c66f8b23f79c6db3b914"),
+        Path('tests/test_issue_1648_image_only.py'): (0o0644, "f42867c94486c7ff0cc9ca9a1f2da0493edfb192d4bf05953bbe2f383b4e51e5"),
+    },
+    "i1700": {
+        Path('.github/workflows/campaign-ci.yml'): (0o0644, "07a90ec91a4ed3082c92e81ff7af804e4b61bac3d2eff5b07a2b72730f9dd078"),
+        Path('.github/workflows/issue-1700-container-staging-deploy.yml'): (0o0644, "cd3f98c5b0c9043c99639405b8a4edfd041c6583c5f0e74bf10469287dd6dde4"),
+        Path('crates/corelink-container/src/routes/staging_d1_binding_probe.rs'): (0o0644, "569e66f6604526d9008ddadee8087f69529ab4d3a13d5d28f72f7e744f2fa926"),
+        Path('crates/corelink-container/src/routes/staging_d1_probe_window.json'): (0o0644, "b9826ebd5774b729276a3a58eef4d913d8dd018ed54e88481c5513e54f217428"),
+        Path('docs/operator/issue-1700-runtime-recovery.md'): (0o0644, "177a5d673ae171a7485eb9d22213d0b6ff8bf333ec0c1e45d416fec2c8e2dc96"),
+        Path('scripts/issue_1700_rollback_quiescence.py'): (0o0644, "073d288875efb422bec71fe41369695451964a79887ae928a0c3e866e96adae6"),
+        Path('scripts/issue_1700_runtime_probe.mjs'): (0o0644, "0676f1db637cc1d545105498bea819294fbccfdd08a90b9b70c9bba2be305e2b"),
+        Path('scripts/tests/issue_1700_probe_process.test.mjs'): (0o0644, "967072d2bc64bd16ce04cd3a11fafe0c39c19ac2a53bd23272c856fc911beca8"),
+        Path('scripts/tests/issue_1700_runtime_probe.test.mjs'): (0o0644, "b1b6be0810d6c9b0ea587a16ed8bd3df3bf7d7f4d3615b5775e11190b22b480a"),
+        Path('tests/test_issue_1700_rollback_quiescence.py'): (0o0644, "99f24394c71993c22dec84dc03a8a3a24ee3e097514871a335d746c81aa75c3e"),
+        Path('worker/src/durable_object.ts'): (0o0644, "f3dc2b18aa7f659c650c8c95394e8857ca01426bf1f2ba00a58c42d1a743caca"),
+        Path('worker/src/staging_d1_probe_retirement.ts'): (0o0644, "554f99b143b80eb663884fb8d939adb2def05810699460faafb2ee12cbcea75c"),
+        Path('worker/src/staging_runtime_d1_probe.ts'): (0o0644, "953b4f58d23efb3a47aaf204f75de335c992bb21d3d605aed0ebee868e78dce7"),
+        Path('worker/tests/durable_object.test.ts'): (0o0644, "f7363e23aa2b490b198c37c186820e6f12da19ca2c1a40dd1be41e4f57565f6c"),
+        Path('worker/tests/staging_d1_probe_retirement.test.ts'): (0o0644, "d54b43921bcac3151160b16c03189674407420b455f16ee95e3556b92e518647"),
+        Path('worker/tests/staging_runtime_d1_probe.test.ts'): (0o0644, "bf0e3ac45f83de3a7bdf93aa2d8eaab9dd6a138292c6e80f74d520aa3a999e6c"),
+    },
+    "i2565": {
+        Path('.github/workflows/issue-1650-real-integration-contract.yml'): (0o0644, "3ba0d7c2848328c9351b16b8a9a36b91558fe8ddde19c8cd3080f8509ce2ca08"),
+        Path('.github/workflows/real-ignored-harnesses.yml'): (0o0644, "535f13cf806b8804202c0d416a0b789fc3392e97a9071bc83798cfbbbbf6bb40"),
+        Path('crates/corelink-stripe-real/src/client.rs'): (0o0644, "102d98e63f9d07c6a130736f9c3fbf049c82d286b640823b7a443922a52a45b7"),
+        Path('crates/corelink-stripe-real/tests/live_integration.rs'): (0o0644, "4667e8354afb20adea5eb18afe33fcadf77bee696e3e91b1f00eefcf7e200b11"),
+        Path('scripts/real-ignored-harness-manifest.json'): (0o0644, "5a6e9d445ff2734afe5805e0735aa5df27757e2a63604c6827349eca67aabe83"),
+        Path('scripts/run-real-ignored-harnesses.sh'): (0o0755, "017d51d6cd4537fe379f2d1f799046f3f2eee1d6259797b7cfdf9a6b105cb796"),
+        Path('scripts/verify_real_ignored_harnesses.py'): (0o0644, "34f1abfb2d0696c2fa06d9837bf5828c0fd24495a24f68548a234180eab4e05c"),
+    },
+}
+# Review record of the #2868 re-baseline, one row per moved pin (a control, the
+# P0 matrix, a group successor, or a #2574 REVIEWED_SURFACE path):
+#   prs         - every PR that moved the file after its previous reviewed
+#                 bytes, taken from main's first-parent history; for a path
+#                 pinned in two maps, after the older of its two previous pins.
+#   class       - "transport-reviewed" rows do at least one of three things:
+#                 (a) change code that runs on a request path into a deployed
+#                 CoreLink Worker or Container (a Fetch, WorkerEntrypoint or
+#                 Durable Object handler and the code it calls, the Container
+#                 image or entrypoint), including data that decides admission
+#                 on that path, such as the probe window; (b) change how a
+#                 credential reaches a deployed Worker or Container process,
+#                 including the authority that writes it there; or (c) touch
+#                 TLS or the gRPC deny. Each diff was read against the #2176
+#                 contract and adds no gRPC admission. A credential row's
+#                 reason starts "Credential flow." and names Source,
+#                 Destination, Scope and Guards; a probe-path row's starts
+#                 "Probe path." and names Path, Effect and Guards.
+#                 "not-transport" rows do none of (a)-(c). A credential that
+#                 reaches only a CI, test or operator process, or only the
+#                 Cloudflare API, is not-transport, and its reason says so.
+#   disposition - every pin map re-pinned to the reviewed bytes. Only
+#                 index_fetch.ts was repaired first (#2868 puts the gRPC deny
+#                 back ahead of the #2853 proof handler); no row adds a gRPC
+#                 admission.
+#   reason      - what the reviewed change does and why its bytes are admitted.
+# The verifier never reads this table. The unit tests require its keys to
+# equal the moved pins exactly, and each disposition to name exactly the maps
+# whose pin moved for that path.
+REBASELINE_LEDGER: dict[Path, tuple[str, str, tuple[str, ...], str]] = {
+    Path(".github/workflows/campaign-ci.yml"): ("#2798, #2799, #2811, #2812, #2825, #2834, #2844, #2852, #2853, #2858, #2862, #2868", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Dispatch-only CI suites; #2868 updates its two #2574 checker digests."),
+    Path(".github/workflows/issue-1650-real-integration-contract.yml"): ("#2811, #2876", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Credentialless contract CI for scoped R2 credentials; #2876 adds infra/staging/topology.json to its PR path filter."),
+    Path(".github/workflows/issue-1700-container-staging-deploy.yml"): ("#2806, #2812, #2825, #2844, #2853, #2882, #2884", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), (
+        "Credential flow. Source: the CF_API_TOKEN Actions secret (#2884; before it STAGING_CF_WORKER_API_TOKEN), and a 32-byte key "
+        "that the #2853 bootstrap broker (issue_1700_http_bootstrap.mjs) generates in RAM. Destination: the token goes only to "
+        "api.cloudflare.com (wrangler deploy of corelink-staging, the broker's script calls, schedule/tail/Container reads), never into "
+        "Worker or Container env; the broker PUTs the key as the corelink-staging secret CORELINK_ADMIN_AUTH_KEY and enables the "
+        "workers.dev subdomain with previews off, and the probe sends the key only as x-corelink-internal-auth to the proof literal. "
+        "Scope: account 6a1fc1c6, script corelink-staging; the broker accepts five script paths plus versions/<uuid>. #2884 names the "
+        "token the repository deploy token; its provider-side grant is write-only and was not read (UNVERIFIED), so the bound is this "
+        "use, not the grant. Guards: protected main, workflow_dispatch with confirm deploy-container-staging-1700, the staging "
+        "environment, token != the route-read token, exact preimage deployment and version, refusal if the secret already exists, a "
+        "45-minute broker lifetime, and cleanup that restores the disabled subdomain and deletes the secret with binding readback. The "
+        "DO gives the proof Container an empty CORELINK_ADMIN_AUTH_KEY. #2882 prints one redacted bootstrap failure line."
+    )),
+    Path(".github/workflows/real-ignored-harnesses.yml"): ("#2800, #2811", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), (
+        "Dispatch-only harness lanes in the protected real-integration environment on ubuntu-24.04. Its credentials reach only CI "
+        "processes: #2811 hands CF_API_TOKEN and the parent R2 access-key ID to issue_2564_r2_temp_credentials.py, which mints one "
+        "bucket-scoped temporary trio for a cargo-test process; the parent R2 secret key is never passed. No deployed Worker or "
+        "Container receives any of them, so (b) does not apply."
+    )),
+    Path(".github/workflows/staging-quarantine-apply.yml"): ("#2816", "transport-reviewed", ("WAVE_BASE_CONTROLS",), (
+        "Credential flow. Source: the staging-environment secrets STAGING_DSR_DLQ_ALERT_ENDPOINT and STAGING_DSR_DLQ_ALERT_AUTH_TOKEN, "
+        "expanded only when the enable_b216_dsr_alert input is true (#2816). Destination: staging_bootstrap_provider.py "
+        "update-existing-apply, which writes them as corelink-signup-staging secrets. Scope: the signup Worker only; corelink-staging "
+        "(the #2176 Worker) gains no secret name. Guards: protected main and staging environment, a distinct confirm phrase for the "
+        "opt-in, an exact successful b216-receiver-deploy-nonprod.yml readback run on the same SHA and its artifact, the receipt "
+        "SHA-256, and an owner acknowledgement comment on #1678."
+    )),
+    Path("Cargo.lock"): ("#2830, #2842, #2843, #2847, #2851", "not-transport", ("WAVE_BASE_CONTROLS",), "Only corelink-cli 0.1.2 -> 0.1.7; no corelink-server dependency moved."),
+    Path("Dockerfile"): ("#2858", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Runtime base stage adds a staging-only PID-1 supervisor script; the final stage keeps USER corelink, PORT and EXPOSE 50051 and ENTRYPOINT corelink-server."),
+    Path("crates/corelink-container/src/routes/staging_d1_binding_probe.rs"): ("#2795, #2801, #2812, #2819, #2825, #2844, #2853, #2858, #2865, #2881, #2882", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Probe windows move (#2882: test constants only); the route now also requires the validated lifetime env and returns 404 without it. Only the DO reaches it; DO fetch 404s the path."),
+    Path("crates/corelink-container/src/routes/staging_d1_probe_window.json"): ("#2795, #2801, #2812, #2819, #2825, #2844, #2853, #2858, #2865, #2881, #2882", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), (
+        "Probe path. Path: the authenticated HTTP proof, index_fetch.ts -> staging_d1_http.ts (after the gRPC deny since #2868) -> DO "
+        "executeStagingD1HttpProof -> runStagingD1HttpSequence -> proof Container route staging_d1_binding_probe.rs. The handler, the "
+        "DO, the sequence and the route (through include_str!) read this file and admit only inside it. Effect: from the reviewed v3 pin (2026-09-30 "
+        "00:00-12:00Z) through v5..v15 it gains last_entry_ms. Now a POST is admitted only when the time and its 2-minute slot lie in "
+        "2026-10-02 18:00-20:00Z and the body names nonce v15, which is also the DO-name prefix. The lifetime must end by expires_ms "
+        "(21:15Z), and the Container's execute/kill deadlines are capped at it. Outside the entry window the POST gets 400, and the "
+        "retirement DROPs refuse outside starts_ms..expires_ms. Guards: unchanged by the window; staging only, the exact workers.dev "
+        "origin and path, the dedicated CORELINK_ADMIN_AUTH_KEY "
+        "(constant-time compare, 503 when unset, deleted by the deploy broker at cleanup), a one-shot durable claim, an armed lifetime "
+        "alarm, and validated deadline env for the Container. Since #2853 the cron string selects a branch that cannot admit. Any "
+        "later window move changes this pin."
+    )),
+    Path("crates/corelink-container/src/storage.rs"): ("#2811", "transport-reviewed", ("WAVE_BASE_CONTROLS",), (
+        "Credential flow. Source: the optional R2_S3_SESSION_TOKEN env var of the Container process, trimmed; absent, empty or "
+        "whitespace-only means none. Destination: the SigV4 Credentials of the outbound R2 S3 client (r2_s3_parts/client_impl.rs); "
+        "no route, listener or inbound auth reads it. Scope: outbound R2 only; the static access-key ID and secret stay required. "
+        "Guards: the DO forwards an explicit env allowlist (durable_object_start.ts) that omits R2_S3_SESSION_TOKEN, so a deployed "
+        "Container always gets none and signs with static keys; only the #2564 CI harness sets it, in a cargo-test process; Debug "
+        "and Display print [REDACTED]."
+    )),
+    Path("crates/corelink-container/src/storage/d1_http.rs"): ("#2811", "not-transport", ("WAVE_BASE_CONTROLS",), "Test struct literals gain r2_session_token: None."),
+    Path("crates/corelink-stripe-real/src/client.rs"): ("#2792", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Outbound Stripe test client uses the deployed wallet proxy route."),
+    Path("crates/corelink-stripe-real/tests/live_integration.rs"): ("#2792", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Exactly the 11-literal wallet route transform (WALLET_ROUTE_TRANSFORMED_LIVE_SHA256)."),
+    Path("docs/internal/secrets-checklist.md"): ("#2793, #2816, #2850, #2853, #2856, #2858", "not-transport", ("WAVE_MATRIX_SHA256",), "Secret inventory rows; row 315 and the three B072 names still appear exactly once."),
+    Path("docs/operator/issue-1700-runtime-recovery.md"): ("#2795, #2801, #2806, #2812, #2819, #2825, #2844", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Operator runbook."),
+    Path("infra/staging/README.md"): ("#2846, #2850, #2853", "not-transport", ("WAVE_BASE_CONTROLS",), "Operator documentation."),
+    Path("infra/staging/topology.json"): ("#2846", "not-transport", ("WAVE_BASE_CONTROLS",), "validated_inputs.runner_label corelink -> ubuntu-24.04."),
+    Path("scripts/issue_1648_image_only.py"): ("#2802", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1648]",), "Image rollout sequencing in a CI operator script."),
+    Path("scripts/issue_1700_rollback_quiescence.py"): ("#2853, #2858, #2865, #2881, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Operator rollback check for the moved probe windows; #2882 also requires an empty broker failure record. Its WORKER_API_TOKEN bearer goes only to api.cloudflare.com schedule/tail reads."),
+    Path("scripts/issue_1700_runtime_probe.mjs"): ("#2801, #2806, #2812, #2819, #2825, #2834, #2844, #2858, #2865, #2881, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Outbound operator probe client; its bearer goes only to api.cloudflare.com, never into the Worker or Container."),
+    Path("scripts/real-ignored-harness-manifest.json"): ("#2811", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Harness manifest: the R2 profile now lists R2_S3_SESSION_TOKEN. Its consumer is a CI cargo-test process, not a deployed Worker or Container."),
+    Path("scripts/run-real-ignored-harnesses.sh"): ("#2811", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Harness runner: the R2 preflight also requires R2_S3_SESSION_TOKEN before cargo test. CI process only; no deployed Worker or Container receives it."),
+    Path("scripts/staging_bootstrap_provider.py"): ("#2816, #2869", "transport-reviewed", ("WAVE_BASE_CONTROLS",), (
+        "Credential flow. Source: STAGING_DSR_DLQ_ALERT_ENDPOINT and STAGING_DSR_DLQ_ALERT_AUTH_TOKEN from the workflow env, read only "
+        "under --enable-b216-dsr-alert (#2816); the writer is the existing STAGING_CF_WORKER_API_TOKEN. Destination: the "
+        "corelink-signup-staging secrets DSR_DLQ_ALERT_ENDPOINT and DSR_DLQ_ALERT_AUTH_TOKEN, the signup Worker's outbound alert "
+        "bearer. The same functions compute the secret set of corelink-staging, the #2176 Worker, which gains no name and now refuses "
+        "the B-216 pair. #2869 adds a read-only, name-only preflight plan. Scope: the signup Worker only, both names or neither, never "
+        "overwriting a bound secret. Guards: the explicit opt-in, a receiver readback receipt that is at most 30 minutes old with a "
+        "matching SHA-256 and route-pattern digest, an owner acknowledgement on #1678, an HTTPS root endpoint on a lowercase DNS host "
+        "that is not an IP or workers.dev, and versioned rollback receipts."
+    )),
+    Path("scripts/tests/issue_1700_probe_process.test.mjs"): ("#2801, #2812, #2844", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),
+    Path("scripts/tests/issue_1700_runtime_probe.test.mjs"): ("#2795, #2801, #2806, #2812, #2819, #2825, #2834, #2844, #2853, #2858, #2865, #2881, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),
+    Path("scripts/verify_i2574_grpc_diagnostic_policy.py"): ("#2868", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Adds REVIEWED_SURFACE as a BASE state; EXPECTED and every transition map unchanged."),
+    Path("scripts/verify_real_ignored_harnesses.py"): ("#2792, #2800, #2811, #2876", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "B068 verifier: exact route transform (294ea6c1), R2 lane edits, then #2876's reviewed #2846 topology state; still pins the transformed live digest exactly once."),
+    Path("scripts/verify_staging_provider_preflight.py"): ("#2816, #2869", "not-transport", ("WAVE_BASE_CONTROLS",), "Preflight checker for the provisioning plan."),
+    Path("tests/test_issue_1648_image_only.py"): ("#2802", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1648]",), "Tests."),
+    Path("tests/test_issue_1700_rollback_quiescence.py"): ("#2853, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),
+    Path("tests/test_staging_bootstrap_provider.py"): ("#2816, #2869", "not-transport", ("WAVE_BASE_CONTROLS",), "Tests."),
+    Path("tests/test_staging_custom_domain.py"): ("#2848", "not-transport", ("WAVE_BASE_CONTROLS",), "Test redacts staging CLI stdout."),
+    Path("tests/test_staging_quarantine_apply_contract.py"): ("#2816, #2846, #2869", "not-transport", ("WAVE_BASE_CONTROLS",), "Tests."),
+    Path("worker/src/durable_object.ts"): ("#2749, #2773, #2788, #2812, #2844, #2853, #2858, #2865, #2881, #2882", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]", "REVIEWED_SURFACE"), "From #2574 EXPECTED, #2749/#2773/#2788 reach states already pinned (#1700 D1-proxy target, i1700 old/new). Since then fetch() only adds early 404/410 denials before the unchanged handler; the new HTTP-proof RPCs reach Container /_health and the probe path, never the gRPC forwarder. #2882 adds the v14/v15 nonces to the scheduled-admission refusal list."),
+    Path("worker/src/durable_object_start.ts"): ("#2749, #2853, #2858", "transport-reviewed", ("WAVE_BASE_CONTROLS", "REVIEWED_SURFACE"), "From #2574 EXPECTED, #2749 is the already-pinned #1700 D1-proxy target. Then: supervisor entrypoint only with a validated staging deadline; port 50051 unchanged; the proof Container gets an empty CORELINK_ADMIN_AUTH_KEY and no DPA_ACCEPT_IP_HASH_SALT."),
+    Path("worker/src/index_env.ts"): ("#2853", "not-transport", ("WAVE_BASE_CONTROLS", "REVIEWED_SURFACE"), "Adds the optional DPA_ACCEPT_IP_HASH_SALT type field only."),
+    Path("worker/src/index_fetch.ts"): ("#2853, #2868", "transport-reviewed", ("WAVE_BASE_CONTROLS", "REVIEWED_SURFACE"), "#2853 ran the staging D1 proof handler before the gRPC deny, which broke the contract: an authenticated gRPC-shaped GET to the proof literal reached its Durable Object and read the proof status, a gRPC POST got 400 and gRPC on *.workers.dev got 404. #2868 restores the deny and the diagnostic forward as the first two Fetch steps; the proof handler runs after them, sees only non-gRPC requests and answers them as before (staging only, admin auth, JSON, never proxies)."),
+    Path("worker/src/index_schedule.ts"): ("#2812, #2844, #2853", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1652]",), "Scheduled (cron) handler, not a request path. Since #2853 its probe branch only reads a persisted receipt through a read-only DO RPC; it can no longer admit, retire or start a Container (that moved behind the authenticated HTTP proof)."),
+    Path("worker/src/staging_d1_binding_proxy.ts"): ("#2858", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Loopback D1 service binding gains deadline checks that only return 502; parsing and D1 calls unchanged."),
+    Path("worker/src/staging_d1_binding_proxy_entrypoint.ts"): ("#2858", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Empty props keep the old path; a validated deadline is passed through; anything else returns 502."),
+    Path("worker/src/staging_d1_probe_retirement.ts"): ("#2801, #2812, #2844, #2853", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), (
+        "Probe path. Path: the same authenticated HTTP proof; runStagingD1HttpSequence calls assertV4FailedProbeCatalogAbsent, and "
+        "the DO retire RPCs it calls run cleanOldProbeTables and cleanV5ProbeTables. Effect: reads the D1 catalog and drops only the "
+        "fixed-prefix probe tables of two named old releases through the DO's CONFIG_DB binding, after validating every object and "
+        "row; any mismatch aborts the proof. No handler, header, credential, Container call or gRPC path. Guards: reached only after "
+        "the DO's durable claim, inside the lifecycle deadlines, and each DROP refuses outside starts_ms..expires_ms of the probe window."
+    )),
+    Path("worker/src/staging_runtime_d1_probe.ts"): ("#2801, #2812, #2844, #2853", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), (
+        "Probe path. Path: index_fetch.ts -> handleStagingD1HttpProof, which runs after the gRPC deny (#2868) and imports this module's probe "
+        "path literal and DO-name prefix -> DO executeStagingD1HttpProof -> runStagingD1HttpSequence (#2853) -> v8/v9 cleanup and "
+        "old/v5 retirement RPCs on fixed-name DOs -> the local admit and run, which start the proof Container and call its probe "
+        "route. Effect: the listed PRs add the v5/v8/v9 cleanup and retirement steps, the admission record and (#2853) this HTTP "
+        "sequence; the cron reader (readStagingD1BindingRuntimeProbeReceipt) is read-only. No fetch handler, header, credential or "
+        "gRPC path is added. Guards: the sequence is entered only after the DO's one-shot durable claim and armed lifetime alarm, "
+        "every step runs inside StagingD1HttpLifecycle deadlines, and the native receipt must match exact keys, release, nonce and a "
+        "2-minute slot inside the probe window; the admin auth and staging checks of the handler are unchanged."
+    )),
+    Path("worker/tests/durable_object.test.ts"): ("#2812, #2844, #2853, #2858", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),
+    Path("worker/tests/staging_d1_binding_proxy.test.ts"): ("#2858", "not-transport", ("WAVE_BASE_CONTROLS",), "Tests."),
+    Path("worker/tests/staging_d1_binding_start_gate.test.ts"): ("#2853, #2858", "not-transport", ("WAVE_BASE_CONTROLS",), "Tests."),
+    Path("worker/tests/staging_d1_probe_retirement.test.ts"): ("#2795, #2801, #2812, #2844, #2853", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),
+    Path("worker/tests/staging_runtime_d1_probe.test.ts"): ("#2795, #2801, #2812, #2819, #2825, #2844, #2853", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),
+}
 WAVE_CONTROLLED_PATHS = frozenset((
     Path("scripts/verify_i2176_grpc_deny_gate.py"),
     Path("tests/test_verify_i2176_grpc_deny_gate.py"),
@@ -901,7 +1099,7 @@ def _wave_controls_match(root: Path) -> bool:
 
 def _wave_common_controls_equal(candidate: Path, trusted_base: Path) -> None:
     if not _wave_controls_match(trusted_base) or not _wave_controls_match(candidate):
-        raise ContractError("actual d2f1 transport controls or P0 secrets matrix drift")
+        raise ContractError("reviewed transport control snapshot or P0 secrets matrix drift")
     for relative in WAVE_CONTROLLED_PATHS:
         require_regular_mode(trusted_base, relative)
         require_regular_mode(candidate, relative)
@@ -976,13 +1174,43 @@ def _wallet_route_expected_verifier(base: Path, accepted_live: bytes) -> bytes:
     accepted = hashlib.sha256(accepted_live).hexdigest().encode("ascii")
     expected = source[:start] + accepted + source[end:]
     expected_sha = hashlib.sha256(expected).hexdigest()
-    allowed = (
+    allowed = [
         WAVE_GROUPS["i2565"][WALLET_ROUTE_VERIFIER_PATH][1][1],
         WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256,
-    )
+    ]
+    # The reviewed successor keeps the transformed live digest (#2800, #2811).
+    successor = WAVE_GROUP_SUCCESSOR_PINS.get("i2565", {}).get(WALLET_ROUTE_VERIFIER_PATH)
+    if successor is not None:
+        allowed.append(successor[1])
     if expected_sha not in allowed:
         raise ContractError("trusted B068 verifier is not the frozen BASE or exact route transform")
     return expected
+
+
+def _i2565_endpoint_pins(state: str) -> dict[Path, tuple[int, str] | None]:
+    """#2565 paths outside the wallet route, at the delivered or successor state."""
+    if state == "new":
+        pins = {path: new for path, (_old, new) in WAVE_GROUPS["i2565"].items()}
+    elif state == "successor":
+        successor = _wave_group_successor_pins("i2565")
+        if successor is None:
+            raise ContractError("#2565 has no reviewed successor state")
+        pins = successor
+    else:
+        raise ContractError(f"unknown #2565 endpoint state: {state}")
+    return {path: pin for path, pin in pins.items() if path not in WALLET_ROUTE_PATHS}
+
+
+def _i2565_endpoint_state(root: Path) -> str:
+    drift: list[str] = []
+    for state in ["new"] + (["successor"] if "i2565" in WAVE_GROUP_SUCCESSOR_PINS else []):
+        drift = sorted(
+            str(path) for path, pin in _i2565_endpoint_pins(state).items()
+            if not _wave_pin_matches(root, path, pin)
+        )
+        if not drift:
+            return state
+    raise ContractError(f"trusted #2565 endpoint drift: {drift}")
 
 
 def _wallet_route_base_states(trusted_base: Path) -> dict[str, str]:
@@ -1001,14 +1229,10 @@ def _wallet_route_base_states(trusted_base: Path) -> dict[str, str]:
     actual_verifier = (trusted_base / WALLET_ROUTE_VERIFIER_PATH).read_bytes()
     if actual_verifier != verifier:
         raise ContractError("trusted B068 verifier is not paired with its wallet live harness")
-    for relative, (_old, new) in WAVE_GROUPS["i2565"].items():
-        if relative in WALLET_ROUTE_PATHS or relative == Path("crates/corelink-stripe-real/src/client.rs"):
-            continue
-        if not _wave_pin_matches(trusted_base, relative, new):
-            raise ContractError(f"trusted #2565 endpoint drift: {relative}")
+    endpoint_state = _i2565_endpoint_state(trusted_base)
     for relative in WALLET_ROUTE_PATHS:
         require_regular_mode(trusted_base, relative)
-    states["i2565"] = "new"
+    states["i2565"] = endpoint_state
     return states
 
 
@@ -1017,7 +1241,7 @@ def validate_wallet_route_candidate(
 ) -> bool:
     """Validate the one protected wallet-route transition from consumed #2565."""
     states = _wallet_route_base_states(trusted_base)
-    if states.get("i2565") != "new":
+    if states.get("i2565") not in ("new", "successor"):
         raise ContractError("wallet route requires the consumed #2565 trusted BASE")
     if changes is None:
         changes = changed_paths(trusted_base, candidate)
@@ -1029,10 +1253,10 @@ def validate_wallet_route_candidate(
             continue
         if _wave_group_state(candidate, name) != state:
             raise ContractError(f"wallet route changes another delivery wave: {name}")
-    for relative, (_old, new) in WAVE_GROUPS["i2565"].items():
-        if relative not in WALLET_ROUTE_PATHS and not _wave_pin_matches(trusted_base, relative, new):
+    for relative, pin in _i2565_endpoint_pins(states["i2565"]).items():
+        if not _wave_pin_matches(trusted_base, relative, pin):
             raise ContractError(f"trusted #2565 endpoint drift: {relative}")
-        if relative not in WALLET_ROUTE_PATHS and not _wave_pin_matches(candidate, relative, new):
+        if not _wave_pin_matches(candidate, relative, pin):
             raise ContractError(f"wallet route changes a #2565 control: {relative}")
     for relative in WALLET_ROUTE_PATHS:
         require_regular_mode(trusted_base, relative)
@@ -1050,18 +1274,38 @@ def validate_wallet_route_candidate(
     return True
 
 
+def _wave_group_successor_pins(group: str) -> dict[Path, tuple[int, str] | None] | None:
+    """The complete reviewed successor state of a group, or None if it has none."""
+    successors = WAVE_GROUP_SUCCESSOR_PINS.get(group)
+    if successors is None:
+        return None
+    pins = WAVE_GROUPS[group]
+    if not successors or not set(successors) <= set(pins):
+        raise ContractError(f"reviewed successor pins are empty or outside delivery group: {group}")
+    if any(pins[path][1] == pin for path, pin in successors.items()):
+        raise ContractError(f"reviewed successor pin repeats the delivered pin: {group}")
+    return {path: successors.get(path, new_pin) for path, (_old_pin, new_pin) in pins.items()}
+
+
 def _wave_group_state(root: Path, group: str) -> str:
     pins = WAVE_GROUPS[group]
-    old = all(_wave_pin_matches(root, path, old_pin) for path, (old_pin, _new_pin) in pins.items())
-    new = all(_wave_pin_matches(root, path, new_pin) for path, (_old_pin, new_pin) in pins.items())
-    if old == new:
+    states = {
+        "old": all(_wave_pin_matches(root, path, old_pin) for path, (old_pin, _new_pin) in pins.items()),
+        "new": all(_wave_pin_matches(root, path, new_pin) for path, (_old_pin, new_pin) in pins.items()),
+    }
+    successor = _wave_group_successor_pins(group)
+    if successor is not None:
+        states["successor"] = all(_wave_pin_matches(root, path, pin) for path, pin in successor.items())
+    matched = [state for state, matches in states.items() if matches]
+    if len(matched) != 1:
         raise ContractError(f"unknown or partial trusted BASE delivery state: {group}")
-    return "old" if old else "new"
+    return matched[0]
 
 def validate_wave(candidate: Path, trusted_base: Path, changes: set[Path]) -> bool:
-    # Accept only the actual d2f1 control surface plus four complete old/new groups.
+    # Accept only the reviewed control snapshot plus four groups that each sit
+    # exactly at old, new or their reviewed successor; only old -> new moves.
     if not _wave_controls_match(trusted_base):
-        raise ContractError("trusted BASE transport controls do not match actual d2f1 snapshot")
+        raise ContractError("trusted BASE transport controls do not match the reviewed snapshot")
     route_base = None
     has_route_sentinels = (trusted_base / WALLET_ROUTE_LIVE_PATH).is_file() and (
         trusted_base / WALLET_ROUTE_VERIFIER_PATH
