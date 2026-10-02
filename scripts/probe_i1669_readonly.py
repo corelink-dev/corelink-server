@@ -6,9 +6,11 @@ The lane has no SQL input.  It sends only the three aggregate statements in
 redacted receipt containing counts and SHA-256 bindings.  It never performs a
 backfill or changes D1, DSR, or audit data.
 
-Exit status: 0 when the full non-empty population is provably satisfied; 1
-when a known mismatch or unevaluable row is found; 2 when evidence is absent,
-empty, partial, or malformed.
+Exit status: 0 when the full non-empty population is provably satisfied
+(``COMPLIANT``) or its only non-satisfied rows are erased lineage under the
+#1669 policy B documented exception (``DOCUMENTED_EXCEPTION``; the receipt
+status names which); 1 when a known mismatch or unevaluable row is found; 2
+when evidence is absent, empty, partial, or malformed.
 """
 
 from __future__ import annotations
@@ -242,7 +244,7 @@ def run(account_id: str, database_id: str, token: str, output: Path) -> int:
             raise ProbeError("backfill completeness does not reconcile with residency")
         receipt.update({"status": state, "reason": reason})
         _write(output, receipt)
-        return 0 if state == "COMPLIANT" else 1
+        return 0 if state in RESIDENCY.PASSING_STATES else 1
     except (ProbeError, RESIDENCY.Indeterminate) as exc:
         receipt.update({"status": "INDETERMINATE", "reason": str(exc)})
         _write(output, receipt)

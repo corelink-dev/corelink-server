@@ -83,6 +83,7 @@ def sql_counts(
     *,
     include_mismatch: bool = False,
     include_orphan: bool = False,
+    include_unexplained: bool = False,
     malformed_region: bool = False,
     public_region: str | None = None,
     public_event: str = "public.revoke",
@@ -107,6 +108,8 @@ def sql_counts(
         connection.execute("INSERT INTO audit_outbox (tenant_id, region) VALUES ('tenant-w', 'enam')")
     if include_orphan:
         connection.execute("INSERT INTO audit_outbox (tenant_id, region) VALUES ('erased-tenant', 'weur')")
+    if include_unexplained:
+        connection.execute("INSERT INTO audit_outbox (tenant_id, region) VALUES ('unexplained-tenant', 'apac')")
     if malformed_region:
         connection.execute("INSERT INTO audit_outbox (tenant_id, region) VALUES ('tenant-e', 'unknown-region')")
     if public_region is not None:
@@ -198,18 +201,138 @@ def test_sql_classifies_unknown_region_as_unevaluable_not_satisfied() -> None:
     assert counts["unevaluable_rows"] == 1
 
 
-def test_retained_dsr_orphan_is_unevaluable_and_fails() -> None:
-    # The erased row remains RETAIN evidence, but must not be collapsed to pass.
-    payload = response(
-        satisfied_rows=9,
-        unevaluable_rows=1,
-        customer_unevaluable_rows=1,
-        orphan_rows=1,
-        orphan_tenants=1,
-        erased_orphan_rows=1,
-        erased_orphan_tenants=1,
-    )
-    assert assess(payload)[0] == "FAILED"
+ERASED_ONLY = dict(
+    satisfied_rows=9,
+    unevaluable_rows=1,
+    customer_unevaluable_rows=1,
+    orphan_rows=1,
+    orphan_tenants=1,
+    erased_orphan_rows=1,
+    erased_orphan_tenants=1,
+)
+
+
+def test_retained_dsr_orphan_is_a_documented_exception_never_compliant() -> None:
+    # #1669 policy B (owner decision 2026-10-01): a DSR-erased orphan is retained
+    # Art. 5(2) evidence in its own erased-lineage state. It is not unevaluable,
+    # not non-compliant, and never satisfied or COMPLIANT.
+    counts = verifier.parse_d1_response(response(**ERASED_ONLY))
+    state, reason = verifier.assess(counts, environment="production")
+    assert state == "DOCUMENTED_EXCEPTION"
+    assert state != "COMPLIANT"
+    assert "policy B" in reason
+    assert verifier.partition(counts) == {
+        "satisfied": 9,
+        "violated": 0,
+        "erased_lineage_exception": 1,
+        "unevaluable": 0,
+        "reserved_public": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("extra", "failing_state"),
+    [
+        # One unexplained orphan beside the erased one: the exception must not
+        # absorb it (it is an orphan WITHOUT a dsr_erasure_log row).
+        (dict(satisfied_rows=8, unevaluable_rows=2, customer_unevaluable_rows=2, orphan_rows=2,
+              orphan_tenants=2, unexplained_orphan_rows=1, unexplained_orphan_tenants=1), "unevaluable"),
+        # A non-orphan unevaluable customer row (unknown region).
+        (dict(satisfied_rows=8, unevaluable_rows=2, customer_unevaluable_rows=2), "unevaluable"),
+        # A known cross-region violation.
+        (dict(satisfied_rows=8, violated_rows=1), "violated"),
+        # An invalid _public row.
+        (dict(total_rows=11, public_rows=1, invalid_public_rows=1, unevaluable_rows=2), "unevaluable"),
+    ],
+)
+def test_erased_lineage_exception_does_not_absorb_any_other_failing_row(extra: dict, failing_state: str) -> None:
+    counts = verifier.parse_d1_response(response(**{**ERASED_ONLY, **extra}))
+    state, reason = verifier.assess(counts, environment="production")
+    assert state == "FAILED"
+    assert reason == verifier.FAILED_REASON
+    states = verifier.partition(counts)
+    assert states["erased_lineage_exception"] == 1
+    assert states[failing_state] == 1
+
+
+def test_sql_erased_orphan_end_to_end_is_documented_exception() -> None:
+    counts = verifier.Counts(**sql_counts(include_orphan=True))
+    assert counts.unevaluable_rows == counts.erased_orphan_rows == 1
+    assert verifier.assess(counts, environment="production")[0] == "DOCUMENTED_EXCEPTION"
+    assert verifier.partition(counts)["erased_lineage_exception"] == 1
+    assert verifier.partition(counts)["unevaluable"] == 0
+
+
+def test_sql_unexplained_orphan_beside_erased_orphan_still_fails() -> None:
+    counts = verifier.Counts(**sql_counts(include_orphan=True, include_unexplained=True))
+    assert counts.erased_orphan_rows == 1
+    assert counts.unexplained_orphan_rows == 1
+    assert verifier.assess(counts, environment="production")[0] == "FAILED"
+    assert verifier.partition(counts) == {
+        "satisfied": 1,
+        "violated": 0,
+        "erased_lineage_exception": 1,
+        "unevaluable": 1,
+        "reserved_public": 0,
+    }
+
+
+# Row/tenant aggregates published on #1669 for retained production receipt
+# 35697251287. The weur_* and erasure_log_rows values are NOT from that receipt;
+# they are placeholders that satisfy the partition invariants.
+RETAINED_PRODUCTION_COUNTS = dict(
+    total_rows=84985, customer_rows=84854, public_rows=131, reserved_public_rows=131,
+    invalid_public_rows=0, satisfied_rows=81315, violated_rows=0, unevaluable_rows=3539,
+    customer_unevaluable_rows=3539, orphan_rows=3539, orphan_tenants=174,
+    erased_orphan_rows=3526, erased_orphan_tenants=170, unexplained_orphan_rows=13,
+    unexplained_orphan_tenants=4, weur_audit_rows=4, weur_orphan_rows=4, weur_tenants=0,
+    erasure_log_rows=2044,
+)
+
+
+def test_retained_production_population_fails_on_the_13_unexplained_rows_only() -> None:
+    counts = verifier.Counts(**RETAINED_PRODUCTION_COUNTS)
+    assert verifier.assess(counts, environment="production") == ("FAILED", verifier.FAILED_REASON)
+    assert verifier.partition(counts) == {
+        "satisfied": 81315,
+        "violated": 0,
+        "erased_lineage_exception": 3526,
+        "unevaluable": 13,
+        "reserved_public": 131,
+    }
+
+
+def test_partition_refuses_erased_rows_outside_the_customer_unevaluable_bucket() -> None:
+    counts = verifier.Counts(**{**response(**ERASED_ONLY)["result"][0]["results"][0],
+                                "customer_unevaluable_rows": 0, "unevaluable_rows": 0,
+                                "satisfied_rows": 10})
+    with pytest.raises(verifier.Indeterminate, match="erased-lineage rows exceed"):
+        verifier.partition(counts)
+
+
+def test_partition_refuses_states_that_do_not_conserve_the_population() -> None:
+    # partition() is public; it must fail closed even when called without assess().
+    counts = verifier.Counts(**{**response(**ERASED_ONLY)["result"][0]["results"][0], "total_rows": 11})
+    with pytest.raises(verifier.Indeterminate, match="do not equal the full audit_outbox population"):
+        verifier.partition(counts)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "status", "code"),
+    [({}, "COMPLIANT", 0), (ERASED_ONLY, "DOCUMENTED_EXCEPTION", 0),
+     ({**ERASED_ONLY, "satisfied_rows": 8, "violated_rows": 1}, "FAILED", 1)],
+)
+def test_cli_exit_code_and_states_follow_policy_b(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], overrides: dict, status: str, code: int
+) -> None:
+    evidence = tmp_path / "d1-response.json"
+    evidence.write_text(json.dumps(response(**overrides)), encoding="utf-8")
+    assert verifier.main(["--environment", "production", "--input", str(evidence)]) == code
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == status
+    assert sum(report["states"].values()) == report["counts"]["total_rows"]
+    assert report["states"]["erased_lineage_exception"] == report["counts"]["erased_orphan_rows"]
+    assert "policy B" in report["exception_policy"]
 
 
 def test_unexplained_orphan_and_weur_orphan_remain_in_the_denominator() -> None:

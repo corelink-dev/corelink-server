@@ -19,6 +19,7 @@ store and use `--input /restricted/path/d1-residency.json`; do not commit it.
 | State | Exit | Meaning | Operator action |
 | --- | ---: | --- | --- |
 | `COMPLIANT` | 0 | Every customer row is `satisfied`; every reserved `_public` row has canonical `wnam` region and an allowed public event type. | Archive the JSON output with the change/attestation record. |
+| `DOCUMENTED_EXCEPTION` | 0 | No `violated` and no `unevaluable` row; the only non-satisfied customer rows are `erased_lineage_exception` (#1669 policy B). | Never attest plain compliance. Attest compliance with the documented erased-lineage exception, citing the policy and `states.erased_lineage_exception`. |
 | `FAILED` | 1 | At least one known mismatch (`violated`) or unprovable row (`unevaluable`) exists. | Do not attest compliance. Preserve evidence and investigate the named buckets. |
 | `INDETERMINATE` | 2 | Credentials, timeout, response shape, control, or full-population partition cannot be trusted. | Restore read access/query health and rerun; never interpret this as zero violations. |
 
@@ -45,10 +46,19 @@ control, the tool cannot distinguish retained Art. 5(2) DSR evidence from an
 unexplained orphan. `weur_audit_rows > 0` with `weur_tenants=0` must remain
 visible through `weur_orphan_rows`; it cannot become a green result.
 
-Erased tenants remain legitimate retained audit evidence. They still fail this
-*residency proof* because their `primary_region` no longer exists, while their
-retention/erasure semantics remain unchanged. The unexplained-orphan counts are
-separate specifically so they cannot disappear from the denominator.
+Erased tenants remain legitimate retained audit evidence. Their residency
+cannot be re-proven because their `primary_region` no longer exists. Under the
+#1669 **policy B** owner decision (2026-10-01), a customer row whose tenant has
+no `tenant` row but does have a `dsr_erasure_log` entry (`erased_orphan_rows`)
+is a documented exception: the `states` object reports it as
+`erased_lineage_exception`, separately from `unevaluable`. It is never
+`satisfied` and never `COMPLIANT`, and it does not by itself fail the check. The
+aggregate SQL is unchanged, so the raw `counts.unevaluable_rows` still includes
+these rows; `states.unevaluable = unevaluable_rows - erased_orphan_rows` is the
+failing bucket. The unexplained-orphan counts stay in `states.unevaluable`
+specifically so they cannot disappear from the denominator. The exception
+covers only rows with a recorded erasure; it never covers a missing tenant with
+no erasure record.
 
 ## Offline classification of a retained hosted receipt
 
@@ -67,10 +77,13 @@ query schemas, query hashes, tenant-to-row cardinalities, all three population
 partitions, and the fail-closed verdict. Its disjoint classes give
 every row an aggregate disposition: satisfied, violated, retained DSR orphan,
 unexplained orphan, other unevaluable customer row, valid `_public`, or invalid
-`_public`. Retained DSR orphans are marked **preserve**; unexplained orphans are
-marked **preserve and require restricted owner reconciliation**. Neither class
-is treated as residency-compliant, and the command cannot assign an individual
-tenant identity from aggregate-only evidence.
+`_public`. Retained DSR orphans are marked
+**`DOCUMENTED_EXCEPTION_ERASED_LINEAGE`** (policy B: preserved, own disposition,
+not non-compliant). Unexplained orphans are marked **preserve and require
+restricted owner reconciliation**. Neither class is treated as
+residency-compliant, and the command cannot assign an individual tenant
+identity from aggregate-only evidence. `overall_disposition` is `COMPLIANT`,
+`DOCUMENTED_EXCEPTION` (exit 0 for both), or `KEEP_OPEN` (exit 1).
 
 Keep the restricted crosswalk and any row-level evidence in the approved
 restricted store. Do not rewrite or delete retained audit rows to make the

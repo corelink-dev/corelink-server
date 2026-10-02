@@ -82,20 +82,104 @@ def resign(receipt: dict) -> None:
     receipt["receipt_sha256"] = classifier.PROBE._hash(receipt)
 
 
+def erased_only_fixture(status: str, reason: str) -> dict:
+    """A population whose only non-satisfied customer rows are DSR-erased orphans."""
+    receipt = receipt_fixture()
+    receipt["counts"]["residency"].update(
+        {
+            "satisfied_rows": 3,
+            "violated_rows": 0,
+            "unevaluable_rows": 1,
+            "customer_unevaluable_rows": 1,
+            "orphan_rows": 1,
+            "orphan_tenants": 1,
+            "erased_orphan_rows": 1,
+            "erased_orphan_tenants": 1,
+            "unexplained_orphan_rows": 0,
+            "unexplained_orphan_tenants": 0,
+        }
+    )
+    receipt["counts"]["backfill_completeness"].update(
+        {"orphan_rows": 1, "joinable_rows": 3, "erased_orphan_rows": 1}
+    )
+    receipt["status"] = status
+    receipt["reason"] = reason
+    resign(receipt)
+    return receipt
+
+
 class ReceiptClassifierTests(unittest.TestCase):
-    def test_classifies_orphans_with_preserve_or_owner_hold_disposition(self) -> None:
+    def test_classifies_orphans_with_exception_or_owner_hold_disposition(self) -> None:
         report = classifier.classify(receipt_fixture())
         classes = {item["class"]: item for item in report["classes"]}
 
         self.assertEqual(report["overall_disposition"], "KEEP_OPEN")
         self.assertFalse(report["tenant_identity_dispositions_complete"])
-        self.assertEqual(classes["erased_orphan_retained_audit"]["disposition"], "PRESERVE_AUDIT_EVIDENCE")
+        self.assertEqual(
+            classes["erased_orphan_retained_audit"]["disposition"],
+            "DOCUMENTED_EXCEPTION_ERASED_LINEAGE",
+        )
         self.assertEqual(classes["unexplained_orphan"]["rows"], 1)
         self.assertEqual(
             classes["unexplained_orphan"]["disposition"],
             "PRESERVE_AND_REQUIRE_RESTRICTED_OWNER_RECONCILIATION",
         )
         self.assertEqual(sum(item["rows"] for item in report["classes"]), 5)
+        self.assertEqual(report["states"]["erased_lineage_exception"], 1)
+        self.assertEqual(report["states"]["unevaluable"], 1)
+
+    def test_erased_only_population_is_documented_exception_not_compliant(self) -> None:
+        residency = classifier.PROBE.RESIDENCY
+        report = classifier.classify(
+            erased_only_fixture(residency.DOCUMENTED_EXCEPTION, residency.DOCUMENTED_EXCEPTION_REASON)
+        )
+        classes = {item["class"]: item for item in report["classes"]}
+
+        self.assertEqual(report["source_status"], "DOCUMENTED_EXCEPTION")
+        self.assertEqual(report["overall_disposition"], "DOCUMENTED_EXCEPTION")
+        self.assertNotIn("COMPLIANT", (report["source_status"], report["overall_disposition"]))
+        self.assertEqual(classes["erased_orphan_retained_audit"]["rows"], 1)
+        self.assertEqual(classes["satisfied_customer"]["rows"], 3)
+        self.assertEqual(
+            report["states"],
+            {
+                "satisfied": 3,
+                "violated": 0,
+                "erased_lineage_exception": 1,
+                "unevaluable": 0,
+                "reserved_public": 1,
+            },
+        )
+        self.assertIn("policy B", report["exception_policy"])
+
+    def test_rejects_erased_lineage_relabelled_compliant(self) -> None:
+        residency = classifier.PROBE.RESIDENCY
+        receipt = erased_only_fixture(residency.COMPLIANT, residency.COMPLIANT_REASON)
+
+        with self.assertRaisesRegex(classifier.ReceiptError, "verdict does not match"):
+            classifier.classify(receipt)
+
+    def test_rejects_documented_exception_claimed_over_an_unexplained_orphan(self) -> None:
+        residency = classifier.PROBE.RESIDENCY
+        receipt = receipt_fixture()
+        receipt["status"] = residency.DOCUMENTED_EXCEPTION
+        receipt["reason"] = residency.DOCUMENTED_EXCEPTION_REASON
+        resign(receipt)
+
+        with self.assertRaisesRegex(classifier.ReceiptError, "verdict does not match"):
+            classifier.classify(receipt)
+
+    def test_pre_policy_b_failed_receipt_with_unexplained_rows_still_classifies(self) -> None:
+        # Receipts written before policy B carry the unchanged FAILED reason; a
+        # population that still has unexplained orphans must keep verifying.
+        receipt = receipt_fixture()
+        self.assertEqual(
+            receipt["reason"],
+            "known violations or unevaluable rows exist; neither may be reported compliant",
+        )
+        report = classifier.classify(receipt)
+        self.assertEqual(report["source_status"], "FAILED")
+        self.assertEqual(report["overall_disposition"], "KEEP_OPEN")
 
     def test_rejects_receipt_with_changed_counts(self) -> None:
         receipt = receipt_fixture()

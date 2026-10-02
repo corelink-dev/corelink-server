@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Classify a retained, redacted #1669 aggregate receipt without D1 access."""
+"""Classify a retained, redacted #1669 aggregate receipt without D1 access.
+
+Under the #1669 policy B owner decision (2026-10-01) the DSR-erased orphans are
+their own class with the ``DOCUMENTED_EXCEPTION_ERASED_LINEAGE`` disposition:
+preserved, not satisfied, not unevaluable, never compliant. Unexplained orphans
+remain unevaluable and keep the issue open.
+"""
 
 from __future__ import annotations
 
@@ -168,7 +174,7 @@ def classify(receipt: object) -> dict[str, Any]:
             "class": "erased_orphan_retained_audit",
             "rows": model.erased_orphan_rows,
             "tenants": model.erased_orphan_tenants,
-            "disposition": "PRESERVE_AUDIT_EVIDENCE",
+            "disposition": "DOCUMENTED_EXCEPTION_ERASED_LINEAGE",
         },
         {
             "class": "unexplained_orphan",
@@ -197,18 +203,36 @@ def classify(receipt: object) -> dict[str, Any]:
     ]
     if sum(item["rows"] for item in classes) != total:
         raise ReceiptError("disposition classes do not conserve the full population")
+    by_class = {item["class"]: item["rows"] for item in classes}
+    states = PROBE.RESIDENCY.partition(model)
+    if states["erased_lineage_exception"] != by_class["erased_orphan_retained_audit"] or states[
+        "unevaluable"
+    ] != (
+        by_class["unexplained_orphan"]
+        + by_class["other_unevaluable_customer"]
+        + by_class["invalid_public"]
+    ):
+        raise ReceiptError("disposition classes do not match the policy-B residency states")
+    if state == PROBE.RESIDENCY.COMPLIANT:
+        overall = "COMPLIANT"
+    elif state == PROBE.RESIDENCY.DOCUMENTED_EXCEPTION:
+        overall = "DOCUMENTED_EXCEPTION"
+    else:
+        overall = "KEEP_OPEN"
     return {
-        "schema": "corelink.issue-1669.aggregate-classification.v1",
+        "schema": "corelink.issue-1669.aggregate-classification.v2",
         "issue": 1669,
         "receipt_sha256": digest,
         "source_status": state,
         "source_reason": reason,
         "classification_scope": "aggregate_counts_only",
+        "exception_policy": PROBE.RESIDENCY.ERASED_LINEAGE_POLICY,
         "tenant_identity_dispositions_complete": (
             model.unexplained_orphan_rows == 0 and model.unexplained_orphan_tenants == 0
         ),
+        "states": states,
         "classes": classes,
-        "overall_disposition": "COMPLIANT" if state == "COMPLIANT" else "KEEP_OPEN",
+        "overall_disposition": overall,
     }
 
 
@@ -245,7 +269,7 @@ def main() -> int:
         return 2
     report["artifact_sha256"] = artifact_sha256
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 0 if report["overall_disposition"] == "COMPLIANT" else 1
+    return 0 if report["overall_disposition"] in ("COMPLIANT", "DOCUMENTED_EXCEPTION") else 1
 
 
 if __name__ == "__main__":

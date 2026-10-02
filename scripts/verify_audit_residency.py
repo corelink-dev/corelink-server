@@ -7,14 +7,24 @@ population. Customer rows partition as satisfied, violated, or unevaluable;
 the canonical ``_public`` namespace is accounted for separately, never
 silently removed from the denominator. Public rows with an unexpected region
 or event type are unevaluable, not an automatic exception.
-An unevaluable row (including a retained DSR-erasure orphan) is evidence that
-the predicate cannot be proven; it is a failing result, never a clean result.
+An unevaluable row is evidence that the predicate cannot be proven; it is a
+failing result, never a clean result.
+
+A retained DSR-erasure orphan (``erased_orphan_rows``: no tenant row, but the
+tenant has a ``dsr_erasure_log`` entry) is NOT unevaluable under the #1669
+policy B owner decision of 2026-10-01: it is classified in its own
+``erased_lineage_exception`` state. That state is never ``satisfied`` and never
+``COMPLIANT``; a population whose only non-satisfied customer rows are erased
+lineage reports ``DOCUMENTED_EXCEPTION``. The aggregate SQL is unchanged, so
+the raw ``unevaluable_rows`` count still includes those rows; ``partition()``
+is the classification that separates them.
 
 The command is read-only.  Use ``--input`` to validate a saved Cloudflare D1
 JSON response, or provide credentials plus ``--database-id`` for one live
 read.  It never loads, writes, or prints credentials.
 
-Exit status: 0 compliant; 1 violated or unevaluable; 2 indeterminate.
+Exit status: 0 compliant or documented exception; 1 violated or unevaluable;
+2 indeterminate.
 """
 
 from __future__ import annotations
@@ -130,6 +140,24 @@ COUNT_FIELDS = (
 )
 
 
+COMPLIANT = "COMPLIANT"
+DOCUMENTED_EXCEPTION = "DOCUMENTED_EXCEPTION"
+FAILED = "FAILED"
+PASSING_STATES = (COMPLIANT, DOCUMENTED_EXCEPTION)
+ERASED_LINEAGE_POLICY = (
+    "#1669 policy B, owner decision 2026-10-01: rows orphaned by a recorded DSR "
+    "erasure are retained Art. 5(2) audit evidence and a documented exception "
+    "(erased lineage), not non-compliant and not satisfied"
+)
+FAILED_REASON = "known violations or unevaluable rows exist; neither may be reported compliant"
+DOCUMENTED_EXCEPTION_REASON = (
+    "no violated or unevaluable rows; the only non-satisfied customer rows are erased "
+    "lineage retained under the #1669 policy B documented exception, never reported compliant"
+)
+COMPLIANT_REASON = "all customer rows are satisfied and all public rows meet the reserved-namespace contract"
+STATE_FIELDS = ("satisfied", "violated", "erased_lineage_exception", "unevaluable", "reserved_public")
+
+
 class Indeterminate(ValueError):
     """Evidence is absent, malformed, partial, or otherwise not trustworthy."""
 
@@ -211,12 +239,35 @@ def assess(counts: Counts, *, environment: str) -> tuple[str, str]:
         raise Indeterminate("weur orphan count exceeds the weur audit population")
     if environment == "production" and counts.erasure_log_rows == 0:
         raise Indeterminate("production DSR-erasure control is empty; orphan classification is unproven")
-    if counts.violated_rows or counts.unevaluable_rows:
-        return (
-            "FAILED",
-            "known violations or unevaluable rows exist; neither may be reported compliant",
-        )
-    return ("COMPLIANT", "all customer rows are satisfied and all public rows meet the reserved-namespace contract")
+    states = partition(counts)
+    if states["violated"] or states["unevaluable"]:
+        return (FAILED, FAILED_REASON)
+    if states["erased_lineage_exception"]:
+        return (DOCUMENTED_EXCEPTION, DOCUMENTED_EXCEPTION_REASON)
+    return (COMPLIANT, COMPLIANT_REASON)
+
+
+def partition(counts: Counts) -> dict[str, int]:
+    """Disjoint, exhaustive residency states under the #1669 policy B contract.
+
+    Only rows counted by ``erased_orphan_rows`` leave the failing bucket: the
+    unexplained orphans, the other unevaluable customer rows and the invalid
+    public rows stay ``unevaluable``. Callers must run the ``assess`` partition
+    invariants first; this function re-checks conservation and fails closed.
+    """
+    unevaluable = counts.unevaluable_rows - counts.erased_orphan_rows
+    if unevaluable < 0 or counts.erased_orphan_rows > counts.customer_unevaluable_rows:
+        raise Indeterminate("erased-lineage rows exceed the customer unevaluable bucket")
+    states = {
+        "satisfied": counts.satisfied_rows,
+        "violated": counts.violated_rows,
+        "erased_lineage_exception": counts.erased_orphan_rows,
+        "unevaluable": unevaluable,
+        "reserved_public": counts.reserved_public_rows,
+    }
+    if sum(states.values()) != counts.total_rows:
+        raise Indeterminate("policy-B residency states do not equal the full audit_outbox population")
+    return states
 
 
 def _live_payload(account_id: str, token: str, database_id: str, timeout: int) -> object:
@@ -267,8 +318,20 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, json.JSONDecodeError, Indeterminate) as exc:
         _indeterminate(str(exc))
 
-    print(json.dumps({"environment": args.environment, "status": state, "reason": reason, "counts": asdict(counts)}, sort_keys=True))
-    return 0 if state == "COMPLIANT" else 1
+    print(
+        json.dumps(
+            {
+                "environment": args.environment,
+                "status": state,
+                "reason": reason,
+                "counts": asdict(counts),
+                "states": partition(counts),
+                "exception_policy": ERASED_LINEAGE_POLICY,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0 if state in PASSING_STATES else 1
 
 
 if __name__ == "__main__":
