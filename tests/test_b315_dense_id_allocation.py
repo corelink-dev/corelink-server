@@ -375,6 +375,61 @@ def test_releasing_a_guard_before_the_merge_call_is_caught(tmp_path: Path, repla
     assert named in failures, failures
 
 
+def test_replace_precondition_fools_plain_git_but_not_no_replace_git(tmp_path: Path):
+    """The substitution scenario proves something only if plain git in the
+    clone really serves the substitute, and only GIT_NO_REPLACE_OBJECTS undoes it."""
+    world = harness.build_world(tmp_path / "w", candidate_ids=(1, 2, 3, 5))
+    substitute = harness.substitute_candidate_backlog(world)
+    spec = f"{world.head}:BACKLOG.md"
+    plain = subprocess.run(["git", "cat-file", "blob", spec], cwd=world.work, env=world.env,
+                           capture_output=True, text=True, check=True).stdout
+    off = subprocess.run(["git", "cat-file", "blob", spec], cwd=world.work,
+                         env={**world.env, "GIT_NO_REPLACE_OBJECTS": "1"},
+                         capture_output=True, text=True, check=True).stdout
+    assert plain == substitute
+    assert off == harness.backlog(1, 2, 3, 5)
+    trees = {
+        subprocess.run(["git", "rev-parse", f"{world.head}^{{tree}}"], cwd=world.work, env=env,
+                       capture_output=True, text=True, check=True).stdout
+        for env in (world.env, {**world.env, "GIT_NO_REPLACE_OBJECTS": "1"})
+    }
+    assert len(trees) == 1, "a blob replacement must leave the tree oid unchanged, or the tree proof would catch it"
+
+
+def test_graft_precondition_survives_git_no_replace_objects(tmp_path: Path):
+    """Why the helper refuses a graft file instead of relying on the variable:
+    git still applies grafts with GIT_NO_REPLACE_OBJECTS set."""
+    world = harness.build_world(tmp_path / "w", variant="behind")
+    harness.graft_head_onto_main(world)
+    probe = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", world.main0, world.head], cwd=world.work,
+        env={**world.env, "GIT_NO_REPLACE_OBJECTS": "1"}, capture_output=True, check=False,
+    )
+    assert probe.returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("scenario_name", "needle", "replacement", "lands"),
+    [
+        ("replaced_candidate_blob_refused", "export GIT_NO_REPLACE_OBJECTS=1\n", "\n", True),
+        ("grafted_behind_head_refused_before_api",
+         '[ ! -e "$graft_file" ] && [ ! -L "$graft_file" ] || refuse', "true || refuse", False),
+    ],
+)
+def test_dropping_an_object_substitution_defence_reaches_the_merge_endpoint(
+    tmp_path: Path, scenario_name: str, needle: str, replacement: str, lands: bool
+):
+    """Teeth for the two substitution scenarios: without the defence the helper
+    validates substituted objects and calls the merge endpoint. For the blob,
+    GitHub merges the real (gapped) bytes and the helper calls it proven."""
+    helper = _mutated_helper(tmp_path, needle, replacement)
+    scenario = next(s for s in harness.SCENARIOS if s.name == scenario_name)
+    run, failures = harness.run_scenario(scenario, tmp_path / "world", helper=helper)
+    assert "merge endpoint called 1x, expected 0x" in failures, failures
+    if lands:
+        assert run.rc == 0 and run.state["state"] == "MERGED" and "MERGED via the PR API" in run.out, run.err
+
+
 def test_origin_in_the_harness_declines_a_direct_push_to_main(tmp_path: Path):
     """The world reproduces production's refusal of the retired design."""
     world = harness.build_world(tmp_path / "w")
@@ -410,7 +465,8 @@ def test_wiring_names_a_planted_retired_design(planted: str, named: str):
 
 @pytest.mark.parametrize(
     "removed",
-    [' -f sha="$CAPTURED_HEAD"', "MERGE_METHOD=squash", 'git merge-base --is-ancestor "$CAPTURED_MAIN" "$CAPTURED_HEAD"'],
+    [' -f sha="$CAPTURED_HEAD"', "MERGE_METHOD=squash", 'git merge-base --is-ancestor "$CAPTURED_MAIN" "$CAPTURED_HEAD"',
+     "export GIT_NO_REPLACE_OBJECTS=1", "git rev-parse --path-format=absolute --git-path info/grafts"],
 )
 def test_wiring_names_a_removed_guarantee(removed: str):
     text = _gate_and_helper()

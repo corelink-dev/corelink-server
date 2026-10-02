@@ -19,7 +19,8 @@ Four layers, each a refusal on its own:
 4. behaviour — scripts/b315_merge_harness.py runs the REAL helper against a
    fake GitHub in throwaway repositories (land, dry run, every race, a 409, a
    405, a merge on an unvalidated main, a wrong tree, a lost response, a stale
-   lease, a busy lock), and at every merge-endpoint call checks that the local
+   lease, a busy lock, a refs/replace-substituted BACKLOG.md blob, a graft that
+   hides a BEHIND head), and at every merge-endpoint call checks that the local
    allocation lock and the remote lease are still held. It proves the helper
    against the harness's model of GitHub; that GitHub enforces the model is
    argued, not proven, here.
@@ -62,10 +63,14 @@ REQUIRED = (
     "moved during allocation",
     "main moved at merge boundary",
     "candidate force-pushed at merge boundary",
-    # allocator on exact object bytes
+    # allocator on exact object bytes, with local object substitution off:
+    # refs/replace disabled for every git the helper runs, a graft file refused
     "backlog_id_alloc.py",
     "--base",
     'git cat-file blob "$1:BACKLOG.md"',
+    "export GIT_NO_REPLACE_OBJECTS=1",
+    "git rev-parse --path-format=absolute --git-path info/grafts",
+    "rewrites commit parents",
     # cross-machine lease, owner-safe release
     "REMOTE_LEASE_REF",
     "REMOTE_LEASE_CONFIRMED",

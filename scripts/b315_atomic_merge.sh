@@ -41,11 +41,29 @@
 # squash is what this repository's history is made of. Under the up-to-date
 # precondition the squash commit's tree is exactly tree(H); the proof checks it.
 #
+# ── Local object substitution (2026-10-01 review) ───────────────────────────
+# Every read below names an oid that GitHub also names, and the claim "the
+# allocator validated the bytes GitHub merges" holds only if local git serves
+# the REAL object for that oid. Two documented git features break that:
+#   * refs/replace/*: `git cat-file`, `merge-base` and `rev-list` read the
+#     replacement. Replacing an invalid candidate BACKLOG.md blob with a valid
+#     one let the allocator pass bytes GitHub never merges, and because a blob
+#     replacement leaves every tree oid unchanged the tree proof passed too.
+#     GIT_NO_REPLACE_OBJECTS turns replacement off for this process and every
+#     git it starts; it overrides core.useReplaceRefs (measured, git 2.51).
+#   * grafts (<common-dir>/info/grafts, or GIT_GRAFT_FILE): they rewrite
+#     commit parents for `merge-base --is-ancestor` and `rev-list --parents`,
+#     and GIT_NO_REPLACE_OBJECTS does NOT turn them off (measured, git 2.51).
+#     A BEHIND head can be grafted onto main. So a graft file in effect is a
+#     refusal, checked before any ancestry read.
+# Both are tested against the real helper in scripts/b315_merge_harness.py.
+#
 # Exit status: 0 = merged and proven (or a clean dry run); 1 = refused and NOT
 # merged; 2 = bad arguments; 3 = LANDED_UNPROVEN (GitHub says MERGED but the
 # parent/tree/reachability proof failed or could not be read; inspect main).
 # A dry run stops before the remote lease and before the merge endpoint.
 set -euo pipefail
+export GIT_NO_REPLACE_OBJECTS=1
 PR=${1:?PR number required}; EXPECTED_HEAD=${2:?captured head required}; DRY_RUN=${3:-0}
 EXPECTED_HEAD_REF=${4:?captured head branch required}; EXPECTED_OWNER=${5:?captured head owner required}; EXPECTED_REPO=${6:?captured head repository required}
 case "$PR" in ""|*[!0-9]*) echo "⛔ PR must be a number, got '$PR'." >&2; exit 2 ;; esac
@@ -84,6 +102,10 @@ trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM
 
 refuse() { echo "⛔ $*" >&2; exit 1; }
 is_oid() { [[ "$1" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; }
+# git resolves the graft path itself (GIT_GRAFT_FILE, else the common-dir copy
+# that linked worktrees share), so this asks git rather than guessing the path.
+graft_file="$(git rev-parse --path-format=absolute --git-path info/grafts 2>/dev/null)" && [ -n "$graft_file" ] || refuse "git graft path unreadable; refusing to read ancestry it may rewrite."
+[ ! -e "$graft_file" ] && [ ! -L "$graft_file" ] || refuse "git graft file $graft_file rewrites commit parents for every ancestry check and for the parent proof; remove it and re-run."
 
 start_backlog_allocation_lock() {
 common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
@@ -134,7 +156,9 @@ pr_snapshot() {
 remote_ref_oid() { local out; out="$(git ls-remote origin "$1" 2>/dev/null)" || return 1; awk 'NR==1 {print $1}' <<<"$out"; }
 remote_main() { remote_ref_oid refs/heads/main; }
 # Exact bytes: the blob inside the fetched commit object, no API transcoding,
-# no checkout filters. The oid binds the bytes, so a re-read cannot differ.
+# no checkout filters. The oid binds the bytes only because replacement
+# objects are off (GIT_NO_REPLACE_OBJECTS above); with them on, this read
+# returned a substituted blob for the same oid.
 backlog_at() { git cat-file blob "$1:BACKLOG.md" >"$2" 2>/dev/null; }
 
 # ── 1. capture exact authorities ─────────────────────────────────────────────

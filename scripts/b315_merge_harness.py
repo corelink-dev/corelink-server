@@ -25,6 +25,13 @@ Every scenario also asserts the helper never pushed to main and never left the
 remote lease behind, and, at every call of the merge endpoint, that the local
 allocation lock (probed with the allocator's own ``fcntl.flock``) and the
 remote lease ref were still held: the lock must span allocation AND merge.
+
+Two scenarios plant local object substitution in the helper's clone only, so
+the clone and origin (which plays GitHub) disagree about what an oid holds:
+``refs/replace`` swapping the candidate's invalid BACKLOG.md blob for a valid
+one, and a graft file making a BEHIND head look as if it contains main. Each
+first proves that plain git in the clone really reads the substitute, so a
+helper that is not fooled is distinguishable from a planting that failed.
 No network, no credentials: ``gh`` cannot reach GitHub.
 """
 
@@ -474,6 +481,10 @@ SCENARIOS: tuple[Scenario, ...] = (
              inject={"put": ["drop_merge_response"]}),
     Scenario("stale_remote_lease_refused", 1, 0, False, "stale remote lease observed", precondition="lease"),
     Scenario("local_lock_busy_refused", 1, 0, False, "lock busy", precondition="lock"),
+    Scenario("replaced_candidate_blob_refused", 1, 0, False, "allocation refused",
+             candidate_ids=(1, 2, 3, 5), precondition="replace_blob"),
+    Scenario("grafted_behind_head_refused_before_api", 1, 0, False, "rewrites commit parents",
+             variant="behind", precondition="graft"),
 )
 
 
@@ -499,6 +510,37 @@ def _hold_lock(world: World) -> subprocess.Popen:
     raise HarnessError("could not pre-hold the allocation lock")
 
 
+def substitute_candidate_backlog(world: World) -> str:
+    """Plant ``refs/replace`` in the helper's clone so the candidate's real
+    BACKLOG.md blob READS as a valid dense population there, while origin
+    (playing GitHub) keeps, and would merge, the real bytes. A blob replacement
+    leaves every tree oid unchanged. Returns the substitute text."""
+    substitute = backlog(1, 2, 3, 4)
+    real = _git(world.env, "rev-parse", f"{world.head}:BACKLOG.md", cwd=world.work)
+    fake = _git(world.env, "hash-object", "-w", "--stdin", cwd=world.work, stdin=substitute)
+    _git(world.env, "replace", real, fake, cwd=world.work)
+    served = _git(world.env, "cat-file", "blob", f"{world.head}:BACKLOG.md", cwd=world.work)
+    if served != substitute.strip():
+        raise HarnessError("refs/replace precondition did not take effect in the clone")
+    return substitute
+
+
+def graft_head_onto_main(world: World) -> Path:
+    """Write a graft file in the helper's clone that makes the head's only
+    parent the current main, so plain git there believes a BEHIND head
+    contains main. Origin (playing GitHub) has no graft."""
+    graft = world.work / ".git" / "info" / "grafts"
+    graft.parent.mkdir(exist_ok=True)
+    graft.write_text(f"{world.head} {world.main0}\n", encoding="utf-8")
+    probe = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", world.main0, world.head],
+        cwd=world.work, env=world.env, capture_output=True, text=True, check=False,
+    )
+    if probe.returncode:
+        raise HarnessError("graft precondition did not take effect in the clone")
+    return graft
+
+
 def run_scenario(
     scenario: Scenario, root: Path, template: World | None = None, helper: Path = HELPER
 ) -> tuple[Run, list[str]]:
@@ -517,6 +559,12 @@ def run_scenario(
         _git(world.env, "--git-dir", str(world.origin), "update-ref", LEASE_REF, planted_lease)
     elif scenario.precondition == "lock":
         holder = _hold_lock(world)
+    elif scenario.precondition == "replace_blob":
+        substitute_candidate_backlog(world)
+    elif scenario.precondition == "graft":
+        graft_head_onto_main(world)
+    elif scenario.precondition:
+        raise HarnessError(f"unknown precondition {scenario.precondition!r}")
     try:
         run = run_helper(world, dry_run=scenario.dry_run, helper=helper)
     finally:

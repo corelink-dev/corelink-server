@@ -1832,7 +1832,7 @@ source-locator: "WP-LEDGER-ID-ALLOC — Dense BACKLOG IDs / concurrent allocatio
 finding-title: "dense BACKLOG id allocation has no merge-time serialization or revalidation"
 problem: "Two merge authorities can read the same main snapshot, choose the same next contiguous id, and both issue a merge; the existing courtesy precheck only reports a collision after the stale merge and accepts a degenerate census."
 evidence: "The merge gate's former BACKLOG block fetched PR/main independently, printed renumber commands, and had no lock or second main-ref/snapshot check; repository merge commits are allowed, while branch-protection/ruleset API checks return GitHub 403 on this plan."
-acceptance: "The single --merge authority holds a crash-safe exclusive lock through allocation and merge, captures exact base/main/head object ids and same-repository head ownership, requires the PR base snapshot to equal current main and the head to contain main, validates the complete canonical dense candidate population on the exact BACKLOG.md blob bytes of those commits, revalidates main and head after allocation and again at the merge boundary, and lands through one PR merge API call pinned to the captured head sha with merge_method=squash, because branch protection on main declines every direct push. Strict up-to-date protection plus the sha pin refuses the merge if either ref moved. The post-merge proof requires state MERGED and a merge commit whose only parent is the captured main, whose tree is the head's tree, and which is reachable from main; otherwise the merge is reported as landed-but-unproven (exit 3), never as a clean merge."
+acceptance: "The single --merge authority holds a crash-safe exclusive lock through allocation and merge, captures exact base/main/head object ids and same-repository head ownership, requires the PR base snapshot to equal current main and the head to contain main, validates the complete canonical dense candidate population on the exact BACKLOG.md blob bytes of those commits, read with git replacement objects disabled and refused while a graft file is in effect, revalidates main and head after allocation and again at the merge boundary, and lands through one PR merge API call pinned to the captured head sha with merge_method=squash, because branch protection on main declines every direct push. Strict up-to-date protection plus the sha pin refuses the merge if either ref moved. The post-merge proof requires state MERGED and a merge commit whose only parent is the captured main, whose tree is the head's tree, and which is reachable from main; otherwise the merge is reported as landed-but-unproven (exit 3), never as a clean merge."
 verify: python3 scripts/verify_b315_dense_id_allocation.py --self-test
 verify-means: |
   done — the allocator fixture self-test, the real BACKLOG.md population, the wiring
@@ -1847,11 +1847,17 @@ verify-means: |
   tree = tree(head); a dry run never calls the merge endpoint or takes the lease;
   head or main moving at capture, during allocation, at the merge boundary or inside
   the API call (409/405) is refused with no merged claim; a BEHIND head, a stale base
-  snapshot, an allocation gap, a stale remote lease and a busy local lock are refused
-  before the API; a merge that lands on an unvalidated main or with a wrong tree exits
-  3; a lost API response is still proven from PR state. That GitHub itself enforces
-  strict up-to-date plus the sha pin is argued from its documented semantics, not
-  exercised: no live merge was run to write this record.
+  snapshot, an allocation gap, a stale remote lease, a busy local lock, a refs/replace
+  substitution of the candidate BACKLOG.md blob and a graft that makes a BEHIND head
+  look current are refused before the API; a merge that lands on an unvalidated main
+  or with a wrong tree exits 3; a lost API response is still proven from PR state.
+  That GitHub itself enforces strict up-to-date plus the sha pin is argued from its
+  documented semantics, not exercised: no live merge was run to write this record.
+  This rewrite of a done item's acceptance and verify-means, together with its trusted
+  verifier, has no admission in the BASE-owned candidate gate, which refuses it by
+  design. It lands through the exact-SHA bootstrap (the report-only gate from an
+  origin/main tree, then a squash merge pinned with --match-head-commit to the
+  reviewed head), and makes no self-hosting claim: this helper did not merge itself.
 last-verified: 2026-10-01
 ```
 
