@@ -786,6 +786,7 @@ class ReviewedBaselineLedgerTests(unittest.TestCase):
                 ".github/workflows/issue-1700-container-staging-deploy.yml",
                 ".github/workflows/staging-quarantine-apply.yml",
                 "crates/corelink-container/src/storage.rs",
+                "crates/corelink-container/src/storage/d1_http.rs",
                 "scripts/staging_bootstrap_provider.py",
             }),
             "Probe path.": (("Path:", "Effect:", "Guards:"), {

@@ -612,18 +612,26 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         hosted_topology = b"new staging topology with hosted runner label"
         old_source = b"old D1 implementation"
         new_source = b"new D1 proxy implementation"
+        successor_source = b"D1 proxy implementation with validated query URL"
         old_topology_sha = hashlib.sha256(old_topology).hexdigest()
         new_topology_sha = hashlib.sha256(new_topology).hexdigest()
         hosted_topology_sha = hashlib.sha256(hosted_topology).hexdigest()
         old_source_sha = hashlib.sha256(old_source).hexdigest()
         new_source_sha = hashlib.sha256(new_source).hexdigest()
+        successor_source_sha = hashlib.sha256(successor_source).hexdigest()
+        # #2889 (Refs #1674) is the reviewed successor bound to today's
+        # hosted-runner topology; the #1700 proxy target stays historical.
         self.assertEqual(
             verify_real_ignored_harnesses.SOURCE_SHA256[source],
-            "60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d",
+            "8db50a72903c2950c09da7ee0a37fb6c7ea138083bf3aa140a21c7a60a358078",
         )
         self.assertEqual(
             verify_real_ignored_harnesses.SOURCE_SHA256[source],
+            verify_real_ignored_harnesses.STAGING_D1_PROXY_SOURCE_I1674_SHA256,
+        )
+        self.assertEqual(
             verify_real_ignored_harnesses.STAGING_D1_PROXY_SOURCE_TARGET_SHA256,
+            "60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d",
         )
         verify_real_ignored_harnesses.verify_d1_proxy_manifest_entry()
         self.assertEqual(
@@ -642,12 +650,13 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
         topology_refusal = "^staging topology digest is outside the reviewed D1 source transition$"
         source_refusal = f"^source digest mismatch \\(reviewed manifest required\\): {re.escape(source)}$"
         with (
-            patch.object(verify_real_ignored_harnesses, "SOURCE_SHA256", {source: new_source_sha}),
+            patch.object(verify_real_ignored_harnesses, "SOURCE_SHA256", {source: successor_source_sha}),
             patch.object(verify_real_ignored_harnesses, "STAGING_D1_PROXY_TOPOLOGY_PREIMAGE_SHA256", old_topology_sha),
             patch.object(verify_real_ignored_harnesses, "STAGING_D1_PROXY_TOPOLOGY_TARGET_SHA256", new_topology_sha),
             patch.object(verify_real_ignored_harnesses, "STAGING_D1_PROXY_TOPOLOGY_HOSTED_RUNNER_SHA256", hosted_topology_sha),
             patch.object(verify_real_ignored_harnesses, "STAGING_D1_PROXY_SOURCE_PREIMAGE_SHA256", old_source_sha),
             patch.object(verify_real_ignored_harnesses, "STAGING_D1_PROXY_SOURCE_TARGET_SHA256", new_source_sha),
+            patch.object(verify_real_ignored_harnesses, "STAGING_D1_PROXY_SOURCE_I1674_SHA256", successor_source_sha),
         ):
             root = Path("unused-root")
             verify_real_ignored_harnesses.verify_source_digests(
@@ -657,13 +666,16 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
                 root, {topology: new_topology, source: new_source}
             )
             verify_real_ignored_harnesses.verify_source_digests(
-                root, {topology: hosted_topology, source: new_source}
+                root, {topology: hosted_topology, source: successor_source}
             )
             for topology_bytes, source_bytes, refusal in (
                 (old_topology, new_source, source_refusal),
                 (new_topology, old_source, source_refusal),
+                (new_topology, successor_source, source_refusal),
                 (hosted_topology, old_source, source_refusal),
-                (b"unreviewed topology", new_source, topology_refusal),
+                # Reverting only the #2889 source under today's topology fails.
+                (hosted_topology, new_source, source_refusal),
+                (b"unreviewed topology", successor_source, topology_refusal),
             ):
                 with self.assertRaisesRegex(AssertionError, refusal):
                     verify_real_ignored_harnesses.verify_source_digests(
@@ -672,7 +684,12 @@ class BacklogVerifyTrustBoundaryTests(unittest.TestCase):
             with patch.object(verify_real_ignored_harnesses, "SOURCE_SHA256", {source: old_source_sha}):
                 with self.assertRaisesRegex(AssertionError, "^D1 proxy source manifest entry drifted"):
                     verify_real_ignored_harnesses.verify_source_digests(
-                        root, {topology: hosted_topology, source: new_source}
+                        root, {topology: hosted_topology, source: successor_source}
+                    )
+            with patch.object(verify_real_ignored_harnesses, "SOURCE_SHA256", {source: new_source_sha}):
+                with self.assertRaisesRegex(AssertionError, "^D1 proxy source manifest entry drifted"):
+                    verify_real_ignored_harnesses.verify_source_digests(
+                        root, {topology: hosted_topology, source: successor_source}
                     )
 
     def test_1700_staging_custom_domain_constants_bind_frozen_hashes(self) -> None:

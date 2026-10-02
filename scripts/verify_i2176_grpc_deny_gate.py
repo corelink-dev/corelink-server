@@ -825,6 +825,8 @@ WAVE_GROUPS: dict[str, dict[Path, tuple[tuple[int, str] | None, tuple[int, str] 
 # e845feb68, where #2876 had moved two #2565 successor paths and #2882/#2884
 # eight i1700 successor paths (all reviewed below), and against main
 # 3e7080062 and 0284fdf14, where #2885/#2886/#2870/#2887 moved no pinned path.
+# The follow-up carries #2889's exact d1_http.rs bytes (head a4f53cf) and the
+# B068 verifier that pins them; both rows below record that review.
 # REBASELINE_LEDGER below holds one row per moved pin: the PRs that moved it,
 # its transport class, its disposition and the reason its bytes are admitted.
 # The path set and the all-or-nothing predicate are unchanged; only reviewed
@@ -846,7 +848,7 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('crates/corelink-container/src/reapi_composition.rs'): (0o0644, "57b3e2c730cf2f326b7f8bdb99df04b9423179524dc830805c3dbb8e62a5f337"),
     Path('crates/corelink-container/src/routes.rs'): (0o0644, "04a84d7be655fd25ee6d05d1b5c598c169be1aae381a255533ffeda0aad1ec2f"),
     Path('crates/corelink-container/src/storage.rs'): (0o0644, "a21a64dc152eea27354de0b14627fd88213d20e1c43129315b4137eec49b711c"),
-    Path('crates/corelink-container/src/storage/d1_http.rs'): (0o0644, "60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d"),
+    Path('crates/corelink-container/src/storage/d1_http.rs'): (0o0644, "8db50a72903c2950c09da7ee0a37fb6c7ea138083bf3aa140a21c7a60a358078"),
     Path('infra/staging/README.md'): (0o0644, "9a6b64adb090de17cc753fcb05c514998a14bccc487d4c66c5c6783c56aa1de6"),
     Path('infra/staging/topology.json'): (0o0644, "4855688905257f05c174d0f02c71bc1a9ffb23c2506a6bd00531d7b655eecd52"),
     Path('scripts/staging_bootstrap_provider.py'): (0o0644, "0861056f2377057909be7771ea7ee92cb90bc9c1839fc1cc6859a738b792ec80"),
@@ -926,7 +928,7 @@ WAVE_GROUP_SUCCESSOR_PINS: dict[str, dict[Path, tuple[int, str]]] = {
         Path('crates/corelink-stripe-real/tests/live_integration.rs'): (0o0644, "4667e8354afb20adea5eb18afe33fcadf77bee696e3e91b1f00eefcf7e200b11"),
         Path('scripts/real-ignored-harness-manifest.json'): (0o0644, "5a6e9d445ff2734afe5805e0735aa5df27757e2a63604c6827349eca67aabe83"),
         Path('scripts/run-real-ignored-harnesses.sh'): (0o0755, "017d51d6cd4537fe379f2d1f799046f3f2eee1d6259797b7cfdf9a6b105cb796"),
-        Path('scripts/verify_real_ignored_harnesses.py'): (0o0644, "34f1abfb2d0696c2fa06d9837bf5828c0fd24495a24f68548a234180eab4e05c"),
+        Path('scripts/verify_real_ignored_harnesses.py'): (0o0644, "32314db6551642f5f5457a38448f50b53c62172aefc620ef6a685c06b1345585"),
     },
 }
 # Review record of the #2868 re-baseline, one row per moved pin (a control, the
@@ -1012,7 +1014,16 @@ REBASELINE_LEDGER: dict[Path, tuple[str, str, tuple[str, ...], str]] = {
         "Container always gets none and signs with static keys; only the #2564 CI harness sets it, in a cargo-test process; Debug "
         "and Display print [REDACTED]."
     )),
-    Path("crates/corelink-container/src/storage/d1_http.rs"): ("#2811", "not-transport", ("WAVE_BASE_CONTROLS",), "Test struct literals gain r2_session_token: None."),
+    Path("crates/corelink-container/src/storage/d1_http.rs"): ("#2811, #2889", "transport-reviewed", ("WAVE_BASE_CONTROLS",), (
+        "Credential flow. Source: CF_API_TOKEN, CLOUDFLARE_ACCOUNT_ID and D1_DATABASE_ID from the Container env (#2811 only adds "
+        "r2_session_token: None to test literals). Destination: the outbound D1 query POST, which carries the token as a bearer only "
+        "when it is non-empty. #2889 (Refs #1674, CodeQL rust/request-forgery; its exact head a4f53cf bytes, carried here) renders "
+        "that URL per request from a fixed origin (https://api.cloudflare.com, or the staging binding proxy "
+        "http://corelink-d1-proxy.invalid, which gets an empty token and no bearer) plus ids of 1-64 characters from [0-9A-Za-z_-]; "
+        "any other id is refused before a client exists. Scope: outbound D1 only; no route, listener or inbound auth reads it. "
+        "Guards: the loopback test seam accepts only a loopback IP literal, an explicit port and the path / or /d1. #2889 states that "
+        "every id accepted today renders a byte-identical URL; not rebuilt or tested here (no cargo on this host), UNVERIFIED."
+    )),
     Path("crates/corelink-stripe-real/src/client.rs"): ("#2792", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Outbound Stripe test client uses the deployed wallet proxy route."),
     Path("crates/corelink-stripe-real/tests/live_integration.rs"): ("#2792", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Exactly the 11-literal wallet route transform (WALLET_ROUTE_TRANSFORMED_LIVE_SHA256)."),
     Path("docs/internal/secrets-checklist.md"): ("#2793, #2816, #2850, #2853, #2856, #2858", "not-transport", ("WAVE_MATRIX_SHA256",), "Secret inventory rows; row 315 and the three B072 names still appear exactly once."),
@@ -1037,7 +1048,7 @@ REBASELINE_LEDGER: dict[Path, tuple[str, str, tuple[str, ...], str]] = {
     Path("scripts/tests/issue_1700_probe_process.test.mjs"): ("#2801, #2812, #2844", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),
     Path("scripts/tests/issue_1700_runtime_probe.test.mjs"): ("#2795, #2801, #2806, #2812, #2819, #2825, #2834, #2844, #2853, #2858, #2865, #2881, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),
     Path("scripts/verify_i2574_grpc_diagnostic_policy.py"): ("#2868", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Adds REVIEWED_SURFACE as a BASE state; EXPECTED and every transition map unchanged."),
-    Path("scripts/verify_real_ignored_harnesses.py"): ("#2792, #2800, #2811, #2876", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "B068 verifier: exact route transform (294ea6c1), R2 lane edits, then #2876's reviewed #2846 topology state; still pins the transformed live digest exactly once."),
+    Path("scripts/verify_real_ignored_harnesses.py"): ("#2792, #2800, #2811, #2876", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "B068 verifier: exact route transform (294ea6c1), R2 lane edits, then #2876's reviewed #2846 topology state; still pins the transformed live digest exactly once. This PR follows #2889: SOURCE_SHA256 pins the new d1_http.rs bytes, and the hosted-runner topology binds the new STAGING_D1_PROXY_SOURCE_I1674_SHA256 (the #1700 proxy target stays historical). CI verifier only."),
     Path("scripts/verify_staging_provider_preflight.py"): ("#2816, #2869", "not-transport", ("WAVE_BASE_CONTROLS",), "Preflight checker for the provisioning plan."),
     Path("tests/test_issue_1648_image_only.py"): ("#2802", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1648]",), "Tests."),
     Path("tests/test_issue_1700_rollback_quiescence.py"): ("#2853, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),

@@ -84,7 +84,7 @@ REQUIRED_TARGET_SOURCES = {
 # boundary; this manifest binds the repository-owned selector/source inputs.
 SOURCE_SHA256 = {
     "crates/corelink-container/src/routes/tier_select_store.rs": "adcecd88d1705a97e5017aa03bbc35dbbcef2b2c090bbd35584b294c7039b5d0",
-    "crates/corelink-container/src/storage/d1_http.rs": "60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d",
+    "crates/corelink-container/src/storage/d1_http.rs": "8db50a72903c2950c09da7ee0a37fb6c7ea138083bf3aa140a21c7a60a358078",
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "cb65c3016cfd62fcf40e63811ae509e4585e174000b297462477997aa70e1269",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "aefc11f79bff187a2014d13ddc2096de6dd2250cbd6cd631cf8a68fc75771b46",
@@ -117,10 +117,20 @@ STAGING_D1_PROXY_SOURCE_TARGET_SHA256 = (
 # structural difference from STAGING_D1_PROXY_TOPOLOGY_TARGET_SHA256 is
 # validated_inputs.runner_label "corelink" -> "ubuntu-24.04". The D1 proxy
 # state this pairing exists for (corelink-staging no longer requires
-# CF_API_TOKEN) is unchanged and d1_http.rs was not touched, so this state stays
-# bound to the proxy source target, never to the pre-proxy source.
+# CF_API_TOKEN) is unchanged and d1_http.rs was not touched, so this state was
+# bound to the proxy source target, never to the pre-proxy source, until #2889
+# moved it to the reviewed successor below.
 STAGING_D1_PROXY_TOPOLOGY_HOSTED_RUNNER_SHA256 = (
     "4855688905257f05c174d0f02c71bc1a9ffb23c2506a6bd00531d7b655eecd52"
+)
+# Reviewed successor of the proxy source (#2889, Refs #1674, CodeQL
+# rust/request-forgery). The D1 query URL is rendered per request from a fixed
+# origin and validated ids, so no configured byte reaches its host or path.
+# It binds the current (hosted-runner) topology state. The proxy target stays
+# bound to its own historical topology state, so reverting only d1_http.rs
+# under today's topology fails here, and the manifest entry must equal it.
+STAGING_D1_PROXY_SOURCE_I1674_SHA256 = (
+    "8db50a72903c2950c09da7ee0a37fb6c7ea138083bf3aa140a21c7a60a358078"
 )
 
 
@@ -283,8 +293,8 @@ def fail(message: str) -> None:
 
 
 def verify_d1_proxy_manifest_entry() -> None:
-    """Keep the D1 proxy source manifest entry equal to the reviewed target."""
-    if SOURCE_SHA256.get(STAGING_D1_PROXY_SOURCE_PATH) != STAGING_D1_PROXY_SOURCE_TARGET_SHA256:
+    """Keep the D1 proxy source manifest entry equal to the current reviewed source."""
+    if SOURCE_SHA256.get(STAGING_D1_PROXY_SOURCE_PATH) != STAGING_D1_PROXY_SOURCE_I1674_SHA256:
         fail("D1 proxy source manifest entry drifted from the reviewed transition target")
 
 
@@ -301,7 +311,7 @@ def verify_source_digests(root: Path = ROOT, overrides: dict[str, bytes] | None 
     source_digest = {
         STAGING_D1_PROXY_TOPOLOGY_PREIMAGE_SHA256: STAGING_D1_PROXY_SOURCE_PREIMAGE_SHA256,
         STAGING_D1_PROXY_TOPOLOGY_TARGET_SHA256: STAGING_D1_PROXY_SOURCE_TARGET_SHA256,
-        STAGING_D1_PROXY_TOPOLOGY_HOSTED_RUNNER_SHA256: STAGING_D1_PROXY_SOURCE_TARGET_SHA256,
+        STAGING_D1_PROXY_TOPOLOGY_HOSTED_RUNNER_SHA256: STAGING_D1_PROXY_SOURCE_I1674_SHA256,
     }.get(topology_digest)
     if source_digest is None:
         fail("staging topology digest is outside the reviewed D1 source transition")
