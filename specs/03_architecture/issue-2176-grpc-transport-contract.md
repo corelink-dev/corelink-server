@@ -1,3 +1,19 @@
+---
+id: "ISSUE-2176-GRPC-TRANSPORT-CONTRACT"
+type: "architecture"
+doc_status: "ACTIVE"
+audit_status: "ACTIVE"
+version: "1.0.0"
+created: "2026-09-25"
+updated: "2026-10-01"
+owner: "Gustavo Schneiter"
+final_approver: "Gustavo Schneiter"
+reviewers: []
+supersedes: null
+superseded_by: null
+tags: ["architecture", "grpc", "transport", "staging", "issue-2176"]
+---
+
 # Issue #2176 gRPC transport contract
 
 **BLOCKED — no general public gRPC claim.**
