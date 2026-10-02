@@ -816,17 +816,15 @@ WAVE_GROUPS: dict[str, dict[Path, tuple[tuple[int, str] | None, tuple[int, str] 
         Path('docs/handoff/2026-09-22-i1650-real-integration-readiness.json'): ((0o0644, "d826103bdc29aad73a5345465105ab8aa63200ed0175301421f168827664536c"), (0o0644, "947e49ba07061eac1db56c389924d03928e64ba691fd5a825fca35535de07b1f")),
         Path('scripts/real-ignored-harness-manifest.json'): ((0o0644, "00e3c392584fc56b0533d40df265fb37b8785a65b20031e327481062a785b55f"), (0o0644, "c71ea89468fe06595270142646ee25ef4f853839c0115ea54fd58c4441b1740c")),
         Path('scripts/run-real-ignored-harnesses.sh'): ((0o0755, "9a3bb0d28733b0c9a6f655330a06ca57183a78787c93015f5f9cd1087bdd0287"), (0o0755, "71d05f1557d3603e2f565e4572f544fa1d284eb52f055789afa1f0aeeb387a47")),
-        Path('scripts/verify_real_ignored_harnesses.py'): ((0o0644, "d2ec122fea6fcb6f7b7504ebe00dfcad32bf692c6e959141433ce59d7dc1eb6b"), (0o0644, "b795ae90046f7ba6fc92a0064ca8f78fac784533ec42701b9c1b0b8f3dff1c1d")),
+        Path('scripts/verify_real_ignored_harnesses.py'): ((0o0644, "d2ec122fea6fcb6f7b7504ebe00dfcad32bf692c6e959141433ce59d7dc1eb6b"), (0o0644, "377bcacb98e7e936bc812babc781a1fc50e68c4da8760c0bf25910f1e16e283a")),
     },
 }
-# Snapshot of the transport control surface. Taken at d2f1 (#2786); 14 entries,
-# the P0 matrix and the B068 verifier pair were re-pinned to reviewed main
-# b60f5ee8c after a per-commit review classified their post-d2f1 changes as not
-# transport-relevant. Dockerfile, durable_object_start.ts, index_fetch.ts and
-# both staging_d1_binding_proxy sources keep their d2f1 pins: their changes
-# (#2853, #2858) touch the Worker/Container request path and await a human
-# transport review, so current main still fails this gate as BASE. All four
-# WAVE_GROUPS have also drifted from exact old/new states on that main.
+# Reviewed snapshot of the transport control surface. First taken at d2f1
+# (#2786, c55d24560); re-baselined by #2868 to the exact bytes of main
+# da2d3f8db after every moved pin was reviewed. REBASELINE_LEDGER below holds
+# one row per moved pin: the PRs that moved it, its transport class and the
+# reason its bytes are admitted. The path set and the all-or-nothing
+# predicate are unchanged; only reviewed digests changed.
 WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('.github/workflows/container-build-push-prod.yml'): (0o0644, "8ee0d29eff20ef5d473e4a712279a727fcdc6c881ba2bb46433f7659802f598f"),
     Path('.github/workflows/issue-2183-reapi-composition.yml'): (0o0644, "bb382d6898ce95fb690c62bfc50334e94889dbf371fa7a0871dd7bac5e24b431"),
@@ -835,7 +833,7 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('.github/workflows/staging-quarantine-apply.yml'): (0o0644, "574c37a78fbed91be485fddc98309e464521d99bfc3a5d05c269daa486d4130b"),
     Path('Cargo.lock'): (0o0644, "02dd662ecdf7bcd6836c9ae18384b9f964c52dc739f63661de2d1a6e8b99929e"),
     Path('Cargo.toml'): (0o0644, "6012612bdd15b83e906f9a870049e137a9f2b947af1dd1105ee9aa6a460bfb0a"),
-    Path('Dockerfile'): (0o0644, "884f577834cfb8ef3c357afee884ac02f27c9c6031a139db04a0523fc07d5472"),
+    Path('Dockerfile'): (0o0644, "17fba21cc46ef543bd85fa90221ba4b84db1922486bd0c4f7e665c4250dfe212"),
     Path('crates/corelink-container/build.rs'): (0o0644, "b7d1b11510f0bf00a21f2f83a97a43389b0d288167f6b9c5516da57ffda9ce4d"),
     Path('crates/corelink-container/proto/staging_transport_probe.proto'): (0o0644, "b243732e58ba3ced040e9181befd4f3c2bd995e0b23eb750889c93629245970c"),
     Path('crates/corelink-container/src/grpc_staging_probe.rs'): (0o0644, "bab9a3dd5fea718e4e384e2fabe9145fadf9233bd9b41522c267ea02019d8e3d"),
@@ -847,19 +845,19 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('crates/corelink-container/src/storage/d1_http.rs'): (0o0644, "60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d"),
     Path('infra/staging/README.md'): (0o0644, "9a6b64adb090de17cc753fcb05c514998a14bccc487d4c66c5c6783c56aa1de6"),
     Path('infra/staging/topology.json'): (0o0644, "4855688905257f05c174d0f02c71bc1a9ffb23c2506a6bd00531d7b655eecd52"),
-    Path('scripts/staging_bootstrap_provider.py'): (0o0644, "4f09213ba0fad99a7433a448f84abc20600e1af9d521b0b15080a7b76cb037fe"),
+    Path('scripts/staging_bootstrap_provider.py'): (0o0644, "0861056f2377057909be7771ea7ee92cb90bc9c1839fc1cc6859a738b792ec80"),
     Path('scripts/verify_i2183_reapi_composition.py'): (0o0644, "532408187817e4ff508e9b2f5776e1646f7f304235ab697cf2e28fbab49a1b6c"),
-    Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "28023901b65dd1046af666fb26c8d862a389b94cafc11e3870a2794d869a6743"),
-    Path('scripts/verify_staging_provider_preflight.py'): (0o0644, "001d0392e7f8adff0c82d36d9c3a13a9d4fa25e603d6baf415c079185a6f35c9"),
+    Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "7674b1d6b0750b7757dc489feaa2d3e47d6a10f5d225a382b5b79a97d387e31b"),
+    Path('scripts/verify_staging_provider_preflight.py'): (0o0644, "2eeb30c175611229aab6717e37c72e25ac425cabf2a348dc286d4a85ff33a7b8"),
     Path('scripts/verify_staging_topology_contract.py'): (0o0644, "48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9"),
     Path('specs/03_architecture/issue-2176-grpc-transport-contract.md'): (0o0644, "351aa666c129c7dbc87db4f69f476f8bcdf522d0ba35223dca7eb507c8a926b3"),
     Path('tests/test_issue_1700_route_inventory.py'): (0o0644, "a371d50bc84eafad075c9ad943cbe9ab5b90a53a4e1501d19a428d38873a5d4a"),
-    Path('tests/test_staging_bootstrap_provider.py'): (0o0644, "6585723899a4cca74d58b1b33c9c816ea7cbc45390274bfa1dd3fea84489b9a2"),
+    Path('tests/test_staging_bootstrap_provider.py'): (0o0644, "bad65b59188844c2b27a6ee9253d4b24c81f7b3e85e84c496408ca4480391468"),
     Path('tests/test_staging_custom_domain.py'): (0o0644, "7fbbd59861b99a6b2ecdeb49bb726da48dde2323bc18004c4867c884edccf02f"),
-    Path('tests/test_staging_quarantine_apply_contract.py'): (0o0644, "5c2c77182f49f7fb2a3d6d65b2acf1cb4f76d907d69938b16f5c1ce6ae141e54"),
+    Path('tests/test_staging_quarantine_apply_contract.py'): (0o0644, "cbd53025a72586932b89b268100f628da983e9c0718d254c4eaf14c94698e78f"),
     Path('worker/package.json'): (0o0644, "96b6b20887688c4280772874766e878e285edb715acdf286f6fe5641e911fe34"),
     Path('worker/src/durable_object_probes.ts'): (0o0644, "3b1a67b3c6883d23dfd29bd0a8cf18de9e9c3848b4e79e1d3d04539944081f78"),
-    Path('worker/src/durable_object_start.ts'): (0o0644, "7f8c28ac7b93628f4c4767efd1bb68bb75d2df9ea85442e92d9a6097c500ce4c"),
+    Path('worker/src/durable_object_start.ts'): (0o0644, "461bf03e2d3f3b5aafb7f9cc33fb4a83f1c278d80db562c10f26e5d0dbe77fcd"),
     Path('worker/src/grpc_staging_authorization.ts'): (0o0644, "6b8e2f6eb6cc42d0b0d7404950d068bab9da47c4bb1bb4c4fa0a0073c3f48400"),
     Path('worker/src/grpc_staging_transport.ts'): (0o0644, "b3c0b471790ed7fd64138d99c0976b63c4fb620b0ce588f8c9852ea2de900f72"),
     Path('worker/src/grpc_transport_gate.ts'): (0o0644, "68b14c5537100733ff467d8beb80f3cadce07f9b3b5f43339ab323e8ca1cfcfd"),
@@ -867,13 +865,13 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('worker/src/index_common.ts'): (0o0644, "dadbd05f00c855febed2266eb0ef308e2aaa80a909c4c8e463c400ed2d6bb4de"),
     Path('worker/src/index_env.ts'): (0o0644, "a6242775bc4a315db4fd8574f842498a54f2b63993e42ec178b50adb9a299daa"),
     Path('worker/src/index_env_contract.ts'): (0o0644, "ec259cf4d4f4c6bab582375b88a449c3d5a3d8d53c7680afdcb8e7728710eb9d"),
-    Path('worker/src/index_fetch.ts'): (0o0644, "d8619985ea28485792198c8f0e8607c108d82af66a76c0fbfc5253f2e2c3ab07"),
+    Path('worker/src/index_fetch.ts'): (0o0644, "88b39d72414468291d768342610a568e48f036d3eebd03156c2a3fce6d3c7c3a"),
     Path('worker/src/lib/devenv_cleanup_route.ts'): (0o0644, "e279cb99a585388fbf4483313a80c042df3c14bf1ca5ef52c31dc451e329907c"),
     Path('worker/src/lib/internal_auth.ts'): (0o0644, "e773fa80db1ffd97ccdd20ae08e60e662482eea7e55bef6f19a3d61644b43acf"),
     Path('worker/src/lib/runner_credential_routes.ts'): (0o0644, "6cd7af8c032dd8315c619f6830c3ef63df1a459152f197ca6a7faedf847b5731"),
     Path('worker/src/pat_issue_rate_limit.ts'): (0o0644, "ff4ca0814c40f128fed4650b2041660670bcc985037b975cb6f29b177d3c1afb"),
-    Path('worker/src/staging_d1_binding_proxy.ts'): (0o0644, "1e5d940b240a4bef9daba0e360758793ab7b11a165f5b1bc8ccb7eae658a348d"),
-    Path('worker/src/staging_d1_binding_proxy_entrypoint.ts'): (0o0644, "af759d84e63a2016737c899cfba045f52c1fcf20061678a3612ddeec6c18bdab"),
+    Path('worker/src/staging_d1_binding_proxy.ts'): (0o0644, "6c9dfdc830c4cfe765aee5175367da814e1675b91dfd703f18acd04468952df8"),
+    Path('worker/src/staging_d1_binding_proxy_entrypoint.ts'): (0o0644, "e22bd0624dbec27c32cfb0f9efa254121ecefe16e61ea481058f4fe7c4d6f558"),
     Path('worker/tests/cloudflare_workers_node_stub.ts'): (0o0644, "0237103e747517298fea07261598d250e25edff6f412cd1df33695c1585cfcf7"),
     Path('worker/tests/grpc_staging_transport.test.ts'): (0o0644, "ab3748063dda62d241c4c0cfdd482261514a2b8fd8a6f427d5ef4023c7fe4f96"),
     Path('worker/tests/staging_d1_binding_proxy.test.ts'): (0o0644, "3928991ec958ba8b22d6758823df35519b2821bc9f09219b9deced0acd2e1ce8"),
@@ -884,6 +882,106 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('worker/vitest.miniflare.config.mts'): (0o0644, "da43009c6edc93f9ca3b626e29371b84d5125de0645c10ba7f3b6bbf3751a12a"),
 }
 WAVE_MATRIX_SHA256 = "06e13899bd841edcea335ed54989fdbd09e785e5f2a482cb206862c80d816475"
+# All four WAVE_GROUPS were delivered and then edited by later PRs, so main
+# matched neither their old nor their new pins and every BASE failed as
+# "partial". WAVE_GROUPS stays the historical old -> new record. These are the
+# reviewed successor bytes of the paths that moved after delivery (every other
+# path keeps its new pin), recorded in REBASELINE_LEDGER. A group in this
+# "successor" state is a BASE state only: no candidate may move a group into
+# or out of it, and old -> new remains the one admitted transition.
+WAVE_GROUP_SUCCESSOR_PINS: dict[str, dict[Path, tuple[int, str]]] = {
+    "i1652": {
+        Path('worker/src/index_schedule.ts'): (0o0644, "09978695620521d709692bbfc4b98fec450bf3a8465e20367caec52bdc626465"),
+    },
+    "i1648": {
+        Path('scripts/issue_1648_image_only.py'): (0o0644, "ae9e315d92b64018bd26835091af52b3c50e74e17dd9c66f8b23f79c6db3b914"),
+        Path('tests/test_issue_1648_image_only.py'): (0o0644, "f42867c94486c7ff0cc9ca9a1f2da0493edfb192d4bf05953bbe2f383b4e51e5"),
+    },
+    "i1700": {
+        Path('.github/workflows/campaign-ci.yml'): (0o0644, "72dd08b4a233dce13458dcdc2f6d105915742243b9de583e704a43dd98caee2e"),
+        Path('.github/workflows/issue-1700-container-staging-deploy.yml'): (0o0644, "d11b0022e96d09a867b10f4836a696baacaa07fc6fc8c5b078615fa71741e76d"),
+        Path('crates/corelink-container/src/routes/staging_d1_binding_probe.rs'): (0o0644, "ad43834d03680f8afafb1b4146901efe12d8d9fe8305d4b24b55999c7ccd0c32"),
+        Path('crates/corelink-container/src/routes/staging_d1_probe_window.json'): (0o0644, "c145e92a2e89ef91893bc390f511345dfc539cf3749125d606d8082c24fe3e08"),
+        Path('docs/operator/issue-1700-runtime-recovery.md'): (0o0644, "177a5d673ae171a7485eb9d22213d0b6ff8bf333ec0c1e45d416fec2c8e2dc96"),
+        Path('scripts/issue_1700_rollback_quiescence.py'): (0o0644, "7c730feae5ad7abd26543a1155439d9060ccccf1bbcfdc66f6f5549255086325"),
+        Path('scripts/issue_1700_runtime_probe.mjs'): (0o0644, "153bf560ae427413ec4653b69c70f9ac7dee36c17de6610350ec2451512fd499"),
+        Path('scripts/tests/issue_1700_probe_process.test.mjs'): (0o0644, "967072d2bc64bd16ce04cd3a11fafe0c39c19ac2a53bd23272c856fc911beca8"),
+        Path('scripts/tests/issue_1700_runtime_probe.test.mjs'): (0o0644, "d187b1a6cf260e122baec9b88de044395468564e2ebe3bfd9f05c0d4df1a49ed"),
+        Path('tests/test_issue_1700_rollback_quiescence.py'): (0o0644, "aa1e0bf92da2cac07a7440cb5a2d37a8694a7c78820158da1bbf9f2f4f76f094"),
+        Path('worker/src/durable_object.ts'): (0o0644, "4efdd04cf2bf5b08b2509ace4a3dd71a1fe83a800b339017f54ed316eb469b86"),
+        Path('worker/src/staging_d1_probe_retirement.ts'): (0o0644, "554f99b143b80eb663884fb8d939adb2def05810699460faafb2ee12cbcea75c"),
+        Path('worker/src/staging_runtime_d1_probe.ts'): (0o0644, "953b4f58d23efb3a47aaf204f75de335c992bb21d3d605aed0ebee868e78dce7"),
+        Path('worker/tests/durable_object.test.ts'): (0o0644, "f7363e23aa2b490b198c37c186820e6f12da19ca2c1a40dd1be41e4f57565f6c"),
+        Path('worker/tests/staging_d1_probe_retirement.test.ts'): (0o0644, "d54b43921bcac3151160b16c03189674407420b455f16ee95e3556b92e518647"),
+        Path('worker/tests/staging_runtime_d1_probe.test.ts'): (0o0644, "bf0e3ac45f83de3a7bdf93aa2d8eaab9dd6a138292c6e80f74d520aa3a999e6c"),
+    },
+    "i2565": {
+        Path('.github/workflows/issue-1650-real-integration-contract.yml'): (0o0644, "c95707a6e43e908a1f3f3004394468acf14707a3f87f34d8a647686012ea711b"),
+        Path('.github/workflows/real-ignored-harnesses.yml'): (0o0644, "535f13cf806b8804202c0d416a0b789fc3392e97a9071bc83798cfbbbbf6bb40"),
+        Path('crates/corelink-stripe-real/src/client.rs'): (0o0644, "102d98e63f9d07c6a130736f9c3fbf049c82d286b640823b7a443922a52a45b7"),
+        Path('crates/corelink-stripe-real/tests/live_integration.rs'): (0o0644, "4667e8354afb20adea5eb18afe33fcadf77bee696e3e91b1f00eefcf7e200b11"),
+        Path('scripts/real-ignored-harness-manifest.json'): (0o0644, "5a6e9d445ff2734afe5805e0735aa5df27757e2a63604c6827349eca67aabe83"),
+        Path('scripts/run-real-ignored-harnesses.sh'): (0o0755, "017d51d6cd4537fe379f2d1f799046f3f2eee1d6259797b7cfdf9a6b105cb796"),
+        Path('scripts/verify_real_ignored_harnesses.py'): (0o0644, "3d977e6f9878c54859071f2ae09896546f27b6d87e8c1fa027d9de888995439e"),
+    },
+}
+# Review record of the #2868 re-baseline, one row per moved pin (a control, the
+# P0 matrix, a group successor, or a #2574 REVIEWED_SURFACE path): the PRs
+# that moved the file after its previous reviewed bytes, its class, and why
+# the new bytes are admitted. "transport-reviewed" rows touch the Worker or
+# Container request path, the gRPC deny, or auth; each was read against the
+# #2176 contract and found to add no gRPC admission. "not-transport" rows have
+# no ingress, TLS or auth effect. The verifier never reads this table; the
+# unit tests require its keys to equal the moved pins exactly, both ways.
+REBASELINE_LEDGER: dict[Path, tuple[str, str, str]] = {
+    Path(".github/workflows/campaign-ci.yml"): ("#2798, #2799, #2811, #2812, #2825, #2834, #2844, #2852, #2853, #2858, #2862, #2868", "not-transport", "Dispatch-only CI suites; #2868 updates its two #2574 checker digests."),
+    Path(".github/workflows/issue-1650-real-integration-contract.yml"): ("#2811", "not-transport", "Credentialless contract CI for scoped R2 credentials."),
+    Path(".github/workflows/issue-1700-container-staging-deploy.yml"): ("#2806, #2812, #2825, #2844, #2853", "not-transport", "Protected staging deploy workflow; no Worker or Container source."),
+    Path(".github/workflows/real-ignored-harnesses.yml"): ("#2800, #2811", "not-transport", "Dispatch-only real-integration harness lanes (R2 fixtures, scoped credentials)."),
+    Path(".github/workflows/staging-quarantine-apply.yml"): ("#2816", "not-transport", "Staging quarantine workflow binds the B-216 alert receiver."),
+    Path("Cargo.lock"): ("#2830, #2842, #2843, #2847, #2851", "not-transport", "Only corelink-cli 0.1.2 -> 0.1.7; no corelink-server dependency moved."),
+    Path("Dockerfile"): ("#2858", "transport-reviewed", "Runtime stage adds a staging-only PID-1 supervisor that execs the same binary; ENTRYPOINT, USER, PORT and EXPOSE 50051 unchanged."),
+    Path("crates/corelink-container/src/routes/staging_d1_binding_probe.rs"): ("#2795, #2801, #2812, #2819, #2825, #2844, #2853, #2858, #2865, #2881", "transport-reviewed", "Probe windows move; the route now also requires the validated lifetime env and returns 404 without it. Only the DO reaches it; DO fetch 404s the path."),
+    Path("crates/corelink-container/src/routes/staging_d1_probe_window.json"): ("#2795, #2801, #2812, #2819, #2825, #2844, #2853, #2858, #2865, #2881", "not-transport", "Staging probe window constants."),
+    Path("crates/corelink-container/src/storage.rs"): ("#2811", "not-transport", "Optional outbound R2 session token, redacted in Debug; no route or listener."),
+    Path("crates/corelink-container/src/storage/d1_http.rs"): ("#2811", "not-transport", "Test struct literals gain r2_session_token: None."),
+    Path("crates/corelink-stripe-real/src/client.rs"): ("#2792", "not-transport", "Outbound Stripe test client uses the deployed wallet proxy route."),
+    Path("crates/corelink-stripe-real/tests/live_integration.rs"): ("#2792", "not-transport", "Exactly the 11-literal wallet route transform (WALLET_ROUTE_TRANSFORMED_LIVE_SHA256)."),
+    Path("docs/internal/secrets-checklist.md"): ("#2793, #2816, #2850, #2853, #2856, #2858", "not-transport", "Secret inventory rows; row 315 and the three B072 names still appear exactly once."),
+    Path("docs/operator/issue-1700-runtime-recovery.md"): ("#2795, #2801, #2806, #2812, #2819, #2825, #2844", "not-transport", "Operator runbook."),
+    Path("infra/staging/README.md"): ("#2846, #2850, #2853", "not-transport", "Operator documentation."),
+    Path("infra/staging/topology.json"): ("#2846", "not-transport", "validated_inputs.runner_label corelink -> ubuntu-24.04."),
+    Path("scripts/issue_1648_image_only.py"): ("#2802", "not-transport", "Image rollout sequencing in a CI operator script."),
+    Path("scripts/issue_1700_rollback_quiescence.py"): ("#2853, #2858, #2865, #2881", "not-transport", "Operator rollback check for the moved probe windows."),
+    Path("scripts/issue_1700_runtime_probe.mjs"): ("#2801, #2806, #2812, #2819, #2825, #2834, #2844, #2858, #2865, #2881", "not-transport", "Outbound operator probe client."),
+    Path("scripts/real-ignored-harness-manifest.json"): ("#2811", "not-transport", "Harness manifest for scoped R2 credentials."),
+    Path("scripts/run-real-ignored-harnesses.sh"): ("#2811", "not-transport", "Harness runner for scoped R2 credentials."),
+    Path("scripts/staging_bootstrap_provider.py"): ("#2816, #2869", "not-transport", "CI provisioning plan: B-216 binding and existing-Worker secret-name delta."),
+    Path("scripts/tests/issue_1700_probe_process.test.mjs"): ("#2801, #2812, #2844", "not-transport", "Tests."),
+    Path("scripts/tests/issue_1700_runtime_probe.test.mjs"): ("#2795, #2801, #2806, #2812, #2819, #2825, #2834, #2844, #2853, #2858, #2865, #2881", "not-transport", "Tests."),
+    Path("scripts/verify_i2574_grpc_diagnostic_policy.py"): ("#2868", "transport-reviewed", "Adds REVIEWED_SURFACE as a BASE state; EXPECTED and every transition map unchanged."),
+    Path("scripts/verify_real_ignored_harnesses.py"): ("#2792, #2800, #2811", "not-transport", "B068 verifier: exact route transform (294ea6c1), then R2 lane edits; still pins the transformed live digest."),
+    Path("scripts/verify_staging_provider_preflight.py"): ("#2816, #2869", "not-transport", "Preflight checker for the provisioning plan."),
+    Path("tests/test_issue_1648_image_only.py"): ("#2802", "not-transport", "Tests."),
+    Path("tests/test_issue_1700_rollback_quiescence.py"): ("#2853", "not-transport", "Tests."),
+    Path("tests/test_staging_bootstrap_provider.py"): ("#2816, #2869", "not-transport", "Tests."),
+    Path("tests/test_staging_custom_domain.py"): ("#2848", "not-transport", "Test redacts staging CLI stdout."),
+    Path("tests/test_staging_quarantine_apply_contract.py"): ("#2816, #2846, #2869", "not-transport", "Tests."),
+    Path("worker/src/durable_object.ts"): ("#2812, #2844, #2853, #2858, #2865, #2881", "transport-reviewed", "fetch() only adds early 404/410 denials before the unchanged handler; new HTTP-proof RPCs reach Container /_health and the probe path, never the gRPC forwarder."),
+    Path("worker/src/durable_object_start.ts"): ("#2853, #2858", "transport-reviewed", "Supervisor entrypoint only with a validated staging deadline; port 50051 unchanged; probe gets no admin key, so admin auth uses the shared key or fails closed."),
+    Path("worker/src/index_env.ts"): ("#2853", "not-transport", "Adds the optional DPA_ACCEPT_IP_HASH_SALT type field only."),
+    Path("worker/src/index_fetch.ts"): ("#2853", "transport-reviewed", "Staging D1 proof handler runs before the gRPC deny. It returns JSON only: 404 on workers.dev off its path, admin auth, exact application/json POST (gRPC POST 400). Else null to the deny."),
+    Path("worker/src/index_schedule.ts"): ("#2812, #2844, #2853", "not-transport", "Scheduled (cron) handler; no fetch path."),
+    Path("worker/src/staging_d1_binding_proxy.ts"): ("#2858", "transport-reviewed", "Loopback D1 service binding gains deadline checks that only return 502; parsing and D1 calls unchanged."),
+    Path("worker/src/staging_d1_binding_proxy_entrypoint.ts"): ("#2858", "transport-reviewed", "Empty props keep the old path; a validated deadline is passed through; anything else returns 502."),
+    Path("worker/src/staging_d1_probe_retirement.ts"): ("#2801, #2812, #2844, #2853", "not-transport", "Probe table cleanup helpers; no fetch path."),
+    Path("worker/src/staging_runtime_d1_probe.ts"): ("#2801, #2812, #2844, #2853", "not-transport", "Probe orchestration and receipts; no fetch handler."),
+    Path("worker/tests/durable_object.test.ts"): ("#2812, #2844, #2853, #2858", "not-transport", "Tests."),
+    Path("worker/tests/staging_d1_binding_proxy.test.ts"): ("#2858", "not-transport", "Tests."),
+    Path("worker/tests/staging_d1_binding_start_gate.test.ts"): ("#2853, #2858", "not-transport", "Tests."),
+    Path("worker/tests/staging_d1_probe_retirement.test.ts"): ("#2795, #2801, #2812, #2844, #2853", "not-transport", "Tests."),
+    Path("worker/tests/staging_runtime_d1_probe.test.ts"): ("#2795, #2801, #2812, #2819, #2825, #2844, #2853", "not-transport", "Tests."),
+}
 WAVE_CONTROLLED_PATHS = frozenset((
     Path("scripts/verify_i2176_grpc_deny_gate.py"),
     Path("tests/test_verify_i2176_grpc_deny_gate.py"),
@@ -937,7 +1035,7 @@ WALLET_ROUTE_LIVE_MODULE = b"mod cleanup_fault_injection {"
 WALLET_ROUTE_LIVE_END = b"\n}\n\nimpl Drop for HarnessCleanup"
 WALLET_ROUTE_LIVE_LITERAL_COUNT = 11
 WALLET_ROUTE_TRANSFORMED_LIVE_SHA256 = "4667e8354afb20adea5eb18afe33fcadf77bee696e3e91b1f00eefcf7e200b11"
-WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256 = "3d977e6f9878c54859071f2ae09896546f27b6d87e8c1fa027d9de888995439e"
+WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256 = "294ea6c178b6713f75e3b85f4db9e4ee28c79576c20a47aeb071069f175333fa"
 WALLET_ROUTE_VERIFIER_KEY = (
     b'"crates/corelink-stripe-real/tests/live_integration.rs": "'
 )
@@ -984,13 +1082,43 @@ def _wallet_route_expected_verifier(base: Path, accepted_live: bytes) -> bytes:
     accepted = hashlib.sha256(accepted_live).hexdigest().encode("ascii")
     expected = source[:start] + accepted + source[end:]
     expected_sha = hashlib.sha256(expected).hexdigest()
-    allowed = (
+    allowed = [
         WAVE_GROUPS["i2565"][WALLET_ROUTE_VERIFIER_PATH][1][1],
         WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256,
-    )
+    ]
+    # The reviewed successor keeps the transformed live digest (#2800, #2811).
+    successor = WAVE_GROUP_SUCCESSOR_PINS.get("i2565", {}).get(WALLET_ROUTE_VERIFIER_PATH)
+    if successor is not None:
+        allowed.append(successor[1])
     if expected_sha not in allowed:
         raise ContractError("trusted B068 verifier is not the frozen BASE or exact route transform")
     return expected
+
+
+def _i2565_endpoint_pins(state: str) -> dict[Path, tuple[int, str] | None]:
+    """#2565 paths outside the wallet route, at the delivered or successor state."""
+    if state == "new":
+        pins = {path: new for path, (_old, new) in WAVE_GROUPS["i2565"].items()}
+    elif state == "successor":
+        successor = _wave_group_successor_pins("i2565")
+        if successor is None:
+            raise ContractError("#2565 has no reviewed successor state")
+        pins = successor
+    else:
+        raise ContractError(f"unknown #2565 endpoint state: {state}")
+    return {path: pin for path, pin in pins.items() if path not in WALLET_ROUTE_PATHS}
+
+
+def _i2565_endpoint_state(root: Path) -> str:
+    drift: list[str] = []
+    for state in ["new"] + (["successor"] if "i2565" in WAVE_GROUP_SUCCESSOR_PINS else []):
+        drift = sorted(
+            str(path) for path, pin in _i2565_endpoint_pins(state).items()
+            if not _wave_pin_matches(root, path, pin)
+        )
+        if not drift:
+            return state
+    raise ContractError(f"trusted #2565 endpoint drift: {drift}")
 
 
 def _wallet_route_base_states(trusted_base: Path) -> dict[str, str]:
@@ -1009,14 +1137,10 @@ def _wallet_route_base_states(trusted_base: Path) -> dict[str, str]:
     actual_verifier = (trusted_base / WALLET_ROUTE_VERIFIER_PATH).read_bytes()
     if actual_verifier != verifier:
         raise ContractError("trusted B068 verifier is not paired with its wallet live harness")
-    for relative, (_old, new) in WAVE_GROUPS["i2565"].items():
-        if relative in WALLET_ROUTE_PATHS or relative == Path("crates/corelink-stripe-real/src/client.rs"):
-            continue
-        if not _wave_pin_matches(trusted_base, relative, new):
-            raise ContractError(f"trusted #2565 endpoint drift: {relative}")
+    endpoint_state = _i2565_endpoint_state(trusted_base)
     for relative in WALLET_ROUTE_PATHS:
         require_regular_mode(trusted_base, relative)
-    states["i2565"] = "new"
+    states["i2565"] = endpoint_state
     return states
 
 
@@ -1025,7 +1149,7 @@ def validate_wallet_route_candidate(
 ) -> bool:
     """Validate the one protected wallet-route transition from consumed #2565."""
     states = _wallet_route_base_states(trusted_base)
-    if states.get("i2565") != "new":
+    if states.get("i2565") not in ("new", "successor"):
         raise ContractError("wallet route requires the consumed #2565 trusted BASE")
     if changes is None:
         changes = changed_paths(trusted_base, candidate)
@@ -1037,10 +1161,10 @@ def validate_wallet_route_candidate(
             continue
         if _wave_group_state(candidate, name) != state:
             raise ContractError(f"wallet route changes another delivery wave: {name}")
-    for relative, (_old, new) in WAVE_GROUPS["i2565"].items():
-        if relative not in WALLET_ROUTE_PATHS and not _wave_pin_matches(trusted_base, relative, new):
+    for relative, pin in _i2565_endpoint_pins(states["i2565"]).items():
+        if not _wave_pin_matches(trusted_base, relative, pin):
             raise ContractError(f"trusted #2565 endpoint drift: {relative}")
-        if relative not in WALLET_ROUTE_PATHS and not _wave_pin_matches(candidate, relative, new):
+        if not _wave_pin_matches(candidate, relative, pin):
             raise ContractError(f"wallet route changes a #2565 control: {relative}")
     for relative in WALLET_ROUTE_PATHS:
         require_regular_mode(trusted_base, relative)
@@ -1058,16 +1182,36 @@ def validate_wallet_route_candidate(
     return True
 
 
+def _wave_group_successor_pins(group: str) -> dict[Path, tuple[int, str] | None] | None:
+    """The complete reviewed successor state of a group, or None if it has none."""
+    successors = WAVE_GROUP_SUCCESSOR_PINS.get(group)
+    if successors is None:
+        return None
+    pins = WAVE_GROUPS[group]
+    if not successors or not set(successors) <= set(pins):
+        raise ContractError(f"reviewed successor pins are empty or outside delivery group: {group}")
+    if any(pins[path][1] == pin for path, pin in successors.items()):
+        raise ContractError(f"reviewed successor pin repeats the delivered pin: {group}")
+    return {path: successors.get(path, new_pin) for path, (_old_pin, new_pin) in pins.items()}
+
+
 def _wave_group_state(root: Path, group: str) -> str:
     pins = WAVE_GROUPS[group]
-    old = all(_wave_pin_matches(root, path, old_pin) for path, (old_pin, _new_pin) in pins.items())
-    new = all(_wave_pin_matches(root, path, new_pin) for path, (_old_pin, new_pin) in pins.items())
-    if old == new:
+    states = {
+        "old": all(_wave_pin_matches(root, path, old_pin) for path, (old_pin, _new_pin) in pins.items()),
+        "new": all(_wave_pin_matches(root, path, new_pin) for path, (_old_pin, new_pin) in pins.items()),
+    }
+    successor = _wave_group_successor_pins(group)
+    if successor is not None:
+        states["successor"] = all(_wave_pin_matches(root, path, pin) for path, pin in successor.items())
+    matched = [state for state, matches in states.items() if matches]
+    if len(matched) != 1:
         raise ContractError(f"unknown or partial trusted BASE delivery state: {group}")
-    return "old" if old else "new"
+    return matched[0]
 
 def validate_wave(candidate: Path, trusted_base: Path, changes: set[Path]) -> bool:
-    # Accept only the reviewed control snapshot plus four complete old/new groups.
+    # Accept only the reviewed control snapshot plus four groups that each sit
+    # exactly at old, new or their reviewed successor; only old -> new moves.
     if not _wave_controls_match(trusted_base):
         raise ContractError("trusted BASE transport controls do not match the reviewed snapshot")
     route_base = None
