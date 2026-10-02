@@ -80,13 +80,15 @@ jobs:
           python3 scripts/verify_staging_target.py
           python3 scripts/verify_staging_topology_contract.py --expect ready
 
+      # Existing Workers yield a name-only update-existing-secrets plan; the
+      # quarantine-apply create gate runs without the flag and still refuses.
       - name: Read current provider state without mutation
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/staging-provider-preflight"
-          python3 scripts/staging_bootstrap_provider.py --phase preflight \
+          python3 scripts/staging_bootstrap_provider.py --phase preflight --existing-worker-plan \
             | tee "$RUNNER_TEMP/staging-provider-preflight/receipt.json"
 
       - name: Upload redacted provider receipt

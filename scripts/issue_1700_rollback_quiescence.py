@@ -10,8 +10,8 @@ import urllib.request
 
 API = 'https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging'
 HTTP_ORIGIN = 'https://corelink-staging.gmhelmold.workers.dev'
-HTTP_NONCE = 'issue-1700-recovery-20261001-v11'
-HTTP_START_MS, HTTP_LAST_ENTRY_MS, HTTP_EXPIRY_MS = 1790884800000, 1790892000000, 1790896500000
+HTTP_NONCE = 'issue-1700-recovery-20261002-v13'
+HTTP_START_MS, HTTP_LAST_ENTRY_MS, HTTP_EXPIRY_MS = 1790924400000, 1790931600000, 1790936100000
 OLD_RELEASES = {'v8': '7d18bcfc450db97b1b987923050b92971da530a8',
                 'v9': '5da497051f0b11dbfc8b87d1dfa8e753304e2719'}
 BROKER_STATUS_CONTRACT = 'issue1700-broker-status-observation-v1'
