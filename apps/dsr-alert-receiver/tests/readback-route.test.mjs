@@ -860,11 +860,14 @@ describe("B-216 read-only Worker inventory", () => {
 
   // Deploy run 37045137543, reproduced: Cloudflare lists a script without routes
   // as `routes: null`, and the initial private readback refused it as ambiguous.
-  it("reads the live `routes: null` as zero routes, and names the read when a shape is refused", async () => {
+  it("reads the live `routes: null` as zero known routes", async () => {
     const live = apiFixture({
       [`/accounts/${READBACK_TARGET.accountId}/workers/scripts`]: { success: true, result: [{ id: READBACK_TARGET.workerName, routes: null }] },
     });
     expect((await readWorkerInventory({ context, fetchImpl: live.fetchImpl })).routes).toEqual({ status: "known", count: 0, pattern_sha256: [] });
+  });
+
+  it("names the script-list read when it refuses a routes value that is neither null nor a list", async () => {
     for (const routes of ["none", {}, 0, false]) {
       const odd = apiFixture({
         [`/accounts/${READBACK_TARGET.accountId}/workers/scripts`]: { success: true, result: [{ id: READBACK_TARGET.workerName, routes }] },
@@ -874,7 +877,9 @@ describe("B-216 read-only Worker inventory", () => {
         readFailure: { endpoint: "scripts_list", http_status: 200, cf_error_codes: [], message_class: "unexpected_shape" },
       });
     }
-    // The refusal names the read it checked, not the first or a later one.
+  });
+
+  it("names the read a shape check refused, not the first or the last one", async () => {
     const subdomain = apiFixture({
       [`/accounts/${READBACK_TARGET.accountId}/workers/scripts/${READBACK_TARGET.workerName}/subdomain`]: { success: true, result: { enabled: "yes", previews_enabled: false } },
     });
@@ -882,13 +887,22 @@ describe("B-216 read-only Worker inventory", () => {
       code: "worker_subdomain_ambiguous",
       readFailure: { endpoint: "worker_subdomain", http_status: 200, cf_error_codes: [], message_class: "unexpected_shape" },
     });
-    // A refused request keeps its own classification.
+    const versions = apiFixture({
+      [`/accounts/${READBACK_TARGET.accountId}/workers/scripts/${READBACK_TARGET.workerName}/versions`]: { success: true, result: { items: [{ id: "not-a-uuid" }] } },
+    });
+    await expect(readWorkerInventory({ context, fetchImpl: versions.fetchImpl })).rejects.toMatchObject({
+      code: "worker_versions_ambiguous",
+      readFailure: { endpoint: "worker_versions", http_status: 200, cf_error_codes: [], message_class: "unexpected_shape" },
+    });
+  });
+
+  it("keeps a refused request's own classification instead of a shape one", async () => {
     const refused = apiFixture({
-      [`/accounts/${READBACK_TARGET.accountId}/workers/scripts`]: { success: false, errors: [{ code: 10000 }], statusCode: 403 },
+      [`/accounts/${READBACK_TARGET.accountId}/workers/scripts/${READBACK_TARGET.workerName}/deployments`]: { success: false, errors: [{ code: 10000 }], statusCode: 403 },
     });
     await expect(readWorkerInventory({ context, fetchImpl: refused.fetchImpl })).rejects.toMatchObject({
       code: "provider_response_rejected",
-      readFailure: { endpoint: "scripts_list", http_status: 403, cf_error_codes: [10000], message_class: "authentication" },
+      readFailure: { endpoint: "worker_deployments", http_status: 403, cf_error_codes: [10000], message_class: "authentication" },
     });
   });
 

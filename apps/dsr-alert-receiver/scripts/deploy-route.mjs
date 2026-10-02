@@ -476,14 +476,67 @@ export function validateDatabaseIdentity(database) {
   return id;
 }
 
-const normalizeSql = (sql) => sql.toLowerCase()
-  .replace(/--[^\n]*/g, " ")
-  .replace(/create\s+table\s+if\s+not\s+exists/g, "create table")
-  .replace(/["`\[\]]/g, "")
-  .replace(/\s+/g, " ")
-  .replace(/\s*([(),=])\s*/g, "$1")
-  .trim()
-  .replace(/;$/, "");
+// Schema SQL is compared as a token list, never as rewritten text. String
+// literals and quoted identifiers keep every byte (the old normalizer lowercased
+// and stripped brackets inside them, so `GLOB '*[^0-9a-f]*'` without its
+// brackets, or an uppercased event literal, compared equal; PR #2890 review).
+// Only keywords and bare identifiers, which SQLite reads case-insensitively, are
+// lowercased; whitespace and comments only separate tokens. SQLite stores a
+// table's SQL as `CREATE TABLE ` plus the statement text from the table name on
+// (IF NOT EXISTS, leading comments and the final `;` dropped), so the migration
+// is reduced the same way before the comparison.
+const SQL_OPERATORS = ["<>", "<=", ">=", "==", "!=", "||", "<<", ">>"];
+
+export function sqlTokens(sql) {
+  if (typeof sql !== "string") fail("database_schema_ambiguous");
+  const tokens = [];
+  let index = 0;
+  const quoted = (open, close) => {
+    let end = index + 1;
+    for (;;) {
+      end = sql.indexOf(close, end);
+      if (end === -1) fail("database_schema_ambiguous");
+      if (open !== "[" && sql[end + 1] === close) { end += 2; continue; }
+      return end + 1;
+    }
+  };
+  while (index < sql.length) {
+    const char = sql[index];
+    if (/\s/.test(char)) { index += 1; continue; }
+    if (sql.startsWith("--", index)) {
+      const end = sql.indexOf("\n", index);
+      index = end === -1 ? sql.length : end + 1;
+      continue;
+    }
+    if (sql.startsWith("/*", index)) {
+      const end = sql.indexOf("*/", index + 2);
+      if (end === -1) fail("database_schema_ambiguous");
+      index = end + 2;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`" || char === "[") {
+      const end = quoted(char, char === "[" ? "]" : char);
+      tokens.push(sql.slice(index, end));
+      index = end;
+      continue;
+    }
+    const word = /^[A-Za-z_][A-Za-z0-9_$]*/.exec(sql.slice(index));
+    if (word) { tokens.push(word[0].toLowerCase()); index += word[0].length; continue; }
+    const number = /^[0-9]+(?:\.[0-9]+)?/.exec(sql.slice(index));
+    if (number) { tokens.push(number[0]); index += number[0].length; continue; }
+    const operator = SQL_OPERATORS.find((candidate) => sql.startsWith(candidate, index));
+    tokens.push(operator ?? char);
+    index += operator ? operator.length : 1;
+  }
+  return tokens;
+}
+
+function storedTableTokens(sql) {
+  const tokens = sqlTokens(sql);
+  while (tokens.at(-1) === ";") tokens.pop();
+  if (tokens[0] === "create" && tokens[1] === "table" && tokens[2] === "if" && tokens[3] === "not" && tokens[4] === "exists") tokens.splice(2, 3);
+  return tokens;
+}
 
 export function validateReceiptSchema(rows, migration) {
   if (!Array.isArray(rows)) fail("database_schema_ambiguous");
@@ -497,10 +550,9 @@ export function validateReceiptSchema(rows, migration) {
     if (migrationTable) fail("database_migration_state_unknown");
     return "empty";
   }
-  const expected = normalizeSql(migration).replace(/create table if not exists/g, "create table");
-  const actual = normalizeSql(receiptTable.sql ?? "");
-  const expectedBody = expected.slice(expected.indexOf("create table"));
-  if (!actual || actual !== expectedBody || !migrationTable) fail("database_schema_drift");
+  const expected = storedTableTokens(migration);
+  const actual = typeof receiptTable.sql === "string" ? storedTableTokens(receiptTable.sql) : [];
+  if (actual.length === 0 || actual.length !== expected.length || actual.some((token, index) => token !== expected[index]) || !migrationTable) fail("database_schema_drift");
   return "applied";
 }
 
@@ -601,6 +653,30 @@ export async function listNamedD1Databases(api) {
     }
   }
   fail("database_inventory_truncated");
+}
+
+// The versions this run deploys are bound by the IDs Wrangler printed for them,
+// never picked from a list: on a same-SHA retry a stale list can hold only an
+// older version with the same tag, which then passed every later check and was
+// deployed (PR #2890 review). Wrangler 4.141 prints these exact lines.
+const VERSION_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+export const UPLOADED_VERSION_LINE = new RegExp(`^Worker Version ID: (${VERSION_UUID})$`, "gm");
+export const SECRET_VERSION_LINE = new RegExp(`Created version (${VERSION_UUID}) with secret ${TARGET.workerSecret}\\.`, "g");
+
+export function capturedVersionId(stdout, pattern, code) {
+  const ids = typeof stdout === "string" ? [...new Set([...stdout.matchAll(pattern)].map((match) => match[1]))] : [];
+  if (ids.length !== 1 || !isUuid(ids[0])) fail(code);
+  return ids[0];
+}
+
+// A version this run created: the captured ID, this run's tag, and this run's
+// unique message (it carries a random nonce), with a script etag. A candidate
+// must also carry the etag of this run's own upload, so its code is that upload.
+export function validateRunVersion(version, { id, tag, message, etag = null }) {
+  if (!isUuid(id) || version?.id !== id || versionTag(version) !== tag || version?.annotations?.["workers/message"] !== message) fail("worker_revision_not_this_run");
+  const scriptEtag = version?.resources?.script?.etag;
+  if (typeof scriptEtag !== "string" || scriptEtag.length === 0 || (etag !== null && scriptEtag !== etag)) fail("worker_revision_not_this_run");
+  return scriptEtag;
 }
 
 export function validatePostflight({ versionId, deployment, bindings, secrets }, expectedDatabaseId, expectedTag) {
@@ -724,7 +800,7 @@ export function assertProviderRequest(path, method, state = {}) {
   if (method === "GET" && [PROVIDER_ACCOUNT_PATH, `${PROVIDER_ACCOUNT_PATH}/workers/scripts`, `${PROVIDER_ACCOUNT_PATH}/workers/subdomain`, `${PROVIDER_ACCOUNT_PATH}/workers/domains`, PROVIDER_SERVICE_ROUTES_PATH].includes(path)) return true;
   if (path.startsWith(`${PROVIDER_WORKER_PATH}/`)) {
     const rest = path.slice(PROVIDER_WORKER_PATH.length);
-    if (method === "GET" && (["/deployments", "/secrets", "/subdomain", "/versions?per_page=100&deployable=true"].includes(rest) || WORKER_VERSION_PATH.test(rest))) return true;
+    if (method === "GET" && (["/deployments", "/secrets", "/subdomain"].includes(rest) || WORKER_VERSION_PATH.test(rest))) return true;
     if (method === "POST" && rest === "/subdomain") return true;
   }
   if (method === "GET" && D1_LIST_PATH.test(path)) return true;
@@ -1105,40 +1181,48 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     }
 
     const expectedVersionTag = `b216-${sha}`;
+    const sourceVersionTag = `b216-source-${sha}`;
+    // Unique to this run: a same-SHA retry cannot produce it.
+    const runMessage = `B-216 reviewed main ${sha} run ${randomUUID()}`;
     workerMutationStarted = true;
     stage = "worker_version_upload";
-    command(["versions", "upload", entrypoint, "--config", tempConfig, "--tag", `b216-source-${sha}`, "--message", `B-216 reviewed main ${sha}`], {
+    const uploadOutput = command(["versions", "upload", entrypoint, "--config", tempConfig, "--tag", sourceVersionTag, "--message", runMessage], {
       cwd: appDir,
       home: wranglerHome,
       apiToken: context.apiToken,
     });
+    const sourceVersionId = capturedVersionId(uploadOutput, UPLOADED_VERSION_LINE, "worker_upload_version_unbound");
+    const sourceEtag = validateRunVersion(
+      await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${sourceVersionId}`),
+      { id: sourceVersionId, tag: sourceVersionTag, message: runMessage },
+    );
     stage = "worker_secret_provision";
-    command(["versions", "secret", "put", TARGET.workerSecret, "--config", tempConfig, "--tag", expectedVersionTag, "--message", `B-216 reviewed main ${sha}`], {
+    const secretOutput = command(["versions", "secret", "put", TARGET.workerSecret, "--config", tempConfig, "--tag", expectedVersionTag, "--message", runMessage], {
       cwd: appDir,
       home: wranglerHome,
       apiToken: context.apiToken,
       input: context.receiverToken,
     });
-    const versionList = normalizeVersionList(await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions?per_page=100&deployable=true`));
-    const tagged = versionList.filter((version) => versionTag(version) === expectedVersionTag);
-    if (tagged.length !== 1 || !isUuid(tagged[0]?.id)) fail("worker_uploaded_revision_ambiguous");
-    const candidateVersion = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${tagged[0].id}`);
+    const candidateId = capturedVersionId(secretOutput, SECRET_VERSION_LINE, "worker_secret_version_unbound");
+    if (candidateId === sourceVersionId) fail("worker_secret_version_unbound");
+    const candidateVersion = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${candidateId}`);
+    validateRunVersion(candidateVersion, { id: candidateId, tag: expectedVersionTag, message: runMessage, etag: sourceEtag });
     validateCandidateVersion(candidateVersion, receipt.database_id, expectedVersionTag);
     // Before activation: the same exact check as rollback and the exercise. Route
     // tag, and the receiver D1 and secret are the only bindings.
     validateRouteOwnedRevision(candidateVersion, receipt.database_id);
 
     stage = "worker_deploy";
-    command(["versions", "deploy", `${tagged[0].id}@100%`, "--yes", "--config", tempConfig], { cwd: appDir, home: wranglerHome, apiToken: context.apiToken });
+    command(["versions", "deploy", `${candidateId}@100%`, "--yes", "--config", tempConfig], { cwd: appDir, home: wranglerHome, apiToken: context.apiToken });
     stage = "worker_readback";
     const [deploymentResponse, version, secrets] = await Promise.all([
       api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`),
-      api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${tagged[0].id}`),
+      api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${candidateId}`),
       api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/secrets`),
     ]);
     const deployments = normalizeDeploymentList(deploymentResponse);
     const activeVersion = selectPriorRevision(deployments);
-    if (activeVersion !== tagged[0].id) fail("worker_revision_readback_mismatch");
+    if (activeVersion !== candidateId) fail("worker_revision_readback_mismatch");
     const bindings = version?.resources?.bindings ?? [];
     validatePostflight({ versionId: activeVersion, deployment: deployments[0], bindings, secrets, expectedTag: expectedVersionTag }, receipt.database_id, expectedVersionTag);
     // And again on what is actually active.
