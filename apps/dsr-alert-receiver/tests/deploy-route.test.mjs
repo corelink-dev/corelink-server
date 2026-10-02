@@ -118,7 +118,7 @@ function routeHarness({ migration, sha, existing = false, foreignPreimage = null
   const {
     domains = [], zoneRoutes = [], serviceRoutes = [], routesAfterDeploy = null,
     domainsStatus = 200, zonesStatus = 200, zoneRoutesStatus = 200, serviceRoutesStatus = 200,
-    zonesResultInfo = null, failDelete = false, ineffectiveDelete = false,
+    zonesResultInfo = null, failDelete = false, ineffectiveDelete = false, zoneRoutesFailAfterDeploy = false,
   } = ingress;
   const initialId = "323e4567-e89b-42d3-a456-426614174000";
   const sourceId = "423e4567-e89b-42d3-a456-426614174000";
@@ -174,6 +174,7 @@ function routeHarness({ migration, sha, existing = false, foreignPreimage = null
     }
     if (path === `/zones/${ZONE_ID}/workers/routes`) {
       if (zoneRoutesStatus !== 200) return json(null, zoneRoutesStatus);
+      if (state.finalDeployed && zoneRoutesFailAfterDeploy) return json(null, 500);
       return json(state.finalDeployed && routesAfterDeploy ? routesAfterDeploy : zoneRoutes);
     }
     if (path === `/accounts/${TARGET.accountId}/workers/services/${TARGET.workerName}/environments/production/routes`) {
@@ -1559,40 +1560,93 @@ describe("B-216 receiver on the shared main account", () => {
     expect(receipt.ingress_postflight).toEqual({ zones_checked: 1, zone_routes: 0, custom_domains: 0, service_routes: 0 });
   });
 
-  it("re-proves ingress after deploy and removes a created Worker that gained a route", async () => {
-    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
-    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
-    const harness = routeHarness({ migration, sha: goodContext.sha, ingress: { routesAfterDeploy: [{ id: "r5", pattern: "api.example.com/*", script: TARGET.workerName }] } });
+  // PR #2880 round-2 review, reproduced: with api.example.com/* routed to the receiver
+  // after deploy, worker_zone_route_present was raised and then the routed Worker was
+  // DELETEd. Detected external ingress now halts every write: no delete, no rollback.
+  const ROUTED_AFTER_DEPLOY = [{ id: "r5", pattern: "api.example.com/*", script: TARGET.workerName }];
+  async function runForReceipt(harness, config, migration, code) {
     const receiptDir = await mkdtemp(join(tmpdir(), "b216-route-test-"));
     const receiptPath = join(receiptDir, "receipt.json");
     try {
-      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, receiptPath, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "worker_zone_route_present" });
-      const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
-      expect(receipt.failed_stage).toBe("ingress_postflight");
-      // The Worker is deleted; the route still names it, so cleanup is not clean.
-      expect(harness.state.deleted).toBe(true);
-      expect(receipt.rollback_status).toBe("ambiguous_do_not_retry");
+      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, receiptPath, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code });
+      return JSON.parse(await readFile(receiptPath, "utf8"));
     } finally {
       await rm(receiptDir, { recursive: true, force: true });
     }
+  }
+
+  it("halts every write, with no delete or rollback, once external ingress is detected after create or deploy", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const routed = routeHarness({ migration, sha: goodContext.sha, ingress: { routesAfterDeploy: ROUTED_AFTER_DEPLOY } });
+    const receipt = await runForReceipt(routed, config, migration, "worker_zone_route_present");
+    expect(receipt).toMatchObject({ failed_stage: "ingress_postflight", rollback_status: "halted_external_ingress_detected", escalation: "lead_review_required" });
+    expect(routed.state.deleted).toBe(false);
+    expect(routed.state.script).toBe(true);
+    expect(routed.state.requests.filter(({ method }) => method === "DELETE")).toHaveLength(0);
+    expect(routed.state.commands.some(({ args }) => args[0] === "rollback")).toBe(false);
+
     const service = routeHarness({ migration, sha: goodContext.sha, ingress: { serviceRoutes: [{ id: "r6", pattern: "api.example.com/alerts" }] } });
-    await expect(runRoute({ context: goodContext, config, migration, fetchImpl: service.fetchImpl, command: service.command, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "worker_zone_route_present" });
+    const serviceReceipt = await runForReceipt(service, config, migration, "worker_zone_route_present");
+    expect(serviceReceipt).toMatchObject({ failed_stage: "ingress_after_create", rollback_status: "halted_external_ingress_detected" });
     expect(service.state.commands.map(({ args }) => args[0])).toEqual(["deploy"]);
     expect(service.state.secretPut).toBe(false);
-    expect(service.state.deleted).toBe(true);
+    expect(service.state.deleted).toBe(false);
+
+    const existing = routeHarness({ migration, sha: goodContext.sha, existing: true, ingress: { routesAfterDeploy: ROUTED_AFTER_DEPLOY } });
+    const existingReceipt = await runForReceipt(existing, config, migration, "worker_zone_route_present");
+    expect(existingReceipt.rollback_status).toBe("halted_external_ingress_detected");
+    expect(existing.state.commands.some(({ args }) => args[0] === "rollback")).toBe(false);
+  });
+
+  it("halts without deleting when the created Worker's own script listing reports a route", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha, malformedRoutes: "present" });
+    const receipt = await runForReceipt(harness, config, migration, "worker_custom_route_present");
+    expect(receipt).toMatchObject({ failed_stage: "worker_initial_private_readback", rollback_status: "halted_external_ingress_detected" });
+    expect(harness.state.requests.filter(({ method }) => method === "DELETE")).toHaveLength(0);
+    expect(harness.state.script).toBe(true);
+  });
+
+  it("proves zero ingress immediately before a cleanup delete or rollback, and halts if it is not zero", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    // A non-ingress failure after the final deploy, while a route has appeared.
+    const created = routeHarness({ migration, sha: goodContext.sha, failFinalSubdomainReadback: true, ingress: { routesAfterDeploy: ROUTED_AFTER_DEPLOY } });
+    const createdReceipt = await runForReceipt(created, config, migration, "provider_response_rejected");
+    expect(createdReceipt).toMatchObject({ rollback_status: "halted_external_ingress_detected", escalation: "lead_review_required" });
+    expect(created.state.requests.filter(({ method }) => method === "DELETE")).toHaveLength(0);
+    expect(created.state.script).toBe(true);
+
+    const existing = routeHarness({ migration, sha: goodContext.sha, existing: true, failFinalDeploymentReadback: true, ingress: { routesAfterDeploy: ROUTED_AFTER_DEPLOY } });
+    const existingReceipt = await runForReceipt(existing, config, migration, "provider_response_rejected");
+    expect(existingReceipt.rollback_status).toBe("halted_external_ingress_detected");
+    expect(existing.state.commands.some(({ args }) => args[0] === "rollback")).toBe(false);
+
+    // Unreadable right before the delete: no delete, ambiguous.
+    const unreadable = routeHarness({ migration, sha: goodContext.sha, failFinalSubdomainReadback: true, ingress: { zoneRoutesFailAfterDeploy: true } });
+    const unreadableReceipt = await runForReceipt(unreadable, config, migration, "provider_response_rejected");
+    expect(unreadableReceipt.rollback_status).toBe("ambiguous_do_not_retry");
+    expect(unreadable.state.requests.filter(({ method }) => method === "DELETE")).toHaveLength(0);
+
+    // Proven zero right before: the created Worker is deleted, as before.
+    const clean = routeHarness({ migration, sha: goodContext.sha, failFinalSubdomainReadback: true });
+    const cleanReceipt = await runForReceipt(clean, config, migration, "provider_response_rejected");
+    expect(cleanReceipt).toMatchObject({ rollback_status: "created_worker_deleted", cleanup_ingress_preimage: { zones_checked: 1, zone_routes: 0, custom_domains: 0, service_routes: 0 } });
   });
 
   it("refuses a pre-existing receiver Worker that this route did not produce, before any write", async () => {
     const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
     for (const [foreignPreimage, code] of [
-      [{ tag: "b216-existing" }, "worker_preimage_not_route_owned"],
-      [{ tag: "production-release" }, "worker_preimage_not_route_owned"],
-      [{ tag: "" }, "worker_preimage_not_route_owned"],
-      [{ bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID }] }, "worker_preimage_bindings_not_exact"],
-      [{ bindings: [...routeOwnedBindings(), { type: "service", name: "API", service: "corelink-api" }] }, "worker_preimage_bindings_not_exact"],
-      [{ bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: "123e4567-e89b-42d3-a456-426614174000" }, { type: "secret_text", name: TARGET.workerSecret }] }, "worker_preimage_bindings_not_exact"],
-      [{ bindings: [{ type: "d1", name: "DB", database_id: DATABASE_ID }, { type: "secret_text", name: TARGET.workerSecret }] }, "worker_preimage_bindings_not_exact"],
+      [{ tag: "b216-existing" }, "worker_revision_not_route_owned"],
+      [{ tag: "production-release" }, "worker_revision_not_route_owned"],
+      [{ tag: "" }, "worker_revision_not_route_owned"],
+      [{ bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID }] }, "worker_revision_bindings_not_exact"],
+      [{ bindings: [...routeOwnedBindings(), { type: "service", name: "API", service: "corelink-api" }] }, "worker_revision_bindings_not_exact"],
+      [{ bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: "123e4567-e89b-42d3-a456-426614174000" }, { type: "secret_text", name: TARGET.workerSecret }] }, "worker_revision_bindings_not_exact"],
+      [{ bindings: [{ type: "d1", name: "DB", database_id: DATABASE_ID }, { type: "secret_text", name: TARGET.workerSecret }] }, "worker_revision_bindings_not_exact"],
     ]) {
       const harness = routeHarness({ migration, sha: goodContext.sha, existing: true, foreignPreimage });
       await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" }), JSON.stringify(foreignPreimage)).rejects.toMatchObject({ code });
@@ -1600,7 +1654,7 @@ describe("B-216 receiver on the shared main account", () => {
       expect(harness.state.requests.filter(({ method, path }) => method !== "GET" && !path.endsWith("/query"))).toHaveLength(0);
       expect(harness.state.deleted).toBe(false);
     }
-    errorCode(() => validateRouteOwnedRevision({ id: "not-a-uuid", metadata: { annotations: { "workers/tag": ROUTE_OWNED_TAG } }, resources: { bindings: routeOwnedBindings() } }, DATABASE_ID), "worker_preimage_not_route_owned");
+    errorCode(() => validateRouteOwnedRevision({ id: "not-a-uuid", metadata: { annotations: { "workers/tag": ROUTE_OWNED_TAG } }, resources: { bindings: routeOwnedBindings() } }, DATABASE_ID), "worker_revision_not_route_owned");
     expect(validateRouteOwnedRevision({ id: "623e4567-e89b-42d3-a456-426614174000", metadata: { annotations: { "workers/tag": ROUTE_OWNED_TAG } }, resources: { bindings: routeOwnedBindings() } }, DATABASE_ID)).toBe("623e4567-e89b-42d3-a456-426614174000");
   });
 

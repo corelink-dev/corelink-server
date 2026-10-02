@@ -689,6 +689,14 @@ export function makeCloudflareApi(token, fetchImpl = fetch) {
   return request;
 }
 
+// The refusals that mean something other than workers.dev reaches the receiver.
+// Once either is seen, no route performs another write: no rollback, no delete,
+// no workers.dev change. It reports `halted_external_ingress_detected` instead.
+export const EXTERNAL_INGRESS_CODES = Object.freeze(["worker_custom_domain_present", "worker_zone_route_present", "worker_custom_route_present"]);
+export function isExternalIngressError(error) {
+  return error instanceof RouteError && EXTERNAL_INGRESS_CODES.includes(error.code);
+}
+
 // Reads one ingress list and classifies an unreadable answer: a 401/403 is a missing
 // read permission, anything else is unreadable. Either refuses the run.
 async function readIngress(api, path, kind) {
@@ -764,15 +772,16 @@ export async function proveNoExternalIngress(api, { workerExists }) {
 // `b216-<40-hex reviewed main SHA>`, and it binds exactly the receiver D1 (the UUID
 // adopted in this run) and the receiver secret, with nothing else. Only such a
 // revision may serve as a rollback target; a pre-existing receiver Worker whose
-// active revision is anything else refuses the run before any write.
+// active revision is anything else refuses the run before any write; and the
+// synthetic exercise sends nothing to an active revision that fails it.
 export function validateRouteOwnedRevision(version, databaseId) {
   const tag = version?.metadata?.annotations?.["workers/tag"];
-  if (!isUuid(version?.id) || typeof tag !== "string" || !/^b216-[0-9a-f]{40}$/.test(tag)) fail("worker_preimage_not_route_owned");
+  if (!isUuid(version?.id) || typeof tag !== "string" || !/^b216-[0-9a-f]{40}$/.test(tag)) fail("worker_revision_not_route_owned");
   const bindings = version?.resources?.bindings;
-  if (!Array.isArray(bindings) || bindings.length !== 2) fail("worker_preimage_bindings_not_exact");
+  if (!Array.isArray(bindings) || bindings.length !== 2) fail("worker_revision_bindings_not_exact");
   const database = bindings.filter((binding) => binding?.type === "d1" && binding.name === TARGET.databaseBinding && (binding.database_id ?? binding.id) === databaseId);
   const secret = bindings.filter((binding) => binding?.type === "secret_text" && binding.name === TARGET.workerSecret);
-  if (database.length !== 1 || secret.length !== 1) fail("worker_preimage_bindings_not_exact");
+  if (database.length !== 1 || secret.length !== 1) fail("worker_revision_bindings_not_exact");
   return version.id;
 }
 
@@ -1059,18 +1068,26 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     receipt.failed_stage = stage;
     receipt.failure_code = error instanceof RouteError ? error.code : "route_failed_closed";
     if (error instanceof RouteError && error.providerFailure) Object.assign(receipt, error.providerFailure);
-    if (workerMutationStarted && tempConfig) {
+    if (isExternalIngressError(error)) {
+      // External ingress reaches the receiver: whatever serves it now may be
+      // production traffic, so no rollback and no delete. The lead decides.
+      receipt.rollback_status = "halted_external_ingress_detected";
+      receipt.escalation = "lead_review_required";
+    } else if (workerMutationStarted && tempConfig) {
       receipt.rollback_target = priorWorkerVersion ?? "delete_worker_created_this_run";
       try {
         if (priorWorkerVersion) {
-          // The prior revision was proven route-owned with exact bindings above.
+          // The prior revision was proven route-owned with exact bindings above. A
+          // rollback is a write, so zero ingress is proven immediately before it.
+          receipt.cleanup_ingress_preimage = await proveNoExternalIngress(api, { workerExists: true });
           command(["rollback", priorWorkerVersion, "--config", tempConfig, "--message", "B-216 exact preimage rollback"], { cwd: appDir, home: wranglerHome, apiToken: context.apiToken });
           const deployments = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`);
           validateRollbackReadback(deployments, priorWorkerVersion);
           receipt.rollback_status = "restored_route_owned_revision";
           receipt.rollback_ingress = await proveNoExternalIngress(api, { workerExists: true });
         } else if (workerCreatedThisRun) {
-          // The preimage was absent, so cleanup removes the Worker this run created.
+          // The preimage was absent, so cleanup removes the Worker this run created,
+          // but only once zero ingress is proven immediately before the delete.
           let inventory;
           try { inventory = await readInventory(); } catch { inventory = null; }
           if (inventory?.worker?.exists === false && inventory.inventory_consistency === "worker_absent") {
@@ -1079,6 +1096,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
             const currentScripts = await api(`/accounts/${TARGET.accountId}/workers/scripts`);
             validateInventoryPage(currentScripts, "worker");
             if (!selectNamedResource(currentScripts, TARGET.workerName, "worker")) fail("worker_rollback_target_ambiguous");
+            receipt.cleanup_ingress_preimage = await proveNoExternalIngress(api, { workerExists: true });
             api.armWorkerDeletion();
             await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`, { method: "DELETE" });
             const after = await readInventory();
@@ -1087,8 +1105,13 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
           }
           receipt.rollback_ingress = await proveNoExternalIngress(api, { workerExists: false });
         }
-      } catch {
-        receipt.rollback_status = "ambiguous_do_not_retry";
+      } catch (cleanupError) {
+        if (isExternalIngressError(cleanupError)) {
+          receipt.rollback_status = "halted_external_ingress_detected";
+          receipt.escalation = "lead_review_required";
+        } else {
+          receipt.rollback_status = "ambiguous_do_not_retry";
+        }
       }
     }
     if (receiptPath) await writeReceipt(receiptPath, receipt);
