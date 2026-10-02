@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import unittest
 import json
 import hashlib
@@ -743,6 +745,260 @@ class StagingBootstrapProviderTests(unittest.TestCase):
                         custom_domain.ACCOUNT_ID,
                         custom_domain.ZONE_ID,
                     )
+
+    # Existing-Worker read-only preflight (#2167 / #1700). Every provider read
+    # is a mocked GET response; no request leaves the process.
+    _ROOT_NAMES = {
+        "CLERK_ISSUER_URL", "CLERK_SECRET_KEY", "CLOUDFLARE_ACCOUNT_ID",
+        "CORELINK_ADMIN_AUTH_KEY", "CORELINK_ERASE_AUTH_KEY",
+        "CORELINK_INTERNAL_AUTH_KEY", "PAT_SIGNING_KEY",
+        "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY",
+    }
+    _SIGNUP_NAMES = {
+        "CLERK_SECRET_KEY", "CLERK_WEBHOOK_SECRET", "CORELINK_ERASE_AUTH_KEY",
+        "CORELINK_INTERNAL_AUTH_KEY", "DSR_DLQ_REDRIVE_AUTH_KEY", "ERASURE_SALT_KEY",
+    }
+    _SOURCE_VALUE = "source-secret-value-must-never-be-read"
+
+    def _run_preflight(
+        self,
+        scripts: object,
+        secrets_by_worker: dict[str, object] | None = None,
+        *flags: str,
+    ) -> tuple[int, str, str, list[str]]:
+        account, zone = custom_domain.ACCOUNT_ID, custom_domain.ZONE_ID
+        responses: dict[str, dict] = {
+            f"zones/{zone}": {
+                "success": True,
+                "result": {"name": "humangr.com", "account": {"id": account}},
+            },
+            f"zones/{zone}/workers/routes": {"success": True, "result": []},
+            f"accounts/{account}/workers/scripts": {"success": True, "result": scripts},
+        }
+        for worker, rows in (secrets_by_worker or {}).items():
+            responses[f"accounts/{account}/workers/scripts/{worker}/secrets"] = {
+                "success": True,
+                "result": rows,
+            }
+        paths: list[str] = []
+
+        def fake_get(_token: str, path: str) -> dict:
+            paths.append(path)
+            if path not in responses:
+                raise RuntimeError("Cloudflare staging readback failed")
+            return responses[path]
+
+        environment = {
+            "STAGING_CF_API_TOKEN": "read-only-token",
+            "STAGING_CF_ACCOUNT_ID": account,
+            "CF_ZONE_ID": zone,
+            "STAGING_R2_S3_ENDPOINT": "https://" + "a" * 32 + ".r2.cloudflarestorage.com",
+            "STAGING_CLERK_SECRET_KEY": self._SOURCE_VALUE,
+            "STAGING_R2_S3_SECRET_ACCESS_KEY": self._SOURCE_VALUE,
+        }
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, environment, clear=True), patch.object(
+            provider, "get", side_effect=fake_get
+        ), patch.object(provider.subprocess, "run") as run, patch.object(
+            provider.secrets, "token_hex"
+        ) as token_hex, contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = provider.main(["--phase", "preflight", *flags])
+        run.assert_not_called()
+        token_hex.assert_not_called()
+        return code, stdout.getvalue(), stderr.getvalue(), paths
+
+    @staticmethod
+    def _secret_rows(names: set[str]) -> list[dict[str, str]]:
+        return [{"name": name, "type": "secret_text"} for name in sorted(names)]
+
+    def _all_workers(self) -> list[dict[str, str]]:
+        workers = renderer.StagingTopologyAdapter.from_file().workers
+        return [{"id": "unrelated-worker"}, *({"id": worker} for worker in workers)]
+
+    def test_create_gate_preflight_still_refuses_existing_workers(self) -> None:
+        code, stdout, stderr, paths = self._run_preflight(self._all_workers())
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("already exist; refusing to overwrite them", stderr)
+        self.assertFalse(any(path.endswith("/secrets") for path in paths))
+
+    def test_existing_worker_plan_is_a_name_only_delta(self) -> None:
+        root_present = self._ROOT_NAMES - {"PAT_SIGNING_KEY", "R2_S3_SECRET_ACCESS_KEY"}
+        signup_present = self._SIGNUP_NAMES - {"CLERK_WEBHOOK_SECRET"}
+        code, stdout, stderr, paths = self._run_preflight(
+            self._all_workers(),
+            {
+                "corelink-staging": self._secret_rows(root_present),
+                "corelink-signup-staging": self._secret_rows(signup_present),
+                "corelink-synthetic-pager-staging": [],
+            },
+            "--existing-worker-plan",
+        )
+        self.assertEqual(code, 0, stderr)
+        receipt = json.loads(stdout)
+        self.assertEqual(receipt["existing_workers"], "all-present")
+        self.assertEqual(receipt["next_operation"], "update-existing-secrets")
+        self.assertIs(receipt["provider_mutation_performed"], False)
+        self.assertIs(receipt["secret_values_read"], False)
+        self.assertEqual(receipt["worker_count"], 3)
+        self.assertEqual(
+            receipt["update_existing_secrets_plan"],
+            {
+                "corelink-staging": {
+                    "secret_names": sorted(root_present),
+                    "missing_secret_names": ["PAT_SIGNING_KEY", "R2_S3_SECRET_ACCESS_KEY"],
+                },
+                "corelink-signup-staging": {
+                    "secret_names": sorted(signup_present),
+                    "missing_secret_names": ["CLERK_WEBHOOK_SECRET"],
+                },
+                "corelink-synthetic-pager-staging": {
+                    "secret_names": [],
+                    "missing_secret_names": [],
+                },
+            },
+        )
+        self.assertNotIn(self._SOURCE_VALUE, stdout + stderr)
+        self.assertNotIn("read-only-token", stdout + stderr)
+        account = custom_domain.ACCOUNT_ID
+        self.assertEqual(
+            sorted(path for path in paths if path.endswith("/secrets")),
+            sorted(
+                f"accounts/{account}/workers/scripts/{worker}/secrets"
+                for worker in renderer.StagingTopologyAdapter.from_file().workers
+            ),
+        )
+
+    def test_existing_worker_plan_accepts_complete_names_and_exact_b216_pair(self) -> None:
+        code, stdout, stderr, _ = self._run_preflight(
+            self._all_workers(),
+            {
+                "corelink-staging": self._secret_rows(self._ROOT_NAMES),
+                "corelink-signup-staging": self._secret_rows(
+                    self._SIGNUP_NAMES | {"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"}
+                ),
+                "corelink-synthetic-pager-staging": [],
+            },
+            "--existing-worker-plan",
+        )
+        self.assertEqual(code, 0, stderr)
+        plan = json.loads(stdout)["update_existing_secrets_plan"]
+        self.assertEqual(
+            {worker: entry["missing_secret_names"] for worker, entry in plan.items()},
+            {
+                "corelink-staging": [],
+                "corelink-signup-staging": [],
+                "corelink-synthetic-pager-staging": [],
+            },
+        )
+
+    def test_existing_worker_plan_fails_closed_on_ambiguous_state(self) -> None:
+        workers = renderer.StagingTopologyAdapter.from_file().workers
+        complete = {
+            "corelink-staging": self._secret_rows(self._ROOT_NAMES),
+            "corelink-signup-staging": self._secret_rows(self._SIGNUP_NAMES),
+            "corelink-synthetic-pager-staging": [],
+        }
+        cases = {
+            "partial Worker set": (
+                [{"id": workers[0]}, {"id": workers[1]}],
+                complete,
+                "only partially present",
+            ),
+            "unapproved secret name": (
+                self._all_workers(),
+                {**complete, "corelink-staging": self._secret_rows(self._ROOT_NAMES | {"CF_API_TOKEN"})},
+                "unapproved staging secret name",
+            ),
+            "B-216 pair on the wrong Worker": (
+                self._all_workers(),
+                {
+                    **complete,
+                    "corelink-staging": self._secret_rows(
+                        self._ROOT_NAMES | {"DSR_DLQ_ALERT_ENDPOINT", "DSR_DLQ_ALERT_AUTH_TOKEN"}
+                    ),
+                },
+                "unapproved staging secret name",
+            ),
+            "partial B-216 pair": (
+                self._all_workers(),
+                {
+                    **complete,
+                    "corelink-signup-staging": self._secret_rows(
+                        self._SIGNUP_NAMES | {"DSR_DLQ_ALERT_ENDPOINT"}
+                    ),
+                },
+                "pair is incomplete",
+            ),
+            "shared secret on one Worker": (
+                self._all_workers(),
+                {
+                    **complete,
+                    "corelink-signup-staging": self._secret_rows(
+                        self._SIGNUP_NAMES - {"CORELINK_INTERNAL_AUTH_KEY"}
+                    ),
+                },
+                "present on only one Worker",
+            ),
+            "malformed secret inventory": (
+                self._all_workers(),
+                {**complete, "corelink-signup-staging": {"names": ["CLERK_SECRET_KEY"]}},
+                "incomplete or unbounded",
+            ),
+            "duplicate secret name": (
+                self._all_workers(),
+                {
+                    **complete,
+                    "corelink-staging": [
+                        *self._secret_rows(self._ROOT_NAMES),
+                        {"name": "PAT_SIGNING_KEY", "type": "secret_text"},
+                    ],
+                },
+                "contains duplicates",
+            ),
+            "unreadable secret inventory": (
+                self._all_workers(),
+                {key: value for key, value in complete.items() if key != "corelink-synthetic-pager-staging"},
+                "readback failed",
+            ),
+        }
+        for label, (scripts, secrets_by_worker, message) in cases.items():
+            with self.subTest(case=label):
+                code, stdout, stderr, _ = self._run_preflight(
+                    scripts, secrets_by_worker, "--existing-worker-plan"
+                )
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn(message, stderr)
+
+    def test_preflight_refuses_a_malformed_worker_listing(self) -> None:
+        for flags in ((), ("--existing-worker-plan",)):
+            for scripts in ({"items": []}, ["corelink-staging"], [{"id": None}]):
+                with self.subTest(flags=flags, scripts=scripts):
+                    code, stdout, stderr, _ = self._run_preflight(scripts, None, *flags)
+                    self.assertEqual(code, 1)
+                    self.assertEqual(stdout, "")
+                    self.assertIn("Worker script inventory is malformed", stderr)
+
+    def test_existing_worker_plan_without_workers_points_to_the_create_path(self) -> None:
+        code, stdout, stderr, paths = self._run_preflight(
+            [{"id": "unrelated-worker"}], None, "--existing-worker-plan"
+        )
+        self.assertEqual(code, 0, stderr)
+        receipt = json.loads(stdout)
+        self.assertEqual(receipt["existing_workers"], "absent")
+        self.assertEqual(receipt["next_operation"], "quarantine-apply")
+        self.assertEqual(receipt["worker_count"], 0)
+        self.assertNotIn("update_existing_secrets_plan", receipt)
+        self.assertFalse(any(path.endswith("/secrets") for path in paths))
+
+    def test_existing_worker_plan_flag_is_preflight_only(self) -> None:
+        for phase in ("quarantine", "postflight", "update-existing-preflight", "update-existing-apply"):
+            with self.subTest(phase=phase), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+                SystemExit
+            ) as raised:
+                provider.main(["--phase", phase, "--existing-worker-plan"])
+            self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":

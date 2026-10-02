@@ -7,6 +7,8 @@ import {
   RouteError,
   TARGET,
   classifyWranglerFailure,
+  completeLinesInWindow,
+  labelWranglerEndpoint,
   makeCloudflareApi,
   listNamedD1Databases,
   normalizeDeploymentList,
@@ -51,6 +53,46 @@ const goodContext = {
   apiToken: "provider-token-never-logged",
   receiverToken: "r".repeat(40),
 };
+// What a failure carries when stderr holds no Wrangler error block (and stdout no
+// bundle report), and what an unclassified (spawn or untrusted) failure carries.
+const NO_STRUCTURED_ERROR = Object.freeze({
+  provider_failure_class: "process_exit",
+  provider_error_code: null,
+  provider_error_codes: [],
+  provider_error_category: "unknown_cli_failure",
+  provider_failure_endpoint: "none_reported",
+  provider_http_status: null,
+  provider_progress: "before_bundle_report",
+  provider_output_structure: "no_structured_error",
+});
+const NO_CLASSIFIED_DETAIL = Object.freeze({
+  provider_error_codes: [],
+  provider_failure_endpoint: null,
+  provider_http_status: null,
+  provider_progress: null,
+  provider_output_structure: null,
+});
+// A Wrangler API-request error block naming the fixed Worker script, with the given
+// note lines; how 4.141.0 renders a coded or uncoded API rejection.
+const scriptApiFailure = (...notes) => [
+  `✘ [ERROR] A request to the Cloudflare API (/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}) failed.`,
+  "",
+  ...notes.map((note) => `  ${note}`),
+  "",
+].join("\n");
+const SCRIPT_API_FAILURE = Object.freeze({
+  provider_failure_endpoint: "worker_script",
+  provider_http_status: null,
+  provider_progress: "before_bundle_report",
+  provider_output_structure: "first_error_block",
+});
+const WRANGLER_4141_FAILURES = JSON.parse(readFileSync(new URL("./fixtures/wrangler-4.141.0-failures.json", import.meta.url), "utf8")).cases;
+// Captures whose diagnosis must equal another capture's: the extra output is noise
+// (a follow-up after the root failure, or an echoed response body).
+const SAME_DIAGNOSIS_AS = Object.freeze({
+  coded_auth_then_offline_whoami: "coded_auth_on_script_upload",
+  hostile_body_on_script_upload: "malformed_response_on_script_upload",
+});
 const errorCode = (fn, code) => {
   try {
     fn();
@@ -226,7 +268,7 @@ function routeHarness({ migration, sha, existing = false, wrongInitialDatabase =
   const command = (args, options = {}) => {
     state.commands.push({ args, options });
     if (args[0] === "deploy") {
-      if (failInitialDeploy) throw new RouteError("provider_command_failed", { provider_failure_class: "process_exit", process_exit_code: 1, provider_error_category: "permission_denied" });
+      if (failInitialDeploy) throw new RouteError("provider_command_failed", failInitialDeploy === true ? { provider_failure_class: "process_exit", process_exit_code: 1, provider_error_category: "permission_denied" } : failInitialDeploy);
       const config = readFileSync(args[args.indexOf("--config") + 1], "utf8");
       if (!config.includes("workers_dev = false\npreview_urls = false") || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/m.test(config)) throw new Error("initial deployment config was not private");
       state.script = true;
@@ -398,36 +440,42 @@ describe("B-216 protected receiver route admission", () => {
     const sensitive = `${goodContext.apiToken} ${goodContext.receiverToken}`;
     const providerFailure = classifyWranglerFailure({
       status: 1,
-      stdout: `upload failed [code: 10021] ${sensitive}`,
-      stderr: `diagnostic ${sensitive}`,
+      stdout: `diagnostic ${sensitive}`,
+      stderr: scriptApiFailure(`upload failed [code: 10021] ${sensitive}`),
     });
     expect(providerFailure).toEqual({
+      ...SCRIPT_API_FAILURE,
       provider_failure_class: "provider_error_code",
       provider_error_code: 10021,
+      provider_error_codes: [10021],
       process_exit_code: 1,
-      provider_error_category: "unknown_cli_failure",
+      provider_error_category: "api_request_rejected",
     });
     expect(JSON.stringify(providerFailure)).not.toContain(sensitive);
 
     expect(classifyWranglerFailure({ status: 17, stdout: `opaque ${sensitive}`, stderr: "" })).toEqual({
-      provider_failure_class: "process_exit",
-      provider_error_code: null,
+      ...NO_STRUCTURED_ERROR,
       process_exit_code: 17,
-      provider_error_category: "unknown_cli_failure",
     });
-    for (const output of [
-      "[code: nope]",
-      "[code: 10021] [code: 10022]",
-      "[code: 1234567]",
-      "[code: 10021",
-      "[code: 10021] [code:",
+    for (const [note, codes] of [
+      ["[code: nope]", []],
+      ["[code: 10021] [code: 10022]", [10021, 10022]],
+      ["[code: 1234567]", []],
+      ["[code: 10021", []],
+      ["[code: 10021] [code:", [10021]],
     ]) {
-      expect(classifyWranglerFailure({ status: 1, stdout: output, stderr: "" })).toEqual({
+      expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: scriptApiFailure(note) })).toEqual({
+        ...SCRIPT_API_FAILURE,
         provider_failure_class: "ambiguous_provider_error_code",
         provider_error_code: null,
+        provider_error_codes: codes,
         process_exit_code: 1,
-        provider_error_category: "unknown_cli_failure",
+        provider_error_category: "api_request_rejected",
       });
+    }
+    // Outside a Wrangler error block no code, category or endpoint is read at all.
+    for (const output of ["upload failed [code: 10021]", "[code: 10021] [code: 10022]", "Permission denied", "Authentication error [code: 10000]"]) {
+      expect(classifyWranglerFailure({ status: 1, stdout: output, stderr: output })).toEqual({ ...NO_STRUCTURED_ERROR, process_exit_code: 1 });
     }
     const spawnFailure = classifyWranglerFailure({
       error: new Error(`spawn failure ${sensitive}`),
@@ -436,6 +484,7 @@ describe("B-216 protected receiver route admission", () => {
       stderr: sensitive,
     });
     expect(spawnFailure).toEqual({
+      ...NO_CLASSIFIED_DETAIL,
       provider_failure_class: "spawn_failure",
       provider_error_code: null,
       process_exit_code: null,
@@ -451,6 +500,7 @@ describe("B-216 protected receiver route admission", () => {
     });
     expect(untrustedFailure.message).toBe("provider_command_failed");
     expect(untrustedFailure.providerFailure).toEqual({
+      ...NO_CLASSIFIED_DETAIL,
       provider_failure_class: "process_exit",
       provider_error_code: null,
       process_exit_code: 1,
@@ -459,22 +509,443 @@ describe("B-216 protected receiver route admission", () => {
     expect(JSON.stringify(untrustedFailure.providerFailure)).not.toContain(sensitive);
     expect(JSON.stringify(untrustedFailure)).not.toContain(sensitive);
 
-    const firstCreate = classifyWranglerFailure({
-      status: 1,
-      stdout: `Using wrangler versions upload the first time you upload a Worker will fail ${sensitive}`,
-      stderr: sensitive,
-    });
-    expect(firstCreate).toEqual({
-      provider_failure_class: "process_exit",
-      provider_error_code: null,
-      process_exit_code: 1,
-      provider_error_category: "first_deploy_required",
-    });
-    expect(JSON.stringify(firstCreate)).not.toContain(sensitive);
-
-    const permission = classifyWranglerFailure({ status: 1, stdout: `Permission denied ${sensitive}`, stderr: "" });
+    const permission = classifyWranglerFailure({ status: 1, stdout: "", stderr: scriptApiFailure(`Permission denied ${sensitive}`) });
     expect(permission.provider_error_category).toBe("permission_denied");
     expect(JSON.stringify(permission)).not.toContain(sensitive);
+  });
+
+  // PR #2877 re-review finding 2: only Wrangler's exact first-deploy message counts.
+  it("names first_deploy_required only for Wrangler's exact message", () => {
+    const exact = "You cannot upload a new version of a Worker that does not yet exist. Please run the `deploy` command first.";
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] ${exact}\n` })).toMatchObject({
+      provider_error_category: "first_deploy_required",
+      provider_output_structure: "first_error_block",
+    });
+    for (const stderr of [
+      "✘ [ERROR] Build failed the first time worker.ts was compiled\n",
+      "✘ [ERROR] Using wrangler versions upload the first time you upload a Worker will fail\n",
+      `✘ [ERROR] ${exact} Or not.\n`,
+      `✘ [ERROR] ${exact.toLowerCase()}\n`,
+      `✘ [ERROR] Build failed\n\n  ${exact}\n`,
+      // An unrecognised banner is not read for provider categories or codes either.
+      "✘ [ERROR] Build failed: unauthorized import, permission denied [code: 10000]\n\n  Authentication error [code: 10000]\n",
+    ]) {
+      expect(classifyWranglerFailure({ status: 1, stdout: "", stderr })).toEqual({
+        ...NO_STRUCTURED_ERROR,
+        process_exit_code: 1,
+        provider_output_structure: "first_error_block",
+      });
+    }
+    expect(classifyWranglerFailure({ status: 1, stdout: `Using wrangler versions upload the first time you upload a Worker will fail`, stderr: "" }).provider_error_category).toBe("unknown_cli_failure");
+  });
+
+  // PR #2877 re-review finding 1: a first error block beyond the analysed head is
+  // not replaced by whatever unstructured text the analysis can still see.
+  it("claims nothing when the first error block lies beyond the analysed window", () => {
+    const warning = "▲ [WARNING] Processing wrangler.toml configuration:\n\n    - Deprecation: a warning that repeats.\n\n";
+    const warnings = warning.repeat(Math.ceil((324 * 1024) / warning.length));
+    expect(warnings.length).toBeGreaterThanOrEqual(324 * 1024);
+    const malformedEchoingAuth = [
+      "✘ [ERROR] Received a malformed response from the API",
+      "",
+      "  Authentication error [code: 10000]",
+      `  PUT /accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName} -> 403 Forbidden`,
+      "",
+    ].join("\n");
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${warnings}${malformedEchoingAuth}` })).toEqual({
+      ...NO_STRUCTURED_ERROR,
+      process_exit_code: 1,
+      provider_output_structure: "truncated",
+    });
+    // The same block inside the window is a malformed response, and the echoed
+    // code is still not read.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${warning}${malformedEchoingAuth}` })).toMatchObject({
+      provider_failure_class: "process_exit",
+      provider_error_codes: [],
+      provider_error_category: "malformed_api_response",
+      provider_failure_endpoint: "worker_script",
+      provider_http_status: 403,
+      provider_output_structure: "first_error_block",
+    });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${warnings}${scriptApiFailure("Authentication error [code: 10000]")}` })).toEqual({
+      ...NO_STRUCTURED_ERROR,
+      process_exit_code: 1,
+      provider_output_structure: "truncated",
+    });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: warning })).toEqual({ ...NO_STRUCTURED_ERROR, process_exit_code: 1 });
+  });
+
+  // Runs 36812580006 and 36934258883 both recorded process_exit +
+  // unknown_cli_failure for the first private deploy. Before this change the first
+  // five cases below all produced exactly that receipt, so it could not say which
+  // one happened. Each must now classify to a distinct, bounded tuple.
+  it.each([
+    ["waf_block_on_script_upload", { provider_failure_class: "process_exit", provider_error_code: null, provider_error_codes: [], provider_error_category: "waf_block", provider_failure_endpoint: "worker_script", provider_http_status: 403, provider_progress: "bundle_reported" }],
+    ["malformed_response_on_script_upload", { provider_failure_class: "process_exit", provider_error_code: null, provider_error_codes: [], provider_error_category: "malformed_api_response", provider_failure_endpoint: "worker_script", provider_http_status: 403, provider_progress: "bundle_reported" }],
+    ["uncoded_rejection_on_service_read", { provider_failure_class: "process_exit", provider_error_code: null, provider_error_codes: [], provider_error_category: "api_request_rejected", provider_failure_endpoint: "worker_service", provider_http_status: null, provider_progress: "before_bundle_report" }],
+    ["transport_failure_on_script_upload", { provider_failure_class: "process_exit", provider_error_code: null, provider_error_codes: [], provider_error_category: "network_failure", provider_failure_endpoint: "none_reported", provider_http_status: null, provider_progress: "bundle_reported" }],
+    ["versions_upload_on_absent_worker", { provider_failure_class: "process_exit", provider_error_code: null, provider_error_codes: [], provider_error_category: "first_deploy_required", provider_failure_endpoint: "none_reported", provider_http_status: null, provider_progress: "before_bundle_report" }],
+    ["coded_auth_on_script_upload", { provider_failure_class: "provider_error_code", provider_error_code: 10000, provider_error_codes: [10000], provider_error_category: "authentication_failed", provider_failure_endpoint: "worker_script", provider_http_status: null, provider_progress: "bundle_reported" }],
+    ["coded_auth_on_subdomain_after_upload", { provider_failure_class: "provider_error_code", provider_error_code: 10000, provider_error_codes: [10000], provider_error_category: "authentication_failed", provider_failure_endpoint: "worker_subdomain", provider_http_status: null, provider_progress: "upload_reported" }],
+  ])("classifies real Wrangler 4.141.0 output for %s without copying it", (name, expected) => {
+    const captured = WRANGLER_4141_FAILURES[name];
+    expect(captured.status).toBe(1);
+    const failure = classifyWranglerFailure(captured);
+    expect(failure).toEqual({ ...expected, process_exit_code: 1, provider_output_structure: "first_error_block" });
+    const serialized = JSON.stringify(failure);
+    for (const leaked of [TARGET.accountId, TARGET.workerName, "8f0000000000abcd", "Forbidden", "/accounts/", "wrangler.log"]) {
+      expect(serialized).not.toContain(leaked);
+    }
+  });
+
+  it("gives every distinct captured Wrangler failure its own receipt tuple", () => {
+    const distinct = Object.entries(WRANGLER_4141_FAILURES)
+      .filter(([name]) => !SAME_DIAGNOSIS_AS[name])
+      .map(([, captured]) => JSON.stringify(classifyWranglerFailure(captured)));
+    expect(distinct).toHaveLength(7);
+    expect(new Set(distinct).size).toBe(distinct.length);
+  });
+
+  // PR #2877 review findings 1 and 2, on real Wrangler 4.141.0 output: a whoami
+  // follow-up that loses its connection after a 10000, and a 403 body imitating an
+  // error banner, a request note, an upload line and a code marker. Neither may
+  // change, or sharpen, the diagnosis of the request that failed first.
+  it.each(Object.entries(SAME_DIAGNOSIS_AS))("classifies %s exactly like %s", (name, reference) => {
+    expect(classifyWranglerFailure(WRANGLER_4141_FAILURES[name])).toEqual(classifyWranglerFailure(WRANGLER_4141_FAILURES[reference]));
+  });
+
+  it("takes the category, codes and endpoint from the first error block only", () => {
+    const colour = (text) => `\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1m${text}\u001b[0m`;
+    const scriptFailed = colour(`A request to the Cloudflare API (/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}) failed.`);
+    const followUp = classifyWranglerFailure({
+      status: 1,
+      stdout: "Total Upload: 4.67 KiB / gzip: 1.74 KiB\n",
+      stderr: [
+        scriptFailed,
+        "",
+        "  Authentication error [code: 10000]",
+        "",
+        colour("A request to the Cloudflare API (/user/tokens/verify) failed."),
+        "",
+        "  Invalid API Token [code: 1000]",
+        "",
+        colour("fetch failed"),
+      ].join("\n"),
+    });
+    expect(followUp).toMatchObject({
+      provider_failure_class: "provider_error_code",
+      provider_error_code: 10000,
+      provider_error_codes: [10000],
+      provider_error_category: "authentication_failed",
+      provider_failure_endpoint: "worker_script",
+      provider_progress: "bundle_reported",
+    });
+    const networkFirst = classifyWranglerFailure({
+      status: 1,
+      stdout: "",
+      stderr: `${colour("fetch failed")}\n\n${scriptFailed}\n\n  Authentication error [code: 10000]`,
+    });
+    expect(networkFirst).toMatchObject({ provider_failure_class: "process_exit", provider_error_codes: [], provider_error_category: "network_failure", provider_failure_endpoint: "none_reported" });
+    const malformed = classifyWranglerFailure({
+      status: 1,
+      stdout: "",
+      stderr: `${colour("Received a malformed response from the API")}\n\n  <html>401 Unauthorized</html>\n  GET /accounts/${TARGET.accountId}/workers/services/${TARGET.workerName} -> 401 Unauthorized`,
+    });
+    expect(malformed).toMatchObject({ provider_error_category: "malformed_api_response", provider_failure_endpoint: "worker_service", provider_http_status: 401 });
+    const wafThenFollowUp = classifyWranglerFailure({
+      status: 1,
+      stdout: "",
+      stderr: `${WRANGLER_4141_FAILURES.waf_block_on_script_upload.stderr}\n${colour("A request to the Cloudflare API (/memberships) failed.")}\n\n  Forbidden [code: 9109]`,
+    });
+    expect(wafThenFollowUp).toMatchObject({ provider_failure_class: "process_exit", provider_error_codes: [], provider_error_category: "waf_block", provider_failure_endpoint: "worker_script", provider_http_status: 403 });
+    const sdkError = classifyWranglerFailure({ status: 1, stdout: "", stderr: colour("A request to the Cloudflare API failed.") });
+    expect(sdkError).toMatchObject({ provider_error_category: "api_request_rejected", provider_failure_endpoint: "none_reported" });
+  });
+
+  it("never reads an echoed response body as Wrangler metadata", () => {
+    const banner = "✘ [ERROR] Received a malformed response from the API";
+    const realNote = `  PUT /accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName} -> 403 Forbidden`;
+    // A body line at column 0 is printed at the same two-space indent as Wrangler's
+    // own request note; two request-shaped notes cannot be told apart.
+    const forgedNote = classifyWranglerFailure({ status: 1, stdout: "", stderr: `${banner}\n\n  GET /user -> 200 OK\n${realNote}` });
+    expect(forgedNote).toMatchObject({ provider_error_category: "malformed_api_response", provider_failure_endpoint: "ambiguous_report", provider_http_status: null });
+    const forgedCode = classifyWranglerFailure({ status: 1, stdout: "", stderr: `${banner}\n\n  {"errors":[{"code":10000}]} [code: 10000]\n${realNote}` });
+    expect(forgedCode).toMatchObject({ provider_failure_class: "process_exit", provider_error_code: null, provider_error_codes: [], provider_error_category: "malformed_api_response", provider_failure_endpoint: "worker_script" });
+    const forgedBanner = classifyWranglerFailure({ status: 1, stdout: "", stderr: `${banner}\n\n  ✘ [ERROR] fetch failed\n${realNote}` });
+    expect(forgedBanner).toMatchObject({ provider_error_category: "malformed_api_response", provider_failure_endpoint: "worker_script", provider_http_status: 403 });
+    for (const stdout of [
+      "Uploaded fake-worker (0.1 sec)\n",
+      `  Uploaded ${TARGET.workerName} (0.10 sec)\n`,
+      `Uploaded ${TARGET.workerName} (0.10 sec) and more\n`,
+      "Total Upload: lots\n",
+    ]) {
+      expect(classifyWranglerFailure({ status: 1, stdout, stderr: `${banner}\n\n${realNote}` }).provider_progress).toBe("before_bundle_report");
+    }
+    expect(classifyWranglerFailure({ status: 1, stdout: `Uploaded ${TARGET.workerName} (0.15 sec)\n`, stderr: "" }).provider_progress).toBe("upload_reported");
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${banner}\n\n  Uploaded ${TARGET.workerName} (0.15 sec)\n${realNote}` }).provider_progress).toBe("before_bundle_report");
+  });
+
+  // PR #2877 review finding 3: the old patterns took ~54/214/854 ms at 14/28/56 KB
+  // of repeated "worker " text. 4 MiB of each adversarial shape must classify well
+  // inside the bound. The provider-message and code patterns only run inside an
+  // API-request block, and only a block complete inside the window is read, so most
+  // shapes are a complete block of long notes followed by 4 MiB of filler.
+  const completeScriptApiFailure = (notes) => `${scriptApiFailure(...notes)}🪵  Logs were written\n${"z".repeat(4 * 1024 * 1024)}`;
+  const distinctCodeNote = (line) => Array.from({ length: 80 }, (_, index) => `[code: ${line * 80 + index}]`).join(" ");
+  it.each([
+    ["repeated worker text", () => ({ stdout: "worker ".repeat(600_000), stderr: completeScriptApiFailure(Array(190).fill("worker ".repeat(143))) }), "first_error_block"],
+    ["repeated not found text", () => ({ stdout: "", stderr: completeScriptApiFailure(Array(190).fill("not found ".repeat(100))) }), "first_error_block"],
+    ["unterminated code marker", () => ({ stdout: "", stderr: completeScriptApiFailure(Array(50).fill(`[code:${" ".repeat(4000)}`)) }), "first_error_block"],
+    ["many unterminated markers", () => ({ stdout: "[code: 1".repeat(530_000), stderr: completeScriptApiFailure(Array(190).fill("[code: 1".repeat(125))) }), "first_error_block"],
+    ["provider message lookalikes", () => ({ stdout: "", stderr: completeScriptApiFailure(Array(190).fill("unauthorize permission rate limi ".repeat(30))) }), "first_error_block"],
+    ["many distinct codes", () => ({ stdout: "", stderr: completeScriptApiFailure(Array.from({ length: 190 }, (_, line) => distinctCodeNote(line))) }), "first_error_block"],
+    ["many banners", () => ({ stdout: "", stderr: "✘ [ERROR] fetch failed\n".repeat(183_000) }), "first_error_block"],
+    ["progress lookalikes", () => ({ stdout: `${"Total Upload: 1 KiB / gzip: ".repeat(150_000)}\n${"Uploaded x (".repeat(350_000)}`, stderr: "" }), "no_structured_error"],
+    ["huge first error block", () => ({ stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n  ${"GET /user -> 200 OK worker ".repeat(160_000)}` }), "truncated"],
+    ["many request notes", () => ({ stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n${"  GET /x -> 200 OK\n".repeat(222_000)}` }), "truncated"],
+  ])("classifies 4 MiB of %s in bounded time", (_name, build, structure) => {
+    const { stdout, stderr } = build();
+    expect(stdout.length + stderr.length).toBeGreaterThanOrEqual(4 * 1024 * 1024);
+    const started = performance.now();
+    const failure = classifyWranglerFailure({ status: 1, stdout, stderr });
+    expect(performance.now() - started).toBeLessThan(1500);
+    expect(failure.provider_output_structure).toBe(structure);
+    expect(failure.provider_error_codes.length).toBeLessThanOrEqual(8);
+  });
+
+  // PR #2877 round-3 finding: a block cut by the window must not be read as complete.
+  // Both cases put the cut where the visible part alone would mislead.
+  it("cuts output to whole lines: the last line before a cut window is dropped", () => {
+    expect(completeLinesInWindow("ab\ncd", 5)).toEqual({ lines: ["ab", "cd"], truncated: false });
+    expect(completeLinesInWindow("ab\ncd", 4)).toEqual({ lines: ["ab", ""], truncated: true });
+    expect(completeLinesInWindow("ab\ncd", 3)).toEqual({ lines: ["ab", ""], truncated: true });
+    expect(completeLinesInWindow("ab\ncd", 2)).toEqual({ lines: [""], truncated: true });
+    expect(completeLinesInWindow("\u001b[1mab\u001b[0m\ncd", 13)).toEqual({ lines: ["ab", "cd"], truncated: false });
+    expect(completeLinesInWindow("\u001b[1mab\u001b[0m\ncd", 12)).toEqual({ lines: ["ab", ""], truncated: true });
+    expect(completeLinesInWindow("\u001b[1mab\u001b[0m\ncd", 4)).toEqual({ lines: [""], truncated: true });
+  });
+
+  // PR #2877 round-4 finding, reproduced exactly: the stdout window ending right
+  // after an upload line made a longer, unrecognised line look like progress.
+  it("does not read progress from a stdout line the window cuts", () => {
+    const window = 256 * 1024;
+    const line = `Uploaded ${TARGET.workerName} (0.15 sec)`;
+    const stdout = `${"w".repeat(window - line.length - 1)}\n${line} and more\n`;
+    expect(classifyWranglerFailure({ status: 1, stdout, stderr: "" }).provider_progress).toBe("before_bundle_report");
+    expect(classifyWranglerFailure({ status: 1, stdout: `${"w".repeat(window - line.length - 2)}\n${line}\nmore`, stderr: "" }).provider_progress).toBe("upload_reported");
+    expect(classifyWranglerFailure({ status: 1, stdout: `${"w".repeat(window - line.length - 1)}\n${line}`, stderr: "" }).provider_progress).toBe("upload_reported");
+  });
+
+  // PR #2877 round-4 class fix: no field may be read from a partial line. Each
+  // recognised line of each capture, in stdout and in stderr, is cut by the window
+  // at every offset from its start to two past its end; the cut classification may
+  // keep or lose detail but never claim more than the uncut one.
+  const RECOGNISED_LINE = /^(?:✘ \[ERROR\] |▲ \[WARNING\] |🪵 | {2}\S|Total Upload: |Uploaded )/;
+  const PROGRESS_RANK = { before_bundle_report: 0, bundle_reported: 1, upload_reported: 2 };
+  // The window is moved with classifyWranglerFailure's windowChars option so each cut
+  // costs the size of the capture, not 256 KiB; the 256 KiB default is exercised by
+  // the reproduction above and the window tests below.
+  const sharpenedFields = (cut, full) => [
+    cut.process_exit_code === full.process_exit_code || "process_exit_code",
+    [full.provider_failure_class, "process_exit"].includes(cut.provider_failure_class) || "provider_failure_class",
+    [full.provider_error_code, null].includes(cut.provider_error_code) || "provider_error_code",
+    [JSON.stringify(full.provider_error_codes), "[]"].includes(JSON.stringify(cut.provider_error_codes)) || "provider_error_codes",
+    [full.provider_error_category, "unknown_cli_failure"].includes(cut.provider_error_category) || "provider_error_category",
+    [full.provider_failure_endpoint, "none_reported"].includes(cut.provider_failure_endpoint) || "provider_failure_endpoint",
+    [full.provider_http_status, null].includes(cut.provider_http_status) || "provider_http_status",
+    PROGRESS_RANK[cut.provider_progress] <= PROGRESS_RANK[full.provider_progress] || "provider_progress",
+    [full.provider_output_structure, "truncated"].includes(cut.provider_output_structure) || "provider_output_structure",
+  ].filter((field) => field !== true);
+  it.each(Object.keys(WRANGLER_4141_FAILURES))("never sharpens %s when the window cuts a recognised line", (name) => {
+    const captured = WRANGLER_4141_FAILURES[name];
+    const full = classifyWranglerFailure(captured);
+    const windowChars = Math.max(captured.stdout.length, captured.stderr.length) + 4;
+    const violations = [];
+    let cuts = 0;
+    let truncatedCuts = 0;
+    for (const stream of ["stdout", "stderr"]) {
+      const text = captured[stream];
+      let lineStart = 0;
+      for (const line of text.split("\n")) {
+        const lineEnd = lineStart + line.length;
+        if (RECOGNISED_LINE.test(line.replace(/\u001b\[[0-9;]*m/g, ""))) {
+          for (let offset = lineStart; offset <= lineEnd + 2; offset += 1) {
+            // The padding line puts the window boundary `offset` characters into the
+            // stream; the tail keeps that stream longer than the window, while the
+            // other stream stays inside it.
+            const cutText = `${"w".repeat(windowChars - offset - 1)}\n${text}\nzzzzzzzz`;
+            const cut = classifyWranglerFailure({ ...captured, [stream]: cutText }, { windowChars });
+            const sharpened = sharpenedFields(cut, full);
+            if (sharpened.length > 0) violations.push(`${stream}@${offset}: ${sharpened.join(",")}`);
+            if (cut.provider_output_structure === "truncated") truncatedCuts += 1;
+            cuts += 1;
+          }
+        }
+        lineStart = lineEnd + 1;
+      }
+    }
+    expect(violations).toEqual([]);
+    expect(cuts).toBeGreaterThan(100);
+    expect(truncatedCuts).toBeGreaterThan(0);
+  });
+
+  it("reports a first error block cut by the analysed window as truncated", () => {
+    const window = 256 * 1024;
+    const padTo = (visible) => `${"w".repeat(window - visible.length - 1)}\n${visible}`;
+    const echoedThenReal = [
+      "✘ [ERROR] Received a malformed response from the API",
+      "",
+      "  <p>",
+      "  GET /user -> 200 OK",
+      "",
+    ].join("\n");
+    const realNote = `  PUT /accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName} -> 403 Forbidden\n`;
+    const cutBetweenNotes = `${padTo(echoedThenReal)}${realNote}`;
+    expect(padTo(echoedThenReal)).toHaveLength(window);
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: cutBetweenNotes })).toEqual({
+      ...NO_STRUCTURED_ERROR,
+      process_exit_code: 1,
+      provider_output_structure: "truncated",
+    });
+    // Uncut, the same block has two request-shaped notes and neither is believed.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${echoedThenReal}${realNote}` })).toMatchObject({
+      provider_error_category: "malformed_api_response",
+      provider_failure_endpoint: "ambiguous_report",
+      provider_http_status: null,
+      provider_output_structure: "first_error_block",
+    });
+
+    const unrecognised = "✘ [ERROR] fetch failed";
+    const cutInBanner = `${padTo(unrecognised)} because the proxy refused the connection\n`;
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: cutInBanner })).toEqual({
+      ...NO_STRUCTURED_ERROR,
+      process_exit_code: 1,
+      provider_output_structure: "truncated",
+    });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${unrecognised} because the proxy refused the connection\n` })).toEqual({
+      ...NO_STRUCTURED_ERROR,
+      process_exit_code: 1,
+      provider_output_structure: "first_error_block",
+    });
+  });
+
+  it("reads only the head of stderr for the first error block", () => {
+    const filler = "x".repeat(4 * 1024 * 1024);
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] fetch failed\n▲ [WARNING] x\n${filler}` })).toMatchObject({
+      provider_error_category: "network_failure",
+      provider_output_structure: "first_error_block",
+    });
+    // The 4 MiB line after the block is cut by the window, so it cannot end the block.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] fetch failed\n${filler}` })).toMatchObject({
+      provider_error_category: "unknown_cli_failure",
+      provider_output_structure: "truncated",
+    });
+    // Ending exactly at the window: complete only because stderr ends there too.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 24)}\n✘ [ERROR] fetch failed\n` }).provider_error_category).toBe("network_failure");
+    // Ending before stderr does: complete only because a whole terminating line is
+    // inside; a terminating line the window cuts is partial and is not read either.
+    const blockThenWarning = "\n✘ [ERROR] fetch failed\n▲ [WARNING] x\n";
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - blockThenWarning.length)}${blockThenWarning}more` }).provider_error_category).toBe("network_failure");
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 25)}\n✘ [ERROR] fetch failed\n▲ [WARNING] more` })).toMatchObject({ provider_error_category: "unknown_cli_failure", provider_output_structure: "truncated" });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 24)}\n✘ [ERROR] fetch failed\n  ` })).toMatchObject({ provider_error_category: "unknown_cli_failure", provider_output_structure: "truncated" });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(256 * 1024 - 23)}\n✘ [ERROR] fetch failed\n` })).toMatchObject({ provider_error_category: "unknown_cli_failure", provider_output_structure: "truncated" });
+    // A block past the line cap, or with a line past the line cap, is cut too.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n${"  GET /x -> 200 OK\n".repeat(200)}` })).toMatchObject({ provider_output_structure: "truncated", provider_failure_endpoint: "none_reported" });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] Received a malformed response from the API\n\n${"  GET /x -> 200 OK\n".repeat(150)}` })).toMatchObject({ provider_output_structure: "first_error_block", provider_failure_endpoint: "ambiguous_report" });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${scriptApiFailure(`Authentication error [code: 10000]${" ".repeat(4096)}`)}` })).toMatchObject({ provider_output_structure: "truncated", provider_error_codes: [] });
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `✘ [ERROR] fetch failed${" ".repeat(4096)}\n` })).toMatchObject({ provider_output_structure: "truncated", provider_error_category: "unknown_cli_failure" });
+    // A banner beyond the analysed head cannot be placed as the first error, so
+    // nothing more specific than unknown is claimed.
+    expect(classifyWranglerFailure({ status: 1, stdout: "", stderr: `${" ".repeat(300 * 1024)}\n✘ [ERROR] fetch failed\n` })).toEqual({
+      ...NO_STRUCTURED_ERROR,
+      process_exit_code: 1,
+      provider_output_structure: "truncated",
+    });
+    expect(classifyWranglerFailure({ status: 1, stdout: `${filler}[code: 12345]`, stderr: filler })).toEqual({
+      ...NO_STRUCTURED_ERROR,
+      process_exit_code: 1,
+      provider_output_structure: "truncated",
+    });
+  });
+
+  it("labels only known Cloudflare endpoints and never returns the path", () => {
+    const account = `/accounts/${TARGET.accountId}`;
+    const worker = `${account}/workers/scripts/${TARGET.workerName}`;
+    for (const [path, label] of [
+      [`${account}/workers/services/${TARGET.workerName}`, "worker_service"],
+      [worker, "worker_script"],
+      [`${worker}?excludeScript=true&bindings_inherit=strict`, "worker_script"],
+      [`${worker}/secrets`, "worker_secrets"],
+      [`${worker}/deployments`, "worker_deployments"],
+      [`${worker}/settings`, "worker_settings"],
+      [`${worker}/subdomain`, "worker_subdomain"],
+      [`${worker}/versions/0f0e0d0c-0b0a-4908-8706-050403020100`, "worker_versions"],
+      [`${account}/workers/workers/${TARGET.workerName}`, "worker_resource"],
+      [`${account}/workers/subdomain`, "account_workers_subdomain"],
+      [`${account}/d1/database/${TARGET.databaseId}/query`, "d1_database"],
+      ["/user/tokens/verify", "user_or_membership"],
+      ["/memberships", "user_or_membership"],
+      ["/accounts", "user_or_membership"],
+      [account, "other_endpoint"],
+      [`${worker}/schedules`, "other_endpoint"],
+      [`${worker}/secrets/extra/depth`, "other_endpoint"],
+      ["/accounts/not-an-account/workers/scripts/x", "other_endpoint"],
+      ["/zones/abc/workers/routes", "other_endpoint"],
+    ]) {
+      expect(labelWranglerEndpoint(path)).toBe(label);
+    }
+  });
+
+  it("drops forged or out-of-range diagnostic fields instead of trusting them", () => {
+    const forged = new RouteError("provider_command_failed", {
+      provider_failure_class: "process_exit",
+      provider_error_codes: [10000, "10001", 2.5],
+      provider_failure_endpoint: `/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`,
+      provider_http_status: 99,
+      provider_progress: "Uploaded corelink",
+    });
+    expect(forged.providerFailure).toMatchObject({
+      provider_error_codes: [],
+      provider_failure_endpoint: null,
+      provider_http_status: null,
+      provider_progress: null,
+    });
+    const tooMany = new RouteError("provider_command_failed", {
+      provider_failure_class: "ambiguous_provider_error_code",
+      provider_error_codes: [1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      provider_http_status: 600,
+    });
+    expect(tooMany.providerFailure.provider_error_codes).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(tooMany.providerFailure.provider_http_status).toBeNull();
+    expect(Object.isFrozen(tooMany.providerFailure.provider_error_codes)).toBe(true);
+  });
+
+  it("writes the classified WAF diagnosis into the failed first-deploy receipt", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha, failInitialDeploy: classifyWranglerFailure(WRANGLER_4141_FAILURES.waf_block_on_script_upload) });
+    const receiptDir = await mkdtemp(join(tmpdir(), "b216-route-test-"));
+    const receiptPath = join(receiptDir, "receipt.json");
+    try {
+      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, receiptPath, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "provider_command_failed" });
+      const raw = await readFile(receiptPath, "utf8");
+      const receipt = JSON.parse(raw);
+      expect(receipt).toMatchObject({
+        failed_stage: "worker_initial_private_deploy",
+        provider_failure_class: "process_exit",
+        provider_error_category: "waf_block",
+        provider_failure_endpoint: "worker_script",
+        provider_http_status: 403,
+        provider_progress: "bundle_reported",
+        provider_error_codes: [],
+        provider_output_structure: "first_error_block",
+        rollback_status: "absent_preimage_verified",
+      });
+      expect(raw).not.toContain("8f0000000000abcd");
+      expect(raw).not.toContain(goodContext.apiToken);
+    } finally {
+      await rm(receiptDir, { recursive: true, force: true });
+    }
   });
 
   it("accepts only canonical repository, main ref, exact checkout SHA, and named protected secrets", () => {

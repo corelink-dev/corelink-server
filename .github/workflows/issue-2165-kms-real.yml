@@ -26,6 +26,7 @@ on:
       - scripts/verify_issue_2165_kms_cleanup.py
       - scripts/verify_issue_2165_ecr_image_build.py
       - scripts/issue_2165_cleanup_tasks.py
+      - scripts/issue_2165_image_budget.py
       - tests/test_issue_2165_kms_runtime.py
       - tests/test_issue_2165_kms_custodian.py
       - tests/test_issue_2165_kms_cycles.py
