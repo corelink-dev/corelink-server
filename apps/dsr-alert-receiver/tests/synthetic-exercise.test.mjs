@@ -102,6 +102,7 @@ describe("B-216 receiver-only synthetic operator", () => {
     expect(receipt.alert_acceptance).toBe("http_202_accepted");
     expect(receipt.durable_receipt).toBe("exact_row_read_back");
     expect(receipt.workers_dev_cleanup).toBe("disabled");
+    expect(receipt.cleanup_failures).toEqual([]);
     expect(harness.state.receiverCalls).toHaveLength(1);
     const call = harness.state.receiverCalls[0];
     expect(call.url).toBe(`https://${TARGET.workerName}.corelink-team.workers.dev/`);
@@ -209,18 +210,57 @@ describe("B-216 receiver-only synthetic operator", () => {
     const harness = exerciseHarness({ ingress });
     const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
     expect(receipt).toMatchObject({ status: "failed_closed", failure_code: code, workers_dev_cleanup: "halted_external_ingress_detected", escalation: "lead_review_required" });
+    expect(receipt).not.toHaveProperty("cleanup_failures");
     expect(harness.state.receiverCalls).toHaveLength(0);
     expect(harness.state.providerCalls.filter(({ method, path }) => method !== "GET" && !path.endsWith("/query"))).toHaveLength(0);
     expect(harness.state.workersDev).toBe(true);
   });
 
   it.each([
-    [{ zonesStatus: 403 }, "ingress_zones_permission_denied"],
-    [{ serviceRoutesStatus: 500 }, "ingress_service_routes_unreadable"],
-  ])("sends nothing when the ingress proof cannot be read (%j), and still disables workers.dev", async (ingress, code) => {
+    [{ zonesStatus: 403 }, "ingress_zones_permission_denied", { endpoint: "zones_list", http_status: 403, cf_error_codes: [], message_class: "permission" }],
+    [{ serviceRoutesStatus: 500 }, "ingress_service_routes_unreadable", { endpoint: "service_routes", http_status: 500, cf_error_codes: [], message_class: "server_error" }],
+  ])("sends nothing when the ingress proof cannot be read (%j), names the read, and still disables workers.dev", async (ingress, code, readFailure) => {
     const harness = exerciseHarness({ ingress });
     const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
-    expect(receipt).toMatchObject({ status: "failed_closed", failure_code: code, workers_dev_cleanup: "disabled" });
+    expect(receipt).toMatchObject({ status: "failed_closed", failure_code: code, workers_dev_cleanup: "disabled", read_failure: readFailure, cleanup_failures: [] });
     expect(harness.state.receiverCalls).toHaveLength(0);
+  });
+
+  it("records a refused workers.dev disable as a cleanup failure, keeping the primary failure as is", async () => {
+    const harness = exerciseHarness({ receiverStatus: 503 });
+    const fetchProvider = async (url, options = {}) => {
+      if ((options.method ?? "GET") === "POST" && new URL(url).pathname.endsWith("/subdomain")) {
+        return Response.json({ success: false, errors: [{ code: 10013, message: `private failure for ${TARGET.accountId}` }] }, { status: 500 });
+      }
+      return harness.fetchProvider(url, options);
+    };
+    const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider, fetchReceiver: harness.fetchReceiver });
+    expect(receipt).toMatchObject({ status: "failed_closed", failure_code: "receiver_acceptance_missing", workers_dev_cleanup: "ambiguous_do_not_retry" });
+    expect(receipt.read_failure).toBeUndefined();
+    expect(receipt.write_failure).toBeUndefined();
+    expect(receipt.cleanup_failures).toEqual([{
+      failure_code: "provider_response_rejected",
+      write_failure: { endpoint: "worker_subdomain", http_status: 500, cf_error_codes: [10013], message_class: "server_error" },
+    }]);
+    expect(JSON.stringify(receipt)).not.toContain("private failure");
+  });
+
+  it("records an unreadable cleanup state as a cleanup failure, beside the primary read failure", async () => {
+    const harness = exerciseHarness({ ingress: { zonesStatus: 403 } });
+    const fetchProvider = async (url, options = {}) => {
+      if (new URL(url).pathname.endsWith(subdomainPath)) return Response.json({ success: false, errors: [{ code: 10000, message: "private" }] }, { status: 403 });
+      return harness.fetchProvider(url, options);
+    };
+    const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider, fetchReceiver: harness.fetchReceiver });
+    expect(receipt).toMatchObject({
+      status: "failed_closed",
+      failure_code: "ingress_zones_permission_denied",
+      read_failure: { endpoint: "zones_list", http_status: 403, cf_error_codes: [], message_class: "permission" },
+      workers_dev_cleanup: "ambiguous_manual_disable_required",
+    });
+    expect(receipt.cleanup_failures).toEqual([{
+      failure_code: "provider_response_rejected",
+      read_failure: { endpoint: "worker_subdomain", http_status: 403, cf_error_codes: [10000], message_class: "authentication" },
+    }]);
   });
 });
