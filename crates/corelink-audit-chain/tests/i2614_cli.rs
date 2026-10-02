@@ -128,7 +128,13 @@ fn write_chain(dir: &TempDir) -> Result<Vec<std::path::PathBuf>, Box<dyn std::er
     let mut mac = blake3::Hasher::new_keyed(checkpoint_key.as_bytes());
     mac.update(b"corelink/audit-chain/daily-checkpoint/v1\0");
     mac.update(&canonical_checkpoint);
-    checkpoint["checkpoint_mac"] = json!(mac.finalize().to_hex().to_string());
+    checkpoint
+        .as_object_mut()
+        .ok_or("checkpoint fixture is not a JSON object")?
+        .insert(
+            "checkpoint_mac".to_owned(),
+            json!(mac.finalize().to_hex().to_string()),
+        );
     fs::write(&checkpoint_path, serde_json::to_vec(&checkpoint)?)?;
 
     let mut paths = Vec::new();

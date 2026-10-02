@@ -1217,6 +1217,7 @@
     }
 
     #[cfg(test)]
+    #[allow(clippy::unwrap_used, reason = "test assertions intentionally surface failures")]
     mod admin_approval_tests {
         use super::*;
         use ed25519_dalek::Signer;

@@ -1,0 +1,587 @@
+# rust-affected-tests — clippy -D warnings + cargo test for the packages a
+# change can break, on GitHub-hosted runners.
+#
+# WHY THIS EXISTS: on 2026-10-01 no general Rust build/lint/test lane ran on a
+# pull request. `corelink-server.yml` runs three named DSR tests,
+# `workspace-lint.yml` runs only after merge, and every per-crate lane is
+# `disabled_manually`. A PR could break any of the 95 workspace packages and
+# merge with every enabled check green.
+#
+# WHERE IT RUNS: `ubuntu-24.04`, the standard hosted runner (free for this
+# public repository). Never the self-hosted fleet — that is the founder's Mac,
+# and the earlier self-hosted draft of this lane died there of ENOSPC.
+#
+# WHAT IT SELECTS: `scripts/rust_affected_packages.py` decides, from
+# `cargo metadata` (never from a listing of `crates/`): the package owning each
+# changed path, plus every package that depends on it (normal/build edges,
+# transitively) and every package whose TESTS dev-depend on that closure.
+# `Cargo.lock` is diffed entry by entry, so a dependency bump selects exactly
+# the members that resolve it. The root `Cargo.toml` is diffed as parsed TOML.
+# Toolchain/cargo configuration and this lane's own files select the whole
+# workspace. The selector's docstring lists what it does NOT see — read it
+# before trusting a green run for a change outside every package directory.
+#
+# TIME BUDGET: under 25 minutes from the first job starting to the verdict.
+# The job timeouts below enforce it on the critical path, select -> the slower
+# of clippy/test -> verdict: 5 + 15 + 2 = 22 minutes, checked by
+# tests/test_rust_affected_packages.py (TimeBudget). The test job is split into
+# TEST_SHARDS matrix jobs, so the broadest selection (the whole workspace) no
+# longer runs every test binary one after another on one runner. Unsharded,
+# the whole-workspace test job took 12.6-15.9 minutes on ubuntu-24.04 with a
+# cold cache (runs 36942836179, 36937687131, 36939536126); in the fastest of
+# them 3.5 minutes compiled and 7.6 minutes ran test binaries in sequence.
+# Sharded three ways, the same whole-workspace selection took 6.6 and 9.7
+# minutes from select to verdict, cold (runs 36950363647, 36948480788); the
+# slowest shard took 9.0 minutes and clippy 3.9.
+#
+# WHAT IT DOES NOT RUN: doctests (they compile one binary per example and would
+# dominate the budget); bench targets (clippy compiles and lints them, but
+# criterion's harness rejects `--skip`, so they are not executed); feature
+# combinations beyond the defaults; `PROPTEST_CASES` above 32 — full-intensity
+# property runs are not this lane's job, only the iteration count changes; and
+# the tests in the test job's SKIP_TESTS ledger, each with its reason. Every
+# other test must pass: a real failure on main is fixed here when the fix is
+# trivially safe, and otherwise stays red and is listed under EXPOSED FAILURES
+# below. The lane never skips it, and never bounds it inside the test. Clippy
+# runs with `-D warnings` on every selected package. The clippy job's
+# CLIPPY_DEBT ledger, which would take a package out of that run and hold it
+# to a reviewed baseline instead, is empty: an entry narrows this lane's gate,
+# so it needs the owner's explicit scope amendment.
+#
+# EXPOSED FAILURES ON MAIN — red whenever corelink-server is selected (any
+# change in its closure, a change to this lane, a manual dispatch). Each one
+# is left unfixed here for the reason given; none is skipped or capped.
+#   cargo test: corelink-server's b126_t1_files_remain_below_the_1000_line_ceiling.
+#     crates/corelink-container/src/main.rs has 1047 lines against the
+#     1000-line ceiling. Splitting it changes its sha256, which
+#     scripts/verify_i2176_grpc_deny_gate.py, scripts/verify_i2574_grpc_diagnostic_policy.py
+#     and scripts/backlog_verify.py pin.
+#   cargo clippy -D warnings, corelink-server, in these files of
+#   crates/corelink-container/src/ only:
+#     grpc_staging_probe.rs, storage/d1_http.rs, routes/staging_d1_binding_probe.rs
+#       sha256-pinned or frozen by scripts/verify_i2176_grpc_deny_gate.py
+#       (d1_http.rs also by scripts/verify_i2574_grpc_diagnostic_policy.py).
+#     routes/dsr/access.rs, signup_d1_http.rs, storage/cas_write_fence.rs,
+#     storage/staging_load_test_admission.rs, webhook_inbox_d1.rs
+#       each file's git blob id binds reviewed CodeQL alerts in
+#       specs/_audits/2026-10-01-i1674-reviewed-codeql-dispositions.json;
+#       any edit unbinds them.
+#     byok_control_transition.rs, storage/staging_load_test_ownership.rs
+#       a change to either one starts a closed-world scope gate
+#       (issue-2666-byok-teardown.yml, issue-2582-signup-ownership.yml) that
+#       fails unless the change is exactly its own issue's file set.
+#     routes/tier_select_store.rs
+#       sha256-pinned by scripts/verify_real_ignored_harnesses.py, a file the
+#       i2176 gate freezes in its i2565 delivery group.
+#     reapi_bytestream.rs
+#       one production slice whose bound rests on the size check in
+#       ReapiIngress::cas_read; replacing its panic is a behavior change, not
+#       a trivially safe fix.
+#   While corelink-server's lib fails, clippy cannot lint its bins and
+#   integration tests, which build on that lib. The cap-lints baseline of run
+#   36950363647 found no diagnostic in them.
+#
+# THE VERDICT JOB is the single check to depend on. It fails unless the
+# selection succeeded AND either clippy and every test shard succeeded, or the
+# selection was empty with a named reason for every changed path and both were
+# skipped for exactly that reason. A skipped job never reads as a pass.
+name: rust-affected-tests
+
+on:
+  pull_request:
+    # The two `paths:` lists below must stay identical and must cover every
+    # file the selector treats as workspace-wide; tests/test_rust_affected_packages.py
+    # reads them between these markers and fails if either drifts.
+    # rust-affected-paths:begin pull_request
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - 'rust-toolchain'  # path-filter-allow: legacy toolchain file; the selector treats it as workspace-wide
+      - '.cargo/config'  # path-filter-allow: legacy cargo config; the selector treats it as workspace-wide
+      - '**/clippy.toml'  # path-filter-allow: no clippy.toml today; a future one changes what clippy reports
+      - '**/.clippy.toml'  # path-filter-allow: no .clippy.toml today; a future one changes what clippy reports
+      - '.github/workflows/rust-affected-tests.yml'
+      - '.github/rust-affected-tests/**'  # path-filter-allow: empty while CLIPPY_DEBT is; a future baseline is lane input
+      - 'scripts/rust_affected_packages.py'
+      - 'scripts/rust_clippy_debt.py'
+      - 'tests/test_rust_affected_packages.py'
+    # rust-affected-paths:end pull_request
+  # Post-merge: catches what two individually-green PRs break together inside
+  # the closure, and is the only event whose caches every PR can restore.
+  push:
+    branches: [main]
+    # rust-affected-paths:begin push
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - 'rust-toolchain'  # path-filter-allow: mirrors the pull_request filter above
+      - '.cargo/config'  # path-filter-allow: mirrors the pull_request filter above
+      - '**/clippy.toml'  # path-filter-allow: mirrors the pull_request filter above
+      - '**/.clippy.toml'  # path-filter-allow: mirrors the pull_request filter above
+      - '.github/workflows/rust-affected-tests.yml'
+      - '.github/rust-affected-tests/**'  # path-filter-allow: mirrors the pull_request filter above
+      - 'scripts/rust_affected_packages.py'
+      - 'scripts/rust_clippy_debt.py'
+      - 'tests/test_rust_affected_packages.py'
+    # rust-affected-paths:end push
+  # Manual run = the whole workspace, for inputs the path mapping cannot see.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-affected-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  # Debuginfo is most of a debug target dir; panic locations come from
+  # `#[track_caller]`, not from debuginfo, so failures still name file:line.
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  RUST_BACKTRACE: '1'
+
+jobs:
+  select:
+    name: select affected packages
+    runs-on: ubuntu-24.04
+    # Measured 25-30 s (runs 36930929982 through 36942836179).
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.select.outputs.mode }}
+      count: ${{ steps.select.outputs.count }}
+      cargo_args: ${{ steps.select.outputs.cargo_args }}
+      test_matrix: ${{ steps.select.outputs.test_matrix }}
+      # The revision whose clippy-debt baselines are the reviewed ones: the
+      # diff base, or the default branch's tip when there is none.
+      debt_base: ${{ steps.select.outputs.debt_base }}
+    steps:
+      # For pull_request this is the merge commit; depth 2 brings its first
+      # parent, the exact base the PR was merged onto.
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Selector teeth (synthetic workspaces)
+        run: python3 -m unittest tests/test_rust_affected_packages.py
+
+      - name: Resolve the pinned toolchain from rust-toolchain.toml
+        run: bash scripts/ci-assert-pinned-toolchain.sh
+
+      - name: Select
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # The test job's matrix width. The selection is dealt round-robin
+          # over this many shards, each a separate ubuntu-24.04 runner.
+          TEST_SHARDS: '3'
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/select"
+          mkdir -p "$work"
+          cargo metadata --format-version 1 --locked > "$work/metadata.json"
+          selector=(python3 scripts/rust_affected_packages.py --metadata "$work/metadata.json"
+                    --test-shards "$TEST_SHARDS" --step-outputs "$GITHUB_OUTPUT")
+          # The clippy job's ratchet holds each committed clippy-debt baseline
+          # to the one at this revision. With no diff base it is the default
+          # branch's tip: what a merge of this ref would be held to.
+          debt_base() {
+            local sha="$1"
+            if [ "$sha" = default ]; then
+              git fetch --no-tags --depth=1 origin "refs/heads/$DEFAULT_BRANCH"
+              sha="$(git rev-parse FETCH_HEAD)"
+            fi
+            if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::clippy-debt base revision '$sha' is not a commit sha"
+              exit 1
+            fi
+            echo "debt_base=$sha" >> "$GITHUB_OUTPUT"
+          }
+
+          case "$EVENT" in
+            workflow_dispatch)
+              debt_base default
+              "${selector[@]}" --all "manual dispatch checks every package"
+              exit 0
+              ;;
+            pull_request)
+              parents="$(git rev-list --parents -n 1 HEAD | wc -w)"
+              if [ "$parents" -ne 3 ]; then
+                echo "::error::expected the pull_request merge commit (2 parents), got $((parents - 1)) — cannot name the base"
+                exit 1
+              fi
+              base="$(git rev-parse HEAD^1)"
+              ;;
+            push)
+              if [[ ! "$BEFORE" =~ ^[0-9a-f]{40}$ || "$BEFORE" =~ ^0{40}$ ]]; then
+                debt_base default
+                "${selector[@]}" --all "push without a previous commit to diff against"
+                exit 0
+              fi
+              if ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+                git fetch --no-tags --depth=1 origin "$BEFORE"
+              fi
+              base="$BEFORE"
+              ;;
+            *)
+              echo "::error::unexpected event '$EVENT'"
+              exit 1
+              ;;
+          esac
+
+          debt_base "$base"
+          echo "diffing $base..$(git rev-parse HEAD)"
+          # --no-renames: a moved file must count against BOTH packages.
+          git diff --name-only --no-renames -z "$base" HEAD > "$work/changed.bin"
+          if git cat-file -e "$base:Cargo.lock" 2>/dev/null; then
+            git show "$base:Cargo.lock" > "$work/base.lock"
+            selector+=(--base-lock "$work/base.lock")
+          fi
+          if git cat-file -e "$base:Cargo.toml" 2>/dev/null; then
+            git show "$base:Cargo.toml" > "$work/base.toml"
+            selector+=(--base-manifest "$work/base.toml")
+          fi
+          "${selector[@]}" --changed "$work/changed.bin"
+
+  clippy:
+    name: clippy -D warnings (affected)
+    needs: select
+    if: needs.select.outputs.mode != 'none'
+    runs-on: ubuntu-24.04
+    # Measured 1.9-4.1 min for the whole workspace with a cold cache (runs
+    # 36930929982 through 36942836179).
+    timeout-minutes: 15
+    env:
+      # DECLARED CLIPPY DEBT — EMPTY. Every selected package is linted with
+      # `-D warnings`, which is this lane's specified gate. A package listed
+      # here (one name per line, as a `|` block) would be left out of that run
+      # and linted instead with every lint capped at warn, its diagnostics
+      # compared one by one with a reviewed baseline at
+      # $CLIPPY_DEBT_DIR/<package>.txt (scripts/rust_clippy_debt.py): any
+      # diagnostic the baseline does not list is red, and so is any listed one
+      # that is gone, until the baseline drops it. The committed baseline must
+      # be a sub-multiset of the same file at the select job's debt_base
+      # revision; only a package with no baseline there is a bootstrap, and its
+      # run warns. However strict, that accepts every listed diagnostic, so an
+      # entry needs the owner's explicit scope amendment, not only the review
+      # of the PR that adds it. tests/test_rust_affected_packages.py
+      # (StrictClippy) fails while this ledger names any package.
+      #   corelink-server fails the strict run in the files listed under
+      #   EXPOSED FAILURES at the top of this file, so this job is red whenever
+      #   it is selected, until those are fixed or the scope is amended. No
+      #   package depends on it, so its failure hides no other package's lints.
+      CLIPPY_DEBT: ''
+      CLIPPY_DEBT_DIR: .github/rust-affected-tests/clippy-debt
+    steps:
+      # Depth 2 brings a pull_request merge commit's first parent, the usual
+      # debt_base; the baseline step fetches any other one itself.
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Resolve the pinned toolchain from rust-toolchain.toml
+        run: bash scripts/ci-assert-pinned-toolchain.sh
+
+      # corelink-reapi and corelink-server compile .proto files in build.rs.
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # arduino/setup-protoc@v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Saved only from main: a PR-scoped cache is restorable by that PR alone
+      # and would evict main's from the shared 10 GB budget.
+      - name: Cache cargo registry and dependency builds
+        if: runner.environment == 'github-hosted'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: rust-affected-clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # The scripts between the markers in this step and the next are run
+      # verbatim, against a fake `cargo`, by tests/test_rust_affected_packages.py
+      # (ClippyScope, ClippyDebt) in the select job.
+      - name: cargo clippy --all-targets -D warnings
+        env:
+          CARGO_SCOPE: ${{ needs.select.outputs.cargo_args }}
+          SELECTED: ${{ needs.select.outputs.count }}
+        run: |
+          # rust-affected-clippy-scope:begin
+          set -euo pipefail
+          read -ra scope <<< "$CARGO_SCOPE"
+          if [ "${#scope[@]}" -eq 0 ]; then
+            echo "::error::the select job reported mode != none but no cargo scope — refusing to lint nothing"
+            exit 1
+          fi
+          debt=()
+          while read -r pkg _rest; do
+            if [ -n "${pkg:-}" ]; then debt+=("$pkg"); fi
+          done <<< "$CLIPPY_DEBT"
+          in_debt() {
+            local candidate
+            for candidate in ${debt[@]+"${debt[@]}"}; do
+              if [ "$candidate" = "$1" ]; then return 0; fi
+            done
+            return 1
+          }
+          lint=()
+          if [ "${scope[0]}" = "--workspace" ]; then
+            lint=(--workspace)
+            for pkg in ${debt[@]+"${debt[@]}"}; do lint+=(--exclude "$pkg"); done
+          else
+            for ((i = 0; i < ${#scope[@]}; i++)); do
+              if [ "${scope[$i]}" = "-p" ] && ! in_debt "${scope[$((i + 1))]:-}"; then
+                lint+=(-p "${scope[$((i + 1))]}")
+              fi
+            done
+          fi
+          if [ "${#lint[@]}" -eq 0 ]; then
+            echo "every selected package carries declared CLIPPY_DEBT; the baseline step lints it"
+            exit 0
+          fi
+          df -h /
+          echo "linting $SELECTED selected package(s) with -D warnings: ${lint[*]}"
+          cargo clippy --locked --keep-going --all-targets "${lint[@]}" -- -D warnings
+          df -h /
+          # rust-affected-clippy-scope:end
+
+      - name: Declared clippy debt matches its reviewed baseline
+        # Report the baseline comparison even when the strict run above failed.
+        if: success() || failure()
+        env:
+          CARGO_SCOPE: ${{ needs.select.outputs.cargo_args }}
+          DEBT_BASE: ${{ needs.select.outputs.debt_base }}
+          CLIPPY_DEBT_REGENERATED: ${{ runner.temp }}/clippy-debt-regenerated
+        run: |
+          # rust-affected-clippy-debt:begin
+          set -euo pipefail
+          read -ra scope <<< "$CARGO_SCOPE"
+          if [[ ! "${DEBT_BASE:-}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::the select job named no clippy-debt base revision ('${DEBT_BASE:-}') — cannot hold the baselines to their reviewed versions"
+            exit 1
+          fi
+          if ! git cat-file -e "${DEBT_BASE}^{commit}" 2>/dev/null \
+              && ! git fetch --no-tags --depth=1 origin "$DEBT_BASE"; then
+            echo "::error::cannot fetch the clippy-debt base revision $DEBT_BASE"
+            exit 1
+          fi
+          fail=0
+          ran=0
+          while read -r pkg extra; do
+            if [ -z "${pkg:-}" ]; then continue; fi
+            if [ -n "${extra:-}" ] || [[ ! "$pkg" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+              echo "::error::malformed CLIPPY_DEBT entry '${pkg} ${extra:-}' — expected one package name"
+              fail=1
+              continue
+            fi
+            baseline="$CLIPPY_DEBT_DIR/$pkg.txt"
+            if [ ! -f "$baseline" ]; then
+              echo "::error::CLIPPY_DEBT lists '$pkg' but its reviewed baseline $baseline does not exist"
+              fail=1
+              continue
+            fi
+            # The ratchet's reference: the same file at the base revision.
+            # Absent there, this change introduces it (a bootstrap).
+            listed="$(git ls-tree --name-only "$DEBT_BASE" -- "$baseline")"
+            if [ "$listed" = "$baseline" ]; then
+              reviewed="$(mktemp)"
+              git show "$DEBT_BASE:$baseline" >"$reviewed"
+              ratchet=(--reviewed-baseline "$reviewed")
+            elif [ -z "$listed" ]; then
+              ratchet=(--bootstrap)
+            else
+              echo "::error::'$baseline' at $DEBT_BASE resolves to '$listed', not to one file"
+              fail=1
+              continue
+            fi
+            selected=0
+            for ((i = 0; i < ${#scope[@]}; i++)); do
+              case "${scope[$i]}" in
+                --workspace) selected=1 ;;
+                -p) if [ "${scope[$((i + 1))]:-}" = "$pkg" ]; then selected=1; fi ;;
+              esac
+            done
+            if [ "$selected" -eq 0 ]; then
+              echo "clippy debt '$pkg': not selected by this change, not linted"
+              python3 scripts/rust_clippy_debt.py --package "$pkg" --baseline "$baseline" "${ratchet[@]}" || fail=1
+              continue
+            fi
+            ran=$((ran + 1))
+            id="$(cargo pkgid -p "$pkg")"
+            out="$(mktemp)"
+            mkdir -p "$CLIPPY_DEBT_REGENERATED"
+            regenerated="$CLIPPY_DEBT_REGENERATED/$pkg.txt"
+            rc=0
+            cargo clippy --locked --keep-going --all-targets -p "$pkg" --message-format=json \
+              -- -D warnings --cap-lints warn >"$out" || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::clippy on '$pkg' did not build even with every lint capped at warn (cargo exit $rc) — a hard error, not lint debt"
+              fail=1
+              continue
+            fi
+            if python3 scripts/rust_clippy_debt.py --package "$pkg" --package-id "$id" \
+                --messages "$out" --baseline "$baseline" "${ratchet[@]}" --regenerated "$regenerated"; then
+              rm -f "$regenerated"
+            else
+              fail=1
+              if [ -s "$regenerated" ]; then
+                # Uploaded, not printed: the log masks secret-shaped source text.
+                echo "the baseline that matches this run is $pkg.txt in the clippy-debt-baselines artifact (fix every NEW entry first; only FIXED entries may leave)"
+              else
+                rm -f "$regenerated"
+              fi
+            fi
+          done <<< "$CLIPPY_DEBT"
+          echo "clippy debt entries run: $ran"
+          exit "$fail"
+          # rust-affected-clippy-debt:end
+
+      - name: Upload the clippy debt baselines that match this run
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clippy-debt-baselines
+          path: ${{ runner.temp }}/clippy-debt-regenerated/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  test:
+    name: cargo test (affected, shard ${{ matrix.shard }})
+    needs: select
+    if: needs.select.outputs.mode != 'none'
+    runs-on: ubuntu-24.04
+    # Each shard compiles and runs about a third of the selection. Measured
+    # 4.0-9.0 min per shard for the whole workspace, cold (see TIME BUDGET).
+    timeout-minutes: 15
+    strategy:
+      # Every shard reports, so one red shard does not hide another's failures.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.test_matrix) }}
+    env:
+      # Most suites read PROPTEST_CASES (default 10 000; corelink-auth alone
+      # took 58 min at that count when measured on 2026-08-30).
+      PROPTEST_CASES: '32'
+      # DECLARED EXCEPTIONS — tests that cannot pass BY DESIGN under the
+      # PROPTEST_CASES above, skipped by exact name with the reason here. Each
+      # name must still resolve to exactly one `fn` in the tree (checked in the
+      # step below), so a renamed or deleted test fails the lane instead of
+      # leaving a skip that silently covers nothing. Shrink-only.
+      #   test_proptest_cases_runtime_configurable_s14
+      #     corelink-privacy/tests/residency_property_region_pinning_30k.rs
+      #     asserts the configured case count is >= 1000, i.e. it fails for any
+      #     run that lowers PROPTEST_CASES below 1000, which this lane must.
+      SKIP_TESTS: test_proptest_cases_runtime_configurable_s14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Resolve the pinned toolchain from rust-toolchain.toml
+        run: bash scripts/ci-assert-pinned-toolchain.sh
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # arduino/setup-protoc@v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # One cache per shard: the shards build different dependency sets.
+      - name: Cache cargo registry and dependency builds
+        if: runner.environment == 'github-hosted'
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: rust-affected-test-${{ matrix.shard }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Declared skips still name exactly one test
+        run: |
+          set -euo pipefail
+          read -ra skips <<< "$SKIP_TESTS"
+          for name in "${skips[@]}"; do
+            matches="$(git grep -n -E "fn ${name}\(" -- '*.rs' || true)"
+            hits="$(printf '%s' "$matches" | grep -c . || true)"
+            if [ "$hits" -ne 1 ]; then
+              echo "::error::declared skip '$name' matches $hits test fns (expected exactly 1) — fix or delete the entry"
+              exit 1
+            fi
+            echo "skip '$name' -> $matches"
+          done
+
+      # `--tests --bins --examples`, not `--all-targets`: bench targets use
+      # criterion's harness, which rejects libtest's `--skip`. clippy above still
+      # compiles and lints every bench; they are not executed here.
+      - name: cargo test --tests --bins --examples
+        env:
+          CARGO_SCOPE: ${{ matrix.cargo_args }}
+          SELECTED: ${{ matrix.count }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          read -ra scope <<< "$CARGO_SCOPE"
+          read -ra skips <<< "$SKIP_TESTS"
+          if [ "${#scope[@]}" -eq 0 ]; then
+            echo "::error::shard '$SHARD' has no cargo scope — refusing to test nothing"
+            exit 1
+          fi
+          skip_args=(--exact)
+          for name in "${skips[@]}"; do skip_args+=(--skip "$name"); done
+          # Measured 2026-10-01 on ubuntu-24.04: 85G free on / before any build,
+          # so no SDK removal step (it cost 2.5 min). Printed so a squeeze shows.
+          df -h /
+          echo "shard $SHARD: testing $SELECTED package(s): ${scope[*]} (skipping: ${skips[*]})"
+          cargo test --locked --no-fail-fast --tests --bins --examples "${scope[@]}" -- "${skip_args[@]}"
+          df -h /
+
+  verdict:
+    name: rust-affected-tests
+    needs: [select, clippy, test]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Combine the results
+        env:
+          SELECT: ${{ needs.select.result }}
+          MODE: ${{ needs.select.outputs.mode }}
+          CLIPPY: ${{ needs.clippy.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          set -euo pipefail
+          echo "select=$SELECT mode=${MODE:-<unset>} clippy=$CLIPPY test=$TEST"
+          if [ "$SELECT" != "success" ]; then
+            echo "::error::package selection did not succeed ($SELECT)"
+            exit 1
+          fi
+          case "$MODE" in
+            none)
+              if [ "$CLIPPY" != "skipped" ] || [ "$TEST" != "skipped" ]; then
+                echo "::error::selection was empty but clippy=$CLIPPY test=$TEST"
+                exit 1
+              fi
+              echo "No package selected; the select job's summary names the reason for every changed path."
+              ;;
+            packages|workspace)
+              if [ "$CLIPPY" != "success" ] || [ "$TEST" != "success" ]; then
+                echo "::error::clippy=$CLIPPY test=$TEST"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::unknown selection mode '${MODE:-<unset>}'"
+              exit 1
+              ;;
+          esac

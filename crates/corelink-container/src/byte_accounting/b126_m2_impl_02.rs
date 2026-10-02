@@ -68,19 +68,8 @@ impl AccountingAcHandler {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_byok_cache_for_test(mut self, cache: Arc<ByokConfigCache>) -> Self {
-        self.test_byok_config_cache = Some(cache);
-        self
-    }
-
-    #[cfg(test)]
     pub(crate) fn byok_for_test(&self) -> Option<&Arc<crate::storage::byok_cas::DataPlaneByok>> {
         self.byok.as_ref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn byok_config_cache_for_test(&self) -> Option<&Arc<ByokConfigCache>> {
-        self.test_byok_config_cache.as_ref()
     }
 
     /// Acquire the per-`(tenant, action_digest)` serialization guard (the shard

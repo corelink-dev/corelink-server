@@ -232,6 +232,11 @@ fn unix_time_ms() -> Result<i64, ()> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "test assertions intentionally surface failures"
+)]
 mod tests {
     use super::*;
     use std::{

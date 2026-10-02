@@ -4,6 +4,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
+    clippy::indexing_slicing,
     reason = "test code: panics surface as failures by design"
 )]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -463,14 +464,17 @@ impl AcUpdateHandler for UnusedAc {
     }
 }
 
+/// The requests a recording CAS handler received, in order.
+type RecordedCalls<T> = Arc<std::sync::Mutex<Vec<T>>>;
+
 fn cas_ingress_for_test(
     auth: Result<(String, bool), AuthenticationFailure>,
     admission: Result<(), AdmissionFailure>,
     read_result: Result<CasReadResponse, corelink_handler_cas::CasHandlerError>,
 ) -> (
     ReapiIngress,
-    Arc<std::sync::Mutex<Vec<CasReadRequest>>>,
-    Arc<std::sync::Mutex<Vec<CasWriteRequest>>>,
+    RecordedCalls<CasReadRequest>,
+    RecordedCalls<CasWriteRequest>,
 ) {
     let read_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let write_calls = Arc::new(std::sync::Mutex::new(Vec::new()));

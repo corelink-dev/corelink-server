@@ -190,6 +190,33 @@ paths = ['''^scripts/published_claims_inventory\.json$''']
 regexTarget = "line"
 regexes = ['''^\s*"(?:README\.md|(?:apps/docs|marketing|legal)/[A-Za-z0-9._/-]+\.(?:md|mdx|html|htm|js|jsx|ts|tsx))": "[a-f0-9]{64}",?$''']
 
+# ── MOVED-FIXTURE CLOSURE — exactly one finding, in one unmerged PR commit ────
+# Not a secret, and not a deferral. `tools/sbom-publish/src/main.rs` carries a
+# made-up UUID in its unit test (`let secret_uuid = "…"`), whose job is to prove
+# `ingestion_summary` never echoes a Dependency-Track project UUID. #2852
+# (f425a8fb3) added it while this gate was disabled. Commit f3dea21a5 of PR
+# #2870 then moved that `mod tests` block below `exit_code_for_error` to clear
+# `clippy::items_after_test_module`, so its patch re-adds the line and the PR
+# diff scan flags it as `generic-api-key`. The PR's later commits put the block
+# back in place: the PR's cumulative diff against main no longer adds the line.
+#
+# The commit itself is immutable (no force-push), so without this pin the PR's
+# `BASE..HEAD` scan exits 1 on it for good. Finding fingerprint being closed:
+#   f3dea21a59fa7a1c4f5bcffe8618430d92d6044c:tools/sbom-publish/src/main.rs:generic-api-key:284
+#
+# HOW NARROW THIS IS. `condition = "AND"`: that one commit SHA, that one path,
+# and a line whose whole shape is the fixture assignment. A UUID-shaped value in
+# any other commit, file or line still fires. Deliberately NOT covered: the
+# same line in f425a8fb3 on main. That is a separate finding for the weekly
+# full-history sweep, outside this PR's scope.
+[[rules.allowlists]]
+description = "Fixture UUID in sbom-publish's unit test, re-added only by the moving commit f3dea21a5 of PR #2870. A closure for one immutable finding, not a value mute. See the comment block above."
+condition = "AND"
+commits = ["f3dea21a59fa7a1c4f5bcffe8618430d92d6044c"]
+paths = ['''^tools/sbom-publish/src/main\.rs$''']
+regexTarget = "line"
+regexes = ['''^\s*let secret_uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";$''']
+
 [allowlist]
 description = "CoreLink deliberate test/example/fixture/spec values — NOT operational secrets"
 # Pure example / fixture / spec / doc-REFERENCE / test trees. These legitimately

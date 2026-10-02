@@ -1,5 +1,6 @@
 #![allow(
     clippy::expect_used,
+    clippy::indexing_slicing,
     clippy::panic,
     clippy::unwrap_used,
     reason = "test assertions intentionally surface failures"
@@ -175,6 +176,10 @@ fn action_digest() -> Digest {
     }
 }
 
+#[expect(
+    deprecated,
+    reason = "the fixture fills the deprecated REAPI v2.0 symlink lists that validation still checks"
+)]
 fn result() -> ActionResult {
     let contents = b"output".to_vec();
     ActionResult {
