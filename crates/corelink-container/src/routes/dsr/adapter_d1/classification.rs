@@ -5,8 +5,7 @@
 //! reviewable while the adapter implementation owns the D1 operations.
 
 use super::{
-    registry::ALL_TENANT_KEYED_TABLES, CAS_PLANE_OWNED, NAMESPACE_TABLES, RETAIN_SET,
-    SPECIAL_ERASE_TABLES, TENANT_ID_TABLES,
+    CAS_PLANE_OWNED, NAMESPACE_TABLES, RETAIN_SET, SPECIAL_ERASE_TABLES, TENANT_ID_TABLES,
 };
 
 /// The five mutually-exclusive classification buckets every tenant-keyed
@@ -60,5 +59,5 @@ pub(super) fn ensure_classification(tables: &[&str]) -> Result<(), String> {
 /// the source of truth; this helper remains available to focused unit tests.
 #[cfg(test)]
 pub(super) fn unclassified_tenant_keyed_tables() -> Vec<(&'static str, usize)> {
-    classification_gaps(ALL_TENANT_KEYED_TABLES)
+    classification_gaps(super::registry::ALL_TENANT_KEYED_TABLES)
 }

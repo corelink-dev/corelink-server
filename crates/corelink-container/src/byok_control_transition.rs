@@ -171,6 +171,14 @@ impl D1ByokControl {
 
     /// Persist BYOK activation only for a freshly provisioned synthetic tenant
     /// bound to the exact admitted run, scenario, and deployment.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only the ownership tests call this staging path; a production caller \
+                      leaves this expectation unfulfilled, which fails -D warnings"
+        )
+    )]
     pub(crate) async fn prepare_staging_synthetic_activation(
         &self,
         activation: &ByokActivation,
@@ -454,22 +462,22 @@ impl D1ByokControl {
             )
             .await
             .map_err(|_| StagingByokTeardownError::StorageUnavailable)?;
-        if rows.len() != 1 {
+        let [row] = rows.as_slice() else {
             return Err(StagingByokTeardownError::InvalidLocator);
-        }
-        let run_id = rows[0]
+        };
+        let run_id = row
             .get("run_id")
             .and_then(Value::as_str)
             .ok_or(StagingByokTeardownError::InvalidLocator)?;
-        let scenario = rows[0]
+        let scenario = row
             .get("scenario")
             .and_then(Value::as_str)
             .ok_or(StagingByokTeardownError::InvalidLocator)?;
-        let target_sha = rows[0]
+        let target_sha = row
             .get("target_deployment_sha")
             .and_then(Value::as_str)
             .ok_or(StagingByokTeardownError::InvalidLocator)?;
-        let tenant_ref = rows[0]
+        let tenant_ref = row
             .get("tenant_ref")
             .and_then(Value::as_str)
             .ok_or(StagingByokTeardownError::InvalidLocator)?;
@@ -575,22 +583,22 @@ impl D1ByokControl {
             )
             .await
             .map_err(|_| StagingByokTeardownError::StorageUnavailable)?;
-        if rows.len() != 1 {
+        let [row] = rows.as_slice() else {
             return Err(StagingByokTeardownError::UnsafeState);
-        }
-        let run_id = rows[0]
+        };
+        let run_id = row
             .get("run_id")
             .and_then(Value::as_str)
             .ok_or(StagingByokTeardownError::UnsafeState)?;
-        let scenario = rows[0]
+        let scenario = row
             .get("scenario")
             .and_then(Value::as_str)
             .ok_or(StagingByokTeardownError::UnsafeState)?;
-        let target_sha = rows[0]
+        let target_sha = row
             .get("target_deployment_sha")
             .and_then(Value::as_str)
             .ok_or(StagingByokTeardownError::UnsafeState)?;
-        let stored_ref = rows[0]
+        let stored_ref = row
             .get("tenant_ref")
             .and_then(Value::as_str)
             .ok_or(StagingByokTeardownError::UnsafeState)?;
@@ -726,12 +734,12 @@ impl D1ByokControl {
                     "staging synthetic tenant locator could not be verified".to_owned(),
                 )
             })?;
-        if rows.len() != 1 {
+        let [row] = rows.as_slice() else {
             return Err(ByokWriteError::Invalid(
                 "staging synthetic tenant locator is absent or ambiguous".to_owned(),
             ));
-        }
-        let tenant_id = text(&rows[0], "tenant_id").map_err(|_| {
+        };
+        let tenant_id = text(row, "tenant_id").map_err(|_| {
             ByokWriteError::Invalid("staging synthetic tenant locator is invalid".to_owned())
         })?;
         if tenant_ref
@@ -1177,6 +1185,10 @@ impl D1ByokControl {
             .map_err(ByokWriteError::Transport)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every input feeds the single D1 batch that commits the preparation"
+    )]
     async fn commit_activation_preparation(
         &self,
         snapshot: &crate::byok_transition_fence::ConfigSnapshot,
