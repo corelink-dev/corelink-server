@@ -41,6 +41,25 @@
 # squash is what this repository's history is made of. Under the up-to-date
 # precondition the squash commit's tree is exactly tree(H); the proof checks it.
 #
+# ── The merge call does NOT pin the base (2026-10-02 review) ────────────────
+# `sha=` pins the head only. The REST merge endpoint takes no base parameter,
+# and GraphQL mergePullRequest also pins only expectedHeadOid. GitHub merges
+# into whatever base the PR names when the PUT arrives, under THAT branch's
+# protection. So the last read before the PUT is the PR's own base and head,
+# and it must still say base=main at the captured main sha. A retarget seen by
+# any read before then is a refusal.
+#   Residual window: a retarget AFTER that last read and BEFORE GitHub acts on
+#   the PUT. On the client, only the start-up of one `gh api` process and one
+#   HTTPS request separate them; five full `gh pr view` calls measured
+#   2026-10-02 on the founder's Mac (load average 55-60) took 1.1-1.6 s each,
+#   start-up included. Exploiting it needs an actor with write
+#   access retargeting the PR inside that gap. It cannot be closed from here,
+#   so it is detected instead: the post-merge proof requires the PR's base to
+#   read main and the merge commit to be reachable from refs/heads/main, and
+#   anything else exits MERGED_INTO_UNEXPECTED_BASE (4) with recovery steps.
+#   This helper never writes main itself, so the worst case is a merge into
+#   another branch that is detected and reported, never a silent one.
+#
 # ── Local object substitution (2026-10-01 review) ───────────────────────────
 # Every read below names an oid that GitHub also names, and the claim "the
 # allocator validated the bytes GitHub merges" holds only if local git serves
@@ -60,7 +79,10 @@
 #
 # Exit status: 0 = merged and proven (or a clean dry run); 1 = refused and NOT
 # merged; 2 = bad arguments; 3 = LANDED_UNPROVEN (GitHub says MERGED but the
-# parent/tree/reachability proof failed or could not be read; inspect main).
+# parent/tree proof failed or could not be read; inspect main);
+# 4 = MERGED_INTO_UNEXPECTED_BASE (GitHub says MERGED, but the PR's base is not
+# main or the merge commit is not on refs/heads/main; follow the printed
+# recovery steps).
 # A dry run stops before the remote lease and before the merge endpoint.
 set -euo pipefail
 export GIT_NO_REPLACE_OBJECTS=1
@@ -72,6 +94,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLOC="$SCRIPT_DIR/backlog_id_alloc.py"
 MERGE_METHOD=squash
 LANDED_UNPROVEN=3
+MERGED_INTO_UNEXPECTED_BASE=4
 REMOTE_LEASE_REF=refs/heads/corelink-backlog-id-merge-lock
 REMOTE_LEASE_OID=; REMOTE_LEASE_HELD=0; REMOTE_LEASE_CONFIRMED=0
 LOCK_PID=; LOCK_READY=; TMP=
@@ -197,11 +220,23 @@ git push --quiet origin "$REMOTE_LEASE_OID:$REMOTE_LEASE_REF" || { observed="$(r
 # surviving remote lease is intentionally handled as stale on the next run.
 backlog_lock_healthy || refuse "local lock lost."
 
-# ── 5. merge boundary: re-read both refs, then one pinned API merge ─────────
-final="$(pr_snapshot)" || refuse "PR #$PR metadata unavailable at the merge boundary."
+# ── 5. merge boundary: the PR, main, then the PR again as the LAST read ─────
+# boundary_pr_check refuses unless the PR still names base=main at the captured
+# main, the captured head, and the captured head ownership. It runs twice:
+# before the final main read, and as the very last read before the PUT,
+# because the PUT pins the head but not the base (see the header).
+boundary_pr_check() {
+  local snap b_head b_base b_base_name
+  snap="$(pr_snapshot)" || refuse "PR #$PR metadata unavailable at the merge boundary."
+  read -r b_head b_base b_base_name _ <<<"$snap"
+  [ "$b_base_name" = main ] && [ "$b_base" = "$CAPTURED_MAIN" ] || refuse "PR base retargeted at merge boundary: the PR names '$b_base_name' at $b_base, not main at the captured $CAPTURED_MAIN; not merging."
+  [ "$b_head" = "$CAPTURED_HEAD" ] || refuse "candidate force-pushed at merge boundary; retry."
+  [ "$snap" = "$snapshot" ] || refuse "head ownership changed at merge boundary; retry."
+}
+boundary_pr_check
 main_sha_final="$(remote_main)" || refuse "origin main unreadable at the merge boundary."
 [ "$main_sha_final" = "$CAPTURED_MAIN" ] || refuse "main moved at merge boundary; retry."
-[ "$final" = "$snapshot" ] || refuse "candidate force-pushed at merge boundary; retry."
+boundary_pr_check   # the LAST read before the PUT: only gh's start-up separates them
 api_sha=""
 if merge_json="$(gh api -X PUT "repos/{owner}/{repo}/pulls/$PR/merge" -f sha="$CAPTURED_HEAD" -f merge_method="$MERGE_METHOD" 2>"$TMP/merge.err")"; then
   read -r api_sha api_merged <<<"$(json_fields "$merge_json" sha merged || true)"
@@ -214,23 +249,44 @@ else
 fi
 
 # ── 6. post-merge proof ─────────────────────────────────────────────────────
-post_state=UNKNOWN; merge_oid=
+post_state=UNKNOWN; merge_oid=; post_base=; main_oid=
 for try in $(seq 1 "$post_tries"); do
-  post_json="$(gh pr view "$PR" --json state,mergeCommit 2>/dev/null || echo '{}')"
+  post_json="$(gh pr view "$PR" --json state,mergeCommit,baseRefName 2>/dev/null || echo '{}')"
   post_state="$(json_fields "$post_json" state || echo UNKNOWN)"
   merge_oid="$(json_fields "$post_json" mergeCommit.oid || true)"
+  post_base="$(json_fields "$post_json" baseRefName || true)"
   [ "$post_state" = MERGED ] && break
   [ "$try" -eq "$post_tries" ] || sleep 2
 done
 [ "$post_state" = MERGED ] || { echo "⛔ PR #$PR is not MERGED (state=$post_state); no false merged claim." >&2; exit 1; }
 unproven() { echo "⛔ PR #$PR is MERGED but the B-315 landing proof FAILED: $*" >&2; echo "   Inspect main now; do not treat this as a clean merge." >&2; exit "$LANDED_UNPROVEN"; }
+wrong_base() {
+  echo "⛔ merged_into_unexpected_base: PR #$PR is MERGED, but NOT into main: $*" >&2
+  echo "   merge commit=${merge_oid:-unreadable} PR base=${post_base:-unreadable} refs/heads/main=${main_oid:-unread} captured main=$CAPTURED_MAIN head=$CAPTURED_HEAD" >&2
+  echo "   This helper never writes main. Do NOT re-run it for PR #$PR: a merged PR cannot be merged again." >&2
+  echo "   Recovery: 1) gh pr view $PR --json baseRefName,mergeCommit   (confirm where it landed)" >&2
+  echo "             2) if '${post_base:-that base}' was not meant to receive it, revert ${merge_oid:-the merge commit} there through a revert PR" >&2
+  echo "             3) open a new PR from head $CAPTURED_HEAD into main and gate it again; the head branch is left in place." >&2
+  exit "$MERGED_INTO_UNEXPECTED_BASE"
+}
 is_oid "$merge_oid" || unproven "PR mergeCommit unreadable."
 [ -z "$api_sha" ] || [ "$api_sha" = "$merge_oid" ] || unproven "API merge sha $api_sha != PR mergeCommit $merge_oid."
+# Where did it land? Asked before the parent/tree proof, which could pass on
+# another base: a branch cut from the captured main has the same tip.
+[ -n "$post_base" ] || unproven "PR base unreadable after merge."
+[ "$post_base" = main ] || wrong_base "the PR's base reads '$post_base' (retargeted after the last pre-merge read)."
 main_oid="$(remote_main || true)"; is_oid "$main_oid" || unproven "main unreadable after merge."
 git fetch --no-tags --quiet origin "$merge_oid" "$main_oid" >/dev/null 2>&1 || unproven "merge commit $merge_oid not fetchable."
+# A read of main that lags the merge is retried before the verdict.
+for try in 1 2 3; do
+  git merge-base --is-ancestor "$merge_oid" "$main_oid" && break
+  [ "$try" -lt 3 ] || wrong_base "merge commit $merge_oid is not reachable from refs/heads/main $main_oid."
+  sleep 2
+  main_oid="$(remote_main || true)"; is_oid "$main_oid" || unproven "main unreadable after merge."
+  git fetch --no-tags --quiet origin "$main_oid" >/dev/null 2>&1 || unproven "main $main_oid not fetchable."
+done
 parents="$(git rev-list --parents -n 1 "$merge_oid" 2>/dev/null || true)"
 [ "$parents" = "$merge_oid $CAPTURED_MAIN" ] || unproven "merge commit parents [${parents#"$merge_oid"} ] != [ $CAPTURED_MAIN ]: it landed on a main this helper did not validate."
 actual_tree="$(git rev-parse --verify --quiet "$merge_oid^{tree}" || true)"
 [ "$actual_tree" = "$head_tree" ] || unproven "resulting main tree mismatch: $actual_tree != tree(head) $head_tree."
-git merge-base --is-ancestor "$merge_oid" "$main_oid" || unproven "merge commit $merge_oid is not reachable from main $main_oid."
 echo "✅ PR #$PR MERGED via the PR API: commit=$merge_oid parent=$CAPTURED_MAIN tree=$actual_tree = tree(head $CAPTURED_HEAD)"

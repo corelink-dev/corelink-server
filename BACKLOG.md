@@ -1832,7 +1832,7 @@ source-locator: "WP-LEDGER-ID-ALLOC — Dense BACKLOG IDs / concurrent allocatio
 finding-title: "dense BACKLOG id allocation has no merge-time serialization or revalidation"
 problem: "Two merge authorities can read the same main snapshot, choose the same next contiguous id, and both issue a merge; the existing courtesy precheck only reports a collision after the stale merge and accepts a degenerate census."
 evidence: "The merge gate's former BACKLOG block fetched PR/main independently, printed renumber commands, and had no lock or second main-ref/snapshot check; repository merge commits are allowed, while branch-protection/ruleset API checks return GitHub 403 on this plan."
-acceptance: "The single --merge authority holds a crash-safe exclusive lock through allocation and merge, captures exact base/main/head object ids and same-repository head ownership, requires the PR base snapshot to equal current main and the head to contain main, validates the complete canonical dense candidate population on the exact BACKLOG.md blob bytes of those commits, read with git replacement objects disabled and refused while a graft file is in effect, revalidates main and head after allocation and again at the merge boundary, and lands through one PR merge API call pinned to the captured head sha with merge_method=squash, because branch protection on main declines every direct push. Strict up-to-date protection plus the sha pin refuses the merge if either ref moved. The post-merge proof requires state MERGED and a merge commit whose only parent is the captured main, whose tree is the head's tree, and which is reachable from main; otherwise the merge is reported as landed-but-unproven (exit 3), never as a clean merge."
+acceptance: "The single --merge authority holds a crash-safe exclusive lock through allocation and merge, captures exact base/main/head object ids and same-repository head ownership, requires the PR base snapshot to equal current main and the head to contain main, validates the complete canonical dense candidate population on the exact BACKLOG.md blob bytes of those commits, read with git replacement objects disabled and refused while a graft file is in effect, revalidates main and head after allocation and again at the merge boundary, and lands through one PR merge API call pinned to the captured head sha with merge_method=squash, because branch protection on main declines every direct push. The merge call pins only the head, so the last read before it re-reads the PR and refuses unless its base is still main at the captured main sha. Strict up-to-date protection plus the sha pin refuses the merge if either ref moved. The post-merge proof requires state MERGED, a PR base that still reads main and a merge commit reachable from refs/heads/main, otherwise it exits 4 (merged_into_unexpected_base) with recovery steps; and it requires that commit's only parent to be the captured main and its tree to be the head's tree, otherwise the merge is reported as landed-but-unproven (exit 3), never as a clean merge."
 verify: python3 scripts/verify_b315_dense_id_allocation.py --self-test
 verify-means: |
   done — the allocator fixture self-test, the real BACKLOG.md population, the wiring
@@ -1849,20 +1849,31 @@ verify-means: |
   the API call (409/405) is refused with no merged claim; a BEHIND head, a stale base
   snapshot, an allocation gap, a stale remote lease, a busy local lock, a refs/replace
   substitution of the candidate BACKLOG.md blob and a graft that makes a BEHIND head
-  look current are refused before the API; a merge that lands on an unvalidated main
-  or with a wrong tree exits 3; a lost API response is still proven from PR state.
-  That GitHub itself enforces strict up-to-date plus the sha pin is argued from its
-  documented semantics, not exercised: no live merge was run to write this record.
-  The harness is imported through the scripts package, so the BASE-owned candidate
-  gate freezes it together with this verifier and, when it runs, refuses a PR that
-  edits either one (its lane, backlog-verify.yml, was disabled_manually on 2026-10-01).
+  look current are refused before the API; a PR retargeted away from main at the
+  last read before the merge call is refused before the API; a merge that lands on an
+  unvalidated main or with a wrong tree exits 3; a merge GitHub lands on another base,
+  or that main does not contain, exits 4 (merged_into_unexpected_base); a lost API
+  response is still proven from PR state. The merge endpoint takes no base, so a
+  retarget after that last read and before GitHub acts on the PUT (one gh start-up
+  plus one request; a gh call measured 1.1-1.6 s on 2026-10-02) is detected after the
+  merge, not refused before it. That GitHub itself enforces strict up-to-date plus the
+  sha pin is argued from its documented semantics, not exercised: no live merge was
+  run to write this record. The verifier re-runs itself in an isolated interpreter
+  (-I -S -B) before importing anything a checkout file could shadow, loads the harness
+  by path from its source bytes (no package import, no bytecode cache), checks that
+  the self_test it calls is the function those bytes define, and refuses a checkout
+  that carries scripts/__init__.*, sitecustomize/usercustomize or *.pth at the root
+  or in scripts/. The BASE-owned candidate gate's closure follows that by-path load,
+  so it freezes the harness together with this verifier and, when it runs, refuses a
+  PR that edits either one (its lane, backlog-verify.yml, was disabled_manually on
+  2026-10-01).
   This rewrite of a done item's acceptance and verify-means, together with its trusted
   verifier, has no admission in the BASE-owned candidate gate, which refuses it by
   design. It is admitted only by an exact-SHA bootstrap that the owner authorizes for
   the reviewed base and head (the report-only gate from an origin/main tree, then a
   squash merge pinned with --match-head-commit to that head), and makes no
   self-hosting claim: this helper did not merge itself.
-last-verified: 2026-10-01
+last-verified: 2026-10-02
 ```
 
 ### B-316 — four live sub-processors still lack completed Legal reviews, and effective commitments text is stale

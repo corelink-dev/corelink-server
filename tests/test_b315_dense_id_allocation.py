@@ -288,6 +288,7 @@ def test_scenarios_are_named_and_cover_land_dry_run_and_refusal():
     assert (1, 0, False, False) in outcomes  # refused before the API
     assert (1, 1, False, False) in outcomes  # API refused, no merged claim
     assert (3, 1, True, False) in outcomes  # merged but unproven
+    assert (4, 1, True, False) in outcomes  # merged, but not into main
 
 
 def _fake_gh(world, *args: str) -> subprocess.CompletedProcess:
@@ -468,7 +469,8 @@ def test_wiring_names_a_planted_retired_design(planted: str, named: str):
 @pytest.mark.parametrize(
     "removed",
     [' -f sha="$CAPTURED_HEAD"', "MERGE_METHOD=squash", 'git merge-base --is-ancestor "$CAPTURED_MAIN" "$CAPTURED_HEAD"',
-     "export GIT_NO_REPLACE_OBJECTS=1", "git rev-parse --path-format=absolute --git-path info/grafts"],
+     "export GIT_NO_REPLACE_OBJECTS=1", "git rev-parse --path-format=absolute --git-path info/grafts",
+     '[ "$b_base_name" = main ] && [ "$b_base" = "$CAPTURED_MAIN" ]', '[ "$post_base" = main ] || wrong_base'],
 )
 def test_wiring_names_a_removed_guarantee(removed: str):
     text = _gate_and_helper()
@@ -524,10 +526,13 @@ def test_gate_wrapper_check_refuses_empty_text_and_a_missing_call_site():
 # ── Trust: the BASE-owned candidate gate must freeze the harness too ─────────
 # The verifier's layer 4 is the harness's word. scripts/backlog_verify.py, run
 # from BASE, refuses a PR that changes a trusted control, and it finds those
-# controls by a static import closure from each item's `verify` command. That
-# closure follows `scripts.`-package imports only, so a bare
-# `import b315_merge_harness` left the harness outside it: a later PR could stub
-# the harness's self_test and the verifier would report every scenario passed.
+# controls by a static closure from each item's `verify` command. That closure
+# follows `scripts.`-package imports and `spec_from_file_location` paths only,
+# so a bare `import b315_merge_harness` left the harness outside it: a later PR
+# could stub the harness's self_test and the verifier would report every
+# scenario passed. Freezing the file is not enough either: a PR can ADD files
+# that change how Python resolves the verifier's imports. The tests after the
+# closure ones build throwaway checkouts that carry such files.
 
 VERIFIER_CONTROL = "scripts/verify_b315_dense_id_allocation.py"
 HARNESS_CONTROL = "scripts/b315_merge_harness.py"
@@ -585,29 +590,143 @@ def test_candidate_that_stubs_the_harness_self_test_is_refused_by_the_base_gate(
         backlog_verify.check_candidate_controls(candidate, trusted, items)
 
 
-def test_verifier_refuses_a_harness_that_is_not_the_tree_file(tmp_path: Path):
-    """`scripts` is a namespace package, and a regular `scripts` package later
-    on sys.path wins over it. A stub there must not be trusted: without the
-    file check the verifier ran this stub and printed PASS."""
+VERIFIER_SOURCE = ROOT / VERIFIER_CONTROL
+STUB_HARNESS = 'SCENARIOS = ("stub",)\n\n\ndef self_test(root, workers=6):\n    return [%r]\n'
+PASS_LINE = "landing scenarios: PASS"
+
+
+def _checkout(tmp_path: Path, *, harness_source: str | None = None, support: bool = True) -> Path:
+    """A throwaway checkout holding a copy of the real verifier. With
+    ``support`` it also carries the gate, the helper, the allocator and
+    BACKLOG.md, so the verifier reaches layer 4; the harness is the real one
+    unless ``harness_source`` is given."""
+    root = tmp_path / "checkout"
+    (root / "scripts").mkdir(parents=True)
+    shutil.copy2(VERIFIER_SOURCE, root / VERIFIER_CONTROL)
+    if support:
+        # The allocator imports backlog_verify from its own directory.
+        for relative in ("scripts/pre-merge-gate-check.sh", "scripts/b315_atomic_merge.sh",
+                         "scripts/backlog_id_alloc.py", "scripts/backlog_verify.py", "BACKLOG.md"):
+            shutil.copy2(ROOT / relative, root / relative)
+        if harness_source is None:
+            shutil.copy2(ROOT / HARNESS_CONTROL, root / HARNESS_CONTROL)
+        else:
+            (root / HARNESS_CONTROL).write_text(harness_source, encoding="utf-8")
+    return root
+
+
+def _run_verifier(root: Path, **env: str) -> subprocess.CompletedProcess:
+    """B-315's declared verify command, run in ``root`` exactly as declared."""
+    return subprocess.run(
+        ["python3", VERIFIER_CONTROL, "--self-test"],
+        cwd=root, env={**os.environ, **env}, capture_output=True, text=True, check=False, timeout=600,
+    )
+
+
+def test_added_scripts_init_that_stubs_self_test_is_refused(tmp_path: Path):
+    """The review reproduction (2026-10-02): a candidate ADDS scripts/__init__.py,
+    which imports the real harness and replaces its self_test. With the harness
+    imported through the `scripts` package, that initializer ran first,
+    `__file__` stayed right, and the verifier printed PASS for every scenario."""
+    root = _checkout(tmp_path)
+    (root / "scripts/__init__.py").write_text(
+        "from . import b315_merge_harness as _real\n_real.self_test = lambda root, workers=6: []\n",
+        encoding="utf-8",
+    )
+    result = _run_verifier(root)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "scripts/__init__.py would steer Python's import resolution" in result.stderr, result.stderr
+    assert PASS_LINE not in result.stdout
+
+
+def test_shadowed_stdlib_module_in_scripts_never_runs(tmp_path: Path):
+    """Run as a script, the verifier has scripts/ first on sys.path, so a
+    candidate scripts/tempfile.py replaced the standard module before any check
+    could run. The isolated re-exec takes scripts/ off the path first."""
+    root = _checkout(tmp_path, support=False)
+    (root / "scripts/tempfile.py").write_text(
+        "import os\nprint('SHADOW RAN: 99 " + PASS_LINE + "', flush=True)\nos._exit(0)\n", encoding="utf-8"
+    )
+    result = _run_verifier(root)
+    assert "SHADOW RAN" not in result.stdout, result.stdout
+    # The real tempfile was imported; the verifier went on to its own refusal.
+    assert result.returncode == 2 and "B-315 instrument broken: missing" in result.stderr, result.stderr
+
+
+def test_shadow_scripts_package_on_pythonpath_is_never_loaded(tmp_path: Path):
+    """A regular `scripts` package elsewhere on PYTHONPATH used to win over the
+    namespace directory. The isolated re-exec ignores PYTHONPATH and the
+    harness is loaded by path, so the tree file is what runs."""
     shadow = tmp_path / "shadow" / "scripts"
     shadow.mkdir(parents=True)
     (shadow / "__init__.py").write_text("", encoding="utf-8")
-    (shadow / "b315_merge_harness.py").write_text(
-        "SCENARIOS = ('stub',)\n\n\ndef self_test(root):\n    return []\n", encoding="utf-8"
+    (shadow / "b315_merge_harness.py").write_text(STUB_HARNESS % "shadow ran", encoding="utf-8")
+    root = _checkout(tmp_path, harness_source=STUB_HARNESS % "tree harness ran")
+    result = _run_verifier(root, PYTHONPATH=str(shadow.parent))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "tree harness ran" in result.stderr and "shadow ran" not in result.stderr, result.stderr
+    assert PASS_LINE not in result.stdout
+
+
+def test_unchecked_hash_pyc_cannot_replace_the_harness_source(tmp_path: Path, monkeypatch):
+    """The default .py loader runs an unchecked-hash __pycache__ pyc instead of
+    the source and reports the .py as its file. The verifier's loader compiles
+    the source bytes, so a committed pyc next to the frozen harness is inert."""
+    import importlib.util
+    import py_compile
+
+    target = tmp_path / "scripts" / "b315_merge_harness.py"
+    target.parent.mkdir()
+    target.write_text(STUB_HARNESS % "cache ran", encoding="utf-8")
+    py_compile.compile(str(target), doraise=True, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+    target.write_text(STUB_HARNESS % "source ran", encoding="utf-8")
+    # Positive control: the planted pyc really fools the default loader.
+    spec = importlib.util.spec_from_file_location("b315_pyc_probe", target)
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    assert probe.self_test(tmp_path) == ["cache ran"]
+    assert probe.self_test.__code__.co_filename == str(target)
+    monkeypatch.setattr(verifier, "HARNESS", target)
+    assert verifier.load_trusted_harness().self_test(tmp_path) == ["source ran"]
+
+
+def test_harness_identity_check_names_a_rebound_self_test(tmp_path: Path, monkeypatch):
+    target = tmp_path / "b315_merge_harness.py"
+    monkeypatch.setattr(verifier, "HARNESS", target)
+    target.write_text(STUB_HARNESS % "real", encoding="utf-8")
+    assert verifier.load_trusted_harness().self_test(tmp_path) == ["real"]  # positive control
+    target.write_text(
+        STUB_HARNESS % "real" + "\n\ndef _stub(root, workers=6):\n    return []\n\n\nself_test = _stub\n",
+        encoding="utf-8",
     )
-    result = subprocess.run(
-        [sys.executable, "-B", str(ROOT / VERIFIER_CONTROL), "--self-test"],
-        cwd=ROOT,
-        env={**os.environ, "PYTHONPATH": str(shadow.parent)},
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=300,
-    )
-    assert result.returncode == 2, result.stdout + result.stderr
-    stub = (shadow / "b315_merge_harness.py").resolve()
-    assert f"scripts.b315_merge_harness loaded from {stub}" in result.stderr, result.stderr
-    assert "PASS" not in result.stdout
+    with pytest.raises(verifier.HarnessTrustError, match="self_test is not the function its source defines"):
+        verifier.load_trusted_harness()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["scripts/__init__.py", "scripts/__init__.pyc", "scripts/sitecustomize.py", "scripts/usercustomize.py",
+     "sitecustomize.py", "usercustomize.py", "scripts/paths.pth", "extra.pth", "scripts/sitecustomize"],
+)
+def test_import_surface_names_each_steering_file(tmp_path: Path, relative: str):
+    (tmp_path / "scripts").mkdir()
+    assert verifier.import_surface_problems(tmp_path) == []  # positive control
+    target = tmp_path / relative
+    if relative.endswith("customize"):
+        target.mkdir()  # a package of that name steers imports as well as a module
+    else:
+        target.write_text("", encoding="utf-8")
+    assert verifier.import_surface_problems(tmp_path) == [
+        f"{relative} would steer Python's import resolution; BASE has no such file"
+    ]
+
+
+def test_import_surface_ignores_look_alike_names_and_the_real_checkout(tmp_path: Path):
+    (tmp_path / "scripts").mkdir()
+    for relative in ("scripts/__init__helper.py", "scripts/sitecustomize_notes.md", "README.pthx", "scripts/init.py"):
+        (tmp_path / relative).write_text("", encoding="utf-8")
+    assert verifier.import_surface_problems(tmp_path) == []
+    assert verifier.import_surface_problems(ROOT) == []
 
 
 # ── The gate wrapper (scripts/pre-merge-gate-check.sh) ──────────────────────

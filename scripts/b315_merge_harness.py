@@ -21,6 +21,14 @@ Fault injections (head/main moving at a named call, a merge landing on another
 main, a wrong tree, a lost API response) are applied inside the fake at the
 exact call where the race would happen.
 
+The merge DESTINATION is a parameter of the fake, not a constant: ``base_ref``
+(main by default) is what ``gh pr view`` reports as ``baseRefName`` and where a
+successful PUT lands, as on GitHub, whose merge endpoint pins only the head.
+A ``retarget_base`` injection points the PR at a branch cut from the current
+main tip (the hardest retarget to see: parent and tree proofs alone would
+pass), and ``rewind_base_after_merge`` lands the merge and then puts the base
+back, so GitHub reports MERGED for a commit main does not contain.
+
 Every scenario also asserts the helper never pushed to main and never left the
 remote lease behind, and, at every call of the merge endpoint, that the local
 allocation lock (probed with the allocator's own ``fcntl.flock``) and the
@@ -53,6 +61,7 @@ ALLOCATOR = ROOT / "scripts" / "backlog_id_alloc.py"
 PR = 7
 OWNER, REPO, HEAD_REF = "acme", "corelink-server", "feature"
 LEASE_REF = "refs/heads/corelink-backlog-id-merge-lock"
+RETARGET_REF = "release"
 MERGE_PATH = f"repos/{{owner}}/{{repo}}/pulls/{PR}/merge"
 
 PROTECTED_MAIN_HOOK = """#!/bin/sh
@@ -183,8 +192,12 @@ def build_world(
     bin_dir = root / "bin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
+    # -I -S -B: the fake GitHub must not import a module that a checkout file
+    # shadows (since Python 3.11, -I also keeps the script's directory off
+    # sys.path), and must not run site hooks or write bytecode.
     gh.write_text(
-        f"#!/bin/sh\nexec {json.dumps(sys.executable)} {json.dumps(str(Path(__file__).resolve()))} fake-gh \"$@\"\n",
+        f"#!/bin/sh\nexec {json.dumps(sys.executable)} -I -S -B {json.dumps(str(Path(__file__).resolve()))} "
+        "fake-gh \"$@\"\n",
         encoding="utf-8",
     )
     gh.chmod(0o755)
@@ -196,6 +209,7 @@ def build_world(
                 "head_ref": HEAD_REF,
                 "head_parent": head_parent,
                 "base_sha": base_sha,
+                "base_ref": "main",
                 "state": "OPEN",
                 "merge_commit": None,
                 "owner": OWNER,
@@ -250,7 +264,14 @@ def _inject(state: dict, origin: str, point: str) -> None:
             # moves but stays an ancestor of the head, so "up to date" holds.
             main = _rev(origin, "refs/heads/main")
             _git(env, "--git-dir", origin, "update-ref", "refs/heads/main", state["head_parent"], main)
-        elif action in {"land_wrong_tree", "drop_merge_response"}:
+        elif action == "retarget_base":
+            # The PR now targets a branch cut from the current main tip. GitHub
+            # updates baseRefName and baseRefOid on a retarget; so does the fake.
+            tip = _rev(origin, "refs/heads/main")
+            _git(env, "--git-dir", origin, "update-ref", f"refs/heads/{RETARGET_REF}", tip)
+            state["base_ref"] = RETARGET_REF
+            state["base_sha"] = tip
+        elif action in {"land_wrong_tree", "drop_merge_response", "rewind_base_after_merge"}:
             state[action] = True
         else:
             raise HarnessError(f"unknown injection {action!r}")
@@ -303,7 +324,8 @@ def _http_error(code: int, message: str) -> int:
 def _fake_merge(state: dict, origin: str, params: dict[str, str]) -> int:
     env = dict(os.environ)
     head = _rev(origin, f"refs/heads/{state['head_ref']}")
-    main = _rev(origin, "refs/heads/main")
+    base_ref = f"refs/heads/{state['base_ref']}"
+    base = _rev(origin, base_ref)
     if state["state"] != "OPEN":
         return _http_error(405, "Pull Request is not mergeable")
     if "sha" in params and params["sha"] != head:
@@ -314,15 +336,17 @@ def _fake_merge(state: dict, origin: str, params: dict[str, str]) -> int:
     if method != "squash":
         return _http_error(422, f"merge_method {method!r} is not modelled by this fake")
     ancestor = subprocess.run(
-        ["git", "--git-dir", origin, "merge-base", "--is-ancestor", main, head],
+        ["git", "--git-dir", origin, "merge-base", "--is-ancestor", base, head],
         env=env, capture_output=True, check=False,
     )
     if ancestor.returncode:
         return _http_error(405, "Head branch is out of date with the base branch.")
-    tree_of = main if state.get("land_wrong_tree") else head
+    tree_of = base if state.get("land_wrong_tree") else head
     tree = _rev(origin, f"{tree_of}^{{tree}}")
-    new = _git(env, "--git-dir", origin, "commit-tree", tree, "-p", main, "-m", f"squash (#{state['pr']})")
-    _git(env, "--git-dir", origin, "update-ref", "refs/heads/main", new, main)
+    new = _git(env, "--git-dir", origin, "commit-tree", tree, "-p", base, "-m", f"squash (#{state['pr']})")
+    _git(env, "--git-dir", origin, "update-ref", base_ref, new, base)
+    if state.get("rewind_base_after_merge"):
+        _git(env, "--git-dir", origin, "update-ref", base_ref, base, new)
     state["state"] = "MERGED"
     state["merge_commit"] = new
     if state.get("drop_merge_response"):
@@ -364,7 +388,7 @@ def _fake_dispatch(state: dict, origin: str, argv: list[str]) -> int:
         full = {
             "headRefOid": _rev(origin, f"refs/heads/{state['head_ref']}"),
             "baseRefOid": state["base_sha"],
-            "baseRefName": "main",
+            "baseRefName": state["base_ref"],
             "headRefName": state["head_ref"],
             "isCrossRepository": state["cross"],
             "headRepositoryOwner": {"login": state["owner"]},
@@ -485,6 +509,13 @@ SCENARIOS: tuple[Scenario, ...] = (
              candidate_ids=(1, 2, 3, 5), precondition="replace_blob"),
     Scenario("grafted_behind_head_refused_before_api", 1, 0, False, "rewrites commit parents",
              variant="behind", precondition="graft"),
+    # view4 is the last read before the PUT (the second boundary check).
+    Scenario("base_retargeted_at_merge_boundary_refused", 1, 0, False, "PR base retargeted at merge boundary",
+             inject={"view4": ["retarget_base"]}),
+    Scenario("base_retargeted_inside_merge_window_detected", 4, 1, True, "base reads 'release'",
+             inject={"put": ["retarget_base"]}),
+    Scenario("merge_missing_from_main_detected", 4, 1, True, "is not reachable from refs/heads/main",
+             inject={"put": ["rewind_base_after_merge"]}),
 )
 
 
@@ -596,6 +627,17 @@ def run_scenario(
         failures.append("helper attempted a direct push to main")
     if run.lease != planted_lease:
         failures.append(f"remote lease left as {run.lease or '<absent>'}, expected {planted_lease or '<absent>'}")
+    if scenario.rc == 4 and "merged_into_unexpected_base" not in run.err:
+        failures.append("exit 4 without the merged_into_unexpected_base marker")
+    if run.state.get("base_ref", "main") != "main" or run.state.get("rewind_base_after_merge"):
+        # These worlds must leave main where it was; otherwise the scenario
+        # would be testing a merge onto main, not a merge somewhere else.
+        if run.main != world.main0:
+            failures.append(f"main moved to {run.main} in a world whose merge must not land on main")
+    if run.state.get("base_ref", "main") != "main" and run.state["state"] == "MERGED":
+        tip = _git(world.env, "--git-dir", str(world.origin), "rev-parse", f"refs/heads/{RETARGET_REF}")
+        if tip != run.state["merge_commit"]:
+            failures.append("the fake did not land the merge on the retargeted base")
     if scenario.rc == 0 and scenario.merged:
         parents = _git(world.env, "--git-dir", str(world.origin), "rev-list", "--parents", "-n", "1", run.main)
         tree = _git(world.env, "--git-dir", str(world.origin), "rev-parse", f"{run.main}^{{tree}}")

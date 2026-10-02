@@ -20,33 +20,85 @@ Four layers, each a refusal on its own:
    fake GitHub in throwaway repositories (land, dry run, every race, a 409, a
    405, a merge on an unvalidated main, a wrong tree, a lost response, a stale
    lease, a busy lock, a refs/replace-substituted BACKLOG.md blob, a graft that
-   hides a BEHIND head), and at every merge-endpoint call checks that the local
-   allocation lock and the remote lease are still held. It proves the helper
-   against the harness's model of GitHub; that GitHub enforces the model is
-   argued, not proven, here.
+   hides a BEHIND head, a PR retargeted at the merge boundary, and a merge
+   GitHub lands on another base or that main does not contain), and at every
+   merge-endpoint call checks that the local allocation lock and the remote
+   lease are still held. It proves the helper against the harness's model of
+   GitHub; that GitHub enforces the model is argued, not proven, here.
 
 Trust: the BASE-owned candidate gate in scripts/backlog_verify.py, when it runs
 (its lane, backlog-verify.yml, was disabled_manually on 2026-10-01), refuses a
-PR that changes this file or the harness (the harness is imported through the
-`scripts` package so that gate's static import closure reaches it). The helper,
-the gate wrapper and the allocator are run by path, so they are NOT in that
-closure: a PR may change them without that refusal, and what judges the change
-is this verifier and its harness when they run on the changed tree.
+PR that changes this file or the harness: its static closure follows the
+``spec_from_file_location(..., HARNESS)`` below. Freezing those two files is
+not enough on its own, because what they DO depends on how Python resolves
+imports in the checkout they run in, and a candidate can ADD files there that
+no closure lists. So this verifier (a) re-runs itself in an isolated
+interpreter before importing anything a file could shadow, (b) loads the
+harness by path, compiled from its source bytes (no package import, no
+bytecode cache), and checks that the self_test it calls is the function those
+bytes define, and (c) refuses outright when the checkout carries a file that
+would steer import resolution (scripts/__init__.*, sitecustomize/usercustomize,
+*.pth at the root or in scripts/). The helper, the gate wrapper and the
+allocator are run by path and are NOT frozen: a PR may change them, and what
+judges the change is this verifier and its harness when they run on the
+changed tree.
 """
 
-from __future__ import annotations
+import sys  # built in: no file in any checkout can stand in for it
 
-import re
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
+
+def _isolate() -> None:
+    """Re-run this verifier where no checkout file can steer its imports.
+
+    Run as ``python3 scripts/verify_b315_dense_id_allocation.py`` (B-315's
+    declared verify command), Python puts scripts/ first on sys.path, so a
+    candidate file such as scripts/tempfile.py would replace a standard-library
+    module this verifier imports before any check here could run (measured
+    2026-10-02: a shadow tempfile.py ran from the script's directory). So the
+    first thing this verifier does, using only built-in modules, is re-exec
+    itself with -I (no PYTHON* environment, no user site and, since Python
+    3.11, no script directory on sys.path), -S (no site hooks, so no
+    sitecustomize, usercustomize or .pth processing) and -B (no bytecode
+    written).
+    """
+    flags = sys.flags
+    if flags.isolated and flags.no_site and flags.dont_write_bytecode:
+        if not getattr(flags, "safe_path", False):
+            print(
+                "B-315 instrument broken: before Python 3.11, isolated mode still puts the "
+                "script's directory on sys.path",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        return
+    import posix  # built in, like sys
+
+    script = __file__ if __file__.startswith("/") else posix.getcwd() + "/" + __file__
+    if not sys.executable:
+        print("B-315 instrument broken: no interpreter path to re-run isolated", file=sys.stderr)
+        raise SystemExit(2)
+    posix.execv(sys.executable, [sys.executable, "-I", "-S", "-B", script, *sys.argv[1:]])
+
+
+if __name__ == "__main__":
+    _isolate()
+
+# Imported only after the isolated re-exec above.
+import importlib.machinery  # noqa: E402
+import importlib.util  # noqa: E402
+import re  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+import types  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOCATOR = ROOT / "scripts/backlog_id_alloc.py"
 GATE = ROOT / "scripts/pre-merge-gate-check.sh"
 ATOMIC = ROOT / "scripts/b315_atomic_merge.sh"
 HARNESS = ROOT / "scripts/b315_merge_harness.py"
+HARNESS_MODULE = "_b315_trusted_harness"
+
 
 REQUIRED = (
     # one authority, crash-safe lock across allocation AND merge
@@ -94,6 +146,15 @@ REQUIRED = (
     "actual_tree",
     '[ "$parents" = "$merge_oid $CAPTURED_MAIN" ]',
     "LANDED_UNPROVEN",
+    # the merge call pins only the head: the base is re-read as the LAST call
+    # before it, and a merge that lands anywhere but main is named as such
+    '[ "$b_base_name" = main ] && [ "$b_base" = "$CAPTURED_MAIN" ]',
+    "PR base retargeted at merge boundary",
+    "boundary_pr_check   # the LAST read before the PUT",
+    "MERGED_INTO_UNEXPECTED_BASE=4",
+    "merged_into_unexpected_base",
+    '[ "$post_base" = main ] || wrong_base',
+    'git merge-base --is-ancestor "$merge_oid" "$main_oid"',
 )
 
 # Retired designs. The first three were the pre-B-315 squash CLI; the rest are
@@ -150,7 +211,112 @@ def gate_problems(gate: str) -> list[str]:
     return problems
 
 
+# ── The import surface and the harness load (layer 4's trust) ────────────────
+# Files that change how Python resolves imports once they exist: an initializer
+# for scripts/ (it turns the namespace directory into a regular package whose
+# code runs on any `scripts.` import), site hooks, and path configuration
+# files. Checked where this repository's Python entry points put directories on
+# sys.path: the root and scripts/. BASE has none of them. The isolated re-exec
+# and the by-path loader already make them inert for this verifier; they are
+# refused anyway, so an attempt is named instead of silently ignored.
+SITE_HOOKS = ("sitecustomize", "usercustomize")
+
+
+def import_surface_problems(root: Path) -> list[str]:
+    """One line per file under ``root`` that would steer import resolution."""
+    suffixes = tuple(importlib.machinery.all_suffixes())
+    watched = ((root / "scripts", ("__init__", *SITE_HOOKS)), (root, SITE_HOOKS))
+    problems = []
+    for directory, stems in watched:
+        for entry in sorted(directory.iterdir()):
+            name = entry.name
+            module_file = any(
+                name == stem or (name.startswith(stem + ".") and name.endswith(suffixes)) for stem in stems
+            )
+            if module_file or name.endswith(".pth"):
+                problems.append(
+                    f"{entry.relative_to(root).as_posix()} would steer Python's import resolution; "
+                    "BASE has no such file"
+                )
+    return problems
+
+
+class HarnessTrustError(RuntimeError):
+    """The harness could not be loaded as exactly its tree file's source."""
+
+
+class _SourceOnlyLoader:
+    """Loads a module by compiling its source file's bytes, and nothing else.
+
+    The default loader for a .py file runs ``__pycache__/<name>.<tag>.pyc``
+    instead whenever that file is an unchecked-hash pyc, without comparing it
+    to the source, and then reports the .py as its co_filename (measured
+    2026-10-02, Python 3.14). A candidate could commit such a file next to the
+    frozen harness. Compiling the bytes here leaves no cache to consult.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.code = None
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module) -> None:
+        self.code = compile(self.path.read_bytes(), str(self.path), "exec", dont_inherit=True)
+        exec(self.code, module.__dict__)
+
+
+def harness_identity_problems(module: types.ModuleType, code: types.CodeType) -> list[str]:
+    """The self_test this verifier calls must be the function the harness
+    source defines: the very code object compiled from its bytes, bound to that
+    module's globals."""
+    problems = []
+    if getattr(module, "__file__", None) != str(HARNESS):
+        problems.append(f"harness module file is {getattr(module, '__file__', None)!r}, not {HARNESS}")
+    defined = [const for const in code.co_consts if isinstance(const, types.CodeType) and const.co_name == "self_test"]
+    self_test = getattr(module, "self_test", None)
+    if len(defined) != 1:
+        problems.append(f"harness source defines self_test {len(defined)} times at module level, expected 1")
+    elif (
+        getattr(self_test, "__code__", None) is not defined[0]
+        or getattr(self_test, "__globals__", None) is not module.__dict__
+    ):
+        problems.append("harness self_test is not the function its source defines")
+    scenarios = getattr(module, "SCENARIOS", None)
+    if not isinstance(scenarios, tuple) or not scenarios:
+        problems.append("harness SCENARIOS is not a non-empty tuple")
+    return problems
+
+
+def load_trusted_harness() -> types.ModuleType:
+    """Load scripts/b315_merge_harness.py by path, from its source bytes.
+
+    Not ``from scripts import b315_merge_harness``: that runs scripts/__init__.py
+    first whenever one exists, and a candidate can add one that imports the real
+    harness and replaces its self_test with a stub while ``__file__`` stays right
+    (reproduced in review on 2026-10-02: exit 0, every scenario reported PASS).
+    """
+    loader = _SourceOnlyLoader(HARNESS)
+    spec = importlib.util.spec_from_file_location(HARNESS_MODULE, HARNESS, loader=loader)
+    if spec is None:
+        raise HarnessTrustError(f"no module spec for {HARNESS}")
+    module = importlib.util.module_from_spec(spec)
+    # dataclasses look their defining module up in sys.modules while the body runs.
+    sys.modules[HARNESS_MODULE] = module
+    loader.exec_module(module)
+    problems = harness_identity_problems(module, loader.code)
+    if problems:
+        raise HarnessTrustError("; ".join(problems))
+    return module
+
+
 def main() -> int:
+    surface = import_surface_problems(ROOT)
+    if surface:
+        print("B-315 instrument refused: the checkout changes Python's import surface:",
+              *surface, sep="\n  ", file=sys.stderr)
+        return 2
     missing_files = [str(p.relative_to(ROOT)) for p in (ALLOCATOR, GATE, ATOMIC, HARNESS) if not p.is_file()]
     if missing_files:
         print(f"B-315 instrument broken: missing {missing_files}", file=sys.stderr)
@@ -187,27 +353,11 @@ def main() -> int:
         print("B-315 allocator refuses the real BACKLOG.md population:", file=sys.stderr)
         print(result.stdout + result.stderr, file=sys.stderr)
         return 1
-    # Layer 4 is only as trustworthy as the harness file it imports. The
-    # BASE-owned candidate gate (scripts/backlog_verify.py) freezes a verifier's
-    # imports only when they are spelled through the `scripts` package, so the
-    # harness is imported that way: once this verifier is BASE, a PR that edits
-    # the harness (say, to stub self_test) is refused as a mutated trusted
-    # control. A bare `import b315_merge_harness` left it outside that closure.
-    # `scripts` has no __init__.py, so a regular `scripts` package anywhere on
-    # sys.path would win over it; the file check below refuses that instead of
-    # trusting whatever module answered to the name.
-    sys.path.insert(0, str(ROOT))
-    from scripts import b315_merge_harness as harness  # noqa: E402
-
-    loaded_from = Path(getattr(harness, "__file__", None) or "").resolve()
-    if loaded_from != HARNESS.resolve():
-        print(
-            f"B-315 instrument broken: scripts.b315_merge_harness loaded from {loaded_from}, "
-            f"not {HARNESS}",
-            file=sys.stderr,
-        )
+    try:
+        harness = load_trusted_harness()
+    except Exception as error:  # any way of not getting the tree's own harness is a refusal
+        print(f"B-315 instrument broken: harness not loaded as its tree source: {error}", file=sys.stderr)
         return 2
-
     with tempfile.TemporaryDirectory(prefix="b315-verify-") as directory:
         problems = harness.self_test(Path(directory))
     if problems:
