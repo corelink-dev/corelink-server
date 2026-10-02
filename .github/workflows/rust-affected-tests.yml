@@ -66,6 +66,10 @@
 #       each file's git blob id binds reviewed CodeQL alerts in
 #       specs/_audits/2026-10-01-i1674-reviewed-codeql-dispositions.json;
 #       any edit unbinds them.
+#     byok_control_transition.rs, storage/staging_load_test_ownership.rs
+#       a change to either one starts a closed-world scope gate
+#       (issue-2666-byok-teardown.yml, issue-2582-signup-ownership.yml) that
+#       fails unless the change is exactly its own issue's file set.
 #     routes/tier_select_store.rs
 #       sha256-pinned by scripts/verify_real_ignored_harnesses.py, a file the
 #       i2176 gate freezes in its i2565 delivery group.

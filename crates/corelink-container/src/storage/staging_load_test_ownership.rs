@@ -1442,19 +1442,13 @@ fn receipt_ref(registration: &StagingLoadTestResourceRegistration<'_>) -> String
         registration.opaque_handle.as_bytes(),
         registration.disposition.as_str().as_bytes(),
     ] {
-        hasher.update((part.len() as u64).to_be_bytes());
+        hasher.update(&(part.len() as u64).to_be_bytes());
         hasher.update(part);
     }
     hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test assertions intentionally surface failures"
-)]
 mod tests {
     use super::*;
 
