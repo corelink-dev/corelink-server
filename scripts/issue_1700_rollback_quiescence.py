@@ -10,8 +10,8 @@ import urllib.request
 
 API = 'https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging'
 HTTP_ORIGIN = 'https://corelink-staging.gmhelmold.workers.dev'
-HTTP_NONCE = 'issue-1700-recovery-20261002-v13'
-HTTP_START_MS, HTTP_LAST_ENTRY_MS, HTTP_EXPIRY_MS = 1790924400000, 1790931600000, 1790936100000
+HTTP_NONCE = 'issue-1700-recovery-20261002-v15'
+HTTP_START_MS, HTTP_LAST_ENTRY_MS, HTTP_EXPIRY_MS = 1790964000000, 1790971200000, 1790975700000
 OLD_RELEASES = {'v8': '7d18bcfc450db97b1b987923050b92971da530a8',
                 'v9': '5da497051f0b11dbfc8b87d1dfa8e753304e2719'}
 BROKER_STATUS_CONTRACT = 'issue1700-broker-status-observation-v1'
@@ -48,7 +48,7 @@ def never_execute_status(observation, *, operation_id, release, image_digest, ca
     keys = ('contract operation_id worker_release started_at_ms expires_at_ms state secret_name '
             'secret_put_attempted secret_put_confirmed secret_put_at_ms subdomain_enable_attempted subdomain_enabled '
             'subdomain_restore_attempted subdomain_restored secret_delete_attempted secret_deleted rollback_safe '
-            'cleanup_basis probe_command_seen admission_closed preimage post_secret post_delete candidate preimage_bindings pid')
+            'cleanup_basis probe_command_seen admission_closed preimage post_secret post_delete candidate preimage_bindings failure pid')
     if (not exact(observation, 'contract requested_at_ms observed_at_ms broker') or
         observation['contract'] != BROKER_STATUS_CONTRACT or
         not all(integer(value) for value in (now_ms, observation['requested_at_ms'], observation['observed_at_ms']))):
@@ -67,7 +67,8 @@ def never_execute_status(observation, *, operation_id, release, image_digest, ca
         not broker['started_at_ms'] <= broker['secret_put_at_ms'] <= observation['observed_at_ms'] or
         broker['secret_name'] != 'CORELINK_ADMIN_AUTH_KEY' or broker['secret_put_attempted'] is not True or
         broker['secret_put_confirmed'] is not True or broker['subdomain_enable_attempted'] is not True or
-        broker['admission_closed'] is not True or broker['probe_command_seen'] is not False):
+        broker['admission_closed'] is not True or broker['probe_command_seen'] is not False or
+        broker['failure'] is not None):
         return False
     candidate = broker['candidate']
     preimage = broker['preimage']
