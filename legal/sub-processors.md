@@ -1,7 +1,11 @@
 ---
-version: "1.3.2"
-last_updated: "2026-09-22"
+version: "1.4.0"
+last_updated: "2026-10-02"
 notification_required: true
+# Approved launch set (B-316 / #2593 owner re-charter, 2026-10-01): exactly these
+# eight vendors. Each is engaged on its own standard online terms and DPA, linked
+# below. No online-acceptance date is recorded for any of them, so every
+# contract_signed_at is null; a date may only be added from an acceptance record.
 sub_processors:
   - id: "cloudflare"
     name: "Cloudflare, Inc."
@@ -18,9 +22,10 @@ sub_processors:
       - "ISO 27018"
       - "PCI-DSS Level 1"
       - "HIPAA-compliant infra"
+    terms_url: "https://www.cloudflare.com/terms/"
     dpa_url: "https://www.cloudflare.com/cloudflare-customer-dpa/"
     primary_jurisdiction: "United States (EU offices)"
-    contract_signed_at: "2026-04-23"
+    contract_signed_at: null
     legal_review_evidence: "docs/compliance/vendor-reviews/cloudflare-dpa-review-2026-04.md"
 
   - id: "clerk"
@@ -32,9 +37,10 @@ sub_processors:
     certifications:
       - "SOC 2 Type II"
       - "GDPR processor"
-    dpa_url: "Clerk DPA (on request)"
+    terms_url: "https://clerk.com/legal/standard-terms"
+    dpa_url: "https://clerk.com/legal/dpa"
     primary_jurisdiction: "United States"
-    contract_signed_at: "2026-04-23"
+    contract_signed_at: null
     legal_review_evidence: "docs/compliance/vendor-reviews/clerk-dpa-review-2026-04.md"
 
   - id: "resend"
@@ -44,6 +50,7 @@ sub_processors:
       - "recipient_email_pii"
     region: "United States"
     certifications: []
+    terms_url: "https://resend.com/legal/terms-of-service"
     dpa_url: "https://resend.com/legal/dpa"
     primary_jurisdiction: "United States"
     contract_signed_at: null
@@ -60,9 +67,10 @@ sub_processors:
       - "PCI-DSS Level 1"
       - "SOC 2 Type II"
       - "ISO 27001"
+    terms_url: "https://stripe.com/legal/ssa"
     dpa_url: "https://stripe.com/legal/dpa"
     primary_jurisdiction: "United States"
-    contract_signed_at: "2026-04-23"
+    contract_signed_at: null
     legal_review_evidence: "docs/compliance/vendor-reviews/stripe-dpa-review-2026-04.md"
 
   - id: "github"
@@ -75,25 +83,11 @@ sub_processors:
     certifications:
       - "SOC 2 Type II"
       - "ISO 27001"
-    dpa_url: "https://docs.github.com/en/site-policy/privacy-policies/github-data-protection-agreement"
+    terms_url: "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service"
+    dpa_url: "https://github.com/customer-terms/github-data-protection-agreement"
     primary_jurisdiction: "United States"
-    contract_signed_at: "2026-04-23"
+    contract_signed_at: null
     legal_review_evidence: "docs/compliance/vendor-reviews/github-dpa-review-2026-04.md"
-
-  - id: "pagerduty"
-    name: "PagerDuty, Inc."
-    role: "Incident management and on-call alerting"
-    data_categories_processed:
-      - "operational_alerts"
-      - "incident_metadata"
-    region: "United States"
-    certifications:
-      - "SOC 2 Type II"
-      - "ISO 27001"
-    dpa_url: "https://www.pagerduty.com/privacy-policy/"
-    primary_jurisdiction: "United States"
-    contract_signed_at: "2026-04-23"
-    legal_review_evidence: "docs/compliance/vendor-reviews/pagerduty-dpa-review-2026-04.md"
 
   - id: "sentry"
     name: "Functional Software, Inc. (Sentry)"
@@ -102,6 +96,7 @@ sub_processors:
       - "telemetry"
     region: "United States"
     certifications: []
+    terms_url: "https://sentry.io/terms/"
     dpa_url: "https://sentry.io/legal/dpa/"
     primary_jurisdiction: "United States"
     contract_signed_at: null
@@ -114,6 +109,7 @@ sub_processors:
       - "telemetry"
     region: "European Union"
     certifications: []
+    terms_url: "https://plausible.io/terms"
     dpa_url: "https://plausible.io/dpa"
     primary_jurisdiction: "Estonia (EU)"
     contract_signed_at: null
@@ -126,7 +122,8 @@ sub_processors:
       - "telemetry"
     region: "European Union"
     certifications: []
-    dpa_url: "https://betterstack.com/privacy"
+    terms_url: "https://betterstack.com/terms"
+    dpa_url: "https://betterstack.com/dpa"
     primary_jurisdiction: "European Union"
     contract_signed_at: null
     legal_review_evidence: "docs/compliance/vendor-reviews/betterstack-dpa-review-2026-09.md"
@@ -150,7 +147,10 @@ Lista completa abaixo. Versão e data de última atualização no frontmatter YA
 > contractual list MUST stay consistent; the drift gate runs in
 > `.github/workflows/subprocessors-sync.yml`. Any change to the active set
 > is made in **both** the register and this file in the same PR (see
-> *Change Process* below).
+> *Change Process* below). `scripts/verify_b316_pending_vendor_reviews.py`
+> checks that this file, the register, the commitments document and every
+> published sub-processor list name the same vendors with the same terms and
+> DPA links.
 
 ## Right to Object
 
@@ -164,21 +164,38 @@ Rate limit: 5 objections/day/subject (anti-DoS; S-08 inheritance).
 
 ## Sub-Processors
 
-Active sub-processors (9) — vendors actually processing customer personal data
-today, matching `apps/docs/docs/trust/subprocessors.mdx`'s "Active
-sub-processors" table and `specs/_compliance/VENDOR-RISK-REGISTER.md` §2:
+Active sub-processors (8) — the approved launch set, matching
+`apps/docs/docs/trust/subprocessors.mdx`'s "Active sub-processors" table,
+`apps/admin-ui/src/content/sub-processors.json`, and the active subset of
+`specs/_compliance/VENDOR-RISK-REGISTER.md` §2:
 
-| ID | Nome | Função | Região | Certificações | DPA |
+| ID | Nome | Função | Região | Terms | DPA |
 |---|---|---|---|---|---|
-| cloudflare | Cloudflare, Inc. | Infrastructure (Workers, R2, KV, DO, D1, Pages, Email) | R2/DO tenant-pinned; D1 control-plane metadata global under SCC/TIA safeguards | SOC 2 Type II, ISO 27001, ISO 27018, PCI-DSS Level 1 | [DPA](https://www.cloudflare.com/cloudflare-customer-dpa/) |
-| clerk | Clerk, Inc. | Authentication, identity provider, JWT issuer | Multi-region (tenant-pinned) | SOC 2 Type II, GDPR processor | Clerk DPA (on request) |
-| stripe | Stripe, Inc. | Payment processing and billing | US and EU | PCI-DSS Level 1, SOC 2 Type II, ISO 27001 | [DPA](https://stripe.com/legal/dpa) |
-| github | GitHub, Inc. | Source code repository and CI/CD | United States | SOC 2 Type II, ISO 27001 | [DPA](https://docs.github.com/en/site-policy/privacy-policies/github-data-protection-agreement) |
-| pagerduty | PagerDuty, Inc. | Incident management + on-call alerting | United States | SOC 2 Type II, ISO 27001 | [Privacy Policy](https://www.pagerduty.com/privacy-policy/) |
-| resend | Resend, Inc. | Transactional email + newsletter-audience delivery (recipient email is PII) | United States | DPA policy published; signed-copy evidence pending (VR-6) | [DPA](https://resend.com/legal/dpa) |
-| sentry | Functional Software, Inc. (Sentry) | Application error monitoring — scrubbed diagnostic telemetry (admin-ui + docs-site) | United States | DPA policy published; signed-copy evidence pending (VR-7) | [DPA](https://sentry.io/legal/dpa/) |
-| plausible | Plausible Insights OÜ (Plausible Analytics) | Cookieless web analytics for the docs-site marketing funnel | European Union | DPA policy published; signed-copy evidence pending (VR-8) | [DPA](https://plausible.io/dpa) |
-| betterstack | Better Stack, Inc. (BetterStack / Statuspage) | Uptime/status monitoring — synthetic probes + public status page (no customer data) | European Union | DPA policy published; signed-copy evidence pending (VR-9) | [Privacy Policy](https://betterstack.com/privacy) |
+| cloudflare | Cloudflare, Inc. | Infrastructure (Workers, R2, KV, DO, D1, Pages, Email) | R2/DO tenant-pinned; D1 control-plane metadata global under SCC/TIA safeguards | [Terms](https://www.cloudflare.com/terms/) | [DPA](https://www.cloudflare.com/cloudflare-customer-dpa/) |
+| clerk | Clerk, Inc. | Authentication, identity provider, JWT issuer | Multi-region (tenant-pinned) | [Terms](https://clerk.com/legal/standard-terms) | [DPA](https://clerk.com/legal/dpa) |
+| resend | Resend, Inc. | Transactional email + newsletter-audience delivery (recipient email is PII) | United States | [Terms](https://resend.com/legal/terms-of-service) | [DPA](https://resend.com/legal/dpa) |
+| stripe | Stripe, Inc. | Payment processing and billing | US and EU | [Terms](https://stripe.com/legal/ssa) | [DPA](https://stripe.com/legal/dpa) |
+| github | GitHub, Inc. | Source code repository and CI/CD | United States | [Terms](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) | [DPA](https://github.com/customer-terms/github-data-protection-agreement) |
+| sentry | Functional Software, Inc. (Sentry) | Application error monitoring — scrubbed diagnostic telemetry (admin-ui + docs-site) | United States | [Terms](https://sentry.io/terms/) | [DPA](https://sentry.io/legal/dpa/) |
+| plausible | Plausible Insights OÜ (Plausible Analytics) | Cookieless web analytics for the docs-site marketing funnel | European Union | [Terms](https://plausible.io/terms) | [DPA](https://plausible.io/dpa) |
+| betterstack | Better Stack, Inc. (BetterStack / Statuspage) | Uptime/status monitoring — synthetic probes + public status page (no customer data) | European Union | [Terms](https://betterstack.com/terms) | [DPA](https://betterstack.com/dpa) |
+
+### Contract basis (owner re-charter, 2026-10-01)
+
+CoreLink is a single-owner company with no separate legal department. On
+2026-10-01 the owner re-chartered B-316 (#2593): each sub-processor above is
+engaged on **that vendor's own standard online terms and data processing
+agreement**, linked in the table, which the owner accepted online when the
+account was created. There is no countersigned copy and no separate named
+Legal/Privacy reviewer; the owner is the reviewer.
+
+**Acceptance dates are not recorded**, so `contract_signed_at` is `null` for
+every vendor. Earlier versions of this file showed `2026-04-23` for five
+vendors; that value is the date the repository's specifications were created,
+it was applied identically to vendors CoreLink never used, and no acceptance
+record supports it, so it has been removed rather than carried forward. A date
+may be added only from an acceptance record (for example a vendor dashboard or
+the acceptance email).
 
 ## Contracted-but-not-active / integration built, not enabled
 

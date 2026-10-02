@@ -88,7 +88,7 @@
     "description": "Source-of-truth pointer"
   },
   "trust.subprocessor.source.full": {
-    "message": "(registro completo de 19 fornecedores; apenas os 11 que processam dados pessoais de clientes em nome da CoreLink aparecem abaixo).",
+    "message": "(o registro completo de fornecedores é interno; abaixo aparecem apenas os fornecedores que processam dados pessoais de clientes em nome da CoreLink, cada um com links para os próprios termos e DPA). Disponível sob solicitação em trust@humangr.com.",
     "description": "Source of truth size context"
   },
   "trust.subprocessor.notice.title": {
@@ -96,7 +96,7 @@
     "description": "Notice section title"
   },
   "trust.subprocessor.notice.body": {
-    "message": "Conforme nosso DPA §6 e LGPD Art. 27 §4º + GDPR Art. 28 §2, daremos aviso por escrito com no mínimo 30 dias corridos antes de adicionar ou substituir um sub-processador que processe dados pessoais de clientes. Assine via digest por e-mail no tenant, status page ou feed RSS pós-GA.",
+    "message": "Conforme nosso DPA §6 e LGPD Art. 27 §4º + GDPR Art. 28 §2, daremos aviso por escrito com no mínimo 30 dias corridos antes de adicionar ou substituir um sub-processador que processe dados pessoais de clientes.",
     "description": "Notice section body"
   },
   "trust.subprocessor.active.title": {

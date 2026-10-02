@@ -10,8 +10,10 @@ export interface SubProcessor {
   role: string;
   region: string;
   certifications: string[];
+  /** Vendor's own standard terms (public page). */
+  terms_url: string;
+  /** Vendor's own data processing agreement (public page). */
   dpa_url: string;
-  last_audit: string;
 }
 
 export interface SubProcessorList {
@@ -20,7 +22,7 @@ export interface SubProcessorList {
 }
 
 export const subProcessors: SubProcessorList = {
-  version: "2026-08-24",
+  version: "2026-10-02",
   items: [
     {
       id: "cloudflare",
@@ -28,8 +30,8 @@ export const subProcessors: SubProcessorList = {
       role: "CDN / edge compute (Workers) / object storage (R2) / KV / Durable Objects / D1 / Pages / Email Routing",
       region: "Global (anycast) with regional pinning where configured",
       certifications: ["ISO 27001", "SOC 2 Type II", "ISO 27018", "PCI DSS Level 1", "EU–US DPF"],
+      terms_url: "https://www.cloudflare.com/terms/",
       dpa_url: "https://www.cloudflare.com/cloudflare-customer-dpa/",
-      last_audit: "2026-02-12",
     },
     {
       id: "clerk",
@@ -37,8 +39,8 @@ export const subProcessors: SubProcessorList = {
       role: "Authentication, SSO, MFA — stores email, name, password hash, session tokens",
       region: "United States (us-east-1)",
       certifications: ["SOC 2 Type II", "GDPR", "CCPA", "EU–US DPF"],
+      terms_url: "https://clerk.com/legal/standard-terms",
       dpa_url: "https://clerk.com/legal/dpa",
-      last_audit: "2026-01-30",
     },
     {
       id: "stripe",
@@ -46,8 +48,8 @@ export const subProcessors: SubProcessorList = {
       role: "Payment processing and subscription billing — stores billing email + payment-method tokens",
       region: "United States; EU customers processed by Stripe Payments Europe Ltd. (Ireland)",
       certifications: ["PCI DSS Level 1", "SOC 2 Type II", "ISO 27001", "EU–US DPF"],
+      terms_url: "https://stripe.com/legal/ssa",
       dpa_url: "https://stripe.com/legal/dpa",
-      last_audit: "2026-03-04",
     },
     {
       id: "resend",
@@ -55,8 +57,8 @@ export const subProcessors: SubProcessorList = {
       role: "Transactional email (account verification, newsletters, sub-processor notices) + Audience for newsletter opt-in list",
       region: "United States",
       certifications: ["SOC 2 Type II (in progress per Resend docs)"],
+      terms_url: "https://resend.com/legal/terms-of-service",
       dpa_url: "https://resend.com/legal/dpa",
-      last_audit: "2026-05-27",
     },
     {
       id: "sentry",
@@ -64,8 +66,8 @@ export const subProcessors: SubProcessorList = {
       role: "Application error monitoring — stores error events with PII fields scrubbed by config",
       region: "United States (Sentry SaaS Cloud)",
       certifications: ["SOC 2 Type II", "GDPR"],
+      terms_url: "https://sentry.io/terms/",
       dpa_url: "https://sentry.io/legal/dpa/",
-      last_audit: "2026-05-27",
     },
     {
       id: "plausible",
@@ -73,8 +75,8 @@ export const subProcessors: SubProcessorList = {
       role: "Privacy-first web analytics for public docs site — cookieless, no PII collected",
       region: "European Union (Germany)",
       certifications: ["GDPR (cookieless by design, no personal data collected)"],
-      dpa_url: "https://plausible.io/data-policy",
-      last_audit: "2026-05-27",
+      terms_url: "https://plausible.io/terms",
+      dpa_url: "https://plausible.io/dpa",
     },
     {
       id: "betterstack",
@@ -82,8 +84,8 @@ export const subProcessors: SubProcessorList = {
       role: "Public status page — displays operational status; no customer personal data processed",
       region: "European Union",
       certifications: ["GDPR"],
-      dpa_url: "https://betterstack.com/privacy",
-      last_audit: "2026-05-27",
+      terms_url: "https://betterstack.com/terms",
+      dpa_url: "https://betterstack.com/dpa",
     },
     {
       id: "github",
@@ -91,17 +93,8 @@ export const subProcessors: SubProcessorList = {
       role: "Source code hosting, CI pipeline, release artifact publishing",
       region: "United States",
       certifications: ["SOC 2 Type II", "ISO 27001", "GDPR", "EU–US DPF"],
-      dpa_url: "https://docs.github.com/en/site-policy/privacy-policies/github-data-protection-agreement",
-      last_audit: "2026-05-27",
-    },
-    {
-      id: "pagerduty",
-      name: "PagerDuty, Inc.",
-      role: "Incident management + on-call alerting — prod + synthetic-drill routes; operational-alert and incident-metadata payloads",
-      region: "United States",
-      certifications: ["SOC 2 Type II", "ISO 27001"],
-      dpa_url: "https://www.pagerduty.com/privacy-policy/",
-      last_audit: "2026-05-15",
+      terms_url: "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service",
+      dpa_url: "https://github.com/customer-terms/github-data-protection-agreement",
     },
   ],
 };

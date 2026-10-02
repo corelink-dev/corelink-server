@@ -1,9 +1,14 @@
 ---
 document_type: "sub_processor_commitments"
-version: "1.0.0"
-effective_date: "2026-05-14"
+version: "1.1.0"
+# v1.1.0 takes effect when it is published; no separate effective date is
+# recorded, so none is stated. v1.0.0 was effective 2026-05-14.
+effective_date: null
+previous_version: "1.0.0"
+previous_effective_date: "2026-05-14"
 legal_basis: "GDPR Art. 28(2); LGPD Art. 39 (operador)"
 wi_origin: "WI-S20-005"
+recharter: "B-316 owner re-charter, 2026-10-01 (#2593)"
 canonical_compliance_matrix: "specs/03_architecture/compliance_matrix.md"
 related_documents:
   - "legal/sub-processors.md"
@@ -13,7 +18,9 @@ related_documents:
 
 # CoreLink Sub-Processor Commitments
 
-> Effective 2026-05-14 · Origin WI-S20-005 · Canonical reference `specs/03_architecture/compliance_matrix.md`.
+> Version 1.1.0 · takes effect on publication (no separate effective date is
+> recorded) · v1.0.0 was effective 2026-05-14 · Origin WI-S20-005 · Canonical
+> reference `specs/03_architecture/compliance_matrix.md`.
 
 This document is the authoritative list of CoreLink sub-processors that
 receive personal data, with the data-protection commitments flowed down
@@ -25,9 +32,19 @@ discovery and notification; this document is the legal commitment view.
 Customer notification of any addition, replacement, or scope expansion is
 provided at least **30 calendar days** in advance per DPA §3.1.
 
+**Contract basis (owner re-charter, 2026-10-01).** CoreLink is a single-owner
+company with no separate legal department. Each sub-processor below is engaged
+on that vendor's own standard online terms and data processing agreement,
+linked in its section, which the owner accepted online when the account was
+created. There is no countersigned copy and no separate named Legal/Privacy
+reviewer; the owner is the reviewer. The online acceptance dates were not
+recorded, so none are stated. Version 1.0.0 showed `2026-04-23` as the
+contract date for Cloudflare, Clerk and Stripe; no acceptance record supports
+that value, so it is not carried forward.
+
 ---
 
-## 1. Active sub-processors (S-20 / GA)
+## 1. Active sub-processors (approved launch set)
 
 ### 1.1 Cloudflare, Inc.
 
@@ -36,58 +53,118 @@ provided at least **30 calendar days** in advance per DPA §3.1.
 | Role | Infrastructure provider — Workers, R2, D1, KV, Durable Objects, Pages, Email Routing. |
 | Data categories | Account metadata; blob content (encrypted); audit logs; telemetry. |
 | Region | R2 objects and jurisdictional Durable Object state are tenant-pinned per `INV-DATA-RESIDENCY` (WNAM / ENAM / WEUR / APAC). The D1 control plane is one shared global database; its primary is currently reported in ENAM with no D1 jurisdiction and automatic read replication. `SAM` is not provisioned and is not promised. |
+| Terms reference | <https://www.cloudflare.com/terms/> |
 | DPA reference | <https://www.cloudflare.com/cloudflare-customer-dpa/> |
-| Sub-processor list | <https://www.cloudflare.com/sub-processors/> |
 | SCCs / transfer mechanism | The repository disclosure describes the shared D1 control plane under SCC/TIA safeguards. This prelaunch record does not establish an executed transfer mechanism or counsel approval. |
-| Certifications | SOC 2 Type II; ISO 27001; ISO 27018; PCI-DSS Level 1; HIPAA-compliant infra. |
+| Schrems II TIA | None recorded; this record does not represent one as completed or approved. |
 | Vendor review evidence | `docs/compliance/vendor-reviews/cloudflare-dpa-review-2026-04.md` |
-| Contract signed | 2026-04-23 |
-| Schrems II TIA | Pending legal review; this record does not represent it as completed or approved. |
+| Contract basis | Cloudflare's standard online terms and DPA, accepted online at account signup. No countersigned copy. |
+| Online acceptance date | Not recorded. |
 
 ### 1.2 Clerk, Inc.
 
 | Field | Value |
 |---|---|
-| Role | Authentication & identity (email verification, MFA, session management). |
-| Data categories | Account email; auth tokens; device metadata; minimal profile. |
-| Region | US (primary); EU read-replica for EU tenants. |
+| Role | Authentication, identity provider, JWT issuer. |
+| Data categories | Account personal data (email, name, credentials, session tokens). |
+| Region | Multi-region (tenant-pinned per `tenant.primary_region`). |
+| Terms reference | <https://clerk.com/legal/standard-terms> |
 | DPA reference | <https://clerk.com/legal/dpa> |
-| Sub-processor list | <https://clerk.com/legal/subprocessors> |
-| SCCs / transfer mechanism | EU SCCs Module 3 + UK IDTA. |
-| Certifications | SOC 2 Type II; ISO 27001 (in progress). |
+| SCCs / transfer mechanism | As set out in Clerk's DPA. |
+| Schrems II TIA | None recorded; CoreLink has not recorded a separate transfer impact assessment for this vendor. |
 | Vendor review evidence | `docs/compliance/vendor-reviews/clerk-dpa-review-2026-04.md` |
-| Contract signed | 2026-04-23 |
-| Schrems II TIA | Completed; flow-down clauses + US-based government-access reporting. |
+| Contract basis | Clerk's standard online terms and DPA, accepted online at account signup. No countersigned copy. |
+| Online acceptance date | Not recorded. |
 
-### 1.3 Stripe, Inc.
+### 1.3 Resend, Inc.
 
 | Field | Value |
 |---|---|
-| Role | Billing, invoicing, payment processing, tax computation. |
-| Data categories | Billing entity name and address; tax ID; payment method tokens; invoice line items. |
-| Region | US (Stripe primary) with EU sub-processors for EU customers. |
+| Role | Transactional email and newsletter-audience delivery. |
+| Data categories | Recipient email address; message content and delivery metadata. |
+| Region | United States. |
+| Terms reference | <https://resend.com/legal/terms-of-service> |
+| DPA reference | <https://resend.com/legal/dpa> |
+| SCCs / transfer mechanism | As set out in Resend's DPA. |
+| Schrems II TIA | None recorded; CoreLink has not recorded a separate transfer impact assessment for this vendor. |
+| Vendor review evidence | `docs/compliance/vendor-reviews/resend-dpa-review-2026-09.md` |
+| Contract basis | Resend's standard online terms and DPA, accepted online at account signup. No countersigned copy. |
+| Online acceptance date | Not recorded. |
+
+### 1.4 Stripe, Inc.
+
+| Field | Value |
+|---|---|
+| Role | Payment processing and subscription billing. |
+| Data categories | Billing data; payment information (payment method tokens; card data never touches CoreLink). |
+| Region | US and EU. |
+| Terms reference | <https://stripe.com/legal/ssa> |
 | DPA reference | <https://stripe.com/legal/dpa> |
-| Sub-processor list | <https://stripe.com/legal/service-providers> |
-| SCCs / transfer mechanism | EU SCCs Module 3; UK IDTA. |
-| Certifications | SOC 1 / SOC 2 Type II; PCI-DSS Level 1; ISO 27001. |
+| SCCs / transfer mechanism | As set out in Stripe's DPA. |
+| Schrems II TIA | None recorded; CoreLink has not recorded a separate transfer impact assessment for this vendor. |
 | Vendor review evidence | `docs/compliance/vendor-reviews/stripe-dpa-review-2026-04.md` |
-| Contract signed | 2026-04-23 |
-| Schrems II TIA | Completed; payment-data government-access regime documented. |
+| Contract basis | Stripe's standard online terms and DPA, accepted online at account signup. No countersigned copy. |
+| Online acceptance date | Not recorded. |
 
-### 1.4 Neon, Inc. *(optional / tenant-selectable Postgres)*
+### 1.5 GitHub, Inc.
 
 | Field | Value |
 |---|---|
-| Role | Postgres control plane (DSR tickets, account, tenant, billing records). |
-| Data categories | Billing data; account data; DSR ticket metadata. |
-| Region | US or EU (selectable per tenant). |
-| DPA reference | <https://neon.tech/dpa> |
-| Sub-processor list | <https://neon.tech/subprocessors> |
-| SCCs / transfer mechanism | EU SCCs Module 3 + UK IDTA. |
-| Certifications | SOC 2 Type II; ISO 27001; HIPAA-compliant. |
-| Vendor review evidence | `docs/compliance/vendor-reviews/neon-dpa-review-2026-04.md` |
-| Contract signed | 2026-04-23 |
-| Schrems II TIA | Completed; EU-region option satisfies EU data-residency promises. |
+| Role | Source code repository and CI/CD pipeline. |
+| Data categories | Source code; CI artifacts. |
+| Region | United States. |
+| Terms reference | <https://docs.github.com/en/site-policy/github-terms/github-terms-of-service> |
+| DPA reference | <https://github.com/customer-terms/github-data-protection-agreement> |
+| SCCs / transfer mechanism | As set out in GitHub's Data Protection Agreement. |
+| Schrems II TIA | None recorded; CoreLink has not recorded a separate transfer impact assessment for this vendor. |
+| Vendor review evidence | `docs/compliance/vendor-reviews/github-dpa-review-2026-04.md` |
+| Contract basis | GitHub's standard online terms and Data Protection Agreement, accepted online at account signup. No countersigned copy. |
+| Online acceptance date | Not recorded. |
+
+### 1.6 Functional Software, Inc. (Sentry)
+
+| Field | Value |
+|---|---|
+| Role | Application error monitoring (admin-ui server/edge/client and the docs-site build loader). |
+| Data categories | Scrubbed diagnostic telemetry (exception and breadcrumb events). |
+| Region | United States. |
+| Terms reference | <https://sentry.io/terms/> |
+| DPA reference | <https://sentry.io/legal/dpa/> |
+| SCCs / transfer mechanism | As set out in Sentry's DPA. |
+| Schrems II TIA | None recorded; CoreLink has not recorded a separate transfer impact assessment for this vendor. |
+| Vendor review evidence | `docs/compliance/vendor-reviews/sentry-dpa-review-2026-09.md` |
+| Contract basis | Sentry's standard online terms and DPA, accepted online at account signup. No countersigned copy. |
+| Online acceptance date | Not recorded. |
+
+### 1.7 Plausible Insights OÜ (Plausible Analytics)
+
+| Field | Value |
+|---|---|
+| Role | Cookieless web analytics for the docs-site marketing funnel. |
+| Data categories | Visitor pageview telemetry. |
+| Region | European Union. |
+| Terms reference | <https://plausible.io/terms> |
+| DPA reference | <https://plausible.io/dpa> |
+| SCCs / transfer mechanism | As set out in Plausible's DPA. |
+| Schrems II TIA | None recorded; CoreLink has not recorded a separate transfer impact assessment for this vendor. |
+| Vendor review evidence | `docs/compliance/vendor-reviews/plausible-dpa-review-2026-09.md` |
+| Contract basis | Plausible's standard online terms and DPA, accepted online at account signup. No countersigned copy. |
+| Online acceptance date | Not recorded. |
+
+### 1.8 Better Stack, Inc. (BetterStack / Statuspage)
+
+| Field | Value |
+|---|---|
+| Role | Uptime/status monitoring — synthetic HTTP-health probes against CoreLink's own public endpoints, and public status page hosting. |
+| Data categories | Synthetic probe telemetry; no customer personal data is sent. |
+| Region | European Union. |
+| Terms reference | <https://betterstack.com/terms> |
+| DPA reference | <https://betterstack.com/dpa> |
+| SCCs / transfer mechanism | As set out in Better Stack's DPA. |
+| Schrems II TIA | None recorded; CoreLink has not recorded a separate transfer impact assessment for this vendor. |
+| Vendor review evidence | `docs/compliance/vendor-reviews/betterstack-dpa-review-2026-09.md` |
+| Contract basis | Better Stack's standard online terms and DPA, accepted online at account signup. No countersigned copy. |
+| Online acceptance date | Not recorded. |
 
 ---
 
@@ -109,8 +186,10 @@ protections to those Processor owes Controller under the DPA, including:
 9. **International transfers** governed by EU SCCs Module 3 (or local
    equivalents) and EDPB Recommendations 01/2020 supplementary measures.
 
-The flow-down language is reviewed by Legal Counsel as part of vendor
-onboarding (`docs/compliance/vendor-reviews/*.md`).
+These obligations are those in each vendor's own standard DPA, linked in §1.
+CoreLink has no separate Legal Counsel; the owner reviews the vendor terms at
+onboarding and records the contract basis in
+`docs/compliance/vendor-reviews/*.md`.
 
 ---
 
@@ -160,4 +239,4 @@ Canonical control IDs catalogued in
 
 ---
 
-*End of sub-processor commitments v1.0.0.*
+*End of sub-processor commitments v1.1.0.*

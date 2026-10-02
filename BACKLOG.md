@@ -1850,30 +1850,35 @@ verify-means: |
 last-verified: 2026-09-06
 ```
 
-### B-316 — four live sub-processors still lack completed Legal reviews, and effective commitments text is stale
+### B-316 — the public sub-processor list named a deferred vendor, unlinked or broken DPAs, and invented contract dates
 ```backlog
 id: B-316
 repo: corelink-server
-owner: owner
-status: open
-source-document: "D03 bundled validators-only CI and sub-processor authority audit"
-source-locator: "legal/sub-processors.md frontmatter; legal/dpa/SUB-PROCESSOR-COMMITMENTS.md §1; specs/_compliance/VENDOR-RISK-REGISTER.md §5"
-finding-title: "four canonical vendor-review packets remain templates, and effective Legal commitments disagree with the recorded nine-vendor target"
-problem: "Canonical TEMPLATE packets now exist for Resend, Sentry, Plausible and Better Stack, closing the prior structural validator gap. The packets remain pending: they do not establish executed DPAs, completed reviews, attestations, or Legal approval. Separately, the effective commitments text still names Neon and omits Resend, GitHub, PagerDuty, Sentry, Plausible and Better Stack from the nine-vendor target recorded in the Legal action packet."
-evidence: "Four canonical TEMPLATE packets and open VR-6..VR-9 are recorded in docs/compliance/vendor-reviews/{resend,sentry,plausible,betterstack}-dpa-review-2026-09.md and specs/_compliance/VENDOR-RISK-REGISTER.md; the current/required commitment populations and Legal approval boundary are recorded in docs/handoff/2026-09-06-b316-vendor-legal-review.json"
-acceptance: "Legal completes the four dated and attributed vendor-review artifacts with genuine signed-copy/attestation evidence, closes VR-6..VR-9, records contract dates, and approves/versions SUB-PROCESSOR-COMMITMENTS.md to the exact nine-vendor active population with Neon removed. Packet existence or validator green alone is never completion. B-032 retains vendor-cadence/Drata ownership and B-314 retains the GDPR Sigstore-table decision."
+owner: tl
+status: done
+source-document: "D03 bundled validators-only CI and sub-processor authority audit; owner re-charter 2026-10-01 (#2593)"
+source-locator: "legal/sub-processors.md; legal/dpa/SUB-PROCESSOR-COMMITMENTS.md §1; specs/_compliance/VENDOR-RISK-REGISTER.md §2/§4c/§5; apps/docs/docs/trust/subprocessors.mdx (+3 locales); apps/docs/docs/explanation/compliance/sub-processors.mdx (+3 locales); apps/admin-ui/src/content/sub-processors.json; apps/docs/src/pages/{legal/sub-processors,trust/sub-processor-register}.tsx"
+finding-title: "the sub-processor surfaces disagreed on the vendor set, linked no terms, linked broken or non-DPA pages, and stated contract dates no record supports"
+problem: "Four vendor packets (Resend, Sentry, Plausible, Better Stack) were TEMPLATE placeholders awaiting a Legal review CoreLink, a single-owner company with no legal department, cannot perform. Every public list still named PagerDuty, which the owner deferred on 2026-10-01 (#1648); the effective commitments still named Neon, which the product never used; Clerk's DPA was 'on request'; GitHub's link was a trust portal and the old docs.github.com DPA URL now redirects to a generic index; Better Stack and Plausible linked privacy/data policies instead of DPAs; no surface linked any vendor's terms; and the registers carried a 2026-04-23 contract date (the repository's spec-creation date, applied identically to vendors including the never-used Neon) plus invented per-vendor audit and effective dates on the admin and docs pages."
+evidence: "Owner re-charter https://github.com/HuGR-dev/corelink-server/issues/2593#issuecomment-5941195884 (2026-10-01T21:39:30Z): B-316 closes on a public sub-processor list naming each approved vendor and linking its standard terms and DPA, accepted online at signup; dates are never invented. The approved eight and their links, each confirmed by a read-only HTTPS GET on 2026-10-02, are recorded in docs/handoff/2026-09-06-b316-vendor-legal-review.json; VR-6..VR-9 are closed under the re-charter in specs/_compliance/VENDOR-RISK-REGISTER.md §5 and the four packets are contract-basis records."
+acceptance: "Every surface that lists sub-processors names exactly cloudflare, clerk, resend, stripe, github, sentry, plausible and betterstack; each links that vendor's own terms and DPA, identically everywhere; PagerDuty and Neon appear on none of them; no surface states an acceptance, contract, audit or effective date for a vendor (none is recorded); the generated trust page matches the register; VR-6..VR-9 are closed under the re-charter. A link that cannot be confirmed is published as 'link pending', never guessed, and keeps the item open. B-032 retains vendor-cadence/Drata ownership and B-314 retains the GDPR Sigstore-table decision."
 action-packet: docs/handoff/2026-09-06-b316-vendor-legal-review.json
-verify: python3 scripts/verify_b316_pending_vendor_reviews.py --expect open --self-test
+verify: python3 scripts/verify_b316_pending_vendor_reviews.py --expect done --self-test
 verify-means: |
-  open — exits 0 only while all four canonical artifacts remain explicit TEMPLATE/TBD
-  packets, contract_signed_at remains null, VR-6..VR-9 remain Legal/Open, and the
-  owner packet exactly records the effective-commitments residue (Neon extra; six
-  active vendors missing) plus its nine-vendor approved target. Missing/extra vendors,
-  a fabricated signature, a prematurely closed risk action, partial/mixed state, path
-  drift, or loss of the B-032/B-314 ownership boundaries fails closed. `done` requires
-  all four genuine completed reviews and the Legal-approved effective-text population;
-  validator path/existence success never implies Legal completion.
-last-verified: 2026-09-25
+  done — the verifier parses 21 surfaces (legal frontmatter and body table,
+  commitments §1, the register's active subset through the generator, the admin
+  JSON and its TS mirror, the four trust and four explanation pages, the four
+  VR records, and the three React renderers) and compares each to the action
+  packet. It exits 0 only when all list exactly the approved eight with the
+  same https:// terms and DPA links, no surface names PagerDuty or Neon, every
+  contract_signed_at is null and every acceptance-date field says "Not
+  recorded.", the generated trust page equals a fresh render of the register,
+  and VR-6..VR-9 are Owner/Closed. A link published as "link pending" on every
+  surface derives `open` (exit 1); a missing/extra/excluded vendor, a missing
+  link, two surfaces that disagree, or a stated date exits 2. The self-test
+  applies 24 named mutations (each must be rejected) plus a positive control
+  (consistent "link pending" derives open).
+last-verified: 2026-10-02
 ```
 
 ### B-317 — strict release workflow contract test failed repository-wide clippy

@@ -88,7 +88,7 @@
     "description": "Source-of-truth pointer"
   },
   "trust.subprocessor.source.full": {
-    "message": "(vollständiges 19-Lieferanten-Verzeichnis; nur die 11 Anbieter, die personenbezogene Daten von Kunden im Auftrag von CoreLink verarbeiten, erscheinen unten).",
+    "message": "(das vollständige Lieferantenverzeichnis ist intern; unten erscheinen nur die Anbieter, die personenbezogene Daten von Kunden im Auftrag von CoreLink verarbeiten, jeweils mit Links zu ihren eigenen Bedingungen und ihrem AVV/DPA). Auf Anfrage erhältlich unter trust@humangr.com.",
     "description": "Source of truth size context"
   },
   "trust.subprocessor.notice.title": {
@@ -96,7 +96,7 @@
     "description": "Notice section title"
   },
   "trust.subprocessor.notice.body": {
-    "message": "Gemäß unserem DPA §6 und LGPD Art. 27 §4º + DSGVO Art. 28 §2 kündigen wir mit mindestens 30 Kalendertagen schriftlicher Vorlauf an, bevor wir einen Auftragsverarbeiter hinzufügen oder ersetzen, der personenbezogene Daten von Kunden verarbeitet. Abonnieren Sie per Tenant-E-Mail-Digest, Status-Seite oder dem RSS-Feed post-GA.",
+    "message": "Gemäß unserem DPA §6 und LGPD Art. 27 §4º + DSGVO Art. 28 §2 kündigen wir mit mindestens 30 Kalendertagen schriftlicher Vorlauf an, bevor wir einen Auftragsverarbeiter hinzufügen oder ersetzen, der personenbezogene Daten von Kunden verarbeitet.",
     "description": "Notice section body"
   },
   "trust.subprocessor.active.title": {

@@ -132,6 +132,54 @@ INERT_VENDORS = {
     ),
 }
 
+# Vendors the owner deferred from the approved launch set (register §4c).
+# They stay registered internally but appear on NO public list — neither the
+# active table nor the inert table. Keep this map in sync with register §4c.
+DEFERRED_VENDORS = {
+    "PagerDuty, Inc.": "Deferred by the owner on 2026-10-01 (#1648, #2593).",
+}
+
+# Each active sub-processor is engaged on its own standard online terms and
+# DPA (B-316 owner re-charter, #2593). These are the vendor's public pages,
+# each confirmed to resolve when it was added here; they must match
+# `legal/sub-processors.md` (`terms_url` / `dpa_url`), which
+# `scripts/verify_b316_pending_vendor_reviews.py` enforces. An active vendor
+# without an entry here is a generation error, never an "on request" fallback.
+PUBLIC_LEGAL_LINKS = {
+    "Cloudflare, Inc.": (
+        "https://www.cloudflare.com/terms/",
+        "https://www.cloudflare.com/cloudflare-customer-dpa/",
+    ),
+    "Stripe, Inc.": (
+        "https://stripe.com/legal/ssa",
+        "https://stripe.com/legal/dpa",
+    ),
+    "Clerk, Inc.": (
+        "https://clerk.com/legal/standard-terms",
+        "https://clerk.com/legal/dpa",
+    ),
+    "GitHub, Inc. (Microsoft Enterprise)": (
+        "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service",
+        "https://github.com/customer-terms/github-data-protection-agreement",
+    ),
+    "Resend, Inc.": (
+        "https://resend.com/legal/terms-of-service",
+        "https://resend.com/legal/dpa",
+    ),
+    "Functional Software, Inc. (Sentry)": (
+        "https://sentry.io/terms/",
+        "https://sentry.io/legal/dpa/",
+    ),
+    "Plausible Insights OÜ (Plausible Analytics)": (
+        "https://plausible.io/terms",
+        "https://plausible.io/dpa",
+    ),
+    "Better Stack, Inc. (BetterStack / Statuspage)": (
+        "https://betterstack.com/terms",
+        "https://betterstack.com/dpa",
+    ),
+}
+
 
 @dataclass(frozen=True)
 class VendorRow:
@@ -174,10 +222,14 @@ class VendorRow:
         return INERT_VENDORS.get(self.vendor, "")
 
     @property
+    def is_deferred(self) -> bool:
+        return self.vendor in DEFERRED_VENDORS
+
+    @property
     def is_customer_data_processor(self) -> bool:
         """True if the vendor actually receives CoreLink-customer data and
         must appear on the public list per GDPR Art. 28 / LGPD Art. 39."""
-        if self.is_inert:
+        if self.is_inert or self.is_deferred:
             return False
         if self.is_byok_custodian or self.is_internal_llm or self.is_public_excluded:
             return False
@@ -260,21 +312,36 @@ def parse_register(register_text: str) -> tuple[list[VendorRow], str]:
 # Renderer
 # --------------------------------------------------------------------------
 
-DPA_LINK_RE = re.compile(r"\[([^\]]+DPA[^\]]*)\]\((https?://[^)]+)\)", re.IGNORECASE)
-ATTESTATION_URL_RE = re.compile(r"\((https?://[^)]+)\)")
+# A vendor page that could not be confirmed is published as this literal,
+# never as a guessed URL. The B-316 verifier reports any such vendor as open.
+LINK_PENDING = "link pending"
 
 
-def extract_dpa_link(attestation_cell: str, vendor: str) -> str:
-    """Best-effort DPA / trust-portal link extraction from the register
-    attestation cell. Falls back to a 'on request' string."""
-    m = DPA_LINK_RE.search(attestation_cell)
-    if m:
-        return f"[{m.group(1)}]({m.group(2)})"
-    # Trust portal as DPA proxy.
-    m2 = ATTESTATION_URL_RE.search(attestation_cell)
-    if m2:
-        return f"[Trust portal]({m2.group(1)})"
-    return f"{vendor.split(',')[0]} DPA (on request)"
+class MissingLegalLinks(ValueError):
+    """An active sub-processor has no public terms/DPA entry."""
+
+
+def legal_links(vendor: str) -> tuple[str, str]:
+    """Return the vendor's (terms, DPA) table cells. Fails closed: an active
+    vendor without an entry for both documents cannot be published."""
+    links = PUBLIC_LEGAL_LINKS.get(vendor)
+    if links is None or len(links) != 2:
+        raise MissingLegalLinks(
+            f"active sub-processor {vendor!r} has no public terms and DPA links "
+            "in PUBLIC_LEGAL_LINKS"
+        )
+    cells = []
+    for label, url in zip(("Terms", "DPA"), links):
+        if url == LINK_PENDING:
+            cells.append(LINK_PENDING)
+        elif url.startswith("https://"):
+            cells.append(f"[{label}]({url})")
+        else:
+            raise MissingLegalLinks(
+                f"active sub-processor {vendor!r} has a {label} link that is "
+                f"neither https:// nor {LINK_PENDING!r}: {url!r}"
+            )
+    return cells[0], cells[1]
 
 
 def shorten_region(scope: str, data_sharing: str, vendor: str | None = None) -> str:
@@ -310,17 +377,18 @@ def shorten_data_sharing(ds: str) -> str:
 
 def render_active_table(rows: Iterable[VendorRow]) -> str:
     out = [
-        "| # | Vendor | Service to CoreLink | Customer-data class | Regions | DPA |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| # | Vendor | Service to CoreLink | Customer-data class | Regions | Terms | DPA |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     n = 0
     for r in rows:
         n += 1
+        terms, dpa = legal_links(r.vendor)
         out.append(
             f"| {n} | **{r.vendor}** | {shorten_service(r.service)} | "
             f"{shorten_data_sharing(r.data_sharing)} | "
             f"{shorten_region(r.regulatory_scope, r.data_sharing, r.vendor)} | "
-            f"{extract_dpa_link(r.attestation, r.vendor)} |"
+            f"{terms} | {dpa} |"
         )
     return "\n".join(out)
 
@@ -361,7 +429,7 @@ def render_inert_table(rows: Iterable[VendorRow]) -> str:
 MDX_TEMPLATE = '''---
 title: "Sub-processors"
 slug: "/trust/subprocessors"
-description: "Public list of CoreLink sub-processors — vendor, service, region, DPA link, and the 30-day advance-notice mechanism for changes."
+description: "Public list of CoreLink sub-processors — vendor, service, region, links to each vendor's terms and DPA, and the 30-day advance-notice mechanism for changes."
 draft: false
 generator: "scripts/gen-public-subprocessors.py"
 source: "specs/_compliance/VENDOR-RISK-REGISTER.md"
@@ -425,6 +493,11 @@ out in DPA §6.4 (objection window, escalation, termination-for-cause if
 unresolved).
 
 ## Active sub-processors
+
+Each sub-processor below is engaged on that vendor's own standard terms and
+data processing agreement (DPA), linked in the table. CoreLink accepted them
+online when it created each account; the acceptance dates were not recorded,
+so this page shows none.
 
 {active_table}
 
@@ -552,7 +625,11 @@ def main(argv: list[str] | None = None) -> int:
         print("error: parsed 0 vendor rows from register §2", file=sys.stderr)
         return 2
 
-    mdx = render_mdx(rows, updated)
+    try:
+        mdx = render_mdx(rows, updated)
+    except MissingLegalLinks as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     if args.dry_run:
         # Print compact summary at the bottom for human eyes.

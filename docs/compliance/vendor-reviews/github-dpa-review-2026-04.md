@@ -8,7 +8,7 @@
 | Sub-processor id | `github` |
 | Review date | `TBD (YYYY-MM-DD)` |
 | Reviewer | `TBD (named Legal Counsel / Privacy Officer)` |
-| DPA reference | <https://docs.github.com/en/site-policy/privacy-policies/github-data-protection-agreement> |
+| DPA reference | <https://github.com/customer-terms/github-data-protection-agreement> (the former docs.github.com DPA URL now redirects to the generic privacy-policies index) |
 | DPA status | `TBD (executed / pending)` |
 | SCC / transfer mechanism | `TBD (e.g. EU SCCs 2021/914 Module 3; UK IDTA)` |
 | Schrems II TIA | `TBD` |

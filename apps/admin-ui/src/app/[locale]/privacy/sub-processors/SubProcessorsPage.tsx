@@ -16,13 +16,31 @@ const TITLE: Record<Locale, string> = {
   de: "Unterauftragsverarbeiter",
 };
 
-const HEADERS: Record<Locale, { name: string; role: string; region: string; certs: string; audit: string; download: string }> = {
+type Headers = {
+  name: string;
+  role: string;
+  region: string;
+  certs: string;
+  terms: string;
+  dpa: string;
+  termsLink: string;
+  dpaLink: string;
+  download: string;
+};
+
+// Each vendor is engaged on its own standard terms and DPA (B-316 owner
+// re-charter, #2593); the table links both. No acceptance dates are shown
+// because none were recorded.
+const HEADERS: Record<Locale, Headers> = {
   en: {
     name: "Name",
     role: "Role",
     region: "Region",
     certs: "Certifications",
-    audit: "Last audit",
+    terms: "Terms",
+    dpa: "DPA",
+    termsLink: "Vendor terms",
+    dpaLink: "Vendor DPA",
     download: "Download CSV",
   },
   pt: {
@@ -30,7 +48,10 @@ const HEADERS: Record<Locale, { name: string; role: string; region: string; cert
     role: "Função",
     region: "Região",
     certs: "Certificações",
-    audit: "Última auditoria",
+    terms: "Termos",
+    dpa: "DPA",
+    termsLink: "Termos do fornecedor",
+    dpaLink: "DPA do fornecedor",
     download: "Baixar CSV",
   },
   es: {
@@ -38,7 +59,10 @@ const HEADERS: Record<Locale, { name: string; role: string; region: string; cert
     role: "Función",
     region: "Región",
     certs: "Certificaciones",
-    audit: "Última auditoría",
+    terms: "Términos",
+    dpa: "DPA",
+    termsLink: "Términos del proveedor",
+    dpaLink: "DPA del proveedor",
     download: "Descargar CSV",
   },
   de: {
@@ -46,7 +70,10 @@ const HEADERS: Record<Locale, { name: string; role: string; region: string; cert
     role: "Rolle",
     region: "Region",
     certs: "Zertifizierungen",
-    audit: "Letztes Audit",
+    terms: "Bedingungen",
+    dpa: "AVV (DPA)",
+    termsLink: "Bedingungen des Anbieters",
+    dpaLink: "AVV des Anbieters",
     download: "CSV herunterladen",
   },
 };
@@ -58,9 +85,9 @@ export interface SubProcessorsPageProps {
 }
 
 function toCsv(items: SubProcessor[]): string {
-  const header = ["id", "name", "role", "region", "certifications", "last_audit"];
+  const header = ["id", "name", "role", "region", "certifications", "terms_url", "dpa_url"];
   const rows = items.map((it) =>
-    [it.id, it.name, it.role, it.region, it.certifications.join("|"), it.last_audit]
+    [it.id, it.name, it.role, it.region, it.certifications.join("|"), it.terms_url, it.dpa_url]
       .map((v) => `"${String(v).replace(/"/g, '""')}"`)
       .join(",")
   );

@@ -10,7 +10,7 @@ pending_signoff:
   - "Legal"
 sources:
   - "legal/sub-processors.md"
-last_updated: "2026-08-24"
+last_updated: "2026-10-02"
 ---
 
 <!-- i18n:MT (pt-BR) — TMX-seeded machine-translation stub; replace with native-speaker translation before GA -->
@@ -37,20 +37,22 @@ to the account owner contact.
 
 ## Active sub-processors
 
-| Provider | Role | Region | Certifications | DPA |
+| Provider | Role | Region | Terms | DPA |
 | --- | --- | --- | --- | --- |
-| Cloudflare, Inc. | Infrastructure (Workers, R2, KV, DO, D1, Pages, Email) | R2/DO tenant-pinned; D1 control-plane metadata global under SCC/TIA safeguards | SOC 2 Type II, ISO 27001, ISO 27018, PCI-DSS L1, HIPAA-compliant infra | [DPA](https://www.cloudflare.com/cloudflare-customer-dpa/) |
-| Clerk | Authentication and user identity | Multi-region (tenant-pinned) | SOC 2 Type II, GDPR processor | Clerk DPA (on request) |
-| Stripe, Inc. | Billing and payment processing | US and EU (PCI-DSS L1) | SOC 2 Type II, PCI-DSS L1, ISO 27001 | [DPA](https://stripe.com/legal/dpa) |
-| GitHub, Inc. | Source code repository and CI/CD | United States | SOC 2 Type II, ISO 27001 | [DPA](https://docs.github.com/en/site-policy/privacy-policies/github-data-protection-agreement) |
-| PagerDuty, Inc. | Incident management + on-call alerting | United States | SOC 2 Type II, ISO 27001 | [Privacy Policy](https://www.pagerduty.com/privacy-policy/) |
-| Resend, Inc. | Transactional email + newsletter-audience delivery | United States | DPA policy published; signed-copy evidence pending (VR-6) | [DPA](https://resend.com/legal/dpa) |
-| Functional Software, Inc. (Sentry) | Application error monitoring — scrubbed diagnostic telemetry | United States | DPA policy published; signed-copy evidence pending (VR-7) | [DPA](https://sentry.io/legal/dpa/) |
-| Plausible Insights OÜ (Plausible Analytics) | Web analytics that sets no cookies, for the docs-site marketing funnel | European Union | DPA policy published; signed-copy evidence pending (VR-8) | [DPA](https://plausible.io/dpa) |
+| Cloudflare, Inc. | Infrastructure (Workers, R2, KV, DO, D1, Pages, Email) | R2/DO tenant-pinned; D1 control-plane metadata global under SCC/TIA safeguards | [Terms](https://www.cloudflare.com/terms/) | [DPA](https://www.cloudflare.com/cloudflare-customer-dpa/) |
+| Clerk, Inc. | Authentication, identity provider, JWT issuer | Multi-region (tenant-pinned) | [Terms](https://clerk.com/legal/standard-terms) | [DPA](https://clerk.com/legal/dpa) |
+| Resend, Inc. | Transactional email + newsletter-audience delivery (recipient email is PII) | United States | [Terms](https://resend.com/legal/terms-of-service) | [DPA](https://resend.com/legal/dpa) |
+| Stripe, Inc. | Payment processing and billing | US and EU | [Terms](https://stripe.com/legal/ssa) | [DPA](https://stripe.com/legal/dpa) |
+| GitHub, Inc. | Source code repository and CI/CD | United States | [Terms](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) | [DPA](https://github.com/customer-terms/github-data-protection-agreement) |
+| Functional Software, Inc. (Sentry) | Application error monitoring — scrubbed diagnostic telemetry (admin-ui + docs-site) | United States | [Terms](https://sentry.io/terms/) | [DPA](https://sentry.io/legal/dpa/) |
+| Plausible Insights OÜ (Plausible Analytics) | Cookieless web analytics for the docs-site marketing funnel | European Union | [Terms](https://plausible.io/terms) | [DPA](https://plausible.io/dpa) |
+| Better Stack, Inc. (BetterStack / Statuspage) | Uptime/status monitoring — synthetic probes + public status page (no customer data) | European Union | [Terms](https://betterstack.com/terms) | [DPA](https://betterstack.com/dpa) |
 
-> The full machine-readable list — including jurisdiction, data categories,
-> certifications, and contract dates — is maintained in
-> `legal/sub-processors.md` and published to the trust portal.
+> Each provider is engaged on its own standard terms and DPA, linked above,
+> accepted online when the account was created; the acceptance dates were
+> not recorded, so none are listed. The full machine-readable list —
+> including jurisdiction, data categories and certifications — is maintained
+> in `legal/sub-processors.md` and published to the trust portal.
 
 ## How to subscribe to change notices
 

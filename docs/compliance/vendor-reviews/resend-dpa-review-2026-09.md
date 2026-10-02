@@ -1,24 +1,27 @@
-# Vendor Legal-Review Record — Resend, Inc.
+# Vendor Contract-Basis Record — Resend, Inc.
 
-> STATUS: TEMPLATE — pending the actual legal review record (owner/counsel to complete).
+> STATUS: RECORDED — owner re-charter of B-316, 2026-10-01 ([#2593](https://github.com/HuGR-dev/corelink-server/issues/2593#issuecomment-5941195884)).
+> Resend is engaged on its own standard online terms and DPA, accepted online
+> at account signup. No countersigned copy exists and no acceptance date is
+> recorded.
 
 | Field | Value |
 |---|---|
 | Vendor | Resend, Inc. |
 | Sub-processor id | `resend` |
-| Review date | `TBD (YYYY-MM-DD)` |
-| Reviewer | `TBD (named Legal Counsel / Privacy Officer)` |
+| Contract basis | Resend's standard online terms and data processing agreement, accepted online by the owner when the account was created (owner statement, #2593 re-charter). No countersigned copy. |
+| Terms reference | <https://resend.com/legal/terms-of-service> |
 | DPA reference | <https://resend.com/legal/dpa> |
-| DPA status | `TBD (signed copy pending — VR-6)` |
-| SCC / transfer mechanism | `TBD` |
-| Schrems II TIA | `TBD` |
+| Online acceptance date | Not recorded. |
+| Reviewer | The owner. CoreLink is a single-owner company with no separate Legal/Privacy reviewer (#2593 re-charter). |
+| Owner disposition | In the approved launch sub-processor set; re-charter recorded 2026-10-01 in #2593. |
+| SCC / transfer mechanism | As set out in Resend's DPA (linked above). |
+| Schrems II TIA | None recorded. |
 | Data categories processed | recipient_email_pii |
 | Data residency / region | United States |
-| Sub-processor flow-down | `TBD (confirm flow-down per GDPR Art. 28(4))` |
-| Certifications verified | `TBD` |
-| Review outcome | `TBD (approved / approved-with-conditions / rejected)` |
-| Conditions / follow-ups | `VR-6 — Legal must obtain and record the signed-copy DPA; public policy is not execution evidence.` |
-| Next review due | `TBD (YYYY-MM-DD)` |
+| Certifications verified | None verified for CoreLink; only Resend's own public statements exist. |
+| Conditions / follow-ups | Record the acceptance date only if an acceptance record (vendor dashboard or acceptance email) is found. Re-read the linked terms and DPA when Resend announces a change. |
+| Next review due | Not scheduled. |
 
 ## Repository-verified technical and data-flow scope
 
@@ -38,11 +41,16 @@
 
 ## Notes
 
-No signature, named review, transfer assessment, certification, or approval is
-claimed. Legal owns VR-6 in `specs/_compliance/VENDOR-RISK-REGISTER.md` §5,
-due 2026-09-23.
+This record replaces the earlier `TEMPLATE` packet. VR-6 originally asked for a
+dated Legal review and a signed-copy DPA; the owner's 2026-10-01 re-charter
+closes it on the public sub-processor list, which names Resend and links its
+standard online terms and DPA. Nothing here claims a signature, a countersigned
+contract, a named Legal reviewer, a transfer impact assessment, a certification,
+or an acceptance date. VR-6 is Closed in
+`specs/_compliance/VENDOR-RISK-REGISTER.md` §5.
 
 ---
 
-*Referenced by `legal/sub-processors.md`. Existence and pending-state integrity
-are enforced by the B-316 verifier.*
+*Referenced by `legal/sub-processors.md`. Its contract basis and its agreement
+with every public sub-processor list are enforced by the B-316 verifier
+(`scripts/verify_b316_pending_vendor_reviews.py`).*

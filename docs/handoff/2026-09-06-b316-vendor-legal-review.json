@@ -1,51 +1,110 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "backlog_id": "B-316",
-  "status": "pending_external",
-  "authority": "Legal",
-  "effective_legal_text": {
-    "artifact": "legal/dpa/SUB-PROCESSOR-COMMITMENTS.md",
-    "current_active_ids": ["cloudflare", "clerk", "stripe", "neon"],
-    "required_active_ids": ["cloudflare", "clerk", "resend", "stripe", "github", "sentry", "plausible", "betterstack"],
-    "stale_extra_ids": ["neon"],
-    "missing_ids": ["resend", "github", "sentry", "plausible", "betterstack"],
-    "decision": "Legal must approve and version the effective commitments text; this remediation does not edit it.",
-    "status": "pending_external"
+  "status": "complete",
+  "authority": "Owner",
+  "recharter": {
+    "decided_at": "2026-10-01T21:39:30Z",
+    "reference": "https://github.com/HuGR-dev/corelink-server/issues/2593#issuecomment-5941195884",
+    "closure_criterion": "A public sub-processor list names each vendor in the approved set and links that vendor's standard terms and DPA, which the owner accepted online at signup. Dates are never invented: where the online acceptance date is not recorded, the packet says so.",
+    "superseded_requirements": [
+      "countersigned contract",
+      "separate named Legal/Privacy reviewer",
+      "non-null contract_signed_at"
+    ]
+  },
+  "approved_population": ["cloudflare", "clerk", "resend", "stripe", "github", "sentry", "plausible", "betterstack"],
+  "excluded_vendors": {
+    "pagerduty": "Deferred by the owner on 2026-10-01 (#1648 closure amendment; #2593 approved set).",
+    "neon": "Never used by the product; removed from the registers on 2026-08-23 and deferred by the owner (#1650, #2566)."
+  },
+  "vendors": {
+    "cloudflare": {
+      "name": "Cloudflare, Inc.",
+      "terms_url": "https://www.cloudflare.com/terms/",
+      "dpa_url": "https://www.cloudflare.com/cloudflare-customer-dpa/",
+      "contract_basis": "vendor_standard_online_terms_and_dpa",
+      "online_acceptance_date": null,
+      "record": "docs/compliance/vendor-reviews/cloudflare-dpa-review-2026-04.md"
+    },
+    "clerk": {
+      "name": "Clerk, Inc.",
+      "terms_url": "https://clerk.com/legal/standard-terms",
+      "dpa_url": "https://clerk.com/legal/dpa",
+      "contract_basis": "vendor_standard_online_terms_and_dpa",
+      "online_acceptance_date": null,
+      "record": "docs/compliance/vendor-reviews/clerk-dpa-review-2026-04.md"
+    },
+    "resend": {
+      "name": "Resend, Inc.",
+      "terms_url": "https://resend.com/legal/terms-of-service",
+      "dpa_url": "https://resend.com/legal/dpa",
+      "contract_basis": "vendor_standard_online_terms_and_dpa",
+      "online_acceptance_date": null,
+      "record": "docs/compliance/vendor-reviews/resend-dpa-review-2026-09.md",
+      "risk_action": "VR-6"
+    },
+    "stripe": {
+      "name": "Stripe, Inc.",
+      "terms_url": "https://stripe.com/legal/ssa",
+      "dpa_url": "https://stripe.com/legal/dpa",
+      "contract_basis": "vendor_standard_online_terms_and_dpa",
+      "online_acceptance_date": null,
+      "record": "docs/compliance/vendor-reviews/stripe-dpa-review-2026-04.md"
+    },
+    "github": {
+      "name": "GitHub, Inc.",
+      "terms_url": "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service",
+      "dpa_url": "https://github.com/customer-terms/github-data-protection-agreement",
+      "contract_basis": "vendor_standard_online_terms_and_dpa",
+      "online_acceptance_date": null,
+      "record": "docs/compliance/vendor-reviews/github-dpa-review-2026-04.md"
+    },
+    "sentry": {
+      "name": "Functional Software, Inc. (Sentry)",
+      "terms_url": "https://sentry.io/terms/",
+      "dpa_url": "https://sentry.io/legal/dpa/",
+      "contract_basis": "vendor_standard_online_terms_and_dpa",
+      "online_acceptance_date": null,
+      "record": "docs/compliance/vendor-reviews/sentry-dpa-review-2026-09.md",
+      "risk_action": "VR-7"
+    },
+    "plausible": {
+      "name": "Plausible Insights OÜ (Plausible Analytics)",
+      "terms_url": "https://plausible.io/terms",
+      "dpa_url": "https://plausible.io/dpa",
+      "contract_basis": "vendor_standard_online_terms_and_dpa",
+      "online_acceptance_date": null,
+      "record": "docs/compliance/vendor-reviews/plausible-dpa-review-2026-09.md",
+      "risk_action": "VR-8"
+    },
+    "betterstack": {
+      "name": "Better Stack, Inc. (BetterStack / Statuspage)",
+      "terms_url": "https://betterstack.com/terms",
+      "dpa_url": "https://betterstack.com/dpa",
+      "contract_basis": "vendor_standard_online_terms_and_dpa",
+      "online_acceptance_date": null,
+      "record": "docs/compliance/vendor-reviews/betterstack-dpa-review-2026-09.md",
+      "risk_action": "VR-9"
+    }
+  },
+  "link_confirmation": {
+    "method": "read-only HTTPS GET of each public vendor page; HTTP 200 with a page title naming the expected document",
+    "checked_on": "2026-10-02",
+    "notes": [
+      "https://clerk.com/legal/terms redirects to https://clerk.com/legal/standard-terms; the final URL is listed.",
+      "https://docs.github.com/en/site-policy/privacy-policies/github-data-protection-agreement now redirects to the generic privacy-policies index; the GitHub Data Protection Agreement is served at https://github.com/customer-terms/github-data-protection-agreement.",
+      "stripe.com legal pages redirect to a locale-prefixed copy of the same document for the requesting region; the unprefixed URLs are listed."
+    ]
   },
   "related_owner_backlog": {
     "vendor_review_cadence_and_Drata_access": "B-032",
     "GDPR_Sigstore_transfer_table_disposition": "B-314"
   },
-  "vendors": {
-    "resend": {
-      "risk_action": "VR-6",
-      "due": "2026-09-23",
-      "artifact": "docs/compliance/vendor-reviews/resend-dpa-review-2026-09.md",
-      "action": "Legal records the dated, attributed review and signed-copy DPA evidence; then closes VR-6 and records contract_signed_at."
-    },
-    "sentry": {
-      "risk_action": "VR-7",
-      "due": "2026-09-24",
-      "artifact": "docs/compliance/vendor-reviews/sentry-dpa-review-2026-09.md",
-      "action": "Legal records the dated, attributed review and signed-copy DPA evidence, and attaches the SOC 2 disposition; then closes VR-7 and records contract_signed_at."
-    },
-    "plausible": {
-      "risk_action": "VR-8",
-      "due": "2026-09-24",
-      "artifact": "docs/compliance/vendor-reviews/plausible-dpa-review-2026-09.md",
-      "action": "Legal records the dated, attributed review and signed-copy DPA evidence plus the attestation disposition; then closes VR-8 and records contract_signed_at."
-    },
-    "betterstack": {
-      "risk_action": "VR-9",
-      "due": "2026-09-24",
-      "artifact": "docs/compliance/vendor-reviews/betterstack-dpa-review-2026-09.md",
-      "action": "Legal records the dated, attributed review and signed-copy DPA evidence plus the attestation disposition; then closes VR-9 and records contract_signed_at."
-    }
-  },
   "non_claims": [
-    "Packet existence is not a signature or executed DPA.",
-    "TEMPLATE records are not completed Legal reviews.",
-    "Public vendor policy pages are not execution evidence.",
-    "No SOC 2 or transfer assessment is inferred."
+    "No countersigned contract or signature is claimed for any vendor.",
+    "No online acceptance date is recorded, so none is stated.",
+    "Acceptance of each vendor's standard online terms and DPA rests on the owner's statement in the re-charter, not on a vendor-side record held in this repository.",
+    "No transfer impact assessment, SOC 2 report or certification is claimed as verified."
   ]
 }

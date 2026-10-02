@@ -1,7 +1,7 @@
 ---
 title: "Sub-processors"
 slug: "/trust/subprocessors"
-description: "Public list of CoreLink sub-processors — vendor, service, region, DPA link, and the 30-day advance-notice mechanism for changes."
+description: "Public list of CoreLink sub-processors — vendor, service, region, links to each vendor's terms and DPA, and the 30-day advance-notice mechanism for changes."
 draft: false
 generator: "scripts/gen-public-subprocessors.py"
 source: "specs/_compliance/VENDOR-RISK-REGISTER.md"
@@ -13,7 +13,7 @@ pending_signoff:
 sources:
   - "specs/_compliance/VENDOR-RISK-REGISTER.md"
   - "legal/sub-processors.md"
-last_updated: "2026-09-22"
+last_updated: "2026-10-02"
 ---
 
 <!-- i18n:MT (de) — bootstrap MT-stub from EN source; replace with native-speaker translation before GA -->
@@ -38,7 +38,7 @@ the service. This page is the **public list** maintained per GDPR Art. 28
 Vendor Risk Register
 (22 vendors total) — only those who *actually process customer
 personal data on CoreLink's behalf today* appear in the **Active
-sub-processors** table (9 of them). A handful of registered
+sub-processors** table (8 of them). A handful of registered
 vendors have a built integration but no live credential or code path yet —
 see "Contracted-but-not-active" below; they are not sub-processors until
 that changes.
@@ -73,17 +73,22 @@ unresolved).
 
 ## Active sub-processors
 
-| # | Vendor | Service to CoreLink | Customer-data class | Regions | DPA |
-| --- | --- | --- | --- | --- | --- |
-| 1 | **Cloudflare, Inc.** | Workers / R2 / D1 / DO / KV / Pages / Email | metadata, encrypted-blobs, audit-logs, telemetry | Multi-region (per tenant `primary_region` pin) | [Cloudflare DPA](https://www.cloudflare.com/cloudflare-customer-dpa/) |
-| 2 | **Stripe, Inc.** | Payment processing + subscription billing + Stripe Atlas counsel | payment, pii | Multi-region (per tenant `primary_region` pin) | [Stripe DPA](https://stripe.com/legal/dpa) |
-| 3 | **Clerk, Inc.** | Authentication + identity provider + JWT issuer | pii | Multi-region (per tenant `primary_region` pin) | Clerk DPA (on request) |
-| 4 | **PagerDuty, Inc.** | Incident management + on-call alerting (prod + synthetic-drill routes) | audit-logs, metadata | US / EU (selectable) | [Trust portal](https://www.pagerduty.com/security/) |
-| 5 | **GitHub, Inc. (Microsoft Enterprise)** | Source code repository + CI/CD pipeline + Actions secrets store | source code (proprietary), ci artifacts, audit-logs | US / EU (selectable) | [Trust portal](https://github.com/security) |
-| 6 | **Resend, Inc.** | Transactional email + newsletter-audience delivery (`apps/admin-ui/src/app/api/newslett... | pii (recipient email address) | Vereinigte Staaten (Datenspeicherung; [Versandregion kann variieren](https://resend.com/security/gdpr)) | [Resend DPA](https://resend.com/legal/dpa) |
-| 7 | **Functional Software, Inc. (Sentry)** | Application error monitoring | telemetry (exception/breadcrumb diagnostic events; `sendDefaultPii: false`, `beforeSend`/`beforeSendTransaction`/`beforeBreadcrumb` route every event through `@/lib/sentry-scrub.ts`, which redacts secret/PII-shaped substrings and denies known-sensitive keys wholesale before the event leaves the process) | US / EU (selectable) | [Sentry DPA](https://sentry.io/legal/dpa/) |
-| 8 | **Plausible Insights OÜ (Plausible Analytics)** | Cookieless web analytics | Telemetrie (Seitenaufruf-Metadaten; benutzerdefinierte Ereignisse/Eigenschaften des Kontos nicht verifiziert) | Europäische Union (Besucherdaten) | [Plausible DPA](https://plausible.io/dpa) |
-| 9 | **Better Stack, Inc. (BetterStack / Statuspage)** | Uptime/status monitoring | telemetry (synthetic uptime/latency probe results against CoreLink's own public endpoints — HTTP status codes, JSON body assertions; no customer PII or content is transmitted to or from BetterStack) | US / EU (selectable) | [Trust portal](https://betterstack.com/privacy) |
+Jeder unten aufgeführte Unterauftragsverarbeiter wird zu den eigenen
+Standardbedingungen und dem Auftragsverarbeitungsvertrag (DPA) des jeweiligen
+Anbieters eingesetzt, die in der Tabelle verlinkt sind. CoreLink hat sie bei
+der Einrichtung des jeweiligen Kontos online akzeptiert; die Annahmedaten
+wurden nicht erfasst, daher zeigt diese Seite keine an.
+
+| # | Vendor | Service to CoreLink | Customer-data class | Regions | Terms | DPA |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | **Cloudflare, Inc.** | Workers / R2 / D1 / DO / KV / Pages / Email | metadata, encrypted-blobs, audit-logs, telemetry | R2/DO tenant-pinned; D1 control-plane metadata global under SCC/TIA safeguards | [Terms](https://www.cloudflare.com/terms/) | [DPA](https://www.cloudflare.com/cloudflare-customer-dpa/) |
+| 2 | **Stripe, Inc.** | Payment processing + subscription billing + Stripe Atlas counsel | payment, pii | Multi-region (per tenant `primary_region` pin) | [Terms](https://stripe.com/legal/ssa) | [DPA](https://stripe.com/legal/dpa) |
+| 3 | **Clerk, Inc.** | Authentication + identity provider + JWT issuer | pii | Multi-region (per tenant `primary_region` pin) | [Terms](https://clerk.com/legal/standard-terms) | [DPA](https://clerk.com/legal/dpa) |
+| 4 | **GitHub, Inc. (Microsoft Enterprise)** | Source code repository + CI/CD pipeline + Actions secrets store | source code (proprietary), ci artifacts, audit-logs | US / EU (selectable) | [Terms](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) | [DPA](https://github.com/customer-terms/github-data-protection-agreement) |
+| 5 | **Resend, Inc.** | Transactional email + newsletter-audience delivery (`apps/admin-ui/src/app/api/newslett... | pii (recipient email address) | Vereinigte Staaten (Datenspeicherung; [Versandregion kann variieren](https://resend.com/security/gdpr)) | [Terms](https://resend.com/legal/terms-of-service) | [DPA](https://resend.com/legal/dpa) |
+| 6 | **Functional Software, Inc. (Sentry)** | Application error monitoring | telemetry (exception/breadcrumb diagnostic events; `sendDefaultPii: false`, `beforeSend`/`beforeSendTransaction`/`beforeBreadcrumb` route every event through `@/lib/sentry-scrub.ts`, which redacts secret/PII-shaped string fragments and denies known-sensitive keys wholesale before the event leaves the process) | US / EU (selectable) | [Terms](https://sentry.io/terms/) | [DPA](https://sentry.io/legal/dpa/) |
+| 7 | **Plausible Insights OÜ (Plausible Analytics)** | Cookieless web analytics | Telemetrie (Seitenaufruf-Metadaten; benutzerdefinierte Ereignisse/Eigenschaften des Kontos nicht verifiziert) | Europäische Union (Besucherdaten) | [Terms](https://plausible.io/terms) | [DPA](https://plausible.io/dpa) |
+| 8 | **Better Stack, Inc. (BetterStack / Statuspage)** | Uptime/status monitoring | telemetry (synthetic uptime/latency probe results against CoreLink's own public endpoints — HTTP status codes, JSON body assertions; no customer PII or content is transmitted to or from BetterStack) | US / EU (selectable) | [Terms](https://betterstack.com/terms) | [DPA](https://betterstack.com/dpa) |
 
 ## Contracted-but-not-active / integration built, not enabled
 

@@ -1,19 +1,17 @@
 /**
  * Sub-processor register — public list at `/trust/sub-processor-register`.
  *
- * Wave-29 stream-8 deliverable, paired with the existing
+ * Wave-29 stream-8 deliverable, paired with the generated
  * `docs/trust/subprocessors.mdx` MDX page at `/trust/subprocessors`.
  *
- * Source of truth: `specs/_compliance/VENDOR-RISK-REGISTER.md` (full
- * 22-vendor register; only the 9 vendors that process customer personal
- * data on CoreLink's behalf appear in the public "Active sub-processors"
- * table).
- *
- * Refresh cadence: monthly (calendar reminder + drift-gate CI in
- * `.github/workflows/subprocessors-sync.yml` once wired post-GA). Until
- * the auto-generator (`scripts/gen-public-subprocessors.py`) ships, this
- * page is the hand-maintained mirror of the MDX page, structured for
- * easier React-side filtering by region and data class.
+ * Rows are rendered from `apps/admin-ui/src/content/sub-processors.json`, the
+ * same data the `/legal/sub-processors` page and the admin-ui page render, so
+ * the three cannot list different vendors or links. Each vendor is engaged on
+ * its own standard terms and DPA (B-316 owner re-charter, #2593); no
+ * acceptance dates are shown because none were recorded.
+ * `scripts/verify_b316_pending_vendor_reviews.py` checks that the JSON, the
+ * generated MDX page, `legal/sub-processors.md` and
+ * `specs/_compliance/VENDOR-RISK-REGISTER.md` agree.
  *
  * 30-day notice mechanism: see DPA §6 / LGPD Art. 27 §4º / GDPR Art. 28 §2.
  */
@@ -23,133 +21,63 @@ import Link from "@docusaurus/Link";
 import Translate from "@docusaurus/Translate";
 import type { ReactElement } from "react";
 
-const LAST_REFRESHED = "2026-08-24";
+import subProcessorsData from "../../../../admin-ui/src/content/sub-processors.json";
 
 interface SubProcessor {
-  readonly num: number;
-  readonly vendor: string;
-  readonly service: string;
-  readonly dataClasses: readonly string[];
-  readonly regions: string;
-  readonly dpaHref: string;
-  readonly dpaLabel: string;
+  readonly id: string;
+  readonly name: string;
+  readonly role: string;
+  readonly region: string;
+  readonly certifications: readonly string[];
+  readonly terms_url: string;
+  readonly dpa_url: string;
 }
 
-const ACTIVE_SUB_PROCESSORS: readonly SubProcessor[] = [
-  {
-    num: 1,
-    vendor: "Cloudflare, Inc.",
-    service: "Workers / R2 / D1 / DO / KV / Pages / Email",
-    dataClasses: ["metadata", "encrypted-blobs", "audit-logs", "telemetry"],
-    regions: "R2/DO tenant-pinned; D1 control-plane metadata global under SCC/TIA safeguards",
-    dpaHref: "https://www.cloudflare.com/cloudflare-customer-dpa/",
-    dpaLabel: "Cloudflare DPA",
-  },
-  {
-    num: 2,
-    vendor: "Stripe, Inc.",
-    service: "Payment processing + subscription billing + Stripe Atlas counsel",
-    dataClasses: ["payment", "pii"],
-    regions: "Multi-region (per tenant primary_region pin)",
-    dpaHref: "https://stripe.com/legal/dpa",
-    dpaLabel: "Stripe DPA",
-  },
-  {
-    num: 3,
-    vendor: "Clerk, Inc.",
-    service: "Authentication + identity provider + JWT issuer",
-    dataClasses: ["pii"],
-    regions: "Multi-region (per tenant primary_region pin)",
-    dpaHref: "mailto:privacy@humangr.com?subject=Clerk%20DPA%20request",
-    dpaLabel: "Clerk DPA (on request)",
-  },
-  {
-    num: 4,
-    vendor: "PagerDuty, Inc.",
-    service: "Incident management + on-call alerting (prod + synthetic-drill routes)",
-    dataClasses: ["audit-logs", "metadata"],
-    regions: "US / EU (selectable)",
-    dpaHref: "https://www.pagerduty.com/security/",
-    dpaLabel: "PagerDuty trust portal",
-  },
-  {
-    num: 5,
-    vendor: "GitHub, Inc. (Microsoft Enterprise)",
-    service: "Source code repository + CI/CD pipeline + Actions secrets store",
-    dataClasses: ["source code", "ci artifacts", "audit-logs"],
-    regions: "US / EU (selectable)",
-    dpaHref: "https://github.com/security",
-    dpaLabel: "GitHub trust portal",
-  },
-  {
-    num: 6,
-    vendor: "Resend, Inc.",
-    service: "Transactional email + newsletter-audience delivery",
-    dataClasses: ["pii (recipient email address)"],
-    regions: "Multi-region (per tenant primary_region pin)",
-    dpaHref: "https://resend.com/legal/dpa",
-    dpaLabel: "Resend DPA",
-  },
-  {
-    num: 7,
-    vendor: "Functional Software, Inc. (Sentry)",
-    service: "Application error monitoring (admin-ui server/edge/client + docs-site build loader)",
-    dataClasses: ["telemetry (scrubbed diagnostic events)"],
-    regions: "US / EU (selectable)",
-    dpaHref: "https://sentry.io/legal/dpa/",
-    dpaLabel: "Sentry DPA",
-  },
-  {
-    num: 8,
-    vendor: "Plausible Insights OÜ (Plausible Analytics)",
-    service: "Cookieless web analytics for the docs-site marketing funnel",
-    dataClasses: ["telemetry (page-view aggregates only)"],
-    regions: "US / EU (selectable)",
-    dpaHref: "https://plausible.io/dpa",
-    dpaLabel: "Plausible DPA",
-  },
-  {
-    num: 9,
-    vendor: "Better Stack, Inc. (BetterStack / Statuspage)",
-    service:
-      "Uptime and status monitoring: synthetic HTTP probes against CoreLink's own public endpoints, and the hosted status page",
-    dataClasses: ["telemetry (probe results only; no customer data is sent)"],
-    regions: "US / EU",
-    dpaHref: "https://betterstack.com/privacy",
-    dpaLabel: "Better Stack privacy policy",
-  },
-];
+interface SubProcessorList {
+  readonly version: string;
+  readonly items: readonly SubProcessor[];
+}
 
-function SubProcessorRow({ sp }: { readonly sp: SubProcessor }): ReactElement {
+const { version: LAST_REFRESHED, items: ACTIVE_SUB_PROCESSORS } =
+  subProcessorsData as SubProcessorList;
+
+// A vendor page that could not be confirmed is published as the literal
+// "link pending" (never a guessed URL); render it as text, not a link.
+function VendorLink({
+  href,
+  label,
+}: {
+  readonly href: string;
+  readonly label: string;
+}): ReactElement {
+  if (!href.startsWith("https://")) return <span>{href}</span>;
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer">
+      {label}
+    </a>
+  );
+}
+
+function SubProcessorRow({
+  sp,
+  num,
+}: {
+  readonly sp: SubProcessor;
+  readonly num: number;
+}): ReactElement {
   return (
     <tr>
-      <td>{sp.num}</td>
+      <td>{num}</td>
       <td>
-        <strong>{sp.vendor}</strong>
+        <strong>{sp.name}</strong>
       </td>
-      <td>{sp.service}</td>
+      <td>{sp.role}</td>
+      <td>{sp.region}</td>
       <td>
-        {sp.dataClasses.map((c) => (
-          <code
-            key={`${sp.num}-${c}`}
-            style={{
-              display: "inline-block",
-              marginRight: "0.25rem",
-              padding: "0.05rem 0.35rem",
-              background: "var(--ifm-color-emphasis-100)",
-              borderRadius: "3px",
-              fontSize: "0.8rem",
-            }}
-          >
-            {c}
-          </code>
-        ))}
+        <VendorLink href={sp.terms_url} label="Terms" />
       </td>
-      <td>{sp.regions}</td>
       <td>
-        <a href={sp.dpaHref} rel="noopener noreferrer" target="_blank">
-          {sp.dpaLabel}
-        </a>
+        <VendorLink href={sp.dpa_url} label="DPA" />
       </td>
     </tr>
   );
@@ -159,7 +87,7 @@ export default function SubProcessorRegister(): ReactElement {
   return (
     <Layout
       title="Sub-processor register"
-      description="CoreLink public sub-processor register — 8 active vendors that process customer personal data on CoreLink's behalf. 30-day advance-notice mechanism per GDPR Art. 28 / LGPD Art. 27 §4º."
+      description="CoreLink public sub-processor register — the vendors that process customer personal data on CoreLink's behalf, with links to each vendor's terms and DPA. 30-day advance-notice mechanism per GDPR Art. 28 / LGPD Art. 27 §4º."
     >
       <main className="container margin-top--lg margin-bottom--xl" style={{ maxWidth: "1100px" }}>
         <header>
@@ -180,6 +108,12 @@ export default function SubProcessorRegister(): ReactElement {
               process customer personal data on our behalf. Maintained per
               GDPR Art. 28 §2 and LGPD Art. 39 + Art. 27 §4º.
             </Translate>
+          </p>
+          <p>
+            Each sub-processor below is engaged on its own standard terms and
+            data processing agreement (DPA), linked in the table. CoreLink
+            accepted them online when it created each account; the acceptance
+            dates were not recorded, so none are shown.
           </p>
           <p>
             <strong>
@@ -209,9 +143,10 @@ export default function SubProcessorRegister(): ReactElement {
               id="trust.subprocessor.source.full"
               description="Source of truth size context"
             >
-              (full 22-vendor register; only the 9 vendors that process
-              customer personal data on CoreLink's behalf appear below).
-              Available on request from trust@humangr.com.
+              (the full vendor register is internal; only the vendors that
+              process customer personal data on CoreLink's behalf appear
+              below, each with links to its own terms and DPA). Available on
+              request from trust@humangr.com.
             </Translate>
           </p>
         </header>
@@ -233,8 +168,7 @@ export default function SubProcessorRegister(): ReactElement {
               Per our DPA §6 and LGPD Art. 27 §4º + GDPR Art. 28 §2, we will
               give at least 30 calendar days' written notice before adding
               or replacing a sub-processor that processes customer personal
-              data. Subscribe via tenant email digest, the status page, or
-              the post-GA RSS feed.
+              data.
             </Translate>
           </p>
           <ul>
@@ -278,14 +212,14 @@ export default function SubProcessorRegister(): ReactElement {
                   <th>#</th>
                   <th>Vendor</th>
                   <th>Service to CoreLink</th>
-                  <th>Customer-data class</th>
                   <th>Region(s)</th>
+                  <th>Terms</th>
                   <th>DPA</th>
                 </tr>
               </thead>
               <tbody>
-                {ACTIVE_SUB_PROCESSORS.map((sp) => (
-                  <SubProcessorRow key={sp.num} sp={sp} />
+                {ACTIVE_SUB_PROCESSORS.map((sp, index) => (
+                  <SubProcessorRow key={sp.id} sp={sp} num={index + 1} />
                 ))}
               </tbody>
             </table>

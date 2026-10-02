@@ -402,7 +402,7 @@ The following CoreLink implementation artefacts evidence the technical security 
 
 | Sub-processor | Agreement | Status |
 |---|---|---|
-| Cloudflare, Inc. | [Cloudflare Customer DPA](https://www.cloudflare.com/cloudflare-customer-dpa/) (incorporating SCCs) | Signed 2026-04-23 (see `legal/sub-processors.md`) |
+| Cloudflare, Inc. | [Cloudflare Customer DPA](https://www.cloudflare.com/cloudflare-customer-dpa/) (incorporating SCCs) | Accepted online with Cloudflare's standard terms; acceptance date not recorded (see `legal/sub-processors.md`) |
 | Customer KMS Provider (future only) | Would require a separately enabled provider agreement | Not an active sub-processor or service option |
 
 **Customer right to audit Sub-processors**: Customer may request CoreLink to exercise its audit rights under the Cloudflare DPA on Customer's behalf, subject to Cloudflare's audit procedures and reasonable scheduling constraints.

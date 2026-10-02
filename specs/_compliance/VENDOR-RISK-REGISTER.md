@@ -3,9 +3,9 @@ id: "VENDOR-RISK-REGISTER-2026-05-15"
 type: "compliance_register"
 doc_status: "ACTIVE"
 audit_status: "ACTIVE"
-version: "1.4.2"
+version: "1.5.0"
 created: "2026-05-15"
-updated: "2026-09-22"
+updated: "2026-10-02"
 sprint: "R5-3"
 parent_wi: "WI-R5-3-GAP-14-VENDOR-RISK"
 owner: "Gustavo Schneiter"
@@ -44,12 +44,12 @@ tags: ["soc2", "cc9.2", "vendor-risk", "register", "gap-14", "drata"]
 | Critical | 7 |
 | Important | 10 |
 | Standard | 5 |
-| Vendors with signed DPA | 18 / 22 (Resend, Sentry, Plausible, Better Stack: DPA policy published, signed-copy evidence pending — VR-6, VR-7, VR-8, VR-9) |
+| Vendors with signed DPA | 18 / 22 recorded as `S` (Resend, Sentry, Plausible, Better Stack: `P` — each vendor's standard online DPA, accepted online at account signup per the owner; no countersigned copy and no recorded acceptance date. VR-6..VR-9 closed under the 2026-10-01 owner re-charter of B-316, #2593) |
 | Vendors with current SOC 2 Type II (≤ 12 mo) | 13 / 22 (Neon's SOC 2 left with its row-16 removal; Resend's, Sentry's, Plausible's and Better Stack's SOC 2 reports are not yet pulled into Drata — VR-6, VR-7, VR-8, VR-9) |
 | Vendors carrying residual score ≥ 8.0 | 0 |
 | Vendors flagged for ad-hoc re-review | 0 |
 | Vendors with critical-category second-vendor failover | 6 / 7 (Drata: monitoring-only, no failover required — see §4) |
-| Registered vendors NOT currently active as public-facing (Art. 28) sub-processors | 5 / 22 — see §4b |
+| Registered vendors NOT currently active as public-facing (Art. 28) sub-processors | 6 / 22 — see §4b (5 inert) and §4c (1 deferred) |
 
 > **2026-08-23 correction:** row 16 previously listed **Neon, Inc.** as an
 > active sub-processor processing `pii + metadata`. `DATABASE_URL` has zero
@@ -110,13 +110,13 @@ Columns:
 | 13 | Anthropic, PBC | Claude model API — internal-only LLM tooling (no customer-data inference) | I | metadata only (CoreLink internal prompts; no customer payloads) | SOC 2 Type II, ISO 27001 (in progress), enterprise zero-retention API | S (zero-retention) / S / N/A | Anthropic Trust Portal | 8 | 0.40 | 3.2 | B | 2026-05-15 | 2026-11-15 | Eng-Lead |
 | 14 | OpenAI, LLC | OpenAI API — internal-only LLM tooling (no customer-data inference) | I | metadata only (CoreLink internal prompts; no customer payloads) | SOC 2 Type II, enterprise zero-retention API, GDPR processor | S (zero-retention) / S / N/A | OpenAI Trust Portal | 8 | 0.40 | 3.2 | B | 2026-05-15 | 2026-11-15 | Eng-Lead |
 | 15 | Grafana Labs | Grafana Cloud — observability (metrics, logs, dashboards) | I | telemetry + audit-logs (no customer PII payloads; only aggregates) | SOC 2 Type II, ISO 27001 | S / S / N/A | [Grafana Trust](https://grafana.com/security/) + `docs/compliance/vendor-reviews/grafana-dpa-review-2026-04.md` | 9 | 0.40 | 3.6 | B | 2026-05-15 | 2026-11-15 | Eng-Lead |
-| 16 | Resend, Inc. | Transactional email + newsletter-audience delivery (`apps/admin-ui/src/app/api/newsletter/subscribe/route.ts`; `RESEND_API_KEY` deployed on `corelink-prod` and `corelink-analytics-prod`) | I | pii (recipient email address) | GDPR processor (self-attested; SOC 2 report not yet pulled into Drata) | P / N/A / N/A (DPA policy published; signed-copy evidence not yet on file — VR-6) | [Resend DPA](https://resend.com/legal/dpa) | 12 | 0.40 | 4.8 | Q | 2026-08-23 | 2026-11-23 | VP-Sec |
+| 16 | Resend, Inc. | Transactional email + newsletter-audience delivery (`apps/admin-ui/src/app/api/newsletter/subscribe/route.ts`; `RESEND_API_KEY` deployed on `corelink-prod` and `corelink-analytics-prod`) | I | pii (recipient email address) | GDPR processor (self-attested; SOC 2 report not yet pulled into Drata) | P / N/A / N/A (vendor's standard online DPA, accepted online at account signup per the owner; acceptance date not recorded — VR-6 closed under the 2026-10-01 re-charter) | [Resend DPA](https://resend.com/legal/dpa) | 12 | 0.40 | 4.8 | Q | 2026-08-23 | 2026-11-23 | VP-Sec |
 | 17 | Twilio, Inc. (SendGrid + Twilio SMS) | Transactional email (SendGrid) + SMS (Twilio) | S | pii (recipient contact only — DKIM-signed transactional mail) | SOC 2 Type II, ISO 27001, GDPR processor | S / S / N/A | Twilio Trust Hub | 6 | 0.40 | 2.4 | A | 2026-05-15 | 2027-05-15 | Eng-Lead |
 | 18 | Atlassian (Statuspage.io) | Public status page hosting | S | metadata (incident titles + impact statements only) | SOC 2 Type II, ISO 27001 | S / S / N/A | Atlassian Trust | 4 | 0.40 | 1.6 | A | 2026-05-15 | 2027-05-15 | Eng-Lead |
 | 19 | Cybot A/S (Cookiebot) | Cookie consent management (admin-ui surface) | S | pii (consent records only) | GDPR processor, ISO 27001 | S / S / N/A | Cybot DPA | 4 | 0.40 | 1.6 | A | 2026-05-15 | 2027-05-15 | Eng-Lead |
-| 20 | Functional Software, Inc. (Sentry) | Application error monitoring — `apps/admin-ui/sentry.server.config.ts` + `sentry.edge.config.ts` (server/edge/client) and the docs-site Pages build-time loader (`apps/docs/docusaurus.config.ts`) | I | telemetry (exception/breadcrumb diagnostic events; `sendDefaultPii: false` + `beforeSend`/`beforeSendTransaction`/`beforeBreadcrumb` route every event through `@/lib/sentry-scrub.ts`, which redacts secret/PII-shaped string fragments and denies known-sensitive keys wholesale before the event leaves the process) | GDPR processor (self-attested); SOC 2 report not yet pulled into Drata | P / N/A / N/A (DPA policy published; signed-copy evidence not yet on file — VR-7) | [Sentry DPA](https://sentry.io/legal/dpa/) | 9 | 0.40 | 3.6 | Q | 2026-08-24 | 2026-11-24 | VP-Sec |
-| 21 | Plausible Insights OÜ (Plausible Analytics) | Web analytics that sets no cookies — `apps/docs/docusaurus.config.ts:224-232` injects `https://plausible.io/js/script.js` unconditionally (`data-domain: corelink-docs.humangr.com`) for the docs-site marketing funnel | I | telemetry (pageview metadata; optional custom events/properties not verified for the CoreLink account) | GDPR processor (self-attested; sets-no-cookies architecture); SOC 2 status not verified | P / N/A / N/A (DPA policy published; signed-copy evidence not yet on file — VR-8) | [Plausible DPA](https://plausible.io/dpa) | 6 | 0.40 | 2.4 | B | 2026-08-24 | 2027-02-24 | Eng-Lead |
-| 22 | Better Stack, Inc. (BetterStack / Statuspage) | Uptime/status monitoring — `docs/internal/secrets-checklist.md` row 131 (`STATUSPAGE_URL`, bound on the `corelink-statuspage-real` Worker) + `monitoring/synthetic/probes.yml` (7 synthetic HTTP-health probes against CoreLink's own public endpoints) + `apps/docs/src/statuspage-url.ts` / `apps/docs/src/components/StatusPill/classify.ts` (docs-site status-pill consumer) | I | telemetry (synthetic uptime/latency probe results against CoreLink's own public endpoints — HTTP status codes + JSON body assertions; no customer PII or content is transmitted to or from BetterStack) | GDPR processor (self-attested); SOC 2 status not verified | P / N/A / N/A (DPA policy published; signed-copy evidence not yet on file — VR-9) | [Better Stack Privacy Policy](https://betterstack.com/privacy) | 6 | 0.40 | 2.4 | B | 2026-08-24 | 2027-02-24 | SRE Lead |
+| 20 | Functional Software, Inc. (Sentry) | Application error monitoring — `apps/admin-ui/sentry.server.config.ts` + `sentry.edge.config.ts` (server/edge/client) and the docs-site Pages build-time loader (`apps/docs/docusaurus.config.ts`) | I | telemetry (exception/breadcrumb diagnostic events; `sendDefaultPii: false` + `beforeSend`/`beforeSendTransaction`/`beforeBreadcrumb` route every event through `@/lib/sentry-scrub.ts`, which redacts secret/PII-shaped string fragments and denies known-sensitive keys wholesale before the event leaves the process) | GDPR processor (self-attested); SOC 2 report not yet pulled into Drata | P / N/A / N/A (vendor's standard online DPA, accepted online at account signup per the owner; acceptance date not recorded — VR-7 closed under the 2026-10-01 re-charter) | [Sentry DPA](https://sentry.io/legal/dpa/) | 9 | 0.40 | 3.6 | Q | 2026-08-24 | 2026-11-24 | VP-Sec |
+| 21 | Plausible Insights OÜ (Plausible Analytics) | Web analytics that sets no cookies — `apps/docs/docusaurus.config.ts:224-232` injects `https://plausible.io/js/script.js` unconditionally (`data-domain: corelink-docs.humangr.com`) for the docs-site marketing funnel | I | telemetry (pageview metadata; optional custom events/properties not verified for the CoreLink account) | GDPR processor (self-attested; sets-no-cookies architecture); SOC 2 status not verified | P / N/A / N/A (vendor's standard online DPA, accepted online at account signup per the owner; acceptance date not recorded — VR-8 closed under the 2026-10-01 re-charter) | [Plausible DPA](https://plausible.io/dpa) | 6 | 0.40 | 2.4 | B | 2026-08-24 | 2027-02-24 | Eng-Lead |
+| 22 | Better Stack, Inc. (BetterStack / Statuspage) | Uptime/status monitoring — `docs/internal/secrets-checklist.md` row 131 (`STATUSPAGE_URL`, bound on the `corelink-statuspage-real` Worker) + `monitoring/synthetic/probes.yml` (7 synthetic HTTP-health probes against CoreLink's own public endpoints) + `apps/docs/src/statuspage-url.ts` / `apps/docs/src/components/StatusPill/classify.ts` (docs-site status-pill consumer) | I | telemetry (synthetic uptime/latency probe results against CoreLink's own public endpoints — HTTP status codes + JSON body assertions; no customer PII or content is transmitted to or from BetterStack) | GDPR processor (self-attested); SOC 2 status not verified | P / N/A / N/A (vendor's standard online DPA, accepted online at account signup per the owner; acceptance date not recorded — VR-9 closed under the 2026-10-01 re-charter) | [Better Stack Privacy Policy](https://betterstack.com/privacy) | 6 | 0.40 | 2.4 | B | 2026-08-24 | 2027-02-24 | SRE Lead |
 
 ---
 
@@ -173,6 +173,21 @@ This section is the source list consumed by `scripts/gen-public-subprocessors.py
 row out of this section, drop it from `INERT_VENDORS`) or when a currently-active
 vendor goes dark (the reverse).
 
+## 4c. Registered vendors **deferred** from the approved launch set (2026-10-01)
+
+The owner deferred these vendors on 2026-10-01. They stay in §2 as registered
+vendors, but they are **not** in the approved launch sub-processor set
+(B-316, #2593) and do not appear on any public sub-processor list — neither
+the active table nor the "Contracted-but-not-active" table.
+`scripts/gen-public-subprocessors.py` excludes them through its
+`DEFERRED_VENDORS` map; keep both in sync. Enabling one later is a
+sub-processor addition: it goes through the 30-day change process and back
+onto the public lists first.
+
+| Vendor | Row | Decision |
+|---|---|---|
+| PagerDuty, Inc. | 9 | Deferred by the owner on 2026-10-01 (#1648 closure amendment; #2593 approved set of eight). Not part of the launch sub-processor set. |
+
 ---
 
 ## 5. Open actions
@@ -184,10 +199,10 @@ vendor goes dark (the reverse).
 | VR-3 | Confirm BAA signature requirement is not triggered (no PHI today); document the negative as an explicit Privacy-Officer signoff | VP-Sec | 2026-07-15 | Open |
 | VR-4 | Add Cookiebot to Drata vendor module (currently manual) | Eng-Lead | 2026-07-15 | Open |
 | VR-5 | Annual methodology refresh + Risk-Committee charter ratification | VP-Sec | 2027-05-15 | Scheduled |
-| VR-6 | Obtain Legal's dated review and signed-copy DPA evidence for Resend (row 16). The canonical packet `docs/compliance/vendor-reviews/resend-dpa-review-2026-09.md` exists but remains explicitly `TEMPLATE`/pending; the public DPA policy is not execution evidence. | Legal | 2026-09-23 | Open |
-| VR-7 | Obtain Legal's dated review and signed-copy DPA evidence for Sentry (row 20), and pull its SOC 2 Type II report into Drata. The canonical packet `docs/compliance/vendor-reviews/sentry-dpa-review-2026-09.md` exists but remains explicitly `TEMPLATE`/pending. | Legal | 2026-09-24 | Open |
-| VR-8 | Obtain Legal's dated review and signed-copy DPA evidence for Plausible (row 21), and confirm its SOC 2/attestation posture. The canonical packet `docs/compliance/vendor-reviews/plausible-dpa-review-2026-09.md` exists but remains explicitly `TEMPLATE`/pending. | Legal | 2026-09-24 | Open |
-| VR-9 | Obtain Legal's dated review and signed-copy DPA evidence for Better Stack (row 22), and confirm its SOC 2/attestation posture. The canonical packet `docs/compliance/vendor-reviews/betterstack-dpa-review-2026-09.md` exists but remains explicitly `TEMPLATE`/pending. | Legal | 2026-09-24 | Open |
+| VR-6 | Record the contract basis for Resend (row 16) in `docs/compliance/vendor-reviews/resend-dpa-review-2026-09.md`. Originally scoped as a dated Legal review with signed-copy DPA evidence; **re-chartered 2026-10-01 by the owner (#2593)**: closed on the public sub-processor list, which names Resend and links its standard online terms and DPA. The owner is the reviewer, no countersigned copy is required, and the online acceptance date is not recorded. | Owner | 2026-09-23 | Closed |
+| VR-7 | Record the contract basis for Sentry (row 20) in `docs/compliance/vendor-reviews/sentry-dpa-review-2026-09.md`. Originally scoped as a dated Legal review with signed-copy DPA evidence; **re-chartered 2026-10-01 by the owner (#2593)**: closed on the public sub-processor list, which names Sentry and links its standard online terms and DPA. The owner is the reviewer, no countersigned copy is required, and the online acceptance date is not recorded. | Owner | 2026-09-24 | Closed |
+| VR-8 | Record the contract basis for Plausible (row 21) in `docs/compliance/vendor-reviews/plausible-dpa-review-2026-09.md`. Originally scoped as a dated Legal review with signed-copy DPA evidence; **re-chartered 2026-10-01 by the owner (#2593)**: closed on the public sub-processor list, which names Plausible and links its standard online terms and DPA. The owner is the reviewer, no countersigned copy is required, and the online acceptance date is not recorded. | Owner | 2026-09-24 | Closed |
+| VR-9 | Record the contract basis for Better Stack (row 22) in `docs/compliance/vendor-reviews/betterstack-dpa-review-2026-09.md`. Originally scoped as a dated Legal review with signed-copy DPA evidence; **re-chartered 2026-10-01 by the owner (#2593)**: closed on the public sub-processor list, which names Better Stack and links its standard online terms and DPA. The owner is the reviewer, no countersigned copy is required, and the online acceptance date is not recorded. | Owner | 2026-09-24 | Closed |
 
 ---
 
@@ -202,3 +217,4 @@ vendor goes dark (the reverse).
 | 1.4.0 | 2026-08-24 | Gustavo Schneiter (Art. 28 gap closure — Better Stack) | Added row 22 (**Better Stack, Inc.**, synthetic uptime/status monitoring; wired per `docs/internal/secrets-checklist.md` row 131, `monitoring/synthetic/probes.yml`, `apps/docs/src/statuspage-url.ts`, `apps/docs/src/components/StatusPill/classify.ts`). Live in production and undisclosed in this register and in `legal/sub-processors.md`. Classified **Important**, `telemetry`-only data class (synthetic probe results against CoreLink's own endpoints — no customer PII), contract **pending** (DPA policy published, no signed-copy evidence file — VR-9). Public page regenerated via `scripts/gen-public-subprocessors.py`; active sub-processor count rises from 8 to 9. |
 | 1.4.1 | 2026-09-06 | CoreLink backlog remediation (B-316) | Replaced four free-form missing-evidence references with canonical, fail-closed pending packets. VR-6..VR-9 remain Open: packet existence records the unresolved Legal action and is not a DPA signature, review outcome, SOC 2 evidence, or approval. Reconciled the frontmatter version with the existing 1.4.0 history before this patch bump. |
 | 1.4.2 | 2026-09-22 | CoreLink legal/docs reconciliation (#1681) | Scoped the Sigstore disclosure to current artifact/signing metadata flows and the deferred transparency-log seam; no GDPR transfer-table outcome selected. |
+| 1.5.0 | 2026-10-02 | CoreLink B-316 re-charter reconciliation (#2593) | Applied the owner's 2026-10-01 re-charter. PagerDuty (row 9) moved to the new §4c as deferred and dropped from every public list; the approved active set is the eight vendors Cloudflare, Clerk, Resend, Stripe, GitHub, Sentry, Plausible and Better Stack. VR-6..VR-9 closed: each vendor is engaged on its standard online terms and DPA, linked on the public list; no acceptance date is recorded. Rows 16/20/21/22 contract cells restated accordingly. |

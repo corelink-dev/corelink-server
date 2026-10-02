@@ -1,14 +1,25 @@
 name: issue-1682 B-316 vendor review contract
 
-# B-316 remains pending external Legal evidence.  This credentialless lane
-# keeps the repository-owned packet shape and its explicit open boundary
-# reproducible on every PR that can change the contract inputs.
+# B-316 was re-chartered by the owner on 2026-10-01 (#2593): it closes on a
+# public sub-processor list that names the approved eight vendors and links
+# each vendor's own terms and DPA, identically on every surface. This
+# credentialless lane re-checks that on every PR that can change one of the
+# surfaces the verifier reads.
 
 on:
   pull_request:
     paths:
       - "BACKLOG.md"
       - ".github/workflows/issue-1682-b316-vendor-review.yml"
+      - "apps/admin-ui/src/app/*/privacy/sub-processors/SubProcessorsTable.tsx"
+      - "apps/admin-ui/src/content/sub-processors.json"
+      - "apps/admin-ui/src/content/sub-processors.ts"
+      - "apps/docs/docs/explanation/compliance/sub-processors.mdx"
+      - "apps/docs/docs/trust/subprocessors.mdx"
+      - "apps/docs/i18n/*/docusaurus-plugin-content-docs/current/explanation/compliance/sub-processors.mdx"
+      - "apps/docs/i18n/*/docusaurus-plugin-content-docs/current/trust/subprocessors.mdx"
+      - "apps/docs/src/pages/legal/sub-processors.tsx"
+      - "apps/docs/src/pages/trust/sub-processor-register.tsx"
       - "docs/compliance/vendor-reviews/betterstack-dpa-review-2026-09.md"
       - "docs/compliance/vendor-reviews/plausible-dpa-review-2026-09.md"
       - "docs/compliance/vendor-reviews/resend-dpa-review-2026-09.md"
@@ -16,6 +27,7 @@ on:
       - "docs/handoff/2026-09-06-b316-vendor-legal-review.json"
       - "legal/dpa/SUB-PROCESSOR-COMMITMENTS.md"
       - "legal/sub-processors.md"
+      - "scripts/gen-public-subprocessors.py"
       - "scripts/verify_b316_pending_vendor_reviews.py"
       - "tests/test_verify_b316_pending_vendor_reviews.py"
       - "specs/_compliance/VENDOR-RISK-REGISTER.md"
@@ -26,7 +38,7 @@ permissions:
 
 jobs:
   verify:
-    name: verify B-316 pending vendor packets
+    name: verify B-316 sub-processor list
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -35,9 +47,9 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-      - name: Verify pending packets and adversarial mutations
-        run: python3 scripts/verify_b316_pending_vendor_reviews.py --expect open --self-test
+      - name: Verify the approved list on every surface, with adversarial mutations
+        run: python3 scripts/verify_b316_pending_vendor_reviews.py --expect=done --self-test
       - name: Install pytest for the B-316 adversarial suite
         run: python3 -m pip install --disable-pip-version-check --no-input pytest==9.0.2
-      - name: Run the complete B-316 pending-state suite
+      - name: Run the complete B-316 suite
         run: python3 -m pytest -q tests/test_verify_b316_pending_vendor_reviews.py
