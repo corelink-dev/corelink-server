@@ -1,4 +1,5 @@
 import os
+import ssl
 import unittest
 import time
 from types import SimpleNamespace
@@ -92,6 +93,36 @@ class WireContractTests(unittest.TestCase):
         }
         with patch.dict(os.environ, env, clear=True), self.assertRaises(RuntimeError):
             client.check_binding()
+
+
+class TlsFloorTests(unittest.TestCase):
+    def test_every_probe_context_refuses_tls_below_1_2_even_with_a_permissive_default(self):
+        # Simulate an interpreter/OpenSSL whose default context still allows
+        # TLS 1.0/1.1: the probe must pin the floor itself (CodeQL
+        # py/insecure-protocol), not inherit whatever the platform allows.
+        created = []
+
+        def permissive_default_context():
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
+            created.append(context)
+            return context
+
+        class NoNetwork(Exception):
+            pass
+
+        binding = {"deployment_sha": "a" * 40, "worker": "corelink-staging", "worker_version_id": "ver_123",
+                   "image_digest": "sha256:" + "b" * 64, "token": "x" * 48}
+        with patch.object(client, "check_binding", return_value=binding), \
+                patch.object(client.ssl, "create_default_context", side_effect=permissive_default_context), \
+                patch.object(client.socket, "create_connection", side_effect=NoNetwork), \
+                self.assertRaises(NoNetwork):
+            client.run()
+        self.assertEqual(len(created), 2, "the h2 and HTTP/1.1 probe contexts exist before any connection")
+        for context in created:
+            self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_2)
+            self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+            self.assertTrue(context.check_hostname)
 
 
 if __name__ == "__main__":
