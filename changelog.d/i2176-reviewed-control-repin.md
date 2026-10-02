@@ -17,15 +17,47 @@
   `REBASELINE_LEDGER` in `scripts/verify_i2176_grpc_deny_gate.py`: 47 rows,
   one per moved pin. Each row records four things:
   - the PRs that moved the file, from main's first-parent history;
-  - its class: 8 rows are transport-reviewed and 39 are not-transport;
+  - its class: 15 rows are transport-reviewed and 32 are not-transport;
   - its disposition, meaning the pin maps re-pinned to the reviewed bytes;
   - the reason the bytes are admitted.
 
+  A row is transport-reviewed when its change runs on a request path into a
+  deployed Worker or Container, or decides admission there. It also counts
+  when it changes how a credential reaches such a process, including the
+  authority that writes it, or when it touches TLS or the gRPC deny. A
+  credential that reaches only a CI, test or operator process, or only the
+  Cloudflare API, is not-transport, and its reason says so.
+
   All 47 rows were re-pinned and none was restored, because none adds a gRPC
   admission. Unit tests require the ledger keys to equal the moved pins and
-  each disposition to name exactly the maps that moved.
+  each disposition to name exactly the maps that moved. A cold review
+  (FIX_FIRST) found that credential flow and the authenticated probe path
+  had been classed as not-transport. Seven rows moved to transport-reviewed,
+  and a unit test pins them with their review records:
+  - credential flow, naming source, destination, scope and guards:
+    - the i1700 deploy workflow: since #2853 its broker PUTs a temporary
+      `CORELINK_ADMIN_AUTH_KEY` into corelink-staging and opens workers.dev;
+      #2884 swaps the authority to `CF_API_TOKEN`, which never enters the
+      Worker or the Container;
+    - `storage.rs`: the Container reads an optional `R2_S3_SESSION_TOKEN`
+      into its R2 signer, but the DO's env allowlist never forwards it, so a
+      deployed Container keeps static keys;
+    - `staging_bootstrap_provider.py` and `staging-quarantine-apply.yml`:
+      the B-216 alert bearer goes to the signup Worker only, behind opt-in
+      and authority receipts, and the #2176 Worker gains no secret name;
+  - probe path, naming path, effect and guards: the probe window JSON,
+    `staging_runtime_d1_probe.ts` and `staging_d1_probe_retirement.ts`.
+    They run on, or decide admission for, the authenticated
+    HTTP -> DO -> Container proof. The V15 window admits a POST only from
+    18:00 to 20:00Z on 2026-10-02, and the lifetime ends by 21:15Z.
 
-  The eight transport-reviewed rows were read against the #2176 contract:
+  Part of that review was kept as not-transport. The harness workflow,
+  runner and manifest hand temporary R2 credentials only to a CI cargo-test
+  process, never to a deployed Worker or Container. `index_schedule.ts` is
+  a cron handler that, since #2853, can only read a receipt.
+
+  The original eight transport-reviewed rows were read against the #2176
+  contract:
   - `index_fetch.ts` (#2853) runs the staging D1 proof handler before the
     gRPC deny. The handler answers JSON and never proxies. On the proof path
     it needs staging and admin auth. A gRPC POST gets 400, and an

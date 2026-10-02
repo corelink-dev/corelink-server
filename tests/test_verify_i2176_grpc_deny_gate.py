@@ -604,6 +604,38 @@ class ReviewedBaselineLedgerTests(unittest.TestCase):
                 self.assertEqual(disposition, tuple(moved[path]))
                 self.assertTrue(reason.strip())
 
+    def test_credential_and_probe_path_rows_carry_their_review_record(self) -> None:
+        # The #2868 cold review (FIX_FIRST) found credential flow and the
+        # authenticated probe path classified as not-transport. These rows are
+        # the reviewed outcome; each must stay transport-reviewed and name every
+        # part of its review, in order.
+        forms = {
+            "Credential flow.": (("Source:", "Destination:", "Scope:", "Guards:"), {
+                ".github/workflows/issue-1700-container-staging-deploy.yml",
+                ".github/workflows/staging-quarantine-apply.yml",
+                "crates/corelink-container/src/storage.rs",
+                "scripts/staging_bootstrap_provider.py",
+            }),
+            "Probe path.": (("Path:", "Effect:", "Guards:"), {
+                "crates/corelink-container/src/routes/staging_d1_probe_window.json",
+                "worker/src/staging_d1_probe_retirement.ts",
+                "worker/src/staging_runtime_d1_probe.ts",
+            }),
+        }
+        for prefix, (labels, expected) in forms.items():
+            with self.subTest(prefix):
+                rows = {
+                    str(path): (kind, reason)
+                    for path, (_prs, kind, _disposition, reason) in verify.REBASELINE_LEDGER.items()
+                    if reason.startswith(prefix)
+                }
+                self.assertEqual(set(rows), expected)
+                for path, (kind, reason) in rows.items():
+                    self.assertEqual(kind, "transport-reviewed", path)
+                    positions = [reason.find(label) for label in labels]
+                    self.assertNotIn(-1, positions, path)
+                    self.assertEqual(positions, sorted(positions), path)
+
     def test_successor_pins_extend_history_without_rewriting_it(self) -> None:
         self.assertEqual(set(verify.WAVE_GROUP_SUCCESSOR_PINS), set(verify.WAVE_GROUPS))
         for group, successors in verify.WAVE_GROUP_SUCCESSOR_PINS.items():

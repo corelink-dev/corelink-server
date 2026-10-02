@@ -933,10 +933,22 @@ WAVE_GROUP_SUCCESSOR_PINS: dict[str, dict[Path, tuple[int, str]]] = {
 #   prs         - every PR that moved the file after its previous reviewed
 #                 bytes, taken from main's first-parent history; for a path
 #                 pinned in two maps, after the older of its two previous pins.
-#   class       - "transport-reviewed" rows touch the Worker or Container
-#                 request path, the gRPC deny, or auth; each diff was read
-#                 against the #2176 contract and adds no gRPC admission.
-#                 "not-transport" rows have no ingress, TLS or auth effect.
+#   class       - "transport-reviewed" rows do at least one of three things:
+#                 (a) change code that runs on a request path into a deployed
+#                 CoreLink Worker or Container (a Fetch, WorkerEntrypoint or
+#                 Durable Object handler and the code it calls, the Container
+#                 image or entrypoint), including data that decides admission
+#                 on that path, such as the probe window; (b) change how a
+#                 credential reaches a deployed Worker or Container process,
+#                 including the authority that writes it there; or (c) touch
+#                 TLS or the gRPC deny. Each diff was read against the #2176
+#                 contract and adds no gRPC admission. A credential row's
+#                 reason starts "Credential flow." and names Source,
+#                 Destination, Scope and Guards; a probe-path row's starts
+#                 "Probe path." and names Path, Effect and Guards.
+#                 "not-transport" rows do none of (a)-(c). A credential that
+#                 reaches only a CI, test or operator process, or only the
+#                 Cloudflare API, is not-transport, and its reason says so.
 #   disposition - every pin map re-pinned to the reviewed bytes. No moved pin
 #                 was restored instead: none adds a gRPC admission.
 #   reason      - what the reviewed change does and why its bytes are admitted.
@@ -946,14 +958,57 @@ WAVE_GROUP_SUCCESSOR_PINS: dict[str, dict[Path, tuple[int, str]]] = {
 REBASELINE_LEDGER: dict[Path, tuple[str, str, tuple[str, ...], str]] = {
     Path(".github/workflows/campaign-ci.yml"): ("#2798, #2799, #2811, #2812, #2825, #2834, #2844, #2852, #2853, #2858, #2862, #2868", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Dispatch-only CI suites; #2868 updates its two #2574 checker digests."),
     Path(".github/workflows/issue-1650-real-integration-contract.yml"): ("#2811, #2876", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Credentialless contract CI for scoped R2 credentials; #2876 adds infra/staging/topology.json to its PR path filter."),
-    Path(".github/workflows/issue-1700-container-staging-deploy.yml"): ("#2806, #2812, #2825, #2844, #2853, #2882, #2884", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Protected staging deploy workflow; no Worker or Container source. #2882 prints one redacted bootstrap failure line; #2884 deploys with the CF_API_TOKEN secret instead of STAGING_CF_WORKER_API_TOKEN."),
-    Path(".github/workflows/real-ignored-harnesses.yml"): ("#2800, #2811", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Dispatch-only real-integration harness lanes (R2 fixtures, scoped credentials)."),
-    Path(".github/workflows/staging-quarantine-apply.yml"): ("#2816", "not-transport", ("WAVE_BASE_CONTROLS",), "Staging quarantine workflow binds the B-216 alert receiver."),
+    Path(".github/workflows/issue-1700-container-staging-deploy.yml"): ("#2806, #2812, #2825, #2844, #2853, #2882, #2884", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), (
+        "Credential flow. Source: the CF_API_TOKEN Actions secret (#2884; before it STAGING_CF_WORKER_API_TOKEN), and a 32-byte key "
+        "that the #2853 bootstrap broker (issue_1700_http_bootstrap.mjs) generates in RAM. Destination: the token goes only to "
+        "api.cloudflare.com (wrangler deploy of corelink-staging, the broker's script calls, schedule/tail/Container reads), never into "
+        "Worker or Container env; the broker PUTs the key as the corelink-staging secret CORELINK_ADMIN_AUTH_KEY and enables the "
+        "workers.dev subdomain with previews off, and the probe sends the key only as x-corelink-internal-auth to the proof literal. "
+        "Scope: account 6a1fc1c6, script corelink-staging; the broker accepts five script paths plus versions/<uuid>. #2884 names the "
+        "token the repository deploy token; its provider-side grant is write-only and was not read (UNVERIFIED), so the bound is this "
+        "use, not the grant. Guards: protected main, workflow_dispatch with confirm deploy-container-staging-1700, the staging "
+        "environment, token != the route-read token, exact preimage deployment and version, refusal if the secret already exists, a "
+        "45-minute broker lifetime, and cleanup that restores the disabled subdomain and deletes the secret with binding readback. The "
+        "DO gives the proof Container an empty CORELINK_ADMIN_AUTH_KEY. #2882 prints one redacted bootstrap failure line."
+    )),
+    Path(".github/workflows/real-ignored-harnesses.yml"): ("#2800, #2811", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), (
+        "Dispatch-only harness lanes in the protected real-integration environment on ubuntu-24.04. Its credentials reach only CI "
+        "processes: #2811 hands CF_API_TOKEN and the parent R2 access-key ID to issue_2564_r2_temp_credentials.py, which mints one "
+        "bucket-scoped temporary trio for a cargo-test process; the parent R2 secret key is never passed. No deployed Worker or "
+        "Container receives any of them, so (b) does not apply."
+    )),
+    Path(".github/workflows/staging-quarantine-apply.yml"): ("#2816", "transport-reviewed", ("WAVE_BASE_CONTROLS",), (
+        "Credential flow. Source: the staging-environment secrets STAGING_DSR_DLQ_ALERT_ENDPOINT and STAGING_DSR_DLQ_ALERT_AUTH_TOKEN, "
+        "expanded only when the enable_b216_dsr_alert input is true (#2816). Destination: staging_bootstrap_provider.py "
+        "update-existing-apply, which writes them as corelink-signup-staging secrets. Scope: the signup Worker only; corelink-staging "
+        "(the #2176 Worker) gains no secret name. Guards: protected main and staging environment, a distinct confirm phrase for the "
+        "opt-in, an exact successful b216-receiver-deploy-nonprod.yml readback run on the same SHA and its artifact, the receipt "
+        "SHA-256, and an owner acknowledgement comment on #1678."
+    )),
     Path("Cargo.lock"): ("#2830, #2842, #2843, #2847, #2851", "not-transport", ("WAVE_BASE_CONTROLS",), "Only corelink-cli 0.1.2 -> 0.1.7; no corelink-server dependency moved."),
     Path("Dockerfile"): ("#2858", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Runtime base stage adds a staging-only PID-1 supervisor script; the final stage keeps USER corelink, PORT and EXPOSE 50051 and ENTRYPOINT corelink-server."),
     Path("crates/corelink-container/src/routes/staging_d1_binding_probe.rs"): ("#2795, #2801, #2812, #2819, #2825, #2844, #2853, #2858, #2865, #2881, #2882", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Probe windows move (#2882: test constants only); the route now also requires the validated lifetime env and returns 404 without it. Only the DO reaches it; DO fetch 404s the path."),
-    Path("crates/corelink-container/src/routes/staging_d1_probe_window.json"): ("#2795, #2801, #2812, #2819, #2825, #2844, #2853, #2858, #2865, #2881, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Staging probe window constants."),
-    Path("crates/corelink-container/src/storage.rs"): ("#2811", "not-transport", ("WAVE_BASE_CONTROLS",), "Optional outbound R2 session token, redacted in Debug; no route or listener."),
+    Path("crates/corelink-container/src/routes/staging_d1_probe_window.json"): ("#2795, #2801, #2812, #2819, #2825, #2844, #2853, #2858, #2865, #2881, #2882", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), (
+        "Probe path. Path: the authenticated HTTP proof, index_fetch.ts -> staging_d1_http.ts (before the gRPC deny) -> DO "
+        "executeStagingD1HttpProof -> runStagingD1HttpSequence -> proof Container route staging_d1_binding_probe.rs. The handler, the "
+        "DO, the sequence and the route (through include_str!) read this file and admit only inside it. Effect: from the reviewed v3 pin (2026-09-30 "
+        "00:00-12:00Z) through v5..v15 it gains last_entry_ms. Now a POST is admitted only when the time and its 2-minute slot lie in "
+        "2026-10-02 18:00-20:00Z and the body names nonce v15, which is also the DO-name prefix. The lifetime must end by expires_ms "
+        "(21:15Z), and the Container's execute/kill deadlines are capped at it. Outside the entry window the POST gets 400, and the "
+        "retirement DROPs refuse outside starts_ms..expires_ms. Guards: unchanged by the window; staging only, the exact workers.dev "
+        "origin and path, the dedicated CORELINK_ADMIN_AUTH_KEY "
+        "(constant-time compare, 503 when unset, deleted by the deploy broker at cleanup), a one-shot durable claim, an armed lifetime "
+        "alarm, and validated deadline env for the Container. Since #2853 the cron string selects a branch that cannot admit. Any "
+        "later window move changes this pin."
+    )),
+    Path("crates/corelink-container/src/storage.rs"): ("#2811", "transport-reviewed", ("WAVE_BASE_CONTROLS",), (
+        "Credential flow. Source: the optional R2_S3_SESSION_TOKEN env var of the Container process, trimmed; absent, empty or "
+        "whitespace-only means none. Destination: the SigV4 Credentials of the outbound R2 S3 client (r2_s3_parts/client_impl.rs); "
+        "no route, listener or inbound auth reads it. Scope: outbound R2 only; the static access-key ID and secret stay required. "
+        "Guards: the DO forwards an explicit env allowlist (durable_object_start.ts) that omits R2_S3_SESSION_TOKEN, so a deployed "
+        "Container always gets none and signs with static keys; only the #2564 CI harness sets it, in a cargo-test process; Debug "
+        "and Display print [REDACTED]."
+    )),
     Path("crates/corelink-container/src/storage/d1_http.rs"): ("#2811", "not-transport", ("WAVE_BASE_CONTROLS",), "Test struct literals gain r2_session_token: None."),
     Path("crates/corelink-stripe-real/src/client.rs"): ("#2792", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Outbound Stripe test client uses the deployed wallet proxy route."),
     Path("crates/corelink-stripe-real/tests/live_integration.rs"): ("#2792", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Exactly the 11-literal wallet route transform (WALLET_ROUTE_TRANSFORMED_LIVE_SHA256)."),
@@ -962,11 +1017,20 @@ REBASELINE_LEDGER: dict[Path, tuple[str, str, tuple[str, ...], str]] = {
     Path("infra/staging/README.md"): ("#2846, #2850, #2853", "not-transport", ("WAVE_BASE_CONTROLS",), "Operator documentation."),
     Path("infra/staging/topology.json"): ("#2846", "not-transport", ("WAVE_BASE_CONTROLS",), "validated_inputs.runner_label corelink -> ubuntu-24.04."),
     Path("scripts/issue_1648_image_only.py"): ("#2802", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1648]",), "Image rollout sequencing in a CI operator script."),
-    Path("scripts/issue_1700_rollback_quiescence.py"): ("#2853, #2858, #2865, #2881, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Operator rollback check for the moved probe windows; #2882 also requires an empty broker failure record."),
-    Path("scripts/issue_1700_runtime_probe.mjs"): ("#2801, #2806, #2812, #2819, #2825, #2834, #2844, #2858, #2865, #2881, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Outbound operator probe client."),
-    Path("scripts/real-ignored-harness-manifest.json"): ("#2811", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Harness manifest for scoped R2 credentials."),
-    Path("scripts/run-real-ignored-harnesses.sh"): ("#2811", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Harness runner for scoped R2 credentials."),
-    Path("scripts/staging_bootstrap_provider.py"): ("#2816, #2869", "not-transport", ("WAVE_BASE_CONTROLS",), "CI provisioning plan: B-216 binding and existing-Worker secret-name delta."),
+    Path("scripts/issue_1700_rollback_quiescence.py"): ("#2853, #2858, #2865, #2881, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Operator rollback check for the moved probe windows; #2882 also requires an empty broker failure record. Its WORKER_API_TOKEN bearer goes only to api.cloudflare.com schedule/tail reads."),
+    Path("scripts/issue_1700_runtime_probe.mjs"): ("#2801, #2806, #2812, #2819, #2825, #2834, #2844, #2858, #2865, #2881, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Outbound operator probe client; its bearer goes only to api.cloudflare.com, never into the Worker or Container."),
+    Path("scripts/real-ignored-harness-manifest.json"): ("#2811", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Harness manifest: the R2 profile now lists R2_S3_SESSION_TOKEN. Its consumer is a CI cargo-test process, not a deployed Worker or Container."),
+    Path("scripts/run-real-ignored-harnesses.sh"): ("#2811", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Harness runner: the R2 preflight also requires R2_S3_SESSION_TOKEN before cargo test. CI process only; no deployed Worker or Container receives it."),
+    Path("scripts/staging_bootstrap_provider.py"): ("#2816, #2869", "transport-reviewed", ("WAVE_BASE_CONTROLS",), (
+        "Credential flow. Source: STAGING_DSR_DLQ_ALERT_ENDPOINT and STAGING_DSR_DLQ_ALERT_AUTH_TOKEN from the workflow env, read only "
+        "under --enable-b216-dsr-alert (#2816); the writer is the existing STAGING_CF_WORKER_API_TOKEN. Destination: the "
+        "corelink-signup-staging secrets DSR_DLQ_ALERT_ENDPOINT and DSR_DLQ_ALERT_AUTH_TOKEN, the signup Worker's outbound alert "
+        "bearer. The same functions compute the secret set of corelink-staging, the #2176 Worker, which gains no name and now refuses "
+        "the B-216 pair. #2869 adds a read-only, name-only preflight plan. Scope: the signup Worker only, both names or neither, never "
+        "overwriting a bound secret. Guards: the explicit opt-in, a receiver readback receipt that is at most 30 minutes old with a "
+        "matching SHA-256 and route-pattern digest, an owner acknowledgement on #1678, an HTTPS root endpoint on a lowercase DNS host "
+        "that is not an IP or workers.dev, and versioned rollback receipts."
+    )),
     Path("scripts/tests/issue_1700_probe_process.test.mjs"): ("#2801, #2812, #2844", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),
     Path("scripts/tests/issue_1700_runtime_probe.test.mjs"): ("#2795, #2801, #2806, #2812, #2819, #2825, #2834, #2844, #2853, #2858, #2865, #2881, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),
     Path("scripts/verify_i2574_grpc_diagnostic_policy.py"): ("#2868", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Adds REVIEWED_SURFACE as a BASE state; EXPECTED and every transition map unchanged."),
@@ -981,11 +1045,26 @@ REBASELINE_LEDGER: dict[Path, tuple[str, str, tuple[str, ...], str]] = {
     Path("worker/src/durable_object_start.ts"): ("#2749, #2853, #2858", "transport-reviewed", ("WAVE_BASE_CONTROLS", "REVIEWED_SURFACE"), "From #2574 EXPECTED, #2749 is the already-pinned #1700 D1-proxy target. Then: supervisor entrypoint only with a validated staging deadline; port 50051 unchanged; the proof Container gets an empty CORELINK_ADMIN_AUTH_KEY and no DPA_ACCEPT_IP_HASH_SALT."),
     Path("worker/src/index_env.ts"): ("#2853", "not-transport", ("WAVE_BASE_CONTROLS", "REVIEWED_SURFACE"), "Adds the optional DPA_ACCEPT_IP_HASH_SALT type field only."),
     Path("worker/src/index_fetch.ts"): ("#2853", "transport-reviewed", ("WAVE_BASE_CONTROLS", "REVIEWED_SURFACE"), "Runs the staging D1 proof handler before the gRPC deny; it answers JSON and never proxies. On *.workers.dev every request but the proof literal gets 404 (gRPC there is denied with 404, not the contract's 503). On the proof path: staging only, admin auth, POST needs exact application/json (gRPC POST 400), an authenticated GET reads the proof status. Else null to the unchanged deny."),
-    Path("worker/src/index_schedule.ts"): ("#2812, #2844, #2853", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1652]",), "Scheduled (cron) handler; no fetch path."),
+    Path("worker/src/index_schedule.ts"): ("#2812, #2844, #2853", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1652]",), "Scheduled (cron) handler, not a request path. Since #2853 its probe branch only reads a persisted receipt through a read-only DO RPC; it can no longer admit, retire or start a Container (that moved behind the authenticated HTTP proof)."),
     Path("worker/src/staging_d1_binding_proxy.ts"): ("#2858", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Loopback D1 service binding gains deadline checks that only return 502; parsing and D1 calls unchanged."),
     Path("worker/src/staging_d1_binding_proxy_entrypoint.ts"): ("#2858", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Empty props keep the old path; a validated deadline is passed through; anything else returns 502."),
-    Path("worker/src/staging_d1_probe_retirement.ts"): ("#2801, #2812, #2844, #2853", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Probe table cleanup helpers; no fetch path."),
-    Path("worker/src/staging_runtime_d1_probe.ts"): ("#2801, #2812, #2844, #2853", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Probe orchestration and receipts; no fetch handler. The probe path literal and DO prefix that the pre-deny handler imports are unchanged."),
+    Path("worker/src/staging_d1_probe_retirement.ts"): ("#2801, #2812, #2844, #2853", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), (
+        "Probe path. Path: the same authenticated HTTP proof; runStagingD1HttpSequence calls assertV4FailedProbeCatalogAbsent, and "
+        "the DO retire RPCs it calls run cleanOldProbeTables and cleanV5ProbeTables. Effect: reads the D1 catalog and drops only the "
+        "fixed-prefix probe tables of two named old releases through the DO's CONFIG_DB binding, after validating every object and "
+        "row; any mismatch aborts the proof. No handler, header, credential, Container call or gRPC path. Guards: reached only after "
+        "the DO's durable claim, inside the lifecycle deadlines, and each DROP refuses outside starts_ms..expires_ms of the probe window."
+    )),
+    Path("worker/src/staging_runtime_d1_probe.ts"): ("#2801, #2812, #2844, #2853", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), (
+        "Probe path. Path: index_fetch.ts -> handleStagingD1HttpProof, which runs before the gRPC deny and imports this module's probe "
+        "path literal and DO-name prefix -> DO executeStagingD1HttpProof -> runStagingD1HttpSequence (#2853) -> v8/v9 cleanup and "
+        "old/v5 retirement RPCs on fixed-name DOs -> the local admit and run, which start the proof Container and call its probe "
+        "route. Effect: the listed PRs add the v5/v8/v9 cleanup and retirement steps, the admission record and (#2853) this HTTP "
+        "sequence; the cron reader (readStagingD1BindingRuntimeProbeReceipt) is read-only. No fetch handler, header, credential or "
+        "gRPC path is added. Guards: the sequence is entered only after the DO's one-shot durable claim and armed lifetime alarm, "
+        "every step runs inside StagingD1HttpLifecycle deadlines, and the native receipt must match exact keys, release, nonce and a "
+        "2-minute slot inside the probe window; the admin auth and staging checks of the handler are unchanged."
+    )),
     Path("worker/tests/durable_object.test.ts"): ("#2812, #2844, #2853, #2858", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Tests."),
     Path("worker/tests/staging_d1_binding_proxy.test.ts"): ("#2858", "not-transport", ("WAVE_BASE_CONTROLS",), "Tests."),
     Path("worker/tests/staging_d1_binding_start_gate.test.ts"): ("#2853, #2858", "not-transport", ("WAVE_BASE_CONTROLS",), "Tests."),
