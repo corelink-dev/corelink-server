@@ -194,10 +194,14 @@ jobs:
           main_sha="$(git rev-parse refs/remotes/trusted/main)"
           [[ "$main_sha" == "$EXPECTED_SHA" ]]
 
+      # Owner decision 2026-10-02 (#2568): the disposable Worker and D1 run on the
+      # main Cloudflare account with the repository deploy token, as the B-216
+      # receiver does (#1678, PRs #2880 and #2885). The operator pins this account
+      # and fences every Cloudflare call to its own exact-name disposable pair.
       - name: Run all provider work packages with exact test-only authority
         env:
-          CLOUDFLARE_ACCOUNT_ID: "51284495e71acdb5a7677e7383ab026b"
-          CF_I2568_API_TOKEN: ${{ secrets.CF_I2568_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: "6a1fc1c626fc2628823e60b9db01f5cd"
+          CF_I2568_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           STRIPE_TEST_ACCOUNT_ID: ${{ vars.STRIPE_TEST_ACCOUNT_ID }}
           I2568_PROVIDER_APPROVED: ${{ vars.I2568_PROVIDER_APPROVED }}

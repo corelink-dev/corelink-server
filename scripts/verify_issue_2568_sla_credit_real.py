@@ -47,12 +47,22 @@ SOURCE_DIGESTS = {
     "migrations/d1/0055_tenant_billing.sql": "f5420ceac080d92ae5dab05cf6209525d767de3408828bda46134e9323e8d93d",
     "migrations/d1/0117_sla_credit_ledger.sql": "658469f4102b6ef424af7dda29c8febcbf1058a677426be24da9306282c3454e",
 }
+# Owner decision 2026-10-02 (#2568): the disposable Worker/D1 pair runs on the main
+# Cloudflare account with the repository deploy token, as the B-216 receiver does.
+CF_ACCOUNT_PIN = "6a1fc1c626fc2628823e60b9db01f5cd"
+RETIRED_CF_ACCOUNT = "51284495e71acdb5a7677e7383ab026b"
+DISPOSABLE_TARGET_NAME = "corelink-i2568-sla-credit-6a"
 PROVIDER_CREDENTIAL_BINDINGS = {
-    "CF_I2568_API_TOKEN": "secrets.CF_I2568_API_TOKEN",
+    "CF_I2568_API_TOKEN": "secrets.CF_API_TOKEN",
     "STRIPE_SECRET_KEY": "secrets.STRIPE_SECRET_KEY",
     "STRIPE_TEST_ACCOUNT_ID": "vars.STRIPE_TEST_ACCOUNT_ID",
     "I2568_PROVIDER_APPROVED": "vars.I2568_PROVIDER_APPROVED",
 }
+# Every credential name the provider job and operator handle must be a registry row.
+REGISTERED_PROVIDER_CREDENTIALS = frozenset({
+    "CF_I2568_API_TOKEN", "CF_API_TOKEN", "STRIPE_SECRET_KEY", "STRIPE_TEST_ACCOUNT_ID",
+})
+WP150_OWNERSHIP_ROW = ".github/workflows/issue-2568-sla-credit-real.yml | #2568 | owned"
 REQUIRED_WORKFLOW = (
     "workflow_dispatch:", "contents: read", "ubuntu-24.04", "timeout-minutes: 25",
     "stripe-test", "CF_I2568_API_TOKEN", "STRIPE_SECRET_KEY", "STRIPE_TEST_ACCOUNT_ID",
@@ -80,6 +90,7 @@ FORBIDDEN = (
     "stripe listen", "stripe fixtures", "card_number", "card[number]",
     "/v1/payment_intents", "/v1/subscriptions", "finalize", "send_invoice",
     "--ip 0.0.0.0", "0.0.0.0",
+    RETIRED_CF_ACCOUNT, "corelink-i2568-sla-credit-test-20260928", "secrets.CF_I2568_API_TOKEN",
 )
 SENSITIVE_KEY = re.compile(r"(?i)(?:sk_(?:live|test)_|rk_(?:live|test)_)[A-Za-z0-9]{8,}")
 
@@ -106,6 +117,48 @@ def validate_secret_registry(data: bytes, mode: int) -> None:
         raise VerificationError("secret registry differs from the exact root-authorized content or mode")
     if b"`CF_I2568_API_TOKEN`" not in data:
         raise VerificationError("secret registry does not register the #2568 provider credential")
+
+
+def validate_wp150_ownership(text: str) -> None:
+    """Post-merge: the shared manifest still records #2568 ownership of its workflow, once."""
+    rows = [line for line in text.splitlines() if line.startswith(".github/workflows/issue-2568-sla-credit-real.yml")]
+    if rows != [WP150_OWNERSHIP_ROW]:
+        raise VerificationError("WP150 manifest does not record exactly one #2568 ownership row for the workflow")
+
+
+def registered_credential_names(text: str) -> set[str]:
+    names: set[str] = set()
+    for line in text.splitlines():
+        cells = line.split("|")
+        if line.startswith("| ") and len(cells) > 3 and cells[1].strip().isdigit():
+            names.update(re.findall(r"`([A-Z][A-Z0-9_]+)`", cells[3]))
+    return names
+
+
+def validate_registered_credentials(text: str) -> None:
+    """Post-merge: every credential name the provider path handles is a registry row."""
+    missing = REGISTERED_PROVIDER_CREDENTIALS - registered_credential_names(text)
+    if missing:
+        raise VerificationError(f"secret registry does not register provider credentials {sorted(missing)!r}")
+
+
+def validate_account_pin(workflow: str, operator: str) -> None:
+    """The workflow and operator name exactly one Cloudflare account: the pinned main account."""
+    accounts = set(re.findall(r"\b[0-9a-f]{32}\b", workflow)) | set(re.findall(r"\b[0-9a-f]{32}\b", operator))
+    if accounts != {CF_ACCOUNT_PIN}:
+        raise VerificationError("workflow/operator Cloudflare account literals differ from the pinned main account")
+    if workflow.count(f'CLOUDFLARE_ACCOUNT_ID: "{CF_ACCOUNT_PIN}"') != 1:
+        raise VerificationError("provider job does not bind CLOUDFLARE_ACCOUNT_ID to the pinned main account once")
+    for marker in (
+        f'CF_ACCOUNT = "{CF_ACCOUNT_PIN}"',
+        f'WORKER_NAME = "{DISPOSABLE_TARGET_NAME}"',
+        f'D1_NAME = "{DISPOSABLE_TARGET_NAME}"',
+        "assert_pinned_targets(CF_ACCOUNT, WORKER_NAME, D1_NAME)",
+        "assert_cloudflare_request(method, path, data, self.database_id)",
+        "cf = cloudflare_from_env(os.environ)",
+    ):
+        if operator.count(marker) != 1:
+            raise VerificationError(f"operator account/target fence marker missing or duplicated: {marker}")
 
 
 def validate_provider_credential_bindings(bindings: dict[str, str], references: list[str] | None = None) -> None:
@@ -175,7 +228,8 @@ def validate_receipt(receipt: dict[str, Any]) -> None:
         if isinstance(value, dict):
             for key, nested in value.items():
                 lowered = str(key).casefold()
-                if lowered in {"raw_response", "stripe_secret_key", "cf_i2568_api_token", "token", "credential_value"}:
+                if lowered in {"raw_response", "stripe_secret_key", "cf_i2568_api_token", "cf_api_token",
+                               "token", "credential_value"}:
                     raise VerificationError("receipt contains a forbidden raw response or credential field")
                 check_keys(nested)
         elif isinstance(value, list):
@@ -263,8 +317,8 @@ def validate_provider_receipt(receipt: dict[str, Any]) -> None:
         raise VerificationError("provider receipt lacks the next nonadvancing draft invoice reconciliation")
     d1 = receipt.get("d1")
     counts = d1.get("row_counts") if isinstance(d1, dict) else None
-    if (not isinstance(d1, dict) or d1.get("name") != "corelink-i2568-sla-credit-test-20260928"
-            or d1.get("account") != "51284495e71acdb5a7677e7383ab026b"
+    if (not isinstance(d1, dict) or d1.get("name") != DISPOSABLE_TARGET_NAME
+            or d1.get("account") != CF_ACCOUNT_PIN
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(d1.get("uuid_sha256", "")))
             or not isinstance(counts, dict) or counts.get("sla_monthly_observations") != 1
             or counts.get("sla_monthly_measurements") != 1 or counts.get("sla_credit_ledger") != 1
@@ -339,6 +393,16 @@ def verify(root: Path = ROOT) -> None:
         "test_main_advance_before_final_acceptance_denies_closure",
         "test_main_advance_before_replay_prevents_invocation",
         "test_main_advance_before_draft_invoice_prevents_stripe_write",
+        "test_account_pin_is_the_main_account",
+        "test_workflow_and_operator_pin_the_same_account",
+        "test_receipt_binds_the_main_account_disposable_d1",
+        "test_cloudflare_account_mismatch_refused_before_any_cloudflare_call",
+        "test_run_all_refuses_retired_account_before_any_provider_write",
+        "test_production_and_staging_names_refused",
+        "test_drifted_pinned_target_refuses_to_load",
+        "test_generated_wrangler_config_names_only_the_disposable_pair",
+        "test_cloudflare_request_fence_refuses_everything_but_the_disposable_pair",
+        "test_live_key_refused_by_run_all_before_any_network_call",
     ))
     expected_leaf_paths = {
         ".actionlint.yaml", WORKFLOW, OPERATOR, WORKER,
@@ -348,14 +412,19 @@ def verify(root: Path = ROOT) -> None:
     }
     if LEAF_PATHS != expected_leaf_paths:
         raise VerificationError("frozen eight-path candidate catalog drift")
+    # The exact delivery-time bytes of these two shared, root-owned documents are
+    # enforced by validate_candidate_diff on the pre-merge candidate. After merge,
+    # other lanes edit them, so the post-merge check is that they still carry the
+    # #2568 rows this operator depends on.
     manifest = root / WP150_PATH
-    if manifest.is_symlink() or not manifest.is_file():
+    if manifest.is_symlink() or not manifest.is_file() or manifest.stat().st_mode & 0o777 != 0o644:
         raise VerificationError("missing or unsafe root-authorized WP150 manifest")
-    validate_wp150_manifest(manifest.read_bytes(), manifest.stat().st_mode & 0o777 | 0o100000)
+    validate_wp150_ownership(manifest.read_text(encoding="utf-8"))
     secret_registry = root / SECRET_REGISTRY_PATH
-    if secret_registry.is_symlink() or not secret_registry.is_file():
+    if secret_registry.is_symlink() or not secret_registry.is_file() or secret_registry.stat().st_mode & 0o777 != 0o644:
         raise VerificationError("missing or unsafe root-authorized secret registry")
-    validate_secret_registry(secret_registry.read_bytes(), secret_registry.stat().st_mode & 0o777 | 0o100000)
+    validate_registered_credentials(secret_registry.read_text(encoding="utf-8"))
+    validate_account_pin(workflow, operator)
     for marker in FORBIDDEN:
         if marker in workflow or marker in operator or marker in worker:
             raise VerificationError(f"forbidden provider surface present: {marker}")

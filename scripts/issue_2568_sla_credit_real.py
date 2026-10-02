@@ -31,8 +31,32 @@ from typing import Any, Callable
 ISSUE = 2568
 BRANCH = "refs/heads/main"
 STRIPE_ACCOUNT_SHA256 = "e9678dceccdaa37a7259379096e82875f6ae0c694f9a461a28691c79eceb33ad"
-CF_ACCOUNT = "51284495e71acdb5a7677e7383ab026b"
-WORKER_NAME = "corelink-i2568-sla-credit-test-20260928"
+# Owner decision 2026-10-02 (#2568): the disposable test Worker and D1 run on the
+# main Cloudflare account, which also hosts production and staging, as the B-216
+# receiver did (#1678, PR #2880). Both are dedicated exact names that this
+# operator creates and deletes itself; every name, path and UUID below is fenced.
+CF_ACCOUNT = "6a1fc1c626fc2628823e60b9db01f5cd"
+WORKER_NAME = "corelink-i2568-sla-credit-6a"
+D1_NAME = "corelink-i2568-sla-credit-6a"
+DISPOSABLE_TARGET_NAMESPACE = re.compile(r"corelink-i2568-sla-credit-[a-z0-9]+(?:-[a-z0-9]+)*")
+# Production, staging and neighbouring Worker/D1 names on the shared account, from
+# this repository's wrangler configs and the account inventory read on 2026-10-02.
+PROTECTED_TARGET_NAMES = frozenset({
+    "corelink-prod-d1", "corelink-config-prod", "corelink-config-staging", "corelink-config-dev",
+    "corelink-analytics", "corelink-analytics-prod", "corelink-analytics-staging", "corelink-analytics-dev",
+    "corelink-dsr-erasure-log", "clerk-audit-db",
+    "corelink-dsr-b216-alert-receipts-6a", "corelink-dsr-b216-alert-receiver-6a",
+    "corelink-prod", "corelink-staging", "corelink-server", "corelink-admin-ui",
+    "corelink-signup-worker", "corelink-signup-worker-prod", "corelink-signup-staging",
+    "corelink-synthetic-pager-staging",
+})
+PROTECTED_TARGET_TOKENS = re.compile(r"(?:^|-)(?:prod|production|staging|stage|live|config|analytics)(?:-|$)")
+PROTECTED_D1_UUIDS = frozenset({
+    "d64742ea-e102-40b2-a844-ff02e3f94562",  # corelink-prod-d1 / corelink-config-prod (production)
+    "d7fe391f-9fe0-4544-a1fb-64747bcd2639",  # corelink-analytics-prod (production)
+    "d72a6b39-6a48-4338-bfda-1111dda98604",  # corelink-config-staging (staging)
+})
+D1_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 # The protected workflow binds this to its exact, fresh main input. A historical
 # commit is never a valid substitute for the code being tested or deployed.
 SOURCE_SHA = os.environ.get("I2568_EXPECTED_SHA", "")
@@ -48,6 +72,71 @@ TIMEOUT = 20
 
 class OperatorError(RuntimeError):
     """Safe, non-sensitive operator failure."""
+
+
+def validate_target_name(name: str, pinned: str) -> str:
+    """Admit only the one dedicated disposable #2568 Worker/D1 name on the shared account."""
+    if not isinstance(name, str) or name in PROTECTED_TARGET_NAMES or PROTECTED_TARGET_TOKENS.search(name):
+        raise OperatorError("Cloudflare target name is a production or staging resource; refusing")
+    if not DISPOSABLE_TARGET_NAMESPACE.fullmatch(name):
+        raise OperatorError("Cloudflare target name is outside the dedicated #2568 namespace; refusing")
+    if name != pinned:
+        raise OperatorError("Cloudflare target name is not the exact pinned #2568 disposable target; refusing")
+    return name
+
+
+def validate_disposable_database_id(identifier: Any) -> str:
+    if not isinstance(identifier, str) or not D1_UUID.fullmatch(identifier):
+        raise OperatorError("D1 identifier is not a canonical UUID; refusing")
+    if identifier in PROTECTED_D1_UUIDS:
+        raise OperatorError("D1 identifier is a production or staging database; refusing")
+    return identifier
+
+
+def assert_pinned_targets(account: str, worker: str, d1: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{32}", account):
+        raise OperatorError("pinned Cloudflare account identifier is malformed")
+    validate_target_name(worker, worker)
+    validate_target_name(d1, d1)
+
+
+# Refuse to load at all if a pinned constant drifts onto a protected name.
+assert_pinned_targets(CF_ACCOUNT, WORKER_NAME, D1_NAME)
+
+
+def assert_cloudflare_request(method: str, path: str, data: dict[str, Any] | None,
+                              bound_database_id: str | None) -> None:
+    """Refuse any Cloudflare API call outside the pinned account's #2568 disposable pair."""
+    prefix = f"/accounts/{CF_ACCOUNT}/"
+    if not path.startswith(prefix):
+        raise OperatorError("Cloudflare request outside the pinned #2568 account refused")
+    rest = path[len(prefix):]
+    worker = f"workers/scripts/{validate_target_name(WORKER_NAME, WORKER_NAME)}"
+    d1_lookup = f"d1/database?name={urllib.parse.quote(validate_target_name(D1_NAME, D1_NAME))}"
+    exact = {
+        ("GET", "workers/subdomain"),
+        ("GET", worker), ("DELETE", worker),
+        ("GET", f"{worker}/settings"), ("GET", f"{worker}/subdomain"),
+        ("GET", f"{worker}/schedules"), ("GET", f"{worker}/versions"),
+        ("GET", d1_lookup),
+    }
+    if (method, rest) in exact and data is None:
+        return
+    if method == "POST" and rest == "d1/database":
+        if data == {"name": D1_NAME}:
+            return
+        raise OperatorError("Cloudflare D1 create for a name other than the #2568 disposable target refused")
+    match = re.fullmatch(r"d1/database/([^/?]+)(/query)?", rest)
+    if match:
+        identifier, query = match.groups()
+        validate_disposable_database_id(identifier)
+        if bound_database_id is None or identifier != bound_database_id:
+            raise OperatorError("Cloudflare D1 request on a database this run did not create refused")
+        if query and method == "POST" and data is not None:
+            return
+        if not query and method in ("GET", "DELETE") and data is None:
+            return
+    raise OperatorError("Cloudflare request outside the #2568 disposable-target allowlist refused")
 
 
 def sha256(data: bytes) -> str:
@@ -174,8 +263,19 @@ class Stripe:
 class Cloudflare:
     def __init__(self, token: str):
         self.token = token
+        # The one D1 UUID this run created (or recovered by exact name); no other
+        # database may be read, queried or deleted.
+        self.database_id: str | None = None
+
+    def bind_database(self, identifier: Any) -> str:
+        identifier = validate_disposable_database_id(identifier)
+        if self.database_id is not None and self.database_id != identifier:
+            raise OperatorError("D1 binding cannot change within one #2568 run")
+        self.database_id = identifier
+        return identifier
 
     def request(self, method: str, path: str, data: dict[str, Any] | None = None) -> tuple[int, dict[str, Any] | None]:
+        assert_cloudflare_request(method, path, data, self.database_id)
         body = json.dumps(data).encode("utf-8") if data is not None else None
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         if body is not None:
@@ -201,14 +301,14 @@ class Cloudflare:
             raise OperatorError(f"Cloudflare {method} target operation has an unknown result state") from exc
 
     def create_database(self) -> str:
-        status, payload = self.request("POST", f"/accounts/{CF_ACCOUNT}/d1/database", {"name": WORKER_NAME})
+        status, payload = self.request("POST", f"/accounts/{CF_ACCOUNT}/d1/database", {"name": D1_NAME})
         if status not in (200, 201) or not payload:
             raise OperatorError("isolated D1 creation did not return a database")
         result = payload.get("result")
         identifier = result.get("uuid") if isinstance(result, dict) else None
         if not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f-]{36}", identifier):
             raise OperatorError("isolated D1 creation returned an invalid identifier")
-        return identifier
+        return self.bind_database(identifier)
 
     def verify_subdomain(self) -> dict[str, Any]:
         status, payload = self.request("GET", f"/accounts/{CF_ACCOUNT}/workers/subdomain")
@@ -237,6 +337,16 @@ class Cloudflare:
         if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
             raise OperatorError("isolated D1 query returned invalid rows")
         return rows
+
+
+def cloudflare_from_env(environ: Any) -> Cloudflare:
+    """Bind the repository deploy token to the pinned main account, or refuse."""
+    token = environ.get("CF_I2568_API_TOKEN", "")
+    if not token:
+        raise OperatorError("Cloudflare API token for the #2568 main-account target is missing")
+    if environ.get("CLOUDFLARE_ACCOUNT_ID") != CF_ACCOUNT:
+        raise OperatorError("Cloudflare target account differs from the pinned #2568 main account")
+    return Cloudflare(token)
 
 
 def _private_write(path: Path, content: str) -> None:
@@ -270,10 +380,10 @@ def _ensure_absent_target(cf: Cloudflare) -> dict[str, Any]:
     status, _ = cf.request("GET", f"/accounts/{CF_ACCOUNT}/workers/scripts/{WORKER_NAME}")
     if status != 404:
         raise OperatorError("exclusive Worker target already exists or could not be proven absent")
-    status, payload = cf.request("GET", f"/accounts/{CF_ACCOUNT}/d1/database?name={urllib.parse.quote(WORKER_NAME)}")
+    status, payload = cf.request("GET", f"/accounts/{CF_ACCOUNT}/d1/database?name={urllib.parse.quote(D1_NAME)}")
     if status == 200 and payload:
         result = payload.get("result")
-        if isinstance(result, list) and any(isinstance(row, dict) and row.get("name") == WORKER_NAME for row in result):
+        if isinstance(result, list) and any(isinstance(row, dict) and row.get("name") == D1_NAME for row in result):
             raise OperatorError("exclusive D1 target already exists; refusing adoption")
     elif status != 404:
         raise OperatorError("exclusive D1 target absence could not be proven")
@@ -305,6 +415,10 @@ def _apply_exact_migrations(cf: Cloudflare, database_id: str, source_root: Path)
 
 
 def _prepare_worker_tree(runtime: Path, candidate_root: Path, source_root: Path, database_id: str) -> None:
+    # The generated Wrangler config is the only Worker/D1 identity Wrangler sees.
+    validate_target_name(WORKER_NAME, WORKER_NAME)
+    validate_target_name(D1_NAME, D1_NAME)
+    validate_disposable_database_id(database_id)
     runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
     (runtime / "migrations").mkdir(mode=0o700, exist_ok=True)
     for name in ("0055_tenant_billing.sql", "0117_sla_credit_ledger.sql"):
@@ -324,7 +438,7 @@ def _prepare_worker_tree(runtime: Path, candidate_root: Path, source_root: Path,
         'STRIPE_API_BASE = "https://api.stripe.com"\n\n'
         '[[d1_databases]]\n'
         'binding = "BILLING_DB"\n'
-        f'database_name = "{WORKER_NAME}"\n'
+        f'database_name = "{D1_NAME}"\n'
         f'database_id = "{database_id}"\n'
         'migrations_dir = "migrations"\n'
     )
@@ -531,15 +645,15 @@ def _cleanup_cloudflare(cf: Cloudflare, database_id: str | None, *,
     result: dict[str, Any] = {"worker_deleted": False, "database_deleted": False, "worker_absent": False, "database_absent": False, "errors": []}
     if database_id is None and d1_create_attempted:
         try:
-            status, payload = cf.request("GET", f"/accounts/{CF_ACCOUNT}/d1/database?name={urllib.parse.quote(WORKER_NAME)}")
+            status, payload = cf.request("GET", f"/accounts/{CF_ACCOUNT}/d1/database?name={urllib.parse.quote(D1_NAME)}")
             matches = payload.get("result") if status == 200 and payload else []
-            matches = [row for row in matches if isinstance(row, dict) and row.get("name") == WORKER_NAME] if isinstance(matches, list) else []
+            matches = [row for row in matches if isinstance(row, dict) and row.get("name") == D1_NAME] if isinstance(matches, list) else []
             if len(matches) > 1:
                 result["errors"].append("target-only D1 recovery found multiple same-name databases")
             elif matches:
                 candidate = matches[0].get("uuid") or matches[0].get("id")
                 if isinstance(candidate, str) and re.fullmatch(r"[0-9a-f-]{36}", candidate):
-                    database_id = candidate
+                    database_id = cf.bind_database(candidate)
                 else:
                     result["errors"].append("target-only D1 recovery found an invalid identifier")
             elif status in (200, 404):
@@ -562,7 +676,7 @@ def _cleanup_cloudflare(cf: Cloudflare, database_id: str | None, *,
             result["errors"].append(str(exc))
     if database_id:
         database_path = (f"/accounts/{CF_ACCOUNT}/d1/database/{database_id}" if database_id
-                         else f"/accounts/{CF_ACCOUNT}/d1/database?name={urllib.parse.quote(WORKER_NAME)}")
+                         else f"/accounts/{CF_ACCOUNT}/d1/database?name={urllib.parse.quote(D1_NAME)}")
         try:
             status, _ = cf.request("DELETE", database_path)
             if status not in (200, 204, 404):
@@ -647,12 +761,8 @@ def run_all(*, expected_sha: str, run_id: str, confirmation: str, source_root: P
 
         # CF read-only authority/topology and exclusive-name preflight is first;
         # no Stripe write may precede proof that both provider boundaries are usable.
-        cf_token = os.environ.get("CF_I2568_API_TOKEN", "")
-        if not cf_token:
-            raise OperatorError("dedicated account-5128 Cloudflare test token is missing")
-        if os.environ.get("CLOUDFLARE_ACCOUNT_ID") != CF_ACCOUNT:
-            raise OperatorError("Cloudflare target account differs from the frozen test account")
-        cf = Cloudflare(cf_token)
+        cf = cloudflare_from_env(os.environ)
+        cf_token = cf.token
         receipt["cloudflare_subdomain"] = _ensure_absent_target(cf)
         d1_create_attempted = False
         worker_upload_attempted = False
@@ -699,10 +809,10 @@ def run_all(*, expected_sha: str, run_id: str, confirmation: str, source_root: P
         database_id = cf.create_database()
         status, db_payload = cf.request("GET", f"/accounts/{CF_ACCOUNT}/d1/database/{database_id}")
         db_result = db_payload.get("result") if db_payload else None
-        if status != 200 or not isinstance(db_result, dict) or db_result.get("uuid") != database_id or db_result.get("name") != WORKER_NAME:
+        if status != 200 or not isinstance(db_result, dict) or db_result.get("uuid") != database_id or db_result.get("name") != D1_NAME:
             raise OperatorError("new D1 target name/UUID readback failed")
         receipt["d1"]["uuid_sha256"] = redacted_id(database_id)
-        receipt["d1"]["name"] = WORKER_NAME
+        receipt["d1"]["name"] = D1_NAME
         receipt["d1"]["account"] = CF_ACCOUNT
         migration_hashes = _apply_exact_migrations(cf, database_id, source_root)
         receipt["d1"]["migration_sha256"] = migration_hashes
