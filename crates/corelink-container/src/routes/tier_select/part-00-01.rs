@@ -120,6 +120,11 @@ pub async fn handle(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors orchestrate_tier_select's stable argument order, with the route state in \
+              place of its three collaborators"
+)]
 async fn orchestrate_runner_tier_select(
     state: &TierSelectRouteState,
     tenant_id: &str,

@@ -9,10 +9,10 @@ source_files:
   - "crates/corelink-container/src/reapi_ingress/validation.rs"
 source_blobs:
   - "crates/corelink-container/src/reapi_bytestream.rs@abc060543e50cce761fb00e2ec5e7e223007d55e"
-  - "crates/corelink-container/src/reapi_bytestream/tests.rs@8e1bd80fce3e61580fbf367194a27fa0b342ba32"
+  - "crates/corelink-container/src/reapi_bytestream/tests.rs@e802e80fb72d621c28b603facbe53a782bd8dad8"
   - "crates/corelink-container/src/reapi_ingress.rs@3d1fed6de23011955eda97fc5eab65950100a83f"
   - "crates/corelink-container/src/reapi_ingress/validation.rs@b7f5d1045997e7b7e733bea9fcbb95caa97a6881"
-checkpoint_sha: "7fa87593d5fc20c970ed3a27a2a711b68298f5cc"
+checkpoint_sha: "84fb91fdece139e532092b68dde700d6b1fd10f4"
 provenance: "AUTHORED"
 timestamp: "2026-09-23T00:00:00Z"
 ---
@@ -48,6 +48,6 @@ Completion requires the trusted exact-PR-head workflow below to pass its source 
 2. `crates/corelink-container/src/reapi_bytestream.rs:69-121` — authenticated read validation, one decorated read, and bounded frame emission.
 3. `crates/corelink-container/src/reapi_bytestream.rs:126-207` — ordered, EOF-final, hash-checked write followed by exactly one decorated persistence call.
 4. `crates/corelink-container/src/reapi_bytestream.rs:223-255` — tonic service contract and explicit unsupported resume behavior.
-5. `crates/corelink-container/src/reapi_bytestream/tests.rs:149-580` — behavior and adversarial coverage for storage denial, ranges, size limits, offsets, audit/quota failure, and resume.
+5. `crates/corelink-container/src/reapi_bytestream/tests.rs:150-581` — behavior and adversarial coverage for storage denial, ranges, size limits, offsets, audit/quota failure, and resume.
 6. `crates/corelink-container/src/reapi_ingress.rs:160-187` — tenant-scoped SHA-256 CAS handler request with a pre-materialization byte limit.
 7. `crates/corelink-container/src/reapi_ingress/validation.rs:48-118` — canonical tenant-bound read/upload resource validation.

@@ -13,7 +13,7 @@ const REGION: &str = "iad";
 fn cas_lock_shards_avoid_false_serialization_for_220_distinct_keys() {
     use std::collections::HashSet;
 
-    assert!(CAS_LOCK_SHARDS >= 32_768);
+    const { assert!(CAS_LOCK_SHARDS >= 32_768) };
     let tenant = "b103-tenant";
     let keys = (1..=220).map(|n| format!("{n:064x}")).collect::<Vec<_>>();
     let first_key = keys.first().expect("the test population is non-empty");

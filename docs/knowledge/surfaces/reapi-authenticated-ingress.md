@@ -15,10 +15,10 @@ source_blobs:
   - "crates/corelink-container/src/reapi_ingress.rs@e2592785789879721719e79ff7935ab76f2e84df"
   - "crates/corelink-container/src/reapi_ingress/admission.rs@fc6bd2e49b672c806b9eaa72f329df7af7a6624d"
   - "crates/corelink-container/src/reapi_ingress/validation.rs@b7f5d1045997e7b7e733bea9fcbb95caa97a6881"
-  - "crates/corelink-container/src/reapi_ingress/tests.rs@40d59193ef67f2e168e5801d86a7c70d148fd3fe"
+  - "crates/corelink-container/src/reapi_ingress/tests.rs@70cf829bace7305ac50df056fcf878f530bb0168"
   - "crates/corelink-container/src/routes.rs@da4d710d15537491da17f84c90f133d06124711e"
   - "crates/corelink-container/src/routes/build.rs@3f4264ce2ef02c736001802dcf514caa18677e05"
-checkpoint_sha: "9f73cedfa760f53da02a33dc7af27ce43b75536a"
+checkpoint_sha: "84fb91fdece139e532092b68dde700d6b1fd10f4"
 provenance: "AUTHORED"
 tags: ["surfaces", "reapi", "grpc", "auth", "tenancy", "cache"]
 timestamp: "2026-09-23T00:00:00Z"
@@ -58,7 +58,7 @@ quota/concurrency admission lease for the resulting context (`crates/corelink-co
   exact tenant-matched REAPI resource forms (`crates/corelink-container/src/reapi_ingress/validation.rs:7-118`).
 - Hosted tests use four storage spies to prove auth, instance, scope, and admission denials never invoke
   CAS or ActionCache, and also assert the admitted context cannot render a bearer placeholder
-  (`crates/corelink-container/src/reapi_ingress.rs:394-416`; `crates/corelink-container/src/reapi_ingress/tests.rs:45-168`; `:219-316`).
+  (`crates/corelink-container/src/reapi_ingress.rs:394-416`; `crates/corelink-container/src/reapi_ingress/tests.rs:46-169`; `:220-317`).
 
 # Citations
 
@@ -66,7 +66,7 @@ quota/concurrency admission lease for the resulting context (`crates/corelink-co
 2. `crates/corelink-container/src/reapi_ingress.rs:139-146` — D1-backed PAT verification and failure classification.
 3. `crates/corelink-container/src/reapi_ingress/admission.rs:22-45` — shared quota and concurrency admission.
 4. `crates/corelink-container/src/reapi_ingress/validation.rs:7-118` — canonical digest and ByteStream resource-name validation.
-5. `crates/corelink-container/src/reapi_ingress/tests.rs:45-168` — storage-spy denial coverage.
+5. `crates/corelink-container/src/reapi_ingress/tests.rs:46-169` — storage-spy denial coverage.
 6. `crates/corelink-container/src/routes.rs:521-525` — router factory exports the unmounted ingress bundle.
 7. `crates/corelink-container/src/routes/build.rs:63-90` — the optional bundle contract and no-mount boundary.
 
