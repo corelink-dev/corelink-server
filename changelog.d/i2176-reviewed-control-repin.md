@@ -6,10 +6,11 @@
   secrets-matrix pin. It had also moved paths in all four delivery groups,
   so each group matched neither its old nor its new pin. Four #2574 surface
   paths had moved too. The pins are now re-baselined to the bytes of main
-  `da2d3f8db`, then re-checked against main `3891e88f5`. By then two more
+  `da2d3f8db`, then re-checked against main `e845feb68`. By then three more
   PRs had moved pinned paths. #2876 moved two #2565 paths: its issue-1650
   path filter and the B068 verifier. #2882 moved eight i1700 paths with its
-  V15 probe window, including `durable_object.ts`. Both verifiers accept
+  V15 probe window, including `durable_object.ts`. #2884 moved the i1700
+  deploy workflow again, to swap its deploy token. Both verifiers accept
   that tree as their own BASE.
 
   Every moved pin was reviewed first. The per-file ledger is

@@ -822,8 +822,8 @@ WAVE_GROUPS: dict[str, dict[Path, tuple[tuple[int, str] | None, tuple[int, str] 
 # Reviewed snapshot of the transport control surface. First taken at d2f1
 # (#2786, c55d24560); re-baselined by #2868 to the exact bytes of main
 # da2d3f8db after every moved pin was reviewed, then re-checked against main
-# 3891e88f5, where #2876 had moved two #2565 successor paths and #2882 eight
-# i1700 successor paths (all reviewed below).
+# e845feb68, where #2876 had moved two #2565 successor paths and #2882/#2884
+# eight i1700 successor paths (all reviewed below).
 # REBASELINE_LEDGER below holds one row per moved pin: the PRs that moved it,
 # its transport class, its disposition and the reason its bytes are admitted.
 # The path set and the all-or-nothing predicate are unchanged; only reviewed
@@ -902,7 +902,7 @@ WAVE_GROUP_SUCCESSOR_PINS: dict[str, dict[Path, tuple[int, str]]] = {
     },
     "i1700": {
         Path('.github/workflows/campaign-ci.yml'): (0o0644, "0fa794317117c791b0428407d4dd7c1f63bc06dea5e4239bcef5c09199655db9"),
-        Path('.github/workflows/issue-1700-container-staging-deploy.yml'): (0o0644, "784b4a4d6ecc47a0eb74344389a29c193ea9e8f41e5c49ff408fcbba27ab6bc9"),
+        Path('.github/workflows/issue-1700-container-staging-deploy.yml'): (0o0644, "cd3f98c5b0c9043c99639405b8a4edfd041c6583c5f0e74bf10469287dd6dde4"),
         Path('crates/corelink-container/src/routes/staging_d1_binding_probe.rs'): (0o0644, "569e66f6604526d9008ddadee8087f69529ab4d3a13d5d28f72f7e744f2fa926"),
         Path('crates/corelink-container/src/routes/staging_d1_probe_window.json'): (0o0644, "b9826ebd5774b729276a3a58eef4d913d8dd018ed54e88481c5513e54f217428"),
         Path('docs/operator/issue-1700-runtime-recovery.md'): (0o0644, "177a5d673ae171a7485eb9d22213d0b6ff8bf333ec0c1e45d416fec2c8e2dc96"),
@@ -946,7 +946,7 @@ WAVE_GROUP_SUCCESSOR_PINS: dict[str, dict[Path, tuple[int, str]]] = {
 REBASELINE_LEDGER: dict[Path, tuple[str, str, tuple[str, ...], str]] = {
     Path(".github/workflows/campaign-ci.yml"): ("#2798, #2799, #2811, #2812, #2825, #2834, #2844, #2852, #2853, #2858, #2862, #2868", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Dispatch-only CI suites; #2868 updates its two #2574 checker digests."),
     Path(".github/workflows/issue-1650-real-integration-contract.yml"): ("#2811, #2876", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Credentialless contract CI for scoped R2 credentials; #2876 adds infra/staging/topology.json to its PR path filter."),
-    Path(".github/workflows/issue-1700-container-staging-deploy.yml"): ("#2806, #2812, #2825, #2844, #2853, #2882", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Protected staging deploy workflow; no Worker or Container source. #2882 prints one redacted bootstrap failure line."),
+    Path(".github/workflows/issue-1700-container-staging-deploy.yml"): ("#2806, #2812, #2825, #2844, #2853, #2882, #2884", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Protected staging deploy workflow; no Worker or Container source. #2882 prints one redacted bootstrap failure line; #2884 deploys with the CF_API_TOKEN secret instead of STAGING_CF_WORKER_API_TOKEN."),
     Path(".github/workflows/real-ignored-harnesses.yml"): ("#2800, #2811", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), "Dispatch-only real-integration harness lanes (R2 fixtures, scoped credentials)."),
     Path(".github/workflows/staging-quarantine-apply.yml"): ("#2816", "not-transport", ("WAVE_BASE_CONTROLS",), "Staging quarantine workflow binds the B-216 alert receiver."),
     Path("Cargo.lock"): ("#2830, #2842, #2843, #2847, #2851", "not-transport", ("WAVE_BASE_CONTROLS",), "Only corelink-cli 0.1.2 -> 0.1.7; no corelink-server dependency moved."),
