@@ -1026,6 +1026,9 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     if (tagged.length !== 1 || !isUuid(tagged[0]?.id)) fail("worker_uploaded_revision_ambiguous");
     const candidateVersion = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${tagged[0].id}`);
     validateCandidateVersion(candidateVersion, receipt.database_id, versionTag);
+    // Before activation: the same exact check as rollback and the exercise. Route
+    // tag, and the receiver D1 and secret are the only bindings.
+    validateRouteOwnedRevision(candidateVersion, receipt.database_id);
 
     stage = "worker_deploy";
     command(["versions", "deploy", `${tagged[0].id}@100%`, "--yes", "--config", tempConfig], { cwd: appDir, home: wranglerHome, apiToken: context.apiToken });
@@ -1040,6 +1043,8 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     if (activeVersion !== tagged[0].id) fail("worker_revision_readback_mismatch");
     const bindings = version?.resources?.bindings ?? [];
     validatePostflight({ versionId: activeVersion, deployment: deployments[0], bindings, secrets, expectedTag: versionTag }, receipt.database_id, versionTag);
+    // And again on what is actually active.
+    validateRouteOwnedRevision(version, receipt.database_id);
     if (!priorWorker) {
       stage = "worker_public_ingress_enable";
       await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`, {

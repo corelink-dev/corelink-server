@@ -119,6 +119,7 @@ function routeHarness({ migration, sha, existing = false, foreignPreimage = null
     domains = [], zoneRoutes = [], serviceRoutes = [], routesAfterDeploy = null,
     domainsStatus = 200, zonesStatus = 200, zoneRoutesStatus = 200, serviceRoutesStatus = 200,
     zonesResultInfo = null, failDelete = false, ineffectiveDelete = false, zoneRoutesFailAfterDeploy = false,
+    extraCandidateBindings = [], extraBindingsAfterDeploy = [],
   } = ingress;
   const initialId = "323e4567-e89b-42d3-a456-426614174000";
   const sourceId = "423e4567-e89b-42d3-a456-426614174000";
@@ -252,11 +253,14 @@ function routeHarness({ migration, sha, existing = false, foreignPreimage = null
       state.details.set(finalId, { id: finalId, metadata: { annotations: { "workers/tag": finalTag } }, resources: { bindings: [
         { type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID },
         { type: "secret_text", name: TARGET.workerSecret },
+        ...extraCandidateBindings,
       ] } });
       return "";
     }
     if (args[0] === "versions" && args[1] === "deploy") {
       state.finalDeployed = true;
+      state.deployedCandidate = true;
+      if (extraBindingsAfterDeploy.length > 0) state.details.get(finalId).resources.bindings.push(...extraBindingsAfterDeploy);
       state.deployments = [{ id: "a23e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: finalId, percentage: 100 }] }];
       return "";
     }
@@ -1607,6 +1611,43 @@ describe("B-216 receiver on the shared main account", () => {
     expect(receipt).toMatchObject({ failed_stage: "worker_initial_private_readback", rollback_status: "halted_external_ingress_detected" });
     expect(harness.state.requests.filter(({ method }) => method === "DELETE")).toHaveLength(0);
     expect(harness.state.script).toBe(true);
+  });
+
+  // PR #2880 round-3 review, reproduced: a full run activated a candidate that also
+  // bound a production D1, a service and a secret, and returned `deployed`.
+  const PRODUCTION_EXTRAS = [
+    { type: "d1", name: "PROD_DB", database_id: "123e4567-e89b-42d3-a456-426614174000" },
+    { type: "service", name: "API", service: "corelink-api" },
+    { type: "secret_text", name: "PRODUCTION_SECRET" },
+  ];
+
+  it("never activates a candidate with any extra binding, and cleans up through the gated path", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    for (const extras of [PRODUCTION_EXTRAS, ...PRODUCTION_EXTRAS.map((extra) => [extra])]) {
+      const created = routeHarness({ migration, sha: goodContext.sha, ingress: { extraCandidateBindings: extras } });
+      const receipt = await runForReceipt(created, config, migration, "worker_revision_bindings_not_exact");
+      expect(receipt.status, JSON.stringify(extras)).toBe("failed");
+      expect(created.state.commands.some(({ args }) => args[0] === "versions" && args[1] === "deploy"), JSON.stringify(extras)).toBe(false);
+      expect(created.state.deployedCandidate).toBeUndefined();
+      expect(receipt).toMatchObject({ rollback_status: "created_worker_deleted", cleanup_ingress_preimage: { zone_routes: 0, custom_domains: 0, service_routes: 0 } });
+      expect(created.state.deleted).toBe(true);
+    }
+    const existing = routeHarness({ migration, sha: goodContext.sha, existing: true, ingress: { extraCandidateBindings: PRODUCTION_EXTRAS } });
+    const existingReceipt = await runForReceipt(existing, config, migration, "worker_revision_bindings_not_exact");
+    expect(existing.state.commands.some(({ args }) => args[0] === "versions" && args[1] === "deploy")).toBe(false);
+    expect(existingReceipt.rollback_status).toBe("restored_route_owned_revision");
+    expect(existing.state.deleted).toBe(false);
+  });
+
+  it("refuses in postflight when the active version holds extra bindings, and cleans up", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha, ingress: { extraBindingsAfterDeploy: PRODUCTION_EXTRAS } });
+    const receipt = await runForReceipt(harness, config, migration, "worker_revision_bindings_not_exact");
+    expect(receipt).toMatchObject({ status: "failed", failed_stage: "worker_readback", rollback_status: "created_worker_deleted" });
+    expect(receipt.worker_revision).toBeUndefined();
+    expect(harness.state.deleted).toBe(true);
   });
 
   it("proves zero ingress immediately before a cleanup delete or rollback, and halts if it is not zero", async () => {
