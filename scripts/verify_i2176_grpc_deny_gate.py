@@ -823,7 +823,8 @@ WAVE_GROUPS: dict[str, dict[Path, tuple[tuple[int, str] | None, tuple[int, str] 
 # (#2786, c55d24560); re-baselined by #2868 to the exact bytes of main
 # da2d3f8db after every moved pin was reviewed, then re-checked against main
 # e845feb68, where #2876 had moved two #2565 successor paths and #2882/#2884
-# eight i1700 successor paths (all reviewed below).
+# eight i1700 successor paths (all reviewed below), and against main
+# 3e7080062, where #2885/#2886 moved no pinned path.
 # REBASELINE_LEDGER below holds one row per moved pin: the PRs that moved it,
 # its transport class, its disposition and the reason its bytes are admitted.
 # The path set and the all-or-nothing predicate are unchanged; only reviewed

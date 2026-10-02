@@ -10,8 +10,9 @@
   PRs had moved pinned paths. #2876 moved two #2565 paths: its issue-1650
   path filter and the B068 verifier. #2882 moved eight i1700 paths with its
   V15 probe window, including `durable_object.ts`. #2884 moved the i1700
-  deploy workflow again, to swap its deploy token. Both verifiers accept
-  that tree as their own BASE.
+  deploy workflow again, to swap its deploy token. #2885 and #2886 (main
+  `3e7080062`) moved no pinned path. Both verifiers accept that tree,
+  merged with this PR, as their own BASE.
 
   Every moved pin was reviewed first. The per-file ledger is
   `REBASELINE_LEDGER` in `scripts/verify_i2176_grpc_deny_gate.py`: 47 rows,
@@ -88,24 +89,25 @@
     verifier, or a new container path;
   - moving any one pin makes the BASE unrecognised.
 
-  Merge note, for a one-time `--admin-reason` merge:
+  Merge note, for a one-time exception to the stale BASE check:
   - Why the exception is needed: the `pull_request_target` check runs the
     BASE verifier, and that verifier is stale. It refuses its own BASE
     ("trusted BASE transport controls do not match actual d2f1 snapshot",
     run 36974457526). By design, it also requires a candidate's verifier
     and tests to equal the BASE bytes. No gate repair can pass that check.
   - Which head to merge: only the reviewed PR head. A commit cannot name
-    its own SHA, so the reason string must quote it. The `--merge` script
-    then merges only the head it gated.
+    its own SHA, so the PR comment that records the exception must quote
+    it.
   - Evidence required on that head: the `issue 2574 staging gRPC
     diagnostic` run must be green, since it executes this PR's suites.
     Locally, these must pass: both `unittest` suites,
     `verify_i2176_grpc_deny_gate.py --self-test` and
     `verify_i2574_grpc_diagnostic_policy.py --self-test`.
-  - Command: `bash scripts/pre-merge-gate-check.sh --merge 2868
-    --admin-reason "#2868 <head SHA>: stale pull_request_target BASE
-    verifier refuses its own BASE; reviewed re-baseline, candidate suites
-    green"`.
+  - Route: while B-315 is open, `--merge` and `--admin` are not used
+    (CLAUDE.md). Run the report-only `bash scripts/pre-merge-gate-check.sh
+    2868`, record the stale-BASE reason and head SHA in a PR comment, then
+    run `gh pr merge 2868 --squash --match-head-commit <head SHA>`. The
+    owner or lead decides whether to proceed.
   - If main moves a pinned path first, re-baseline and review it before
     merging. An i1700 probe-window move does this, because the window
     constants live in pinned i1700 paths (the V15 move touched eight).
