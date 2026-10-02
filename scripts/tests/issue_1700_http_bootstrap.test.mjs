@@ -382,7 +382,11 @@ test("a provider call that outlives its budget records timed_out and still fails
 test("closing the broker during a provider call records aborted and still fails closed", async () => {
   const f = fixture({ request: (path, init) => (path === `/versions/${id(11)}` ? pending(init) : undefined) });
   const preparing = f.broker.dispatch("prepare");
-  while (!f.calls.some(call => call.path === `/versions/${id(11)}`)) await new Promise(resolve => setImmediate(resolve));
+  // Bounded wait: a broker that never issues the read fails here instead of hanging the run.
+  for (let turns = 0; !f.calls.some(call => call.path === `/versions/${id(11)}`); turns++) {
+    assert.ok(turns < 10_000, "the preimage version read was never issued");
+    await new Promise(resolve => setImmediate(resolve));
+  }
   await f.broker.close();
   await assert.rejects(preparing, /bootstrap_unknown/);
   assert.deepEqual(f.broker.snapshot().failure, readFailure({ aborted: true }));
