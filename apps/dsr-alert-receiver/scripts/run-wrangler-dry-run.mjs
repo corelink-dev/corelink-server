@@ -20,11 +20,15 @@ async function containsGeneratedFile(directory) {
   return false;
 }
 
+// The credentialless bundle needs some well-formed D1 UUID; the real one is
+// adopted by exact name at deploy time and never reaches this offline build.
+export const DRY_RUN_DATABASE_ID = "0b216000-0000-4000-8000-00000000d1d1";
+
 export function buildDryRunConfig(config, migration, projectDir) {
   validateTrackedInputs(config, migration);
   const placeholder = `database_id = "${TARGET.placeholderId}"`;
   if (config.split(placeholder).length !== 2) throw new Error("target_config_not_unique");
-  const configured = config.replace(placeholder, `database_id = "${TARGET.databaseId}"`);
+  const configured = config.replace(placeholder, `database_id = "${DRY_RUN_DATABASE_ID}"`);
   return configured
     .replace('main = "src/index.ts"', `main = "${resolve(projectDir, "src/index.ts")}"`)
     .replace('migrations_dir = "migrations"', `migrations_dir = "${resolve(projectDir, "migrations")}"`);

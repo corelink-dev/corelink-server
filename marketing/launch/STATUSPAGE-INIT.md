@@ -175,7 +175,7 @@ For each component, in Statuspage UI: **Components → Add Component**. Set the 
 | **C5** | `Audit` | "Audit-chain ingest + Merkle-proof issuance; SIEM forwarding (S3 + Splunk-compatible)." | `Security` | Public | ingest lag |
 | **C6** | `Billing` | "Stripe webhook ingest, invoice generation, metering aggregation." | `Operations` | Public | webhook success rate |
 | **C7** | `Docs` | "corelink-docs.humangr.com Docusaurus site + CDN; includes security.txt + trust center." | `Operations` | Public | availability |
-| **C8** | `Admin Console` | "admin.corelink.humangr.com operator console — Clerk-gated; org/tenant/user admin." | `Operations` | Public | availability |
+| **C8** | `Admin Console` | "humangr.com/corelink/en/admin/tenants operator console — Clerk-gated; org/tenant/user admin." | `Operations` | Public | availability |
 
 **After each component is created, copy the component ID from the URL** (`https://manage.statuspage.io/pages/<page-id>/components/<component-id>`). Each becomes one of the `SP_COMPONENT_*` placeholders in §5.
 

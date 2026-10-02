@@ -75,8 +75,9 @@ production-deploy campaign sealed 2026-05-22 (tag
 Current public entry points are `corelink-api.humangr.com`,
 `corelink-signup.humangr.com`, `corelink-get.humangr.com`,
 `corelink-docs.humangr.com`, and the path-mounted customer app at
-`https://humangr.com/corelink`. `corelink-app.humangr.com` is retired
-(NXDOMAIN); the docs host redirects to `https://humangr.com/corelink/docs/`.
+`https://humangr.com/corelink`. The former bare `corelink-app` subdomain is
+retired (it has no address record); the docs host redirects to
+`https://humangr.com/corelink/docs/`.
 The Wave 33-36 reorg campaign
 (2026-05-22 → 2026-05-27) then consolidated the workspace from 149
 packages to 87 across 11 umbrella crates, restored the wasm32 build,

@@ -99,7 +99,7 @@ The status page advertises exactly the following 8 components. Each maps to a Co
 | C5 | **Audit** | Audit-chain ingest + Merkle-proof issuance; SIEM forwarding (S3 + Splunk-compatible). | Audit ingest lag ≤ 60 s; proof issuance p99 ≤ 200 ms. | VPSec |
 | C6 | **Billing** | Stripe webhook ingest, invoice generation, metering aggregation. | Webhook ingest success ≥ 99.9%; billing freshness ≤ 1 h. | Finance + SRE-OC |
 | C7 | **Docs** | `corelink-docs.humangr.com` Docusaurus site + CDN; including security.txt + trust center. | Docs availability ≥ 99.95%. | VPMkt + Engineering |
-| C8 | **Admin Console** | `admin.corelink.humangr.com` operator console — Clerk-gated; org/tenant/user admin. | Admin availability ≥ 99.9%. | SRE-OC |
+| C8 | **Admin Console** | `humangr.com/corelink/en/admin/tenants` operator console — Clerk-gated; org/tenant/user admin. | Admin availability ≥ 99.9%. | SRE-OC |
 
 **Hidden / private components.** None at GA. (If we add tenant-scoped private status visibility post-GA, file ADR-0036.)
 

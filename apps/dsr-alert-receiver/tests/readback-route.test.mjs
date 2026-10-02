@@ -65,7 +65,7 @@ describe("B-216 read-only Worker inventory", () => {
     expect(workflow).toContain("if: ${{ inputs.readback_only }}");
     expect(workflow).toContain("if: ${{ inputs.deploy_once }}");
     const readback = workflow.split("- name: Read fixed Worker inventory without mutation")[1].split("- name: Deploy exact receiver target")[0];
-    expect(readback).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}");
+    expect(readback).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}");
     expect(readback).not.toContain("B216_DSR_ALERT_RECEIVER_TOKEN");
     expect(readback).not.toContain("run-deploy-route.mjs");
   });
@@ -75,7 +75,7 @@ describe("B-216 read-only Worker inventory", () => {
     const runner = await readFile(new URL("../scripts/run-readback-route.mjs", import.meta.url), "utf8");
     expect(workflow).toContain("if: ${{ inputs.readback_only }}");
     const readback = workflow.split("- name: Read fixed Worker inventory without mutation")[1].split("- name: Deploy exact receiver target")[0];
-    expect(readback).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.B216_CF_RECEIVER_WRITE_TOKEN }}");
+    expect(readback).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}");
     expect(readback).not.toContain("B216_DSR_ALERT_RECEIVER_TOKEN");
     expect(runner).toContain("includeTokenPolicyDiagnostic: true");
   });
@@ -100,8 +100,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(diagnostic).toEqual({
       status: "details_read",
       token_active: true,
-      account_5128_scope: true,
-      workers_admin_on_5128: true,
+      target_account_scope: true,
+      workers_admin_on_target_account: true,
       verification: activeVerification,
     });
     expect(calls.map(({ url }) => new URL(url).pathname)).toEqual([
@@ -127,8 +127,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(diagnostic).toEqual({
       status: "verify_unknown",
       token_active: null,
-      account_5128_scope: null,
-      workers_admin_on_5128: null,
+      target_account_scope: null,
+      workers_admin_on_target_account: null,
       verification: { http_status: 200, error_class: "malformed_verification_fields", active_status: "other", token_id_shape: "valid_32_hex", token_kind: "user", user_verify: userOk, account_verify: notAttempted },
     });
     expect(JSON.stringify(diagnostic)).not.toContain(tokenId);
@@ -163,8 +163,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(diagnostic).toEqual({
       status: "verify_unknown",
       token_active: null,
-      account_5128_scope: null,
-      workers_admin_on_5128: null,
+      target_account_scope: null,
+      workers_admin_on_target_account: null,
       verification: {
         http_status: 502,
         error_class: "http_response",
@@ -323,8 +323,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(diagnostic).toEqual({
       status: "details_read",
       token_active: true,
-      account_5128_scope: true,
-      workers_admin_on_5128: true,
+      target_account_scope: true,
+      workers_admin_on_target_account: true,
       verification: {
         http_status: 200,
         error_class: "none",
@@ -362,7 +362,7 @@ describe("B-216 read-only Worker inventory", () => {
     });
     const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
     expect(paths()).toEqual([userVerifyPath, accountVerifyPath, `${accountTokensPath}/${tokenId}`]);
-    expect(diagnostic).toMatchObject({ status: "details_read", token_active: true, account_5128_scope: true, workers_admin_on_5128: false });
+    expect(diagnostic).toMatchObject({ status: "details_read", token_active: true, target_account_scope: true, workers_admin_on_target_account: false });
     expect(diagnostic.verification.token_kind).toBe("account");
     expect(diagnostic.verification.user_verify).toEqual({ http_status: 403, error_class: "http_response" });
     expect(JSON.stringify(diagnostic)).not.toContain(tokenId);
@@ -378,8 +378,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(diagnostic).toEqual({
       status: "verify_unknown",
       token_active: null,
-      account_5128_scope: null,
-      workers_admin_on_5128: null,
+      target_account_scope: null,
+      workers_admin_on_target_account: null,
       verification: {
         http_status: 401,
         error_class: "http_response",
@@ -425,7 +425,7 @@ describe("B-216 read-only Worker inventory", () => {
     });
     const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
     expect(paths()).toEqual([userVerifyPath, accountVerifyPath, `${accountTokensPath}/${tokenId}`]);
-    expect(diagnostic).toMatchObject({ status: "details_read", account_5128_scope: false, workers_admin_on_5128: false });
+    expect(diagnostic).toMatchObject({ status: "details_read", target_account_scope: false, workers_admin_on_target_account: false });
     expect(diagnostic.verification.token_kind).toBe("account");
   });
 
@@ -438,7 +438,7 @@ describe("B-216 read-only Worker inventory", () => {
     });
     const diagnostic = await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl });
     expect(paths()).toEqual([userVerifyPath, accountVerifyPath, `${accountTokensPath}/${tokenId}`]);
-    expect(diagnostic).toMatchObject({ status: "unknown_access", token_active: true, account_5128_scope: null, workers_admin_on_5128: null });
+    expect(diagnostic).toMatchObject({ status: "unknown_access", token_active: true, target_account_scope: null, workers_admin_on_target_account: null });
     expect(diagnostic.verification.token_kind).toBe("account");
     expect(JSON.stringify(diagnostic)).not.toContain("private detail denial");
   });
@@ -495,8 +495,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(diagnostic).toEqual({
       status: "unknown_access",
       token_active: true,
-      account_5128_scope: null,
-      workers_admin_on_5128: null,
+      target_account_scope: null,
+      workers_admin_on_target_account: null,
       verification: activeVerification,
     });
     expect(calls).toHaveLength(2);
@@ -513,8 +513,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(diagnostic).toEqual({
       status: "inactive",
       token_active: false,
-      account_5128_scope: null,
-      workers_admin_on_5128: null,
+      target_account_scope: null,
+      workers_admin_on_target_account: null,
       verification: inactiveVerification,
     });
     expect(calls).toHaveLength(1);
@@ -536,8 +536,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(diagnostic).toEqual({
       status: "details_unknown",
       token_active: true,
-      account_5128_scope: null,
-      workers_admin_on_5128: null,
+      target_account_scope: null,
+      workers_admin_on_target_account: null,
       verification: activeVerification,
     });
   });
@@ -557,8 +557,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl })).toEqual({
       status: "policy_scope_unknown",
       token_active: true,
-      account_5128_scope: null,
-      workers_admin_on_5128: null,
+      target_account_scope: null,
+      workers_admin_on_target_account: null,
       verification: activeVerification,
     });
   });
@@ -580,8 +580,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl })).toEqual({
       status: "details_read",
       token_active: true,
-      account_5128_scope: true,
-      workers_admin_on_5128: false,
+      target_account_scope: true,
+      workers_admin_on_target_account: false,
       verification: activeVerification,
     });
   });
@@ -608,8 +608,8 @@ describe("B-216 read-only Worker inventory", () => {
     expect(await readTokenPolicyDiagnostic({ apiToken: context.apiToken, fetchImpl })).toEqual({
       status: "policy_conflict",
       token_active: true,
-      account_5128_scope: null,
-      workers_admin_on_5128: null,
+      target_account_scope: null,
+      workers_admin_on_target_account: null,
       verification: activeVerification,
     });
   });
@@ -632,8 +632,8 @@ describe("B-216 read-only Worker inventory", () => {
       expect(receipt.token_policy_diagnostic).toEqual({
         status: "unknown_access",
         token_active: true,
-        account_5128_scope: null,
-        workers_admin_on_5128: null,
+        target_account_scope: null,
+        workers_admin_on_target_account: null,
         verification: activeVerification,
       });
       expect(JSON.stringify(receipt)).not.toContain("private provider message");
@@ -674,8 +674,8 @@ describe("B-216 read-only Worker inventory", () => {
       expect(receipt.token_policy_diagnostic).toMatchObject({
         status: "details_read",
         token_active: true,
-        account_5128_scope: true,
-        workers_admin_on_5128: true,
+        target_account_scope: true,
+        workers_admin_on_target_account: true,
         verification: { token_kind: "account" },
       });
       const saved = await readFile(join(runnerTemp, "b216-receiver-readback-receipt.json"), "utf8");

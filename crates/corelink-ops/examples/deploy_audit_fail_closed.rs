@@ -51,7 +51,7 @@ fn main() {
         DeployTarget::new(
             "corelink-worker",
             "00000000000000000000000000000001",
-            "api.corelink.humangr.com/*",
+            "corelink-api.humangr.com/*",
         ),
         GitHubActor::new(
             "github-actions[bot]",

@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { TARGET } from "../scripts/deploy-route.mjs";
 import { disableWorkersDev, runSyntheticReceiverExercise, safeWorkersDevUrl } from "../scripts/synthetic-exercise.mjs";
 
+// The UUID the provider reports for the receiver D1; routes adopt it by exact name.
+const DATABASE_ID = "c0ffee00-0b16-4000-8000-0000000006a1";
 const workerPath = `/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`;
 const subdomainPath = `${workerPath}/subdomain`;
 const versionId = "123e4567-e89b-42d3-a456-426614174000";
@@ -18,7 +20,7 @@ const activeVersion = {
   id: versionId,
   metadata: { annotations: { "workers/tag": `b216-${sha}` } },
   resources: { bindings: [
-    { type: "d1", name: TARGET.databaseBinding, database_id: TARGET.databaseId },
+    { type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID },
     { type: "secret_text", name: TARGET.workerSecret },
   ] },
 };
@@ -29,7 +31,10 @@ const inventory = {
   versions: { status: "known", count: 1, items: [{ id: versionId, tag: `b216-${sha}` }] },
 };
 
-function exerciseHarness({ receiverStatus = 202, readbackRows } = {}) {
+const ZONE_ID = "f".repeat(32);
+
+function exerciseHarness({ receiverStatus = 202, readbackRows, version = activeVersion, ingress = {} } = {}) {
+  const { domains = [], zoneRoutes = [], serviceRoutes = [], zonesStatus = 200, serviceRoutesStatus = 200 } = ingress;
   const state = { workersDev: true, preview: false, receiverCalls: [], providerCalls: [], receiptRow: null };
   const tables = [
     { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)" },
@@ -40,9 +45,15 @@ function exerciseHarness({ receiverStatus = 202, readbackRows } = {}) {
     const path = parsed.pathname.replace(/^\/client\/v4(?=\/)/, "");
     state.providerCalls.push({ path, method: options.method ?? "GET", body: options.body ? JSON.parse(options.body) : undefined });
     const json = (result) => Response.json({ success: true, result });
+    const rejected = (status) => Response.json({ success: false, result: null }, { status });
     if (path === `/accounts/${TARGET.accountId}`) return json({ id: TARGET.accountId });
-    if (path === `/accounts/${TARGET.accountId}/d1/database`) return json([{ name: TARGET.databaseName, uuid: TARGET.databaseId, account_id: TARGET.accountId }]);
-    if (path.endsWith(`/d1/database/${TARGET.databaseId}/query`)) {
+    // The zero-ingress proof: account custom domains, zone list, zone routes, service routes.
+    if (path === `/accounts/${TARGET.accountId}/workers/domains`) return json(domains);
+    if (path === "/zones") return zonesStatus === 200 ? Response.json({ success: true, result: [{ id: ZONE_ID }], result_info: { page: 1, per_page: 50, count: 1, total_count: 1, total_pages: 1 } }) : rejected(zonesStatus);
+    if (path === `/zones/${ZONE_ID}/workers/routes`) return json(zoneRoutes);
+    if (path === `/accounts/${TARGET.accountId}/workers/services/${TARGET.workerName}/environments/production/routes`) return serviceRoutesStatus === 200 ? json(serviceRoutes) : rejected(serviceRoutesStatus);
+    if (path === `/accounts/${TARGET.accountId}/d1/database`) return json([{ name: TARGET.databaseName, uuid: DATABASE_ID, account_id: TARGET.accountId }]);
+    if (path.endsWith(`/d1/database/${DATABASE_ID}/query`)) {
       const { sql, params = [] } = JSON.parse(options.body);
       if (sql.includes("sqlite_master")) return json([{ success: true, results: tables }]);
       if (sql.includes("d1_migrations")) return json([{ success: true, results: [{ name: TARGET.migration }] }]);
@@ -50,7 +61,7 @@ function exerciseHarness({ receiverStatus = 202, readbackRows } = {}) {
       return json([{ success: true, results: rows }]);
     }
     if (path === `${workerPath}/deployments`) return json({ deployments: [activeDeployment] });
-    if (path === `${workerPath}/versions/${versionId}`) return json(activeVersion);
+    if (path === `${workerPath}/versions/${versionId}`) return json(version);
     if (path === `${workerPath}/secrets`) return json([{ name: TARGET.workerSecret }]);
     if (path === subdomainPath && (options.method ?? "GET") === "POST") {
       const body = JSON.parse(options.body);
@@ -99,7 +110,7 @@ describe("B-216 receiver-only synthetic operator", () => {
     expect(call.options.headers.authorization).toBe(`Bearer ${context.receiverToken}`);
     expect(call.envelope).toEqual({ schema_version: 1, event: "dsr.erasure.dead_letter", severity: "critical", component: "dsr-erasure-dlq", event_id: receipt.event_id, exhausted: true, requeue_count: 1 });
     expect(Object.keys(call.envelope).sort()).toEqual(["component", "event", "event_id", "exhausted", "requeue_count", "schema_version", "severity"]);
-    const durableQuery = harness.state.providerCalls.find(({ path, body }) => path.endsWith(`/d1/database/${TARGET.databaseId}/query`) && body?.sql.includes("WHERE event_id"));
+    const durableQuery = harness.state.providerCalls.find(({ path, body }) => path.endsWith(`/d1/database/${DATABASE_ID}/query`) && body?.sql.includes("WHERE event_id"));
     expect(durableQuery.body.params).toEqual([receipt.event_id]);
     expect(harness.state.workersDev).toBe(false);
     expect(harness.state.preview).toBe(false);
@@ -138,5 +149,78 @@ describe("B-216 receiver-only synthetic operator", () => {
     });
     expect(result.status).toBe("already_disabled");
     expect(calls).toEqual([{ requestedPath: subdomainPath }]);
+  });
+
+  // PR #2880 round-2 review, reproduced: extra production bindings on the active
+  // revision passed the presence-only checks and the authenticated POST was sent.
+  it.each([
+    ["a production D1", { type: "d1", name: "PROD_DB", database_id: "123e4567-e89b-42d3-a456-426614174000" }],
+    ["a corelink-api service", { type: "service", name: "API", service: "corelink-api" }],
+    ["a production secret", { type: "secret_text", name: "PRODUCTION_SECRET" }],
+  ])("sends nothing when the active revision also binds %s", async (_name, extra) => {
+    const harness = exerciseHarness({ version: { ...activeVersion, resources: { bindings: [...activeVersion.resources.bindings, extra] } } });
+    const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
+    expect(receipt.status).toBe("failed_closed");
+    expect(receipt.failure_code).toBe("worker_revision_bindings_not_exact");
+    expect(harness.state.receiverCalls).toHaveLength(0);
+    expect(receipt.alert_acceptance).toBe("not_attempted");
+    expect(receipt.workers_dev_cleanup).toBe("disabled");
+  });
+
+  it("sends nothing when the reproduced production bindings are all present together", async () => {
+    const harness = exerciseHarness({ version: { ...activeVersion, resources: { bindings: [
+      ...activeVersion.resources.bindings,
+      { type: "d1", name: "PROD_DB", database_id: "123e4567-e89b-42d3-a456-426614174000" },
+      { type: "service", name: "API", service: "corelink-api" },
+      { type: "secret_text", name: "PRODUCTION_SECRET" },
+    ] } } });
+    const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
+    expect(receipt).toMatchObject({ status: "failed_closed", failure_code: "worker_revision_bindings_not_exact", alert_acceptance: "not_attempted" });
+    expect(harness.state.receiverCalls).toHaveLength(0);
+  });
+
+  // "b216-release" fails the existing postflight tag check; an upper-case hex tag
+  // passes that case-insensitive check and is refused only by the route-owned one.
+  it.each([
+    ["b216-release", "worker_revision_tag_invalid"],
+    [`b216-${"E".repeat(40)}`, "worker_revision_not_route_owned"],
+  ])("sends nothing to an active revision tagged %s", async (tag, code) => {
+    const harness = exerciseHarness({ version: { ...activeVersion, metadata: { annotations: { "workers/tag": tag } } } });
+    const foreignInventory = { ...inventory, versions: { ...inventory.versions, items: [{ id: versionId, tag }] } };
+    const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => foreignInventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
+    expect(receipt.failure_code).toBe(code);
+    expect(harness.state.receiverCalls).toHaveLength(0);
+  });
+
+  it("proves zero ingress before sending, even when the inventory reports routes as unknown", async () => {
+    const harness = exerciseHarness();
+    const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => ({ ...inventory, routes: { status: "unknown" } }), fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
+    expect(receipt.status).toBe("complete");
+    expect(receipt.ingress_preflight).toEqual({ zones_checked: 1, zone_routes: 0, custom_domains: 0, service_routes: 0 });
+    const ingressReads = harness.state.providerCalls.filter(({ path }) => path === "/zones" || path === `/zones/${ZONE_ID}/workers/routes` || path.endsWith("/workers/domains") || path.endsWith("/environments/production/routes"));
+    expect(ingressReads).toHaveLength(4);
+  });
+
+  it.each([
+    [{ domains: [{ id: "d1", hostname: "alerts.example.com", service: TARGET.workerName }] }, "worker_custom_domain_present"],
+    [{ zoneRoutes: [{ id: "r1", pattern: "api.example.com/*", script: TARGET.workerName }] }, "worker_zone_route_present"],
+    [{ serviceRoutes: [{ id: "r2", pattern: "api.example.com/alerts" }] }, "worker_zone_route_present"],
+  ])("halts every write and sends nothing when external ingress reaches the receiver (%j)", async (ingress, code) => {
+    const harness = exerciseHarness({ ingress });
+    const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
+    expect(receipt).toMatchObject({ status: "failed_closed", failure_code: code, workers_dev_cleanup: "halted_external_ingress_detected", escalation: "lead_review_required" });
+    expect(harness.state.receiverCalls).toHaveLength(0);
+    expect(harness.state.providerCalls.filter(({ method, path }) => method !== "GET" && !path.endsWith("/query"))).toHaveLength(0);
+    expect(harness.state.workersDev).toBe(true);
+  });
+
+  it.each([
+    [{ zonesStatus: 403 }, "ingress_zones_permission_denied"],
+    [{ serviceRoutesStatus: 500 }, "ingress_service_routes_unreadable"],
+  ])("sends nothing when the ingress proof cannot be read (%j), and still disables workers.dev", async (ingress, code) => {
+    const harness = exerciseHarness({ ingress });
+    const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
+    expect(receipt).toMatchObject({ status: "failed_closed", failure_code: code, workers_dev_cleanup: "disabled" });
+    expect(harness.state.receiverCalls).toHaveLength(0);
   });
 });

@@ -8,9 +8,34 @@ import { execSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { mdEscape } from "../scripts/gen-reapi-docs";
 
 const DOCS_ROOT = resolve(__dirname, "..");
 const GEN_DIR = join(DOCS_ROOT, "docs", "reference", "reapi", "_generated");
+
+/**
+ * Split a GFM table row into cells the way GFM does: a backslash escapes a
+ * following backslash or pipe, and any other pipe ends the cell.
+ */
+function gfmCells(row: string): string[] {
+  const cells: string[] = [];
+  let current = "";
+  for (let index = 0; index < row.length; index++) {
+    const character = row[index];
+    const next = row[index + 1];
+    if (character === "\\" && (next === "\\" || next === "|")) {
+      current += character + next;
+      index++;
+    } else if (character === "|") {
+      cells.push(current);
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  cells.push(current);
+  return cells;
+}
 
 describe("REAPI auto-generator", () => {
   it("regenerates without drift (pnpm docs:gen:check exits 0)", () => {
@@ -40,6 +65,14 @@ describe("REAPI auto-generator", () => {
       expect(txt).toMatch(/^id: /m);
       expect(txt).toMatch(/^title: /m);
     }
+  });
+
+  it("keeps an escaped type name inside one table cell, backslashes included", () => {
+    for (const name of ["a|b", "a\\|b", "a\\\\|b", "a\\", "<T>\\|<U>"]) {
+      expect(gfmCells(mdEscape(name)), JSON.stringify(name)).toEqual([expect.any(String)]);
+    }
+    expect(mdEscape("a\\|b")).toBe("a\\\\\\|b");
+    expect(mdEscape("<T>|")).toBe("&lt;T&gt;\\|");
   });
 
   it("each generated page is non-empty", () => {

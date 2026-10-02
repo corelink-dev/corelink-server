@@ -30,8 +30,6 @@ import {
   useToast,
 } from "@/components/ui/linear";
 
-const DOCS_CLW = "https://docs.humangr.com/corelink/workspaces";
-
 /** Humanize a byte count into KB/MB/GB (binary units, 1024). Renders an honest
  *  "0 B" for empty snapshots — never a fabricated size. */
 function humanizeBytes(bytes: number): string {
@@ -164,17 +162,6 @@ function WorkspacesInner(): React.ReactElement {
           </HelpPopover>{" "}
           the ones your team hydrates most so the retention preference is recorded.
         </p>
-        <div className="lin-mt">
-          <Button
-            variant="ghost"
-            size="sm"
-            href={DOCS_CLW}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            How Workspaces work
-          </Button>
-        </div>
       </Card>
 
       {/* ── Create ─────────────────────────────────────────────────────── */}

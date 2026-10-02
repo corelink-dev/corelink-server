@@ -440,13 +440,32 @@ export async function captureBrokerProcess(directory, pid, inspect = inspectBrok
   finally { await handle.close(); }
   return owner;
 }
+const MAX_OWNER_BYTES = 4096;
+// The ownership record names the PID that shutdown may signal, so the bytes that are
+// parsed must be the bytes that were validated. One descriptor does both: O_NOFOLLOW
+// refuses a symlink, O_NONBLOCK keeps a FIFO from stalling open(), and fstat/read act
+// on that inode, so a rename after validation cannot substitute another record.
+async function readBrokerProcess(path) {
+  let handle;
+  try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) { if (error.code === "ENOENT") throw error; throw reject(); }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600 || stat.size > MAX_OWNER_BYTES) throw reject();
+    const buffer = Buffer.alloc(MAX_OWNER_BYTES + 1);
+    let length = 0;
+    for (let read; (read = (await handle.read(buffer, length, buffer.length - length, length)).bytesRead) > 0;) {
+      length += read;
+      if (length > MAX_OWNER_BYTES) throw reject();
+    }
+    return JSON.parse(buffer.toString("utf8", 0, length));
+  } finally { await handle.close(); }
+}
 export async function shutdownBroker(directory, { inspect = inspectBrokerProcess, signal = (pid, name) => process.kill(pid, name),
   command = brokerCommand, pause = ms => new Promise(yes => setTimeout(yes, ms)),
 } = {}) {
   await privateDirectory(directory);
-  const ownerPath = join(directory, BROKER_PROCESS), stat = await lstat(ownerPath);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600 || stat.size > 4096) throw reject();
-  const owner = JSON.parse(await readFile(ownerPath, "utf8"));
+  const owner = await readBrokerProcess(join(directory, BROKER_PROCESS));
   if (!exact(owner, ["contract", "directory", "pid", "uid", "started", "command"]) ||
       owner.contract !== "corelink-staging-http-bootstrap-process-v1" || owner.directory !== directory) throw reject();
   const { contract: _contract, directory: _directory, ...identity } = owner;

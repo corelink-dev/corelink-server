@@ -37,7 +37,7 @@ import Translate, { translate } from "@docusaurus/Translate";
 import styles from "./pilot.module.css";
 
 // The route is served by the container behind the prod API host. The old
-// `signup.corelink.humangr.com` name is NXDOMAIN (dotted scheme, retired — the
+// dotted `signup.corelink.` name is NXDOMAIN (dotted scheme, retired — the
 // flat `corelink-*.humangr.com` scheme is canonical), so every submission from
 // this form failed at DNS: the pilot intake was advertised as open and could
 // not accept a single application.

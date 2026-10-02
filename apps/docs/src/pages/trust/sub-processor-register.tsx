@@ -243,7 +243,7 @@ export default function SubProcessorRegister(): ReactElement {
               <code>subprocessor-changes@</code> in tenant settings.
             </li>
             <li>
-              <strong>Status page</strong> — subscribe at{" "}
+              <strong>Status page</strong> —{" "}
               <a
                 href="https://hugrl.betteruptime.com"
                 rel="noopener noreferrer"
@@ -251,11 +251,12 @@ export default function SubProcessorRegister(): ReactElement {
               >
                 hugrl.betteruptime.com
               </a>{" "}
-              (RSS / email / SMS / webhook).
+              carries service state only — subscriptions are switched off
+              there, so it is not a sub-processor notification channel.
             </li>
             <li>
-              <strong>RSS feed (post-GA)</strong> —{" "}
-              <code>https://corelink.humangr.com/trust/subprocessors.rss</code>.
+              <strong>RSS feed</strong> — not available; no sub-processor
+              feed has been published.
             </li>
           </ul>
         </section>
