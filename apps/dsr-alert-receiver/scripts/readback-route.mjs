@@ -3,11 +3,14 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RECEIVER_TARGET } from "./receiver-target.mjs";
 
+// Account, Worker and repository come from the one pinned receiver target, which
+// refuses to load if they drift onto a production or staging name.
 export const READBACK_TARGET = Object.freeze({
-  repository: "HuGR-dev/corelink-server",
-  accountId: "51284495e71acdb5a7677e7383ab026b",
-  workerName: "corelink-dsr-b216-alert-receiver-20260927",
+  repository: RECEIVER_TARGET.repository,
+  accountId: RECEIVER_TARGET.accountId,
+  workerName: RECEIVER_TARGET.workerName,
 });
 
 const API = "https://api.cloudflare.com/client/v4";
@@ -233,8 +236,8 @@ function unknownTokenPolicyDiagnostic(status = "unknown_response", tokenActive =
   return Object.freeze({
     status,
     token_active: tokenActive,
-    account_5128_scope: null,
-    workers_admin_on_5128: null,
+    target_account_scope: null,
+    workers_admin_on_target_account: null,
     verification,
   });
 }
@@ -283,8 +286,8 @@ function summarizeTokenPolicies(policies) {
   return Object.freeze({
     status: "details_read",
     token_active: true,
-    account_5128_scope: accountScoped,
-    workers_admin_on_5128: accountScoped ? adminOnTargetAccount : false,
+    target_account_scope: accountScoped,
+    workers_admin_on_target_account: accountScoped ? adminOnTargetAccount : false,
   });
 }
 
