@@ -53,23 +53,22 @@ def never_execute_fixture(state='enabled'):
     started, now = HTTP_START_MS, HTTP_START_MS + 15 * 60000
     candidate = {'operation_id': '123456', 'candidate_deployment_id': ids[2], 'candidate_version_id': ids[3],
                  'worker_release': RELEASE, 'image_digest': DIGEST}
-    broker = {'contract': 'corelink-staging-http-bootstrap-v1', 'operation_id': '123456', 'worker_release': RELEASE,
+    broker = {'contract': 'corelink-staging-http-bootstrap-v2', 'operation_id': '123456', 'worker_release': RELEASE,
               'started_at_ms': started, 'expires_at_ms': started + 45 * 60000, 'state': state,
-              'secret_name': 'CORELINK_ADMIN_AUTH_KEY', 'secret_put_attempted': True, 'secret_put_confirmed': True,
-              'secret_put_at_ms': started + 500, 'subdomain_enable_attempted': True, 'subdomain_enabled': True,
-              'subdomain_restore_attempted': False, 'subdomain_restored': False, 'secret_delete_attempted': False,
-              'secret_deleted': False, 'rollback_safe': False, 'cleanup_basis': None,
+              'secret_name': 'CORELINK_ADMIN_AUTH_KEY', 'secret_carrier': 'candidate_version',
+              'secret_file_written': True, 'secret_file_removed': True, 'candidate_key_confirmed': True,
+              'subdomain_enable_attempted': True, 'subdomain_enabled': True,
+              'subdomain_restore_attempted': False, 'subdomain_restored': False,
+              'rollback_safe': False, 'cleanup_basis': None,
               'probe_command_seen': False, 'admission_closed': True,
               'preimage': {'deployment_id': ids[0], 'version_id': ids[1], 'created_at_ms': started - 10000,
                            'subdomain': {'enabled': False, 'previews_enabled': False}},
-              'post_secret': {'deployment_id': ids[4], 'version_id': ids[5], 'created_at_ms': started + 1000},
-              'post_delete': None, 'candidate': candidate,
+              'candidate': candidate,
               'preimage_bindings': [{'name': f'BINDING_{index}', 'type': 'plain_text'} for index in range(35)],
               'failure': None, 'pid': 1234}
     if state == 'cleaned':
         broker.update(subdomain_enabled=False, subdomain_restore_attempted=True, subdomain_restored=True,
-                      secret_delete_attempted=True, secret_deleted=True, rollback_safe=True, cleanup_basis='never_execute',
-                      post_delete={'deployment_id': ids[6], 'version_id': ids[7], 'created_at_ms': now - 1000})
+                      rollback_safe=True, cleanup_basis='never_execute')
     observation = {'contract': BROKER_STATUS_CONTRACT, 'requested_at_ms': now - 10, 'observed_at_ms': now, 'broker': broker}
     options = {'http_required': True, 'http_attempt': None, 'http_proof': {'invalid': True},
                'expected_release': RELEASE, 'expected_image_digest': DIGEST, 'operation_id': '123456',
@@ -154,7 +153,10 @@ class QuiescenceTests(unittest.TestCase):
             lambda o, s: s['broker'].update(probe_command_seen=True),
             lambda o, s: s['broker'].update(probe_command_seen=0),
             lambda o, s: s['broker'].update(admission_closed=False),
-            lambda o, s: s['broker'].update(secret_put_confirmed=False),
+            lambda o, s: s['broker'].update(secret_file_removed=False),
+            lambda o, s: s['broker'].update(candidate_key_confirmed=False),
+            lambda o, s: s['broker'].update(secret_carrier='script_secret'),
+            lambda o, s: s['broker'].update(contract='corelink-staging-http-bootstrap-v1'),
             lambda o, s: s['broker'].update(rollback_safe=True),
             lambda o, s: s['broker']['candidate'].update(candidate_version_id=s['broker']['preimage']['version_id']),
             lambda o, s: s['broker']['candidate'].update(operation_id='999'),
@@ -311,6 +313,25 @@ class QuiescenceTests(unittest.TestCase):
         self.assertLess(failed.index("'failure',broker"), failed.index('raise SystemExit(1)'))
         self.assertNotIn('CLOUDFLARE_API_TOKEN', failed)
         self.assertNotIn('payload', failed)
+        # The admin key rides the candidate upload; nothing writes a script-level secret.
+        upload = deploy.split('        id: deploy\n', 1)[1].split('      - name:', 1)[0]
+        self.assertIn('--secrets-file "$secrets_file"', upload)
+        self.assertIn('secrets_file="$RUNNER_TEMP/staging-http-broker/candidate-secrets.json"', upload)
+        self.assertLess(upload.index("trap 'rm -f -- \"$secrets_file\"' EXIT"), upload.index('pnpm exec wrangler deploy'))
+        self.assertNotIn('secret put', deploy)
+        self.assertNotIn('secret bulk', deploy)
+        self.assertNotIn('versions secret', deploy)
+        # Each exact-preimage restore is followed by the provider readback that the key is gone.
+        for step_id in ('early_rollback', 'runtime_rollback'):
+            with self.subTest(step=step_id):
+                body = deploy.split(f'        id: {step_id}\n', 1)[1].split('\n      - name:', 1)[0]
+                self.assertEqual(body.count("'scripts/issue_1700_http_bootstrap.mjs','verify_restored'"), 1)
+                self.assertLess(body.index('wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%"'),
+                                body.index("'verify_restored'"))
+                self.assertIn('PREIMAGE_DEPLOYMENT_ID: ${{ steps.preimage.outputs.preimage_deployment_id }}', body)
+                self.assertIn('staging-http-bootstrap-restore.json', body)
+        self.assertIn('${{ runner.temp }}/staging-http-bootstrap-restore.json', deploy)
+        self.assertNotIn('candidate-secrets.json', deploy.split('Upload redacted route-free deployment receipt', 1)[1])
         runtime = deploy.split('        id: runtime_probe\n', 1)[1].split('      - name:', 1)[0]
         self.assertIn('issue_1700_http_bootstrap.mjs probe', runtime)
         self.assertNotIn('issue_1700_runtime_probe.mjs', runtime)

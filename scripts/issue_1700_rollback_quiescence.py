@@ -10,8 +10,8 @@ import urllib.request
 
 API = 'https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging'
 HTTP_ORIGIN = 'https://corelink-staging.gmhelmold.workers.dev'
-HTTP_NONCE = 'issue-1700-recovery-20261002-v15'
-HTTP_START_MS, HTTP_LAST_ENTRY_MS, HTTP_EXPIRY_MS = 1790964000000, 1790971200000, 1790975700000
+HTTP_NONCE = 'issue-1700-recovery-20261002-v16'
+HTTP_START_MS, HTTP_LAST_ENTRY_MS, HTTP_EXPIRY_MS = 1790975160000, 1790982360000, 1790986860000
 OLD_RELEASES = {'v8': '7d18bcfc450db97b1b987923050b92971da530a8',
                 'v9': '5da497051f0b11dbfc8b87d1dfa8e753304e2719'}
 BROKER_STATUS_CONTRACT = 'issue1700-broker-status-observation-v1'
@@ -46,33 +46,32 @@ def never_execute_status(observation, *, operation_id, release, image_digest, ca
         return isinstance(value, str) and re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value)
 
     keys = ('contract operation_id worker_release started_at_ms expires_at_ms state secret_name '
-            'secret_put_attempted secret_put_confirmed secret_put_at_ms subdomain_enable_attempted subdomain_enabled '
-            'subdomain_restore_attempted subdomain_restored secret_delete_attempted secret_deleted rollback_safe '
-            'cleanup_basis probe_command_seen admission_closed preimage post_secret post_delete candidate preimage_bindings failure pid')
+            'secret_carrier secret_file_written secret_file_removed candidate_key_confirmed subdomain_enable_attempted '
+            'subdomain_enabled subdomain_restore_attempted subdomain_restored rollback_safe '
+            'cleanup_basis probe_command_seen admission_closed preimage candidate preimage_bindings failure pid')
     if (not exact(observation, 'contract requested_at_ms observed_at_ms broker') or
         observation['contract'] != BROKER_STATUS_CONTRACT or
         not all(integer(value) for value in (now_ms, observation['requested_at_ms'], observation['observed_at_ms']))):
         return False
     broker = observation['broker']
-    if (not exact(broker, keys) or broker['contract'] != 'corelink-staging-http-bootstrap-v1' or
+    if (not exact(broker, keys) or broker['contract'] != 'corelink-staging-http-bootstrap-v2' or
         not isinstance(operation_id, str) or not re.fullmatch(r'[1-9][0-9]{0,19}', operation_id) or
         not isinstance(release, str) or not re.fullmatch(r'[0-9a-f]{40}', release) or release in OLD_RELEASES.values() or
         not isinstance(image_digest, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image_digest) or
         broker['operation_id'] != operation_id or broker['worker_release'] != release or
-        not all(integer(broker[key]) for key in ('started_at_ms', 'expires_at_ms', 'secret_put_at_ms', 'pid')) or broker['pid'] < 2 or
+        not all(integer(broker[key]) for key in ('started_at_ms', 'expires_at_ms', 'pid')) or broker['pid'] < 2 or
         broker['expires_at_ms'] != broker['started_at_ms'] + BROKER_LIFETIME_MS or
         not broker['started_at_ms'] <= observation['requested_at_ms'] <= observation['observed_at_ms'] <= now_ms < broker['expires_at_ms'] or
         now_ms - observation['observed_at_ms'] > BROKER_STATUS_MAX_AGE_MS or
         observation['observed_at_ms'] - observation['requested_at_ms'] > BROKER_STATUS_MAX_AGE_MS or
-        not broker['started_at_ms'] <= broker['secret_put_at_ms'] <= observation['observed_at_ms'] or
-        broker['secret_name'] != 'CORELINK_ADMIN_AUTH_KEY' or broker['secret_put_attempted'] is not True or
-        broker['secret_put_confirmed'] is not True or broker['subdomain_enable_attempted'] is not True or
+        broker['secret_name'] != 'CORELINK_ADMIN_AUTH_KEY' or broker['secret_carrier'] != 'candidate_version' or
+        broker['secret_file_written'] is not True or broker['secret_file_removed'] is not True or
+        broker['candidate_key_confirmed'] is not True or broker['subdomain_enable_attempted'] is not True or
         broker['admission_closed'] is not True or broker['probe_command_seen'] is not False or
         broker['failure'] is not None):
         return False
     candidate = broker['candidate']
     preimage = broker['preimage']
-    post_secret = broker['post_secret']
     if (not all(uuid(value) for value in (candidate_deployment_id, candidate_version_id, preimage_deployment_id, preimage_version_id)) or
         candidate_deployment_id == preimage_deployment_id or candidate_version_id == preimage_version_id or
         not exact(candidate, 'operation_id candidate_deployment_id candidate_version_id worker_release image_digest') or
@@ -82,13 +81,7 @@ def never_execute_status(observation, *, operation_id, release, image_digest, ca
         preimage['deployment_id'] != preimage_deployment_id or preimage['version_id'] != preimage_version_id or
         not integer(preimage['created_at_ms']) or preimage['created_at_ms'] > broker['started_at_ms'] or
         not exact(preimage['subdomain'], 'enabled previews_enabled') or
-        preimage['subdomain']['enabled'] is not False or preimage['subdomain']['previews_enabled'] is not False or
-        not exact(post_secret, 'deployment_id version_id created_at_ms') or
-        not uuid(post_secret['deployment_id']) or not uuid(post_secret['version_id']) or
-        post_secret['deployment_id'] in (preimage_deployment_id, candidate_deployment_id) or
-        post_secret['version_id'] in (preimage_version_id, candidate_version_id) or
-        not integer(post_secret['created_at_ms']) or
-        not broker['secret_put_at_ms'] // 1000 * 1000 <= post_secret['created_at_ms'] <= observation['observed_at_ms']):
+        preimage['subdomain']['enabled'] is not False or preimage['subdomain']['previews_enabled'] is not False):
         return False
     bindings = broker['preimage_bindings']
     if not isinstance(bindings, list) or len(bindings) > 128:
@@ -104,19 +97,12 @@ def never_execute_status(observation, *, operation_id, release, image_digest, ca
     if broker['state'] == 'enabled':
         return (broker['expires_at_ms'] - observation['observed_at_ms'] < BROKER_PROBE_RESERVE_MS and
                 broker['subdomain_enabled'] is True and broker['rollback_safe'] is False and
-                broker['cleanup_basis'] is None and broker['post_delete'] is None and
-                all(broker[key] is False for key in ('subdomain_restore_attempted', 'subdomain_restored',
-                                                   'secret_delete_attempted', 'secret_deleted')))
+                broker['cleanup_basis'] is None and
+                all(broker[key] is False for key in ('subdomain_restore_attempted', 'subdomain_restored')))
     if broker['state'] != 'cleaned' or broker['cleanup_basis'] != 'never_execute' or broker['subdomain_enabled'] is not False:
         return False
-    post_delete = broker['post_delete']
-    return (all(broker[key] is True for key in ('rollback_safe', 'subdomain_restore_attempted', 'subdomain_restored',
-                                              'secret_delete_attempted', 'secret_deleted')) and
-            exact(post_delete, 'deployment_id version_id created_at_ms') and
-            uuid(post_delete['deployment_id']) and uuid(post_delete['version_id']) and
-            post_delete['deployment_id'] not in (preimage_deployment_id, candidate_deployment_id, post_secret['deployment_id']) and
-            post_delete['version_id'] not in (preimage_version_id, candidate_version_id, post_secret['version_id']) and
-            integer(post_delete['created_at_ms']) and post_secret['created_at_ms'] <= post_delete['created_at_ms'] <= observation['observed_at_ms'])
+    # The key rides only the candidate version; the exact preimage restore that follows removes it.
+    return all(broker[key] is True for key in ('rollback_safe', 'subdomain_restore_attempted', 'subdomain_restored'))
 
 
 def complete_http_proof(attempt, wrapper, expected_release, expected_image_digest, now_ms):
