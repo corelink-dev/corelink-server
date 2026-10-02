@@ -31,9 +31,11 @@ REQUIRED_RESOURCES = {
         ("D1 database", "D1 database", "dedicated integration database for audit path"),
         ("R2 test bucket", "R2 bucket", "dedicated disposable bucket; cleanup after receipt"),
     ),
+    # direct-test (owner decision 2026-10-02, #2565): no Wallet broker; the
+    # Starter price is a run-owned fixture, so it is not a standing resource.
     "stripe": (
-        ("HuGR wallet broker test reference", "wallet broker account", "stripe-prod-test only; test mode"),
-        ("Starter test price", "Stripe price", "test-mode price_* only"),
+        ("Stripe TEST account", "Stripe account", "test mode only; sk_test_/rk_test_ key; identity and livemode=false proven before writes"),
+        ("Customer portal TEST default configuration", "Stripe billing portal configuration", "test mode only; saved default read by live_billing_portal_session"),
     ),
     "neon": (
         ("Neon shadow database", "PostgreSQL database", "staging shadow branch; disposable tenant data only"),

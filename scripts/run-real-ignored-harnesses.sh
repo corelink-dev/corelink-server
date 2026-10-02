@@ -139,24 +139,28 @@ preflight_r2() {
 }
 
 preflight_stripe() {
-  # The Stripe tests route through the HuGR wallet broker. Requiring the
-  # test-only reference prevents a manually dispatched run from accidentally
-  # pointing at a live-mode wallet credential.
-  require_env \
-    HUGR_WALLET_BASE HUGR_WALLET_TOKEN HUGR_STRIPE_REF \
-    STRIPE_AUTH_MODE STRIPE_PRICE_ID_STARTER STRIPE_TEST_ACCOUNT_ID GITHUB_RUN_ID
+  # The Stripe tests call Stripe TEST mode directly (owner decision
+  # 2026-10-02, #2565); the Wallet broker is not used. This is the first of
+  # three refusals of a live key: nothing reaches Cargo unless the protected
+  # key has a Stripe TEST prefix. The Rust harness refuses again before its
+  # first request and then proves livemode=false before any write. Messages
+  # name the variable, never its value.
+  require_env STRIPE_AUTH_MODE STRIPE_SECRET_KEY_TEST STRIPE_TEST_ACCOUNT_ID GITHUB_RUN_ID
   [[ "$GITHUB_RUN_ID" =~ ^[0-9]{1,20}$ ]] || \
     die "GITHUB_RUN_ID must be a bounded numeric run selector"
   [[ "$GITHUB_RUN_ID" =~ [1-9] ]] || \
     die "GITHUB_RUN_ID must be nonzero"
-  require_https HUGR_WALLET_BASE
-  [[ "$HUGR_WALLET_TOKEN" == hugrw_* ]] || die "HUGR_WALLET_TOKEN must be a wallet-broker token"
-  [[ "$HUGR_STRIPE_REF" == stripe-prod-test ]] || \
-    die "HUGR_STRIPE_REF must be the provisioned Stripe test reference"
-  [[ "$STRIPE_AUTH_MODE" == wallet-broker ]] || \
-    die "STRIPE_AUTH_MODE must be wallet-broker for the real Stripe profile"
-  [[ "$STRIPE_PRICE_ID_STARTER" == price_* ]] || \
-    die "STRIPE_PRICE_ID_STARTER must be a Stripe price identifier"
+  [[ "$STRIPE_AUTH_MODE" == direct-test ]] || \
+    die "STRIPE_AUTH_MODE must be direct-test for the real Stripe profile"
+  case "$STRIPE_SECRET_KEY_TEST" in
+    sk_live_*|rk_live_*)
+      die "STRIPE_SECRET_KEY_TEST is a Stripe LIVE key; the Stripe profile refuses live-mode credentials" ;;
+  esac
+  [[ "$STRIPE_SECRET_KEY_TEST" =~ ^(sk|rk)_test_[A-Za-z0-9]+$ ]] || \
+    die "STRIPE_SECRET_KEY_TEST must be a Stripe TEST secret key (sk_test_ or rk_test_)"
+  # The production key name must not ride along into a test process.
+  [[ -z "${STRIPE_SECRET_KEY:-}" ]] || \
+    die "STRIPE_SECRET_KEY must not reach the Stripe profile; bind the TEST key as STRIPE_SECRET_KEY_TEST"
   [[ "$STRIPE_TEST_ACCOUNT_ID" =~ ^acct_[A-Za-z0-9]+$ ]] || \
     die "STRIPE_TEST_ACCOUNT_ID must be a Stripe account identifier"
 }

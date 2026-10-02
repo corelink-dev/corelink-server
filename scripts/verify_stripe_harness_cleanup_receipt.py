@@ -9,13 +9,21 @@ import sys
 from pathlib import Path
 
 
+# Each checkout test also owns one disposable TEST-mode Starter product and
+# price (direct-test profile, #2565); Stripe cannot delete either, so both are
+# archived (`active=false`) and read back.
 EXPECTED = {
     "live_create_customer": {"customer": 1},
-    "live_create_checkout_session_starter": {"checkout": 1, "customer": 1},
-    "live_idempotent_checkout_returns_same_session": {"checkout": 1, "customer": 1},
+    "live_create_checkout_session_starter": {"checkout": 1, "customer": 1, "price": 1, "product": 1},
+    "live_idempotent_checkout_returns_same_session": {"checkout": 1, "customer": 1, "price": 1, "product": 1},
     "live_billing_portal_session": {"customer": 1},
 }
-STATUS = {"customer": "deleted_readback_pass", "checkout": "expired_readback_pass"}
+STATUS = {
+    "customer": "deleted_readback_pass",
+    "checkout": "expired_readback_pass",
+    "price": "archived_readback_pass",
+    "product": "archived_readback_pass",
+}
 HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
