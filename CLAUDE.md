@@ -54,8 +54,13 @@ for bodies), or invoke the **`okf-context`** skill.
   proptest-density lanes. Green PR checks do not prove the code builds or its
   tests pass — run the focused checks locally and say so in the PR.
 - B-098 spec population → **490 full-schema + 11 YAML-only (501 total)**. `python3 scripts/validate_specs.py`
-  reports 490 schema-valid, 11 YAML-only and 0 missing-front-matter failures.
-  `spec_validation.yml` is disabled (2026-10-01) — run it locally.
+  reports 489 schema-valid, 11 YAML-only and 1 missing-front-matter failure:
+  `specs/03_architecture/issue-2176-grpc-transport-contract.md`. That contract
+  says it is immutable to ordinary candidates, and its SHA-256 is pinned in
+  `verify_i2176_grpc_deny_gate.py` (`WAVE_BASE_CONTROLS`),
+  `verify_i2574_grpc_diagnostic_policy.py` (`EXPECTED`) and the #2574 delivery
+  fixture, so its front matter can only land with a root-reviewed re-pin of
+  those verifiers. `spec_validation.yml` is disabled (2026-10-01) — run it locally.
 - Secrets matrix: `bash scripts/secrets-checklist-verify.sh` (OK, no drift) +
   `python3 scripts/validate_secrets_matrix.py` (code_only=0). Both exclude build output
   (`.open-next`/`.wrangler`) — don't let them scan generated bundles.
