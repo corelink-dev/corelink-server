@@ -90,7 +90,7 @@ jobs:
           test "$GITHUB_REF" = "$EXPECTED_REF"
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          # The staging token's account must be the pinned account; never print it.
+          # The staging account secret must be the pinned account; never print it.
           if [[ "$STAGING_CF_ACCOUNT_ID" != "$EXPECTED_ACCOUNT" ]]; then
             echo "B-216 route stopped: staging_account_mismatch"
             exit 1
@@ -122,14 +122,17 @@ jobs:
         if: ${{ inputs.readback_only }}
         shell: bash
         env:
-          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+          # Every mode uses the repository deploy token CF_API_TOKEN (a user
+          # token), as #2884 did for #1700. The staging Worker token got 403 on
+          # Worker version reads in readback run 37028034683.
+          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: node apps/dsr-alert-receiver/scripts/run-readback-route.mjs
 
       - name: Deploy exact receiver target and verify redacted readback
         if: ${{ inputs.deploy_once }}
         shell: bash
         env:
-          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.CF_API_TOKEN }}
           B216_DSR_ALERT_RECEIVER_TOKEN: ${{ secrets.STAGING_DSR_DLQ_ALERT_AUTH_TOKEN }}
         run: node apps/dsr-alert-receiver/scripts/run-deploy-route.mjs
 
@@ -155,7 +158,7 @@ jobs:
         if: ${{ inputs.exercise_once }}
         shell: bash
         env:
-          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.CF_API_TOKEN }}
           B216_DSR_ALERT_RECEIVER_TOKEN: ${{ secrets.STAGING_DSR_DLQ_ALERT_AUTH_TOKEN }}
         run: node apps/dsr-alert-receiver/scripts/run-synthetic-exercise.mjs
 
@@ -163,7 +166,7 @@ jobs:
         if: ${{ inputs.disable_workers_dev }}
         shell: bash
         env:
-          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+          B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: node apps/dsr-alert-receiver/scripts/run-disable-workers-dev.mjs
 
       - name: Preserve synthetic exercise receipt
