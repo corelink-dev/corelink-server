@@ -673,6 +673,7 @@ class Run:
     lease: str
     main: str
     mutations: list[list[str]] = field(default_factory=list)
+    leftover_holders: list[int] = field(default_factory=list)
 
 
 def run_helper(
@@ -702,7 +703,16 @@ def _run(world: World, argv: list[str]) -> Run:
     env["B315_FAKE_ORIGIN"] = str(world.origin)
     env["B315_FAKE_LOCK"] = str(lock_path(world))
     env["TMPDIR"] = str(world.root / "tmp")
-    result = subprocess.run(argv, cwd=world.work, env=env, capture_output=True, text=True, timeout=180, check=False)
+    try:
+        result = subprocess.run(argv, cwd=world.work, env=env, capture_output=True, text=True, timeout=180,
+                                check=False)
+        rc, out, err = result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired as expired:
+        def text(value) -> str:
+            return value.decode("utf-8", "replace") if isinstance(value, bytes) else (value or "")
+
+        rc, out, err = 124, text(expired.stdout), text(expired.stderr) + "\n[harness] timed out after 180 s"
+    leftover = _reap_lock_holders(world)
     state = json.loads(world.state.read_text(encoding="utf-8"))
     puts = [call for call in state["calls"] if call[:1] == ["api"] and "PUT" in call]
     mutations = [call for call in state["calls"] if is_mutating(call)]
@@ -713,7 +723,28 @@ def _run(world: World, argv: list[str]) -> Run:
         env=world.env, capture_output=True, text=True, check=False,
     ).stdout.strip()
     main = _git(world.env, "--git-dir", str(world.origin), "rev-parse", "refs/heads/main")
-    return Run(result.returncode, result.stdout, result.stderr, state, puts, pushes, lease, main, mutations)
+    return Run(rc, out, err, state, puts, pushes, lease, main, mutations, leftover)
+
+
+def _reap_lock_holders(world: World) -> list[int]:
+    """Kill, and return, any allocation-lock holder a run left behind.
+
+    The helper waits for its holder on every exit, so a survivor means it hung
+    or was killed (a stopped holder that never got SIGCONT, say). Only a pid
+    whose command line names THIS world's lock path is touched, so a reused
+    pid is never killed."""
+    left = []
+    lock = str(lock_path(world))
+    for ready in (world.work / ".git").glob("backlogalloc.ready.*"):
+        match = re.match(r"locked pid=(\d+)", ready.read_text(encoding="utf-8"))
+        if not match:
+            continue
+        pid = int(match.group(1))
+        command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+        if "--hold-lock" in command and lock in command:
+            os.kill(pid, signal.SIGKILL)
+            left.append(pid)
+    return left
 
 
 @dataclass(frozen=True)
@@ -901,6 +932,8 @@ def run_scenario(
         failures.append("helper attempted a direct push to main")
     if run.lease != planted_lease:
         failures.append(f"remote lease left as {run.lease or '<absent>'}, expected {planted_lease or '<absent>'}")
+    if run.leftover_holders:
+        failures.append(f"the run left its allocation-lock holder running (killed: {run.leftover_holders})")
     if run.mutations != run.puts:
         failures.append(f"mutating gh calls besides the pinned merge PUTs: {run.mutations}")
     if scenario.dry_run and run.pushes:
