@@ -457,6 +457,36 @@ jobs:
           PY
           node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
             > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"
+          # Ownership and quiescence are proven: from here the exact Worker preimage restore
+          # is attempted however the Container steps below end (the rollback upload inherits
+          # the candidate's admin key). The step keeps its failure outcome; the Worker and
+          # Container preimages are verified separately.
+          worker_restore_attempted=0
+          restore_worker_preimage() {
+            worker_restore_attempted=1
+            pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
+              --config "$RUNNER_TEMP/staging-config/root.toml" \
+              --name corelink-staging --yes \
+              --message "$ROLLBACK_MARKER"
+            python3 - <<'PY' > "$RUNNER_TEMP/staging-http-bootstrap-restore.json"
+          import json,os,subprocess
+          # Provider readback: the exact preimage version is active at 100% and carries no admin key.
+          payload={'api_token':os.environ['CLOUDFLARE_API_TOKEN'],
+                   'preimage_deployment_id':os.environ['PREIMAGE_DEPLOYMENT_ID'],
+                   'preimage_version_id':os.environ['PREIMAGE_VERSION_ID']}
+          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','verify_restored',
+                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
+                         input=json.dumps(payload),text=True,check=True,
+                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
+          PY
+          }
+          finish_rollback() {
+            local status=$?
+            trap - EXIT
+            if [ "$worker_restore_attempted" = 0 ]; then restore_worker_preimage || status=1; fi
+            exit "$status"
+          }
+          trap finish_rollback EXIT
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/rollback.toml" \
             --strict --message "$ROLLBACK_MARKER"
@@ -468,21 +498,7 @@ jobs:
           MIN_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
             node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
             "$RUNNER_TEMP/staging-containers-image-restored.json"
-          pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
-            --config "$RUNNER_TEMP/staging-config/root.toml" \
-            --name corelink-staging --yes \
-            --message "$ROLLBACK_MARKER"
-          python3 - <<'PY' > "$RUNNER_TEMP/staging-http-bootstrap-restore.json"
-          import json,os,subprocess
-          # Provider readback: the exact preimage version is active at 100% and carries no admin key.
-          payload={'api_token':os.environ['CLOUDFLARE_API_TOKEN'],
-                   'preimage_deployment_id':os.environ['PREIMAGE_DEPLOYMENT_ID'],
-                   'preimage_version_id':os.environ['PREIMAGE_VERSION_ID']}
-          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','verify_restored',
-                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
-                         input=json.dumps(payload),text=True,check=True,
-                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
-          PY
+          restore_worker_preimage
           pnpm exec wrangler deployments list \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
@@ -696,6 +712,35 @@ jobs:
             > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"
           # Keep the cleaned, admission-closed broker available for the second
           # fresh never_execute status check; always-local shutdown runs below.
+          # Ownership and quiescence are proven: from here the exact Worker preimage restore
+          # is attempted however the Container steps below end (the rollback upload inherits
+          # the candidate's admin key). The step keeps its failure outcome; the Worker and
+          # Container preimages are verified separately.
+          worker_restore_attempted=0
+          restore_worker_preimage() {
+            worker_restore_attempted=1
+            pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
+              --config "$RUNNER_TEMP/staging-config/root.toml" \
+              --name corelink-staging --yes --message "$ROLLBACK_MARKER"
+            python3 - <<'PY' > "$RUNNER_TEMP/staging-http-bootstrap-restore.json"
+          import json,os,subprocess
+          # Provider readback: the exact preimage version is active at 100% and carries no admin key.
+          payload={'api_token':os.environ['CLOUDFLARE_API_TOKEN'],
+                   'preimage_deployment_id':os.environ['PREIMAGE_DEPLOYMENT_ID'],
+                   'preimage_version_id':os.environ['PREIMAGE_VERSION_ID']}
+          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','verify_restored',
+                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
+                         input=json.dumps(payload),text=True,check=True,
+                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
+          PY
+          }
+          finish_rollback() {
+            local status=$?
+            trap - EXIT
+            if [ "$worker_restore_attempted" = 0 ]; then restore_worker_preimage || status=1; fi
+            exit "$status"
+          }
+          trap finish_rollback EXIT
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/rollback-runtime.toml" \
             --strict --message "$ROLLBACK_MARKER"
@@ -708,20 +753,7 @@ jobs:
             node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
             "$RUNNER_TEMP/staging-runtime-containers-image-restored.json"
           ROLLBACK_CONTAINER_RESTORE_ATTEMPTED=1 python3 scripts/issue_1700_rollback_quiescence.py
-          pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
-            --config "$RUNNER_TEMP/staging-config/root.toml" \
-            --name corelink-staging --yes --message "$ROLLBACK_MARKER"
-          python3 - <<'PY' > "$RUNNER_TEMP/staging-http-bootstrap-restore.json"
-          import json,os,subprocess
-          # Provider readback: the exact preimage version is active at 100% and carries no admin key.
-          payload={'api_token':os.environ['CLOUDFLARE_API_TOKEN'],
-                   'preimage_deployment_id':os.environ['PREIMAGE_DEPLOYMENT_ID'],
-                   'preimage_version_id':os.environ['PREIMAGE_VERSION_ID']}
-          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','verify_restored',
-                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
-                         input=json.dumps(payload),text=True,check=True,
-                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
-          PY
+          restore_worker_preimage
           pnpm exec wrangler deployments list \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \

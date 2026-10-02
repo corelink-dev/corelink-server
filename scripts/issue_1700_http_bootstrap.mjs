@@ -64,7 +64,8 @@ export const FAILURE_VALIDATIONS = Object.freeze([
   "envelope_result_missing",
   // The result shape and the exact checks made on it.
   "bindings_invalid", "subdomain_invalid", "deployments_invalid", "preimage_mismatch", "subdomain_not_disabled",
-  "preimage_key_present", "candidate_key_missing", "candidate_secret_drift", "deployment_chain_mismatch",
+  "preimage_key_present", "preimage_secrets_unprovable", "candidate_key_missing", "candidate_secret_drift",
+  "deployment_chain_mismatch",
   "version_mismatch", "release_binding_mismatch", "subdomain_not_enabled", "subdomain_state_mismatch",
 ]);
 export const FAILURE_KEYS = Object.freeze(["phase", "endpoint_label", "http_status", "cf_error_codes", "cf_message_class",
@@ -235,8 +236,9 @@ async function writeSecretsFile(directory, content) {
 async function removeSecretsFile(directory) {
   await unlink(join(directory, SECRETS_FILE)).catch(error => { if (error.code !== "ENOENT") throw error; });
 }
-const secretNames = inventory => inventory.filter(row => row.type === "secret_text" || row.type === "secret_key")
-  .map(row => row.name).filter(name => name !== SECRET_NAME).sort();
+// Name AND type of every hidden-value binding: a secret_key turned secret_text is drift.
+const secretSignature = inventory => inventory.filter(row => row.type === "secret_text" || row.type === "secret_key")
+  .map(row => `${row.name}:${row.type}`).sort();
 // After the workflow restores the exact preimage version, prove from the provider that it
 // is active at 100% and carries no admin key, and that the key file is gone. Read-only.
 export async function verifyRestoredPreimage(inputValue, { directory, request = fetch, timeoutMs = 30_000 } = {}) {
@@ -382,11 +384,11 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     const inventory = nestedBindings(rawBindings);
     const release = rawBindings.filter(row => row.name === "SENTRY_RELEASE");
     if (release.length !== 1 || release[0].type !== "plain_text" || release[0].text !== input.expected_release) throw refuse("release_binding_mismatch");
-    // The admin key rides this exact version as secret_text, and it is the only secret the
-    // upload added: every other secret is the preimage's, inherited unchanged.
+    // The admin key rides this exact version as secret_text and is its ONLY hidden-value
+    // binding (the preimage has none, see prepare): any other secret came from inheritance.
     const carried = inventory.filter(row => row.name === SECRET_NAME);
     if (carried.length !== 1 || carried[0].type !== "secret_text") throw refuse("candidate_key_missing");
-    if (JSON.stringify(secretNames(inventory)) !== JSON.stringify(secretNames(bindings))) throw refuse("candidate_secret_drift");
+    if (JSON.stringify(secretSignature(inventory)) !== JSON.stringify([`${SECRET_NAME}:secret_text`])) throw refuse("candidate_secret_drift");
     return version;
   }
   async function prepare() {
@@ -402,6 +404,10 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     if (!record(version) || version.id !== input.preimage_version_id) throw refuse("version_mismatch");
     bindings = nestedBindings(version.resources?.bindings);
     if (bindings.some(row => row.name === SECRET_NAME)) throw refuse("preimage_key_present");
+    // An upload inherits secret VALUES from the newest upload, which after every exact-preimage
+    // rollback is not the preimage. Inherited values cannot be shown to be the preimage's, so a
+    // preimage carrying any other secret is refused rather than silently re-sourced.
+    if (secretSignature(bindings).length !== 0) throw refuse("preimage_secrets_unprovable");
     // No provider write: the key reaches Cloudflare only inside the candidate upload.
     await writeSecrets(`${JSON.stringify({ [SECRET_NAME]: key.toString("base64url") })}\n`);
     secretFileWritten = true;
@@ -437,7 +443,7 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     state = "complete"; await persist(); return proof;
   }
   async function cleanup() {
-    const neverExecute = !probeSeen && ["prepared", "enabled"].includes(state);
+    const neverExecute = !probeSeen && ["prepared", "enabled", "bind_failed"].includes(state);
     if (!secretFileWritten || restoreAttempted || (!neverExecute &&
         (state !== "complete" || !validateDeploymentProof(proof, attempt, { expectedRelease: input.expected_release,
           expectedImageDigest: candidate?.image_digest, observedAt: now() })))) throw reject();
@@ -449,11 +455,16 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     await persist();
     if (neverExecute && await attemptExists()) throw reject();
     await dropSecretsFile();
-    // A bound candidate must still be the exact active version before the restore.
-    if (candidate) await currentCandidate("cleanup_verify_before_restore");
+    // A bound candidate must still be the exact active version before the restore. After a
+    // failed bind this re-proves ownership (including the carried key) before any write.
+    if (candidate) { await currentCandidate("cleanup_verify_before_restore"); candidateKeyConfirmed = true; }
     const current = await api("cleanup_subdomain_before", "/subdomain", subdomainState);
-    if (current.enabled !== enabled || current.previews_enabled) throw refuse("subdomain_state_mismatch");
-    if (enabled) {
+    // Undo only a toggle this broker attempted. An origin it never tried to enable, or a
+    // confirmed enable someone else has since reverted, is not ours to touch.
+    if (current.previews_enabled || (current.enabled && !enabledAttempted) || (enabled && !current.enabled)) {
+      throw refuse("subdomain_state_mismatch");
+    }
+    if (current.enabled) {
       restoreAttempted = true; await persist();
       const restore = await api("cleanup_restore_subdomain", "/subdomain", subdomainState, "POST", preimage.subdomain);
       if (restore.enabled || restore.previews_enabled) throw refuse("subdomain_not_disabled");
@@ -473,7 +484,16 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     alive(); busy = true;
     if (command === "probe") probeSeen = true;
     try { return await ({ prepare, bind_candidate: bindCandidate, probe, cleanup })[command](value); }
-    catch { state = "unknown"; await persist().catch(() => {}); throw unknown(); }
+    catch {
+      // A failed bind of a parsed candidate never executed the probe. Keep that positive fact,
+      // fenced (no probe is ever admitted again), so cleanup can still prove ownership, undo any
+      // attempted workers.dev enable and let the workflow restore the exact preimage.
+      const fenced = command === "bind_candidate" && state === "prepared" && candidate !== null && !probeSeen &&
+        !controller.signal.aborted && now() < deadline;
+      state = fenced ? "bind_failed" : "unknown";
+      if (fenced) admissionClosed = true;
+      await persist().catch(() => {}); throw unknown();
+    }
     finally { busy = false; }
   }
   async function expire() {

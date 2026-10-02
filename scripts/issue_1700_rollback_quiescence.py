@@ -18,6 +18,8 @@ BROKER_STATUS_CONTRACT = 'issue1700-broker-status-observation-v1'
 BROKER_LIFETIME_MS = 45 * 60_000
 BROKER_STATUS_MAX_AGE_MS = 5_000
 BROKER_PROBE_RESERVE_MS = 21 * 60_000 + 8 * 60_000 + 90_000
+# A failed bind may record its own redacted failure; it never involved a probe.
+BIND_PHASES = frozenset(('bind_verify_candidate', 'bind_subdomain_before', 'bind_enable_subdomain', 'bind_subdomain_after'))
 
 
 def read_broker_status(directory, *, runner=subprocess.run, now=lambda: int(time.time() * 1000)):
@@ -66,9 +68,11 @@ def never_execute_status(observation, *, operation_id, release, image_digest, ca
         observation['observed_at_ms'] - observation['requested_at_ms'] > BROKER_STATUS_MAX_AGE_MS or
         broker['secret_name'] != 'CORELINK_ADMIN_AUTH_KEY' or broker['secret_carrier'] != 'candidate_version' or
         broker['secret_file_written'] is not True or broker['secret_file_removed'] is not True or
-        broker['candidate_key_confirmed'] is not True or broker['subdomain_enable_attempted'] is not True or
+        type(broker['candidate_key_confirmed']) is not bool or type(broker['subdomain_enable_attempted']) is not bool or
         broker['admission_closed'] is not True or broker['probe_command_seen'] is not False or
-        broker['failure'] is not None):
+        not (broker['failure'] is None or (broker['state'] in ('bind_failed', 'cleaned') and
+                                           isinstance(broker['failure'], dict) and
+                                           broker['failure'].get('phase') in BIND_PHASES))):
         return False
     candidate = broker['candidate']
     preimage = broker['preimage']
@@ -97,12 +101,21 @@ def never_execute_status(observation, *, operation_id, release, image_digest, ca
     if broker['state'] == 'enabled':
         return (broker['expires_at_ms'] - observation['observed_at_ms'] < BROKER_PROBE_RESERVE_MS and
                 broker['subdomain_enabled'] is True and broker['rollback_safe'] is False and
+                broker['cleanup_basis'] is None and broker['failure'] is None and
+                broker['candidate_key_confirmed'] is True and broker['subdomain_enable_attempted'] is True and
+                all(broker[key] is False for key in ('subdomain_restore_attempted', 'subdomain_restored')))
+    if broker['state'] == 'bind_failed':
+        # Fenced failed bind: nothing restored yet, workers.dev never confirmed enabled.
+        return (broker['subdomain_enabled'] is False and broker['rollback_safe'] is False and
                 broker['cleanup_basis'] is None and
                 all(broker[key] is False for key in ('subdomain_restore_attempted', 'subdomain_restored')))
     if broker['state'] != 'cleaned' or broker['cleanup_basis'] != 'never_execute' or broker['subdomain_enabled'] is not False:
         return False
     # The key rides only the candidate version; the exact preimage restore that follows removes it.
-    return all(broker[key] is True for key in ('rollback_safe', 'subdomain_restore_attempted', 'subdomain_restored'))
+    # A restore write is only ever the undo of this broker's own attempted enable.
+    return (all(broker[key] is True for key in ('rollback_safe', 'subdomain_restored', 'candidate_key_confirmed')) and
+            type(broker['subdomain_restore_attempted']) is bool and
+            (broker['subdomain_restore_attempted'] is False or broker['subdomain_enable_attempted'] is True))
 
 
 def complete_http_proof(attempt, wrapper, expected_release, expected_image_digest, now_ms):

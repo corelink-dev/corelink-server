@@ -93,8 +93,19 @@ an existing or ambiguous binding stops the operation. The broker then writes the
 key once to an exclusive, no-follow, owner-only file in its private directory. The
 deploy step passes that file to `wrangler deploy --secrets-file`, so the key rides
 only the candidate version, and removes it however the step ends. The broker also
-removes it at bind. The candidate version must carry the key as `secret_text`, and
-its other secrets must be exactly the preimage's.
+removes it at bind. The candidate version must carry the key as `secret_text` and
+no other secret, compared by name and type. An upload inherits secret *values* from
+the newest upload, which after every rollback is not the preimage, so values cannot
+be proven to be the preimage's. A preimage that carries any other secret is
+therefore refused before the key file is written.
+
+A bind that fails after its candidate tuple parsed becomes `bind_failed`. That state
+is fenced: admission is closed and no probe is ever admitted. The positive
+never-executed fact survives the failure. Cleanup then re-proves the exact
+candidate. If workers.dev is enabled, it disables it, but only when this broker
+attempted the enable, and it reads back that it is disabled. After that the
+workflow may restore the exact preimage. A bind interrupted by close, expiry or
+an unparseable tuple stays `unknown`.
 Temporary workers.dev activation follows verified candidate identity and preserves
 the disabled preview setting. Only proven quiescence, or a positively fenced
 never-executed broker state, permits restoration of its owned bootstrap changes.
@@ -119,7 +130,7 @@ launch time and exact command before any fallback signal; its shutdown receipt
 does not claim provider cleanup. The workflow cannot report success without this
 verified exit. These fresh status and shutdown operations are local only. The
 broker makes at most 15 management API calls (3 prepare, 5 bind, 2 probe, 5
-cleanup), and each restore adds two read-only readbacks.
+cleanup); a failed bind skips the probe. Each restore adds two read-only readbacks.
 
 Worker versions are immutable, and an upload inherits the newest upload's secrets.
 Rollback uploads can therefore leave an undeployed version that still names the
@@ -131,7 +142,12 @@ This finite native proof always restores the exact Worker and Container
 preimages after accepted proof and owned bootstrap cleanup. Cleanup verifies the
 exact candidate and disables workers.dev. Restoring the exact preimage version
 then removes the key from the deployed path. A read-only `verify_restored` readback
-proves that version is active at 100%, carries no admin key and left no key file. The retained native proof
+proves that version is active at 100%, carries no admin key and left no key file.
+The rollback upload inherits the candidate's key. So once quiescence and broker
+cleanup have succeeded, an `EXIT` trap attempts the exact Worker preimage restore
+and its readback however the later Container waits, digest checks or the second
+quiescence gate end. The step keeps its failure outcome, and the Worker and
+Container preimages are verified separately. The retained native proof
 describes that execution; it is not a claim that the candidate remains active.
 
 Native proof is only one part of #1700. Canonical Custom Domain publication,

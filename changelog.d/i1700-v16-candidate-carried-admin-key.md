@@ -17,7 +17,14 @@
   `secret_text`, with every other secret exactly the preimage's. Cleanup now
   only disables workers.dev. The exact preimage restore removes the key, and a
   new read-only `verify_restored` readback proves after each restore that the
-  restored version is active at 100% with no key and no key file. Broker
+  restored version is active at 100% with no key and no key file. Review
+  hardening adds four things. First, a bind that fails after parsing its
+  candidate stays fenced as `bind_failed` instead of `unknown`, so cleanup can
+  re-prove ownership and disable an attempted workers.dev enable. Second, an
+  `EXIT` trap guarantees the exact Worker preimage restore once broker cleanup
+  succeeded, even when the Container checks fail. Third, secrets are compared by
+  name and type. Fourth, a preimage carrying any other secret is refused,
+  because inherited values cannot be proven. Broker
   contract v2 drops the `secret_put_*`, `secret_delete_*`, `post_secret` and
   `post_delete` fields. Rollback quiescence reads v2. The broker makes at most
   15 management API calls, none to a secrets or settings path.

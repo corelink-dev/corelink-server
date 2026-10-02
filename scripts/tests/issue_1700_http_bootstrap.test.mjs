@@ -110,13 +110,21 @@ const secretRows = bindings => bindings.filter(row => row.type === "secret_text"
   .map(row => ({ name: row.name, type: row.type }));
 function fixture(options = {}) {
   let clock = NOW, domain = { enabled: false, previews_enabled: false }, attempt, secretsFile = null, latest = null;
-  const versions = new Map();
-  const upload = (versionId, message, bindings) => { versions.set(versionId, versionBody(versionId, message, bindings)); latest = versionId; };
-  upload(id(11), "issue-1700-route-free-rollback-preimage", [...bindingFixture(), ...(options.preimageBindings ?? [])]);
+  // Secret VALUES are opaque provider state: never in a response, only inherited by uploads
+  // and used to authenticate the probe against whatever version is actually deployed.
+  const versions = new Map(), values = new Map();
+  const upload = (versionId, message, bindings, secretValues = new Map()) => {
+    versions.set(versionId, versionBody(versionId, message, bindings)); values.set(versionId, secretValues); latest = versionId;
+  };
+  const preimageExtra = options.preimageBindings ?? [];
+  upload(id(11), "issue-1700-route-free-rollback-preimage", [...bindingFixture(), ...preimageExtra],
+    new Map(secretRows(preimageExtra).map(row => [row.name, `preimage-value-${row.name}`])));
   if (!options.latestIsDeployed) {
-    upload(LATEST_ROLLBACK, "issue-1700-route-free-rollback-36861129067-prior",
-      [...bindingFixture(), { name: SECRET_NAME, type: "secret_text" }, ...(options.latestSecrets ?? [])]);
+    const latestSecrets = [{ name: SECRET_NAME, type: "secret_text" }, ...(options.latestSecrets ?? [])];
+    upload(LATEST_ROLLBACK, "issue-1700-route-free-rollback-36861129067-prior", [...bindingFixture(), ...latestSecrets],
+      new Map(latestSecrets.map(row => [row.name, row.name === SECRET_NAME ? "stale-admin-key-from-a-prior-run" : `stale-${row.name}`])));
   }
+  const deployedVersion = () => deployments[0].versions[0].version_id;
   const deployments = [deployment(1, NOW - 1000)];
   const calls = [], snapshots = [], runnerArgs = [], secretWrites = [];
   const request = async (url, init) => {
@@ -137,7 +145,8 @@ function fixture(options = {}) {
     }
     if (path === "/subdomain") {
       if (init.method === "POST") domain = JSON.parse(init.body);
-      return response(domain);
+      // Applied provider-side, then the response may still be lost (options.subdomainResponse).
+      return options.subdomainResponse?.(init, calls) ?? response(domain);
     }
     // The script-level surfaces the old bootstrap used: settings follow the newest upload,
     // and secret edits are refused (10215) while the newest upload is not deployed.
@@ -155,19 +164,28 @@ function fixture(options = {}) {
     attemptExists: async () => options.attemptExists ?? attempt !== undefined,
     readAttempt: async () => { if (options.missingAttempt || !attempt) throw new Error("ENOENT"); return attempt; },
     proofRunner: async args => { runnerArgs.push(args); if (options.proofRunner) return options.proofRunner(args);
+      // The Worker only answers the admin key stored on the version that is actually deployed.
+      if (args.authKey !== values.get(deployedVersion())?.get(SECRET_NAME)) throw new Error("401 admin key rejected");
       const result = completeProof(clock); attempt = result.attempt; return result.proof; },
   });
-  return { broker, calls, snapshots, runnerArgs, request, versions, deployments, secretWrites,
-    secretsFile: () => secretsFile, latest: () => latest, clock: () => clock,
+  return { broker, calls, snapshots, runnerArgs, request, versions, deployments, secretWrites, values,
+    secretsFile: () => secretsFile, latest: () => latest, clock: () => clock, deployedVersion, domain: () => domain,
+    setDomain: value => { domain = value; },
     advance: ms => { clock += ms; },
     // `wrangler deploy --secrets-file`: a new version with the config bindings, the newest
-    // upload's secrets inherited, the file's secrets on top, then deployed at 100%.
-    deploy: ({ withFile = true } = {}) => {
+    // upload's secrets (names, types AND values) inherited, the file's secrets on top, then
+    // deployed at 100%. `content` is the file actually handed to wrangler (default: the
+    // broker's write); `withFile: false` models an upload that never consumed it.
+    deploy: ({ withFile = true, content = secretsFile, keyType = "secret_text" } = {}) => {
       clock += 1010;
-      const fromFile = withFile && secretsFile !== null
-        ? Object.keys(JSON.parse(secretsFile)).map(name => ({ name, type: "secret_text" })) : [];
-      const secrets = new Map([...secretRows(versions.get(latest).resources.bindings), ...fromFile].map(row => [row.name, row]));
-      upload(id(13), `issue-1700-route-free-${input().operation_id}-${RELEASE}`, [...bindingFixture(), ...secrets.values()]);
+      const rows = new Map(secretRows(versions.get(latest).resources.bindings).map(row => [row.name, row]));
+      const secretValues = new Map(values.get(latest));
+      if (withFile && content !== null) {
+        for (const [name, value] of Object.entries(JSON.parse(content))) {
+          rows.set(name, { name, type: name === SECRET_NAME ? keyType : "secret_text" }); secretValues.set(name, value);
+        }
+      }
+      upload(id(13), `issue-1700-route-free-${input().operation_id}-${RELEASE}`, [...bindingFixture(), ...rows.values()], secretValues);
       deployments.unshift(deployment(3, clock));
     },
     drift: () => { clock += 1000; upload(id(19), "someone-else", bindingFixture()); deployments.unshift(deployment(9, clock)); },
@@ -175,7 +193,8 @@ function fixture(options = {}) {
     // exact preimage version redeployed at 100%. The newest upload is left undeployed.
     rollback: () => {
       clock += 1000;
-      upload(id(14), "issue-1700-route-free-rollback-this-run", [...bindingFixture(), ...secretRows(versions.get(latest).resources.bindings)]);
+      upload(id(14), "issue-1700-route-free-rollback-this-run", [...bindingFixture(), ...secretRows(versions.get(latest).resources.bindings)],
+        new Map(values.get(latest)));
       deployments.unshift(deployment(4, clock));
       clock += 1000;
       deployments.unshift({ ...deployment(5, clock), versions: [{ percentage: 100, version_id: id(11) }] });
@@ -223,6 +242,9 @@ test("V15 state (newest upload != deployed): the bootstrap completes with no scr
   f.deploy();
   assert.deepEqual(f.versions.get(id(13)).resources.bindings.filter(row => row.name === SECRET_NAME),
     [{ name: SECRET_NAME, type: "secret_text" }]);
+  // The stale residue's value was overridden by the consumed file, never by inheritance.
+  assert.equal(f.values.get(id(13)).get(SECRET_NAME), file[SECRET_NAME]);
+  assert.notEqual(f.values.get(LATEST_ROLLBACK).get(SECRET_NAME), file[SECRET_NAME]);
   const bound = await f.broker.dispatch("bind_candidate", candidate());
   assert.equal(f.secretsFile(), null); assert.equal(bound.secret_file_removed, true);
   assert.equal(bound.candidate_key_confirmed, true);
@@ -498,7 +520,7 @@ test("the rollback-quiescence reader expects exactly the broker snapshot keys, f
   assert.ok(declared, "quiescence key list not found");
   const keys = [...declared[1].matchAll(/'([^']*)'/g)].map(match => match[1]).join("").split(/\s+/).filter(Boolean);
   assert.deepEqual(keys.sort(), Object.keys(fixture().broker.snapshot()).sort());
-  assert.match(python, /broker\['failure'\] is not None/);
+  assert.match(python, /broker\['failure'\] is None or \(broker\['state'\] in \('bind_failed', 'cleaned'\)/);
   assert.ok(python.includes(`'${BROKER_CONTRACT}'`));
 });
 
@@ -572,8 +594,10 @@ test("the key file is exclusive, owner-only, never followed and gone after bind"
     await broker.dispatch("prepare");
     const path = join(directory, SECRETS_FILE), stat = await lstat(path);
     assert.equal(stat.isFile(), true); assert.equal(stat.mode & 0o777, 0o600);
-    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { [SECRET_NAME]: SECRET_TEXT });
-    f.deploy();
+    const onDisk = await readFile(path, "utf8");
+    assert.deepEqual(JSON.parse(onDisk), { [SECRET_NAME]: SECRET_TEXT });
+    f.deploy({ content: onDisk }); // wrangler reads exactly this file
+    assert.equal(f.values.get(id(13)).get(SECRET_NAME), SECRET_TEXT);
     await broker.dispatch("bind_candidate", candidate());
     assert.equal((await readdir(directory)).includes(SECRETS_FILE), false);
     // A planted symlink or leftover file is never written through or reused.
@@ -687,6 +711,108 @@ test("probe winning concurrency, lost response and expiry stay UNKNOWN with no c
   assert.equal(expired.broker.snapshot().rollback_safe, false);
   assert.equal(expired.secretsFile(), null);
   await assert.rejects(expired.broker.dispatch("cleanup"));
+});
+
+test("an upload that never consumed the key file cannot produce a proof, even with stale-key residue", async () => {
+  const f = fixture(); // the newest upload still carries a stale admin key
+  await f.broker.dispatch("prepare");
+  f.deploy({ withFile: false });
+  // Names and types alone look right: the stale key was inherited as secret_text.
+  assert.equal((await f.broker.dispatch("bind_candidate", candidate())).candidate_key_confirmed, true);
+  assert.notEqual(f.values.get(id(13)).get(SECRET_NAME), JSON.parse(f.secretWrites[0])[SECRET_NAME]);
+  // The authenticated proof is what rejects it: no proof, no completion, no cleanup permission.
+  await assert.rejects(f.broker.dispatch("probe"), /bootstrap_unknown/);
+  assert.equal(f.runnerArgs.length, 1);
+  assert.equal(f.broker.snapshot().state, "unknown");
+  await assert.rejects(f.broker.dispatch("cleanup"));
+});
+
+for (const [name, preimageBindings] of [
+  ["secret_text", [{ name: "STAGING_DSR_DLQ_ALERT_AUTH_TOKEN", type: "secret_text" }]],
+  ["secret_key", [{ name: "SIGNING_JWK", type: "secret_key" }]],
+]) {
+  test(`a preimage carrying another ${name} secret is refused: inherited values cannot be proven`, async () => {
+    const f = fixture({ preimageBindings });
+    await assert.rejects(f.broker.dispatch("prepare"), /bootstrap_unknown/);
+    assert.deepEqual(f.broker.snapshot().failure, readFailure({ http_status: 200, validation_failed: "preimage_secrets_unprovable" }));
+    assert.equal(f.secretWrites.length, 0);
+  });
+}
+
+test("the carried key and every other secret are compared by name AND type", async () => {
+  const keyType = fixture({ latestIsDeployed: true });
+  await keyType.broker.dispatch("prepare"); keyType.deploy({ keyType: "secret_key" });
+  await assert.rejects(keyType.broker.dispatch("bind_candidate", candidate()), /bootstrap_unknown/);
+  assert.equal(keyType.broker.snapshot().failure.validation_failed, "candidate_key_missing");
+  const retyped = fixture({ latestSecrets: [{ name: SECRET_NAME.replace("ADMIN", "OTHER"), type: "secret_key" }] });
+  await retyped.broker.dispatch("prepare"); retyped.deploy();
+  await assert.rejects(retyped.broker.dispatch("bind_candidate", candidate()), /bootstrap_unknown/);
+  assert.equal(retyped.broker.snapshot().failure.validation_failed, "candidate_secret_drift");
+});
+
+const enableApplied = init => init.method === "POST" && JSON.parse(init.body).enabled === true;
+for (const [name, subdomainResponse, phase] of [
+  ["the enable is applied but its response is lost", init => (enableApplied(init) ? cfError(502, []) : undefined),
+    "bind_enable_subdomain"],
+  ["the readback after the enable fails", (init, calls) => (init.method === "GET" &&
+    calls.some(call => call.method === "POST") && !calls.some(call => call.method === "POST" && !JSON.parse(call.body).enabled) &&
+    calls.at(-1).method === "GET" && calls.at(-2)?.method === "POST" ? cfError(500, []) : undefined), "bind_subdomain_after"],
+]) {
+  test(`a failed bind where ${name} stays fenced and cleanup disables workers.dev`, async () => {
+    const f = fixture({ subdomainResponse });
+    await f.broker.dispatch("prepare"); f.deploy();
+    await assert.rejects(f.broker.dispatch("bind_candidate", candidate()), /bootstrap_unknown/);
+    assert.equal(f.domain().enabled, true); // the provider really did enable it
+    const failed = f.broker.snapshot();
+    assert.equal(failed.state, "bind_failed"); assert.equal(failed.admission_closed, true);
+    assert.equal(failed.subdomain_enable_attempted, true); assert.equal(failed.failure.phase, phase);
+    await assert.rejects(f.broker.dispatch("probe"));
+    assert.equal(f.runnerArgs.length, 0);
+    const cleaned = await f.broker.dispatch("cleanup");
+    assert.equal(cleaned.state, "cleaned"); assert.equal(cleaned.cleanup_basis, "never_execute");
+    assert.equal(cleaned.subdomain_restore_attempted, true); assert.equal(cleaned.subdomain_restored, true);
+    assert.equal(cleaned.candidate_key_confirmed, true); assert.equal(cleaned.probe_command_seen, false);
+    assert.deepEqual(f.domain(), { enabled: false, previews_enabled: false });
+    await assert.rejects(f.broker.dispatch("probe"));
+  });
+}
+
+test("a failed bind before any enable re-proves ownership and leaves workers.dev untouched", async () => {
+  let flaky = 1;
+  const f = fixture({ request: path => (path === `/versions/${id(13)}` && flaky-- > 0 ? cfError(503, []) : undefined) });
+  await f.broker.dispatch("prepare"); f.deploy();
+  await assert.rejects(f.broker.dispatch("bind_candidate", candidate()), /bootstrap_unknown/);
+  assert.equal(f.broker.snapshot().state, "bind_failed");
+  assert.equal(f.broker.snapshot().candidate_key_confirmed, false);
+  const cleaned = await f.broker.dispatch("cleanup");
+  assert.equal(cleaned.state, "cleaned"); assert.equal(cleaned.candidate_key_confirmed, true);
+  assert.equal(cleaned.subdomain_restore_attempted, false);
+  assert.equal(f.calls.some(call => call.method === "POST"), false);
+  // An origin this broker never tried to enable is not its to disable.
+  const foreign = fixture({ request: path => (path === `/versions/${id(13)}` && foreign.calls.filter(call =>
+    call.path === `/versions/${id(13)}`).length === 1 ? cfError(503, []) : undefined) });
+  await foreign.broker.dispatch("prepare"); foreign.deploy();
+  await assert.rejects(foreign.broker.dispatch("bind_candidate", candidate()), /bootstrap_unknown/);
+  foreign.setDomain({ enabled: true, previews_enabled: false });
+  await assert.rejects(foreign.broker.dispatch("cleanup"), /bootstrap_unknown/);
+  assert.equal(foreign.broker.snapshot().failure.validation_failed, null); // first failure (the 503) wins
+  assert.equal(foreign.calls.some(call => call.method === "POST"), false);
+});
+
+test("a bind interrupted by close or by a parse refusal is not fenced and cannot clean up", async () => {
+  const f = fixture({ request: (path, init) => (path === `/versions/${id(13)}` ? pending(init) : undefined) });
+  await f.broker.dispatch("prepare"); f.deploy();
+  const binding = f.broker.dispatch("bind_candidate", candidate());
+  for (let turns = 0; !f.calls.some(call => call.path === `/versions/${id(13)}`); turns++) {
+    assert.ok(turns < 10_000); await new Promise(resolve => setImmediate(resolve));
+  }
+  await f.broker.close();
+  await assert.rejects(binding, /bootstrap_unknown/);
+  assert.equal(f.broker.snapshot().state, "unknown");
+  await assert.rejects(f.broker.dispatch("cleanup"));
+  const parsed = fixture(); await parsed.broker.dispatch("prepare"); parsed.deploy();
+  await assert.rejects(parsed.broker.dispatch("bind_candidate", { ...candidate(), image_digest: "latest" }));
+  assert.equal(parsed.broker.snapshot().state, "unknown");
 });
 
 test("close and expiry remove an unconsumed key file without any provider call", async () => {
