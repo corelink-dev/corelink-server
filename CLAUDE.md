@@ -138,9 +138,13 @@ run the underlying check locally and say so in the PR, or ask the owner to
 re-enable the lane — never assume a cron or PR trigger will catch it. The
 checks that REMAIN active on a PR MUST be green — but no build/test lane is
 among them (see Gates).
-Never blind `--admin` merge; if you must `--admin`, state the documented
-infra/flake reason explicitly — `--merge --admin-reason "<why>"`, which the
-script refuses on draft/pending/conflicting/missing-gate states (those never ran).
+Never blind `--admin` merge. **Until B-315 is fixed, `--admin` is never used:**
+the interim route is the report-only gate, then
+`gh pr merge <PR> --squash --match-head-commit <gated head SHA>`, with the
+documented infra/flake reason for proceeding recorded in a PR comment.
+**After B-315 lands**, if you must `--admin`, state that reason explicitly —
+`--merge --admin-reason "<why>"`, which the script refuses on
+draft/pending/conflicting/missing-gate states (those never ran).
 (A green PR now takes minutes, not 30+.)
 
 **2026-08-02 correction — the "cron only" rule no longer covers everything it
