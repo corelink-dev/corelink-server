@@ -10,6 +10,7 @@ import {
   makeCloudflareApi,
   normalizeDeploymentList,
   proveNoExternalIngress,
+  providerFailureFields,
   queryReadOnlyDatabase,
   selectNamedResource,
   selectPriorRevision,
@@ -176,6 +177,7 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
   } catch (error) {
     exerciseError = error instanceof RouteError ? error.code : "synthetic_exercise_failed_closed";
     receipt.failure_code = exerciseError;
+    Object.assign(receipt, providerFailureFields(error));
     externalIngress = isExternalIngressError(error);
   } finally {
     if (externalIngress) {

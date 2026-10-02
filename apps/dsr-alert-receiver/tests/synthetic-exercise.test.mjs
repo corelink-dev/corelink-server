@@ -215,12 +215,12 @@ describe("B-216 receiver-only synthetic operator", () => {
   });
 
   it.each([
-    [{ zonesStatus: 403 }, "ingress_zones_permission_denied"],
-    [{ serviceRoutesStatus: 500 }, "ingress_service_routes_unreadable"],
-  ])("sends nothing when the ingress proof cannot be read (%j), and still disables workers.dev", async (ingress, code) => {
+    [{ zonesStatus: 403 }, "ingress_zones_permission_denied", { endpoint: "zones_list", http_status: 403, cf_error_codes: [], message_class: "permission" }],
+    [{ serviceRoutesStatus: 500 }, "ingress_service_routes_unreadable", { endpoint: "service_routes", http_status: 500, cf_error_codes: [], message_class: "server_error" }],
+  ])("sends nothing when the ingress proof cannot be read (%j), names the read, and still disables workers.dev", async (ingress, code, readFailure) => {
     const harness = exerciseHarness({ ingress });
     const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
-    expect(receipt).toMatchObject({ status: "failed_closed", failure_code: code, workers_dev_cleanup: "disabled" });
+    expect(receipt).toMatchObject({ status: "failed_closed", failure_code: code, workers_dev_cleanup: "disabled", read_failure: readFailure });
     expect(harness.state.receiverCalls).toHaveLength(0);
   });
 });

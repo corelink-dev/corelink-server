@@ -4,6 +4,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RECEIVER_TARGET } from "./receiver-target.mjs";
+import { classifyReadFailure, sanitizeReadFailure } from "./read-failure.mjs";
 
 // Account, Worker and repository come from the one pinned receiver target, which
 // refuses to load if they drift onto a production or staging name.
@@ -74,6 +75,14 @@ export function assertTokenDiagnosticPath(path) {
   fail("token_diagnostic_path_rejected");
 }
 
+// A refused read carries an allowlisted `readFailure` (see read-failure.mjs): which
+// endpoint, the HTTP status, Cloudflare's numeric error codes and a message class.
+function readFailed(code, failure) {
+  const error = new ReadbackError(code);
+  error.readFailure = failure;
+  throw error;
+}
+
 function makeReadOnlyApi(token, fetchImpl) {
   return async (path, { absent404 = false } = {}) => {
     assertReadbackPath(path);
@@ -84,12 +93,14 @@ function makeReadOnlyApi(token, fetchImpl) {
         redirect: "error",
         headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       });
-    } catch { fail("provider_transport_ambiguous"); }
+    } catch { readFailed("provider_transport_ambiguous", classifyReadFailure({ path, transport: true })); }
     if (response.status === 404 && absent404) return { absent: true };
-    if (!response.ok) fail(response.status === 404 ? "provider_target_not_found" : "provider_response_rejected");
     let payload;
-    try { payload = await response.json(); } catch { fail("provider_response_ambiguous"); }
-    if (payload?.success !== true) fail("provider_response_rejected");
+    let malformed = false;
+    try { payload = await response.json(); } catch { malformed = true; }
+    if (!response.ok) readFailed(response.status === 404 ? "provider_target_not_found" : "provider_response_rejected", classifyReadFailure({ path, status: response.status, payload, malformed }));
+    if (malformed) readFailed("provider_response_ambiguous", classifyReadFailure({ path, status: response.status, malformed: true }));
+    if (payload?.success !== true) readFailed("provider_response_rejected", classifyReadFailure({ path, status: response.status, payload }));
     return { result: payload.result, resultInfo: payload.result_info };
   };
 }
@@ -371,22 +382,32 @@ export async function readTokenPolicyDiagnostic({ apiToken, fetchImpl = fetch, n
   return Object.freeze({ ...summarizeTokenPolicies(details.result.policies), verification: verificationDiagnostic });
 }
 
+// Whether the token verified at all: a verify endpoint answered and named its kind.
+// Null when there was no token to verify.
+export function tokenVerifies(diagnostic) {
+  if (!diagnostic || diagnostic.status === "token_missing") return null;
+  return ["user", "account"].includes(diagnostic.verification?.token_kind);
+}
+
 export async function writeReadbackReceipt(context, options = {}) {
   const outputPath = join(context.runnerTemp || tmpdir(), "b216-receiver-readback-receipt.json");
+  // The token diagnostic runs first and on its own, so its result is recorded even
+  // when a later inventory read is refused.
+  let tokenDiagnostic = null;
+  if (options.includeTokenPolicyDiagnostic === true) {
+    try {
+      tokenDiagnostic = await readTokenPolicyDiagnostic({
+        apiToken: context.apiToken,
+        fetchImpl: options.fetchImpl,
+        now: options.nowMs,
+      });
+    } catch {
+      tokenDiagnostic = unknownTokenPolicyDiagnostic();
+    }
+  }
   let receipt;
   try {
     receipt = await readWorkerInventory({ context, ...options });
-    if (options.includeTokenPolicyDiagnostic === true) {
-      try {
-        receipt.token_policy_diagnostic = await readTokenPolicyDiagnostic({
-          apiToken: context.apiToken,
-          fetchImpl: options.fetchImpl,
-          now: options.nowMs,
-        });
-      } catch {
-        receipt.token_policy_diagnostic = unknownTokenPolicyDiagnostic();
-      }
-    }
   } catch (error) {
     receipt = {
       schema_version: 1,
@@ -397,7 +418,12 @@ export async function writeReadbackReceipt(context, options = {}) {
       worker_name: READBACK_TARGET.workerName,
       status: "failed_closed",
       failure_code: error instanceof ReadbackError ? error.code : "readback_internal_error",
+      read_failure: sanitizeReadFailure(error?.readFailure),
     };
+  }
+  if (tokenDiagnostic) {
+    receipt.token_policy_diagnostic = tokenDiagnostic;
+    receipt.token_verifies = tokenVerifies(tokenDiagnostic);
   }
   await mkdir(context.runnerTemp || tmpdir(), { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });

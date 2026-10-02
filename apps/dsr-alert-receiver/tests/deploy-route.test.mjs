@@ -1650,6 +1650,27 @@ describe("B-216 receiver on the shared main account", () => {
     expect(harness.state.deleted).toBe(true);
   });
 
+  it("names the refused read or write in the failure receipt, without bodies or IDs", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const zones = routeHarness({ migration, sha: goodContext.sha, ingress: { zonesStatus: 403 } });
+    const zonesReceipt = await runForReceipt(zones, config, migration, "ingress_zones_permission_denied");
+    expect(zonesReceipt.read_failure).toEqual({ endpoint: "zones_list", http_status: 403, cf_error_codes: [], message_class: "permission" });
+    expect(zonesReceipt.write_failure).toBeUndefined();
+
+    const harness = routeHarness({ migration, sha: goodContext.sha });
+    const wrapped = { ...harness, fetchImpl: async (url, options = {}) => {
+      if ((options.method ?? "GET") === "POST" && new URL(url).pathname.endsWith("/subdomain")) {
+        return Response.json({ success: false, errors: [{ code: 10013, message: `private failure for ${TARGET.accountId}` }] }, { status: 500 });
+      }
+      return harness.fetchImpl(url, options);
+    } };
+    const writeReceipt = await runForReceipt(wrapped, config, migration, "provider_response_rejected");
+    expect(writeReceipt.write_failure).toEqual({ endpoint: "worker_subdomain", http_status: 500, cf_error_codes: [10013], message_class: "server_error" });
+    expect(writeReceipt.read_failure).toBeUndefined();
+    expect(JSON.stringify(writeReceipt)).not.toContain("private failure");
+  });
+
   it("proves zero ingress immediately before a cleanup delete or rollback, and halts if it is not zero", async () => {
     const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
