@@ -1853,11 +1853,15 @@ verify-means: |
   or with a wrong tree exits 3; a lost API response is still proven from PR state.
   That GitHub itself enforces strict up-to-date plus the sha pin is argued from its
   documented semantics, not exercised: no live merge was run to write this record.
+  The harness is imported through the scripts package, so the BASE-owned candidate
+  gate freezes it together with this verifier and, when it runs, refuses a PR that
+  edits either one (its lane, backlog-verify.yml, was disabled_manually on 2026-10-01).
   This rewrite of a done item's acceptance and verify-means, together with its trusted
   verifier, has no admission in the BASE-owned candidate gate, which refuses it by
-  design. It lands through the exact-SHA bootstrap (the report-only gate from an
-  origin/main tree, then a squash merge pinned with --match-head-commit to the
-  reviewed head), and makes no self-hosting claim: this helper did not merge itself.
+  design. It is admitted only by an exact-SHA bootstrap that the owner authorizes for
+  the reviewed base and head (the report-only gate from an origin/main tree, then a
+  squash merge pinned with --match-head-commit to that head), and makes no
+  self-hosting claim: this helper did not merge itself.
 last-verified: 2026-10-01
 ```
 

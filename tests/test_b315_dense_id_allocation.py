@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -517,6 +519,95 @@ def test_gate_wrapper_check_refuses_empty_text_and_a_missing_call_site():
     assert verifier.gate_problems(" \n") == ["gate wrapper text is EMPTY: nothing to check"]
     without = "\n".join(line for line in _gate().splitlines() if "bash scripts/b315_atomic_merge.sh" not in line)
     assert any("0 helper call sites" in problem for problem in verifier.gate_problems(without))
+
+
+# ── Trust: the BASE-owned candidate gate must freeze the harness too ─────────
+# The verifier's layer 4 is the harness's word. scripts/backlog_verify.py, run
+# from BASE, refuses a PR that changes a trusted control, and it finds those
+# controls by a static import closure from each item's `verify` command. That
+# closure follows `scripts.`-package imports only, so a bare
+# `import b315_merge_harness` left the harness outside it: a later PR could stub
+# the harness's self_test and the verifier would report every scenario passed.
+
+VERIFIER_CONTROL = "scripts/verify_b315_dense_id_allocation.py"
+HARNESS_CONTROL = "scripts/b315_merge_harness.py"
+SELF_TEST_SIGNATURE = "def self_test(root: Path, workers: int = 6) -> list[str]:\n"
+
+
+def _trusted_items():
+    from scripts import backlog_verify
+
+    return backlog_verify.parse((ROOT / "BACKLOG.md").read_text(encoding="utf-8"))
+
+
+def test_real_harness_is_a_trusted_backlog_control():
+    from scripts import backlog_verify
+
+    controls = backlog_verify._candidate_control_paths(ROOT, _trusted_items())
+    assert VERIFIER_CONTROL in controls, "B-315's verify command no longer names its verifier"
+    assert HARNESS_CONTROL in controls, "the BASE gate would not refuse a PR that edits the harness"
+
+
+def _control_roots(tmp_path: Path):
+    """BASE and candidate copies of every trusted control (plus the harness,
+    named explicitly, so that a closure which misses it fails the assertion
+    below rather than a file lookup)."""
+    from scripts import backlog_verify
+
+    items = _trusted_items()
+    controls = backlog_verify._candidate_control_paths(ROOT, items) | {HARNESS_CONTROL}
+    roots = []
+    for name in ("trusted", "candidate"):
+        root = tmp_path / name
+        for relative in sorted(controls):
+            source = ROOT / relative
+            if source.is_file():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+        roots.append(root)
+    return roots[0], roots[1], items
+
+
+def test_candidate_that_stubs_the_harness_self_test_is_refused_by_the_base_gate(tmp_path: Path):
+    from scripts import backlog_verify
+
+    trusted, candidate, items = _control_roots(tmp_path)
+    # Positive control: identical copies are admitted, so the refusal below is
+    # about the stub and not about the fixture.
+    backlog_verify.check_candidate_controls(candidate, trusted, items)
+
+    harness_file = candidate / HARNESS_CONTROL
+    text = harness_file.read_text(encoding="utf-8")
+    assert text.count(SELF_TEST_SIGNATURE) == 1, "the stub did not apply exactly once"
+    harness_file.write_text(text.replace(SELF_TEST_SIGNATURE, SELF_TEST_SIGNATURE + "    return []\n"), encoding="utf-8")
+    with pytest.raises(RuntimeError, match=re.escape(f"candidate mutated trusted backlog control {HARNESS_CONTROL}")):
+        backlog_verify.check_candidate_controls(candidate, trusted, items)
+
+
+def test_verifier_refuses_a_harness_that_is_not_the_tree_file(tmp_path: Path):
+    """`scripts` is a namespace package, and a regular `scripts` package later
+    on sys.path wins over it. A stub there must not be trusted: without the
+    file check the verifier ran this stub and printed PASS."""
+    shadow = tmp_path / "shadow" / "scripts"
+    shadow.mkdir(parents=True)
+    (shadow / "__init__.py").write_text("", encoding="utf-8")
+    (shadow / "b315_merge_harness.py").write_text(
+        "SCENARIOS = ('stub',)\n\n\ndef self_test(root):\n    return []\n", encoding="utf-8"
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", str(ROOT / VERIFIER_CONTROL), "--self-test"],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(shadow.parent)},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    stub = (shadow / "b315_merge_harness.py").resolve()
+    assert f"scripts.b315_merge_harness loaded from {stub}" in result.stderr, result.stderr
+    assert "PASS" not in result.stdout
 
 
 # ── The gate wrapper (scripts/pre-merge-gate-check.sh) ──────────────────────

@@ -24,6 +24,14 @@ Four layers, each a refusal on its own:
    allocation lock and the remote lease are still held. It proves the helper
    against the harness's model of GitHub; that GitHub enforces the model is
    argued, not proven, here.
+
+Trust: the BASE-owned candidate gate in scripts/backlog_verify.py, when it runs
+(its lane, backlog-verify.yml, was disabled_manually on 2026-10-01), refuses a
+PR that changes this file or the harness (the harness is imported through the
+`scripts` package so that gate's static import closure reaches it). The helper,
+the gate wrapper and the allocator are run by path, so they are NOT in that
+closure: a PR may change them without that refusal, and what judges the change
+is this verifier and its harness when they run on the changed tree.
 """
 
 from __future__ import annotations
@@ -179,8 +187,26 @@ def main() -> int:
         print("B-315 allocator refuses the real BACKLOG.md population:", file=sys.stderr)
         print(result.stdout + result.stderr, file=sys.stderr)
         return 1
-    sys.path.insert(0, str(HARNESS.parent))
-    import b315_merge_harness as harness  # noqa: E402
+    # Layer 4 is only as trustworthy as the harness file it imports. The
+    # BASE-owned candidate gate (scripts/backlog_verify.py) freezes a verifier's
+    # imports only when they are spelled through the `scripts` package, so the
+    # harness is imported that way: once this verifier is BASE, a PR that edits
+    # the harness (say, to stub self_test) is refused as a mutated trusted
+    # control. A bare `import b315_merge_harness` left it outside that closure.
+    # `scripts` has no __init__.py, so a regular `scripts` package anywhere on
+    # sys.path would win over it; the file check below refuses that instead of
+    # trusting whatever module answered to the name.
+    sys.path.insert(0, str(ROOT))
+    from scripts import b315_merge_harness as harness  # noqa: E402
+
+    loaded_from = Path(getattr(harness, "__file__", None) or "").resolve()
+    if loaded_from != HARNESS.resolve():
+        print(
+            f"B-315 instrument broken: scripts.b315_merge_harness loaded from {loaded_from}, "
+            f"not {HARNESS}",
+            file=sys.stderr,
+        )
+        return 2
 
     with tempfile.TemporaryDirectory(prefix="b315-verify-") as directory:
         problems = harness.self_test(Path(directory))
