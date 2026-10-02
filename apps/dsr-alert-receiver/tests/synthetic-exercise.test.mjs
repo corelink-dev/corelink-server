@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { TARGET } from "../scripts/deploy-route.mjs";
 import { disableWorkersDev, runSyntheticReceiverExercise, safeWorkersDevUrl } from "../scripts/synthetic-exercise.mjs";
 
+// The UUID the provider reports for the receiver D1; routes adopt it by exact name.
+const DATABASE_ID = "c0ffee00-0b16-4000-8000-0000000006a1";
 const workerPath = `/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`;
 const subdomainPath = `${workerPath}/subdomain`;
 const versionId = "123e4567-e89b-42d3-a456-426614174000";
@@ -18,7 +20,7 @@ const activeVersion = {
   id: versionId,
   metadata: { annotations: { "workers/tag": `b216-${sha}` } },
   resources: { bindings: [
-    { type: "d1", name: TARGET.databaseBinding, database_id: TARGET.databaseId },
+    { type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID },
     { type: "secret_text", name: TARGET.workerSecret },
   ] },
 };
@@ -41,8 +43,8 @@ function exerciseHarness({ receiverStatus = 202, readbackRows } = {}) {
     state.providerCalls.push({ path, method: options.method ?? "GET", body: options.body ? JSON.parse(options.body) : undefined });
     const json = (result) => Response.json({ success: true, result });
     if (path === `/accounts/${TARGET.accountId}`) return json({ id: TARGET.accountId });
-    if (path === `/accounts/${TARGET.accountId}/d1/database`) return json([{ name: TARGET.databaseName, uuid: TARGET.databaseId, account_id: TARGET.accountId }]);
-    if (path.endsWith(`/d1/database/${TARGET.databaseId}/query`)) {
+    if (path === `/accounts/${TARGET.accountId}/d1/database`) return json([{ name: TARGET.databaseName, uuid: DATABASE_ID, account_id: TARGET.accountId }]);
+    if (path.endsWith(`/d1/database/${DATABASE_ID}/query`)) {
       const { sql, params = [] } = JSON.parse(options.body);
       if (sql.includes("sqlite_master")) return json([{ success: true, results: tables }]);
       if (sql.includes("d1_migrations")) return json([{ success: true, results: [{ name: TARGET.migration }] }]);
@@ -99,7 +101,7 @@ describe("B-216 receiver-only synthetic operator", () => {
     expect(call.options.headers.authorization).toBe(`Bearer ${context.receiverToken}`);
     expect(call.envelope).toEqual({ schema_version: 1, event: "dsr.erasure.dead_letter", severity: "critical", component: "dsr-erasure-dlq", event_id: receipt.event_id, exhausted: true, requeue_count: 1 });
     expect(Object.keys(call.envelope).sort()).toEqual(["component", "event", "event_id", "exhausted", "requeue_count", "schema_version", "severity"]);
-    const durableQuery = harness.state.providerCalls.find(({ path, body }) => path.endsWith(`/d1/database/${TARGET.databaseId}/query`) && body?.sql.includes("WHERE event_id"));
+    const durableQuery = harness.state.providerCalls.find(({ path, body }) => path.endsWith(`/d1/database/${DATABASE_ID}/query`) && body?.sql.includes("WHERE event_id"));
     expect(durableQuery.body.params).toEqual([receipt.event_id]);
     expect(harness.state.workersDev).toBe(false);
     expect(harness.state.preview).toBe(false);

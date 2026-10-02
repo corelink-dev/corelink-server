@@ -8,7 +8,7 @@ import {
   listNamedD1Databases,
   makeCloudflareApi,
   normalizeDeploymentList,
-  queryBootstrapDatabase,
+  queryReadOnlyDatabase,
   selectNamedResource,
   selectPriorRevision,
   validateCandidateVersion,
@@ -80,7 +80,7 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
     account_id: TARGET.accountId,
     worker_name: TARGET.workerName,
     database_name: TARGET.databaseName,
-    database_id: TARGET.databaseId,
+    database_id: null,
     binding: TARGET.databaseBinding,
     event_id: eventId,
     customer_data_included: false,
@@ -97,11 +97,11 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
     const account = await api(`/accounts/${TARGET.accountId}`);
     if (account?.id !== TARGET.accountId) fail("account_identity_mismatch");
     const database = selectNamedResource(await listNamedD1Databases(api), TARGET.databaseName, "database");
-    const databaseId = validateDatabaseIdentity(database);
-    if (databaseId !== TARGET.databaseId) fail("database_identity_mismatch");
-    const tables = await queryBootstrapDatabase(api, databaseId, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+    const databaseId = api.adoptDatabase(validateDatabaseIdentity(database));
+    receipt.database_id = databaseId;
+    const tables = await queryReadOnlyDatabase(api, databaseId, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
     if (validateReceiptSchema(tables, migration) !== "applied") fail("database_schema_not_applied");
-    validateMigrationLedger(await queryBootstrapDatabase(api, databaseId, "SELECT name FROM d1_migrations ORDER BY name"));
+    validateMigrationLedger(await queryReadOnlyDatabase(api, databaseId, "SELECT name FROM d1_migrations ORDER BY name"));
 
     const inventory = await readInventory({
       context: { repository: context.repository, ref: context.ref, sha: context.sha, checkoutSha: context.checkoutSha, readbackOnly: "true", apiToken: context.apiToken },
@@ -157,7 +157,7 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
       fail("receiver_acceptance_missing");
     }
     receipt.alert_acceptance = "http_202_accepted";
-    const rows = await queryBootstrapDatabase(api, databaseId,
+    const rows = await queryReadOnlyDatabase(api, databaseId,
       "SELECT event_id, schema_version, event, severity, component, exhausted, requeue_count, received_at_ms FROM dsr_alert_receipts WHERE event_id = ?",
       [eventId]);
     validateDsrReceiptRow(rows, eventId);
