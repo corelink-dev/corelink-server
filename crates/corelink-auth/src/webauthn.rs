@@ -6,7 +6,7 @@
 //! flow. The crate is **HIGH_RISK** (FF-HR-002 / FF-HR-005 / FF-HR-009)
 //! and is the first line of defence against:
 //!
-//! - origin spoofing (`evil.corelink.humangr.com.attacker.com`),
+//! - origin spoofing (`evil.example.com.attacker.com`),
 //! - RP-ID confusion,
 //! - challenge replay,
 //! - user-verification (UV) downgrade in admin step-up,
@@ -36,7 +36,7 @@
 //!    surface: an attacker registering `attacker.com` as RP-ID would
 //!    be silently accepted by a weak validator.
 //! 2. [`OriginAllowlist::contains`] is **exact match** — no prefix /
-//!    regex / suffix matching (mitigates `evil.corelink.humangr.com.attacker.com`).
+//!    regex / suffix matching (mitigates `evil.example.com.attacker.com`).
 //! 3. [`Ceremony::Authentication`] in admin step-up demands
 //!    [`AuthenticatorFlags::user_verification`] = true. UP alone is
 //!    insufficient.
@@ -80,10 +80,10 @@
 //! use uuid::Uuid;
 //!
 //! # fn ex() -> Result<(), Box<dyn std::error::Error>> {
-//! let cfg = EngineConfig::builder(RpId::new("corelink.humangr.com")?, "CoreLink")
+//! let cfg = EngineConfig::builder(RpId::new("example.com")?, "CoreLink")
 //!     .origins(OriginAllowlist::from_strings([
-//!         "https://app.corelink.humangr.com",
-//!         "https://admin.corelink.humangr.com",
+//!         "https://app.example.com",
+//!         "https://admin.example.com",
 //!     ])?)
 //!     .aaguids(AaguidPolicy::builder()
 //!         .allow(Aaguid::yubikey_5())
@@ -99,14 +99,14 @@
 //! let challenge = engine.start_registration(user, AuthenticatorAttachment::Platform)?;
 //! let response = RegistrationResponse::synthetic_for_test(
 //!     challenge.id().clone(), Aaguid::touch_id(), CredentialId::synthetic([1u8; 32].to_vec()),
-//!     COSE_ALG_ES256, AuthenticatorFlags::up_uv(), 0, Origin::parse("https://app.corelink.humangr.com")?,
+//!     COSE_ALG_ES256, AuthenticatorFlags::up_uv(), 0, Origin::parse("https://app.example.com")?,
 //! );
 //! let cred_id = engine.finish_registration(challenge.id(), response)?;
 //!
 //! let auth_challenge = engine.start_authentication(user, Ceremony::AdminStepUp)?;
 //! let auth_response = AuthenticationResponse::synthetic_for_test(
 //!     auth_challenge.id().clone(), cred_id.clone(), AuthenticatorFlags::up_uv(), SignCount::new(1),
-//!     Origin::parse("https://admin.corelink.humangr.com")?,
+//!     Origin::parse("https://admin.example.com")?,
 //! );
 //! let outcome = engine.finish_authentication(auth_challenge.id(), auth_response)?;
 //! assert!(outcome.is_authenticated());

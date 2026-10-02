@@ -163,7 +163,7 @@ Total: 60 min.
 | Quote attribution | By name + role | Anonymized ("VP Platform at a Series B fintech") |
 | Architecture diagram | Sanitized; reviewable | Sanitized; reviewable; redactions enforced |
 | Numbers | Public | Range (e.g. "60-70% cache hit") rather than precise |
-| Distribution | Public on corelink.humangr.com | NDA PDF to qualified sales prospects |
+| Distribution | Public on humangr.com/corelink | NDA PDF to qualified sales prospects |
 | Reference calls | Up to 2 / quarter for 12 months | Up to 2 / quarter for 12 months |
 
 **Sign-off statement (read to customer at end of call):**

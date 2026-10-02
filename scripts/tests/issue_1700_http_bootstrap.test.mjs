@@ -1,12 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, chmod, lstat, writeFile } from "node:fs/promises";
+import fsPromises, { appendFile, mkdtemp, open, readFile, readdir, rename, rm, chmod, lstat, symlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
 import { once } from "node:events";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
 import {
   BROKER_CONTRACT, BROKER_LEDGER, BROKER_SOCKET, BROKER_PROCESS, MAX_LIFETIME_MS, PROBE_RESERVE_MS, SECRET_NAME,
@@ -488,3 +491,109 @@ for (const phase of ["close", "signal"]) for (const becomesAbsent of [true, fals
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 }
+
+// The ownership record names the PID that shutdown may signal. These tests change the
+// record between validation and use (CWE-367) and require that shutdown acts only on
+// bytes it validated, on the inode it validated.
+const ownerRecord = (directory, identity) =>
+  `${JSON.stringify({ contract: "corelink-staging-http-bootstrap-process-v1", directory, ...identity })}\n`;
+const recordingShutdown = (directory, inspected, signals) => shutdownBroker(directory, {
+  inspect: async pid => { inspected.push(pid); return null; },
+  command: async () => {}, signal: (pid, name) => { signals.push([pid, name]); }, pause: async () => {},
+});
+// Builtin ESM bindings follow the CommonJS exports after syncBuiltinESMExports, so the
+// module under test calls these wrappers through its own `node:fs/promises` imports.
+async function withPatchedFs(patches, run) {
+  const saved = Object.fromEntries(Object.keys(patches).map(name => [name, fsPromises[name]]));
+  try {
+    for (const [name, wrap] of Object.entries(patches)) fsPromises[name] = wrap(saved[name]);
+    syncBuiltinESMExports();
+    return await run();
+  } finally { Object.assign(fsPromises, saved); syncBuiltinESMExports(); }
+}
+
+test("local shutdown acts on the validated owner record even when the path is swapped after validation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "i1700-owner-swap-")); await chmod(directory, 0o700);
+  const outside = await mkdtemp(join(tmpdir(), "i1700-owner-decoy-"));
+  const identity = processIdentity(directory), ownerPath = join(directory, BROKER_PROCESS), staged = join(directory, "staged");
+  const inspected = [], signals = [];
+  let swaps = 0;
+  try {
+    await captureBrokerProcess(directory, identity.pid, async () => identity);
+    // Validated in place, this decoy would be refused: world-readable, outside the private directory.
+    await writeFile(join(outside, "decoy.json"), ownerRecord(directory, processIdentity(directory, 4321)), { mode: 0o644 });
+    await symlink(join(outside, "decoy.json"), staged);
+    const swapAfter = original => async (path, ...rest) => {
+      const result = await original(path, ...rest);
+      if (path === ownerPath && swaps === 0) { swaps++; await rename(staged, ownerPath); }
+      return result;
+    };
+    const result = await withPatchedFs({ lstat: swapAfter, stat: swapAfter, open: swapAfter },
+      () => recordingShutdown(directory, inspected, signals));
+    assert.equal(swaps, 1); // the substitution really happened after the first path check
+    assert.equal((await lstat(ownerPath)).isSymbolicLink(), true);
+    assert.equal(result.pid, identity.pid);
+    assert.deepEqual(inspected, [identity.pid]); assert.deepEqual(signals, []);
+  } finally { await rm(directory, { recursive: true, force: true }); await rm(outside, { recursive: true, force: true }); }
+});
+
+test("local shutdown bounds the owner bytes it reads, not only the size it validated", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "i1700-owner-grow-")); await chmod(directory, 0o700);
+  const identity = processIdentity(directory), ownerPath = join(directory, BROKER_PROCESS);
+  const inspected = [], signals = [];
+  let grown = false;
+  // Trailing whitespace keeps the record valid JSON, so only a byte bound can refuse it.
+  const grow = async () => { if (grown) return; grown = true; await appendFile(ownerPath, " ".repeat(8192)); };
+  const probe = await open(BOOTSTRAP_SOURCE, "r"), handleProto = Object.getPrototypeOf(probe);
+  await probe.close();
+  const handleStat = handleProto.stat;
+  try {
+    await captureBrokerProcess(directory, identity.pid, async () => identity);
+    const growAfter = original => async (path, ...rest) => {
+      const result = await original(path, ...rest);
+      if (path === ownerPath) await grow();
+      return result;
+    };
+    handleProto.stat = async function (...args) { const result = await handleStat.apply(this, args); await grow(); return result; };
+    await assert.rejects(withPatchedFs({ lstat: growAfter, stat: growAfter },
+      () => recordingShutdown(directory, inspected, signals)), /bootstrap_rejected/);
+    handleProto.stat = handleStat;
+    assert.equal(grown, true); assert.equal((await lstat(ownerPath)).size > 8192, true);
+    assert.deepEqual(inspected, []); assert.deepEqual(signals, []);
+  } finally { handleProto.stat = handleStat; await rm(directory, { recursive: true, force: true }); }
+});
+
+test("local shutdown refuses a symlinked, FIFO, loose-mode or oversized owner record without following or blocking", async () => {
+  const outside = await mkdtemp(join(tmpdir(), "i1700-owner-target-")); await chmod(outside, 0o700);
+  const plants = {
+    // A conforming record behind a symlink: only refusing to follow the link rejects it.
+    symlink: async (path, owner) => {
+      const target = join(outside, "owner.json");
+      await writeFile(target, owner); await chmod(target, 0o600); await symlink(target, path);
+    },
+    fifo: async path => { await promisify(execFile)("mkfifo", ["-m", "600", path]); },
+    loose_mode: async (path, owner) => { await writeFile(path, owner); await chmod(path, 0o644); },
+    oversized: async (path, owner) => { await writeFile(path, owner + " ".repeat(4096)); await chmod(path, 0o600); },
+  };
+  try {
+    for (const [name, plant] of Object.entries(plants)) {
+      const directory = await mkdtemp(join(tmpdir(), "i1700-owner-shape-")); await chmod(directory, 0o700);
+      const ownerPath = join(directory, BROKER_PROCESS), inspected = [], signals = [];
+      try {
+        await plant(ownerPath, ownerRecord(directory, processIdentity(directory)));
+        const shutdown = recordingShutdown(directory, inspected, signals);
+        let timer;
+        const outcome = await Promise.race([shutdown.then(() => "accepted", error => error.message),
+          new Promise(yes => { timer = setTimeout(yes, 5000, "blocked"); })]);
+        clearTimeout(timer);
+        if (outcome === "blocked") {
+          // Release a reader stuck in open() so the failure is reported instead of hanging the run.
+          const writer = await open(ownerPath, constants.O_RDWR);
+          await shutdown.catch(() => {}); await writer.close();
+        }
+        assert.equal(outcome, "bootstrap_rejected", name);
+        assert.deepEqual(inspected, [], name); assert.deepEqual(signals, [], name);
+      } finally { await rm(directory, { recursive: true, force: true }); }
+    }
+  } finally { await rm(outside, { recursive: true, force: true }); }
+});

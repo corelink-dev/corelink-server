@@ -288,23 +288,28 @@ def run_deferred_coherence(rules: list[dict], docs: list[DocFile],
 
 @dataclass
 class HostnameResult:
-    """Outcome of [hostname-liveness]. `scan_errors` and `expiry_failures` are
-    check-integrity failures (the scan or the allowlist is untrustworthy);
-    `failures` are shipped surfaces naming an unproven host; `tracked` are the
-    suppressed ones (fatal only under --strict)."""
+    """Outcome of [hostname-liveness]. `scan_errors`, `expiry_failures` and
+    `scope_errors` are check-integrity failures (the scan or the allowlist is
+    untrustworthy); `failures` are shipped surfaces naming an unproven host;
+    `scope_failures` are mentions of a suppressed host in a file its suppression
+    does not declare; `tracked` are the suppressed ones (fatal only under
+    --strict)."""
     files: list[Path] = field(default_factory=list)
     refs: list[HostRef] = field(default_factory=list)
     failures: list[tuple[str, HostRef]] = field(default_factory=list)
+    scope_failures: list[tuple[str, HostRef]] = field(default_factory=list)
     tracked: list[tuple[str, HostRef]] = field(default_factory=list)
     tracked_strict: list[tuple[str, HostRef]] = field(default_factory=list)
     scan_errors: list[str] = field(default_factory=list)
     expiry_failures: list[str] = field(default_factory=list)
+    scope_errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     @property
     def total_fail(self) -> int:
-        return (len(self.failures) + len(self.scan_errors) +
-                len(self.expiry_failures) + len(self.tracked_strict))
+        return (len(self.failures) + len(self.scope_failures) +
+                len(self.scan_errors) + len(self.expiry_failures) +
+                len(self.scope_errors) + len(self.tracked_strict))
 
 
 def run_hostname_liveness(host_cfg: dict, *, repo_root: Path | None = None,
@@ -332,6 +337,24 @@ def run_hostname_liveness(host_cfg: dict, *, repo_root: Path | None = None,
     tracked_cfg = host_cfg.get("tracked_dead", {})
     tracked_dead = {h.strip().lower() for h in tracked_cfg}
 
+    # [suppression-scope]: a suppression names the EXACT repo-relative files it
+    # covers. A host-wide mute would silence a NEW mention of the same dead host
+    # on any other page — e.g. renewing a dead host because a historical ledger
+    # still narrates it must not also mute that host on a customer quickstart.
+    # A missing, empty or non-string `files` list is a hard failure, exactly
+    # like a missing `expires`.
+    scopes: dict[str, set[str]] = {}
+    for host, meta in sorted(tracked_cfg.items()):
+        files = meta.get("files") if isinstance(meta, dict) else None
+        if (not isinstance(files, list) or not files
+                or not all(isinstance(f, str) and f.strip() for f in files)):
+            res.scope_errors.append(
+                f"[hostname-liveness] suppression `{host}` has no valid `files` "
+                f"list — every hostname suppression must name the exact "
+                f"repo-relative files it covers.")
+            continue
+        scopes[host.strip().lower()] = {f.strip() for f in files}
+
     res.files = iter_host_scan_files(root)
     for p in res.files:
         res.refs.extend(extract_host_refs(p, p.relative_to(root).as_posix()))
@@ -357,12 +380,21 @@ def run_hostname_liveness(host_cfg: dict, *, repo_root: Path | None = None,
             "ERROR, not a pass.")
 
     used: set[str] = set()
+    used_files: set[tuple[str, str]] = set()
     seen: set[tuple] = set()
     for r in res.refs:
         if host_is_allowed(r.host, live_allow, live_patterns):
             continue
         if r.host in tracked_dead:
+            scope = scopes.get(r.host)
+            if scope is not None and r.file not in scope:
+                key = (r.host, r.file, r.line)
+                if key not in seen:
+                    seen.add(key)
+                    res.scope_failures.append((r.host, r))
+                continue
             used.add(r.host)
+            used_files.add((r.host, r.file))
             key = (r.host, r.file)
             if key not in seen:
                 seen.add(key)
@@ -406,6 +438,18 @@ def run_hostname_liveness(host_cfg: dict, *, repo_root: Path | None = None,
             f"[suppression-hygiene] allowlist hostname.tracked_dead entry "
             f"`{host}` never matched — dead suppression; delete it (record the "
             f"removal in hostname._retired) or state why it must stay armed.")
+    # The same contract one level down: a declared file that no longer mentions
+    # the host is a stale scope entry, armed to re-silence that file later.
+    for host in sorted(scopes):
+        if host not in used:
+            continue  # already reported above as a whole-entry dead suppression
+        for rel in sorted(scopes[host]):
+            if (host, rel) in used_files:
+                continue
+            res.warnings.append(
+                f"[suppression-hygiene] allowlist hostname.tracked_dead entry "
+                f"`{host}` declares file `{rel}`, which no longer mentions it — "
+                f"remove that file from the entry's `files`.")
     return res
 
 
@@ -461,7 +505,8 @@ def main() -> int:
               "`hostname.live_allow` of scripts/docs_reality_allowlist.json with "
               "the probe date in its reason string; every DEAD/DNS-ONLY host must "
               "be REMOVED FROM THE DOCS (preferred) or carry a `hostname."
-              "tracked_dead` entry with a reason, an owner and an `expires` date.")
+              "tracked_dead` entry with a reason, an owner, the exact `files` it "
+              "covers and an `expires` date.")
         return 0
 
     if args.list_hosts:
@@ -615,19 +660,22 @@ def main() -> int:
     # `--verify-dns` for the manual refresh path).
     hostres = run_hostname_liveness(host_cfg, strict=args.strict)
     host_failures = hostres.failures
+    host_scope_fail = hostres.scope_failures
     host_tracked = hostres.tracked
     host_strict_fail = hostres.tracked_strict
     host_scan_errors = hostres.scan_errors
     host_expiry_fail = hostres.expiry_failures
+    host_scope_errors = hostres.scope_errors
     warnings.extend(hostres.warnings)
 
     # -----------------------------------------------------------------------
     # Report
     # -----------------------------------------------------------------------
+    # The hostname share comes from the result object's own `total_fail`, so a
+    # bucket added there can never be counted in the report but left out here.
     total_fail = (len(cli_failures) + len(strict_tracked_fail) +
                   len(deferred_fatal) + len(endpoint_fatal) +
-                  len(host_failures) + len(host_strict_fail) +
-                  len(host_scan_errors) + len(host_expiry_fail))
+                  hostres.total_fail)
 
     if cli_failures:
         print("== [cli-existence] FAIL — documented command does not exist ==")
@@ -668,13 +716,30 @@ def main() -> int:
             print(f"  {m}")
         print()
 
+    if host_scope_errors:
+        print("== [hostname-liveness] FAIL — hostname suppression with no file scope ==")
+        for m in host_scope_errors:
+            print(f"  {m}")
+        print()
+
     if host_failures:
         print("== [hostname-liveness] FAIL — shipped surface names a host that is "
               "not on the proven-live allowlist ==")
         for host, r in sorted(host_failures, key=lambda x: (x[0], x[1].file, x[1].line)):
             print(f"  {r.file}:{r.line}: `{host}` is not in hostname.live_allow "
                   f"(verified-live registry). Repoint it at a real host, or add a "
-                  f"hostname.tracked_dead entry with a reason + expiry.")
+                  f"hostname.tracked_dead entry with a reason, files + expiry.")
+            print(f"      > {r.excerpt}")
+        print()
+
+    if host_scope_fail:
+        print("== [hostname-liveness] FAIL — suppressed dead host named in a file "
+              "its suppression does not declare ==")
+        for host, r in sorted(host_scope_fail, key=lambda x: (x[0], x[1].file, x[1].line)):
+            print(f"  {r.file}:{r.line}: `{host}` is suppressed only for the files "
+                  f"listed in its hostname.tracked_dead `files`; this file is not "
+                  f"one of them. Remove the dead host here (preferred), or justify "
+                  f"this file in the entry.")
             print(f"      > {r.excerpt}")
         print()
 

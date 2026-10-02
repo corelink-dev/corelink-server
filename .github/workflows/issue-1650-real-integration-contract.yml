@@ -17,6 +17,7 @@ on:
       - "scripts/verify_i1650_real_integration_readiness.py"
       - "docs/handoff/2026-09-22-i1650-real-integration-readiness.json"
       - "crates/corelink-pat/tests/emit_e2e_seed.rs"
+      - "infra/staging/topology.json"
       - "crates/corelink-container/src/routes/tier_select_store.rs"
       - "crates/corelink-container/src/storage/d1_http.rs"
       - "crates/corelink-container/src/storage.rs"
