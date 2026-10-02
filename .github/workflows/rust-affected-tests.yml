@@ -30,6 +30,9 @@
 # the whole-workspace test job took 12.6-15.9 minutes on ubuntu-24.04 with a
 # cold cache (runs 36942836179, 36937687131, 36939536126); in the fastest of
 # them 3.5 minutes compiled and 7.6 minutes ran test binaries in sequence.
+# Sharded three ways, the same whole-workspace selection took 6.6 and 9.7
+# minutes from select to verdict, cold (runs 36950363647, 36948480788); the
+# slowest shard took 9.0 minutes and clippy 3.9.
 #
 # WHAT IT DOES NOT RUN: doctests (they compile one binary per example and would
 # dominate the budget); bench targets (clippy compiles and lints them, but
@@ -218,10 +221,11 @@ jobs:
       # list is red, and so is any listed one that is gone, until the baseline
       # drops it. Shrink-only; a package whose baseline empties is deleted here.
       #   corelink-server
-      #     Its strict run printed 349 diagnostics on main (run 36939536126,
-      #     2026-10-01): indexing/slicing, unwrap/expect, too_many_arguments and
-      #     a few others, almost all in code compiled only for its tests. They
-      #     stay debt because fixing them edits src/grpc_staging_probe.rs and
+      #     Its baseline holds the 347 diagnostics run 36950363647 measured
+      #     (2026-10-02) across 26 files: indexing/slicing 178, expect/unwrap
+      #     129, too_many_arguments 11, and 29 others. (The strict run on main,
+      #     36939536126, printed 349, counted by rendered text.) They stay debt
+      #     because fixing them edits src/grpc_staging_probe.rs and
       #     src/storage/d1_http.rs, whose sha256 are pinned by
       #     scripts/verify_i2176_grpc_deny_gate.py and
       #     scripts/verify_i2574_grpc_diagnostic_policy.py, and adds test-only
@@ -380,8 +384,8 @@ jobs:
     needs: select
     if: needs.select.outputs.mode != 'none'
     runs-on: ubuntu-24.04
-    # Each shard compiles and runs about a third of the selection; unsharded,
-    # the whole workspace took 12.6-15.9 min (see TIME BUDGET above).
+    # Each shard compiles and runs about a third of the selection. Measured
+    # 4.0-9.0 min per shard for the whole workspace, cold (see TIME BUDGET).
     timeout-minutes: 15
     strategy:
       # Every shard reports, so one red shard does not hide another's failures.
