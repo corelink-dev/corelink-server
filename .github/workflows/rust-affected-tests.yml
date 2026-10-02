@@ -46,7 +46,8 @@
 # in the clippy job's CLIPPY_DEBT ledger are left out of the `-D warnings` run.
 # They are linted instead against a reviewed baseline, diagnostic by
 # diagnostic: any diagnostic the baseline does not list is red, however many
-# listed ones were fixed in the same change.
+# listed ones were fixed in the same change, and the committed baseline may
+# not list anything the base revision's copy of it does not.
 #
 # THE VERDICT JOB is the single check to depend on. It fails unless the
 # selection succeeded AND either clippy and every test shard succeeded, or the
@@ -128,6 +129,9 @@ jobs:
       count: ${{ steps.select.outputs.count }}
       cargo_args: ${{ steps.select.outputs.cargo_args }}
       test_matrix: ${{ steps.select.outputs.test_matrix }}
+      # The revision whose clippy-debt baselines are the reviewed ones: the
+      # diff base, or the default branch's tip when there is none.
+      debt_base: ${{ steps.select.outputs.debt_base }}
     steps:
       # For pull_request this is the merge commit; depth 2 brings its first
       # parent, the exact base the PR was merged onto.
@@ -148,6 +152,7 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           # The test job's matrix width. The selection is dealt round-robin
           # over this many shards, each a separate ubuntu-24.04 runner.
           TEST_SHARDS: '3'
@@ -158,9 +163,25 @@ jobs:
           cargo metadata --format-version 1 --locked > "$work/metadata.json"
           selector=(python3 scripts/rust_affected_packages.py --metadata "$work/metadata.json"
                     --test-shards "$TEST_SHARDS" --step-outputs "$GITHUB_OUTPUT")
+          # The clippy job's ratchet holds each committed clippy-debt baseline
+          # to the one at this revision. With no diff base it is the default
+          # branch's tip: what a merge of this ref would be held to.
+          debt_base() {
+            local sha="$1"
+            if [ "$sha" = default ]; then
+              git fetch --no-tags --depth=1 origin "refs/heads/$DEFAULT_BRANCH"
+              sha="$(git rev-parse FETCH_HEAD)"
+            fi
+            if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::clippy-debt base revision '$sha' is not a commit sha"
+              exit 1
+            fi
+            echo "debt_base=$sha" >> "$GITHUB_OUTPUT"
+          }
 
           case "$EVENT" in
             workflow_dispatch)
+              debt_base default
               "${selector[@]}" --all "manual dispatch checks every package"
               exit 0
               ;;
@@ -174,6 +195,7 @@ jobs:
               ;;
             push)
               if [[ ! "$BEFORE" =~ ^[0-9a-f]{40}$ || "$BEFORE" =~ ^0{40}$ ]]; then
+                debt_base default
                 "${selector[@]}" --all "push without a previous commit to diff against"
                 exit 0
               fi
@@ -188,6 +210,7 @@ jobs:
               ;;
           esac
 
+          debt_base "$base"
           echo "diffing $base..$(git rev-parse HEAD)"
           # --no-renames: a moved file must count against BOTH packages.
           git diff --name-only --no-renames -z "$base" HEAD > "$work/changed.bin"
@@ -219,7 +242,12 @@ jobs:
       # what clippy reports with the baseline, diagnostic by diagnostic
       # (scripts/rust_clippy_debt.py): any diagnostic the baseline does not
       # list is red, and so is any listed one that is gone, until the baseline
-      # drops it. Shrink-only; a package whose baseline empties is deleted here.
+      # drops it. Shrink-only, and enforced as such: the committed baseline
+      # must be a sub-multiset of the same file at the select job's debt_base
+      # revision, so committing a regenerated baseline cannot admit a new
+      # diagnostic. Only a package with no baseline at that revision is a
+      # bootstrap, and its run warns. A package whose baseline empties is
+      # deleted here.
       #   corelink-server
       #     Its baseline holds the 347 diagnostics run 36950363647 measured
       #     (2026-10-02) across 26 files: indexing/slicing 178, expect/unwrap
@@ -234,9 +262,12 @@ jobs:
         corelink-server
       CLIPPY_DEBT_DIR: .github/rust-affected-tests/clippy-debt
     steps:
+      # Depth 2 brings a pull_request merge commit's first parent, the usual
+      # debt_base; the baseline step fetches any other one itself.
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
         with:
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Resolve the pinned toolchain from rust-toolchain.toml
@@ -309,11 +340,21 @@ jobs:
         if: success() || failure()
         env:
           CARGO_SCOPE: ${{ needs.select.outputs.cargo_args }}
+          DEBT_BASE: ${{ needs.select.outputs.debt_base }}
           CLIPPY_DEBT_REGENERATED: ${{ runner.temp }}/clippy-debt-regenerated
         run: |
           # rust-affected-clippy-debt:begin
           set -euo pipefail
           read -ra scope <<< "$CARGO_SCOPE"
+          if [[ ! "${DEBT_BASE:-}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::the select job named no clippy-debt base revision ('${DEBT_BASE:-}') — cannot hold the baselines to their reviewed versions"
+            exit 1
+          fi
+          if ! git cat-file -e "${DEBT_BASE}^{commit}" 2>/dev/null \
+              && ! git fetch --no-tags --depth=1 origin "$DEBT_BASE"; then
+            echo "::error::cannot fetch the clippy-debt base revision $DEBT_BASE"
+            exit 1
+          fi
           fail=0
           ran=0
           while read -r pkg extra; do
@@ -329,6 +370,20 @@ jobs:
               fail=1
               continue
             fi
+            # The ratchet's reference: the same file at the base revision.
+            # Absent there, this change introduces it (a bootstrap).
+            listed="$(git ls-tree --name-only "$DEBT_BASE" -- "$baseline")"
+            if [ "$listed" = "$baseline" ]; then
+              reviewed="$(mktemp)"
+              git show "$DEBT_BASE:$baseline" >"$reviewed"
+              ratchet=(--reviewed-baseline "$reviewed")
+            elif [ -z "$listed" ]; then
+              ratchet=(--bootstrap)
+            else
+              echo "::error::'$baseline' at $DEBT_BASE resolves to '$listed', not to one file"
+              fail=1
+              continue
+            fi
             selected=0
             for ((i = 0; i < ${#scope[@]}; i++)); do
               case "${scope[$i]}" in
@@ -337,7 +392,8 @@ jobs:
               esac
             done
             if [ "$selected" -eq 0 ]; then
-              echo "clippy debt '$pkg': not selected by this change, not run"
+              echo "clippy debt '$pkg': not selected by this change, not linted"
+              python3 scripts/rust_clippy_debt.py --package "$pkg" --baseline "$baseline" "${ratchet[@]}" || fail=1
               continue
             fi
             ran=$((ran + 1))
@@ -354,7 +410,7 @@ jobs:
               continue
             fi
             if python3 scripts/rust_clippy_debt.py --package "$pkg" --package-id "$id" \
-                --messages "$out" --baseline "$baseline" --regenerated "$regenerated"; then
+                --messages "$out" --baseline "$baseline" "${ratchet[@]}" --regenerated "$regenerated"; then
               rm -f "$regenerated"
             else
               fail=1

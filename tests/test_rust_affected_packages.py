@@ -509,42 +509,74 @@ exit "$FAKE_CARGO_RC"
 
 
 class FakeCargoStep(unittest.TestCase):
-    """Base: run one marked workflow script verbatim against the fake cargo."""
+    """Base: run one marked workflow script verbatim against the fake cargo,
+    from the root of a throwaway git repository that stands in for the
+    checkout (its `scripts` is a link to this repository's)."""
 
     MARKER = ""
+    DEBT_DIR = ".github/rust-affected-tests/clippy-debt"
 
     def setUp(self) -> None:
         self.script = marked_script(WORKFLOW.read_text(encoding="utf-8"), self.MARKER)
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.bin = Path(self._tmp.name) / "bin"
+        tmp = Path(self._tmp.name)
+        self.bin = tmp / "bin"
         self.bin.mkdir()
         cargo = self.bin / "cargo"
         cargo.write_text(FAKE_CARGO, encoding="utf-8")
         cargo.chmod(0o755)
-        self.log = Path(self._tmp.name) / "cargo.log"
-        self.debt_dir = Path(self._tmp.name) / "clippy-debt"
-        self.debt_dir.mkdir()
-        self.regenerated_dir = Path(self._tmp.name) / "regenerated"
+        self.log = tmp / "cargo.log"
+        self.repo = tmp / "checkout"
+        self.debt_dir = self.repo / self.DEBT_DIR
+        self.debt_dir.mkdir(parents=True)
+        (self.repo / "scripts").symlink_to(ROOT / "scripts", target_is_directory=True)
+        self.regenerated_dir = tmp / "regenerated"
+        # Isolated from the developer's git configuration (signing, hooks).
+        self.git_env = {
+            "PATH": os.environ.get("PATH", ""), "HOME": str(tmp), "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        }
+        self.git("init", "-q")
+        self.debt_base = ""
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(["git", *args], cwd=self.repo, env=self.git_env, capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    def commit_base(self, files: dict[str, str]) -> str:
+        """Commit `files` (repo-relative path -> text) as the base revision and
+        make it the step's DEBT_BASE."""
+        for name, text in files.items():
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            self.git("add", "--", name)
+        self.git("commit", "-q", "--allow-empty", "-m", "base")
+        self.debt_base = self.git("rev-parse", "HEAD")
+        return self.debt_base
 
     def run_step(self, *, scope: str, debt: str, out: str = "", rc: int = 0,
                  pkgid: str = "") -> tuple[int, str]:
         env = {
+            **self.git_env,
             "PATH": f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
             "CARGO_SCOPE": scope,
             "CLIPPY_DEBT": debt,
-            "CLIPPY_DEBT_DIR": str(self.debt_dir),
+            "CLIPPY_DEBT_DIR": self.DEBT_DIR,
             "CLIPPY_DEBT_REGENERATED": str(self.regenerated_dir),
+            "DEBT_BASE": self.debt_base,
             "SELECTED": "n",
             "FAKE_CARGO_LOG": str(self.log),
             "FAKE_CARGO_OUT": out,
             "FAKE_CARGO_RC": str(rc),
             "FAKE_PKGID": pkgid,
         }
-        # From the repo root: the step calls scripts/rust_clippy_debt.py by
-        # its repo-relative path, exactly as the job does after checkout.
-        proc = subprocess.run(["bash", "-c", self.script], env=env, cwd=ROOT, capture_output=True, text=True,
-                              check=False)
+        # From the checkout's root: the step calls scripts/rust_clippy_debt.py
+        # and the baseline by repo-relative path, exactly as the job does.
+        proc = subprocess.run(["bash", "-c", self.script], env=env, cwd=self.repo, capture_output=True,
+                              text=True, check=False)
         return proc.returncode, proc.stdout + proc.stderr
 
     def cargo_calls(self) -> list[str]:
@@ -801,13 +833,130 @@ class DebtFailClosed(unittest.TestCase):
             rcd.read_baseline("\n".join(reversed(entries)))
 
 
+class DebtRatchet(unittest.TestCase):
+    """The committed baseline is held to the base revision's reviewed one."""
+
+    def counter(self, *diagnostics: str) -> Counter:
+        return rcd.read_baseline(baseline_of(*diagnostics))
+
+    def test_equal_and_shrunk_baselines_pass(self) -> None:
+        reviewed = self.counter(diagnostic(**A), diagnostic(**B))
+        for committed in (self.counter(diagnostic(**A), diagnostic(**B)), self.counter(diagnostic(**A)), Counter()):
+            with self.subTest(committed=sum(committed.values())):
+                ok, report = rcd.ratchet("p", committed, reviewed)
+                self.assertTrue(ok, report)
+
+    def test_an_added_identity_fails(self) -> None:
+        ok, report = rcd.ratchet("p", self.counter(diagnostic(**A), diagnostic(**NEW_UNWRAP)),
+                                 self.counter(diagnostic(**A), diagnostic(**B)))
+        self.assertFalse(ok, report)
+        text = "\n".join(report)
+        self.assertIn("ADDS 1 entry(ies)", text)
+        self.assertIn("ADDED x1 (committed baseline lists 1, base revision lists 0)", text)
+        self.assertIn("parse(y).unwrap()", text)
+
+    def test_a_raised_multiplicity_fails(self) -> None:
+        committed = self.counter(diagnostic(**A), diagnostic(**{**A, "line": 11}), diagnostic(**{**A, "line": 12}))
+        ok, report = rcd.ratchet("p", committed, self.counter(diagnostic(**A)))
+        self.assertFalse(ok, report)
+        self.assertIn("ADDED x2 (committed baseline lists 3, base revision lists 1)", "\n".join(report))
+
+    def test_a_bootstrap_passes_with_a_warning(self) -> None:
+        ok, report = rcd.ratchet("p", self.counter(diagnostic(**A)), None)
+        self.assertTrue(ok, report)
+        self.assertTrue(report[0].startswith("::warning::clippy debt 'p': BOOTSTRAP"), report)
+
+
+class DebtCommandLine(unittest.TestCase):
+    """scripts/rust_clippy_debt.py main(): which reviewed baseline applies is
+    never left implicit."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.committed = self.write("committed.txt", baseline_of(diagnostic(**A), diagnostic(**NEW_UNWRAP)))
+        self.reviewed = self.write("reviewed.txt", baseline_of(diagnostic(**A), diagnostic(**B)))
+        self.messages = self.write("messages.json", stream(diagnostic(**A), diagnostic(**NEW_UNWRAP)))
+
+    def write(self, name: str, text: str) -> Path:
+        path = self.dir / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def main(self, *args: str) -> tuple[int, str]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            try:
+                code = rcd.main(["--package", "corelink-server", "--baseline", str(self.committed), *args])
+            except SystemExit as exit_:
+                code = exit_.code
+        return code, out.getvalue()
+
+    def test_a_reviewed_baseline_or_a_bootstrap_is_required(self) -> None:
+        code, log = self.main("--package-id", PKGID, "--messages", str(self.messages))
+        self.assertEqual(code, 2, log)
+        code, log = self.main("--reviewed-baseline", str(self.reviewed), "--bootstrap")
+        self.assertEqual(code, 2, log)
+
+    def test_messages_and_package_id_go_together(self) -> None:
+        for args in (("--messages", str(self.messages)), ("--package-id", PKGID),
+                     ("--regenerated", str(self.dir / "r.txt"))):
+            with self.subTest(args=args[0]):
+                code, log = self.main("--reviewed-baseline", str(self.reviewed), *args)
+                self.assertEqual(code, 2, log)
+
+    def test_a_matching_run_with_a_grown_baseline_is_red(self) -> None:
+        code, log = self.main("--reviewed-baseline", str(self.reviewed), "--package-id", PKGID,
+                              "--messages", str(self.messages))
+        self.assertEqual(code, 1, log)
+        self.assertIn("ADDS 1 entry(ies)", log)
+        self.assertIn("2 distinct diagnostics, baseline lists 2", log)
+
+    def test_the_same_run_as_a_bootstrap_is_green(self) -> None:
+        code, log = self.main("--bootstrap", "--package-id", PKGID, "--messages", str(self.messages))
+        self.assertEqual(code, 0, log)
+        self.assertIn("BOOTSTRAP", log)
+
+    def test_ratchet_only(self) -> None:
+        code, log = self.main("--reviewed-baseline", str(self.reviewed))
+        self.assertEqual(code, 1, log)
+        self.assertIn("only the ratchet ran", log)
+        self.write("committed.txt", baseline_of(diagnostic(**A)))
+        code, log = self.main("--reviewed-baseline", str(self.reviewed))
+        self.assertEqual(code, 0, log)
+
+    def test_an_unreadable_or_hand_edited_reviewed_baseline_fails(self) -> None:
+        code, log = self.main("--reviewed-baseline", str(self.dir / "absent.txt"))
+        self.assertEqual(code, 1, log)
+        self.assertIn("cannot read the base revision's reviewed baseline", log)
+        text = self.reviewed.read_text(encoding="utf-8")
+        entry = text.splitlines()[-1]
+        self.write("reviewed.txt", text.replace(entry, entry.replace(", ", ",  ", 1)))
+        code, log = self.main("--reviewed-baseline", str(self.reviewed))
+        self.assertEqual(code, 1, log)
+        self.assertIn("canonical", log)
+
+
 class ClippyDebtStep(FakeCargoStep):
     """The workflow's baseline step, run verbatim against a fake cargo."""
 
     MARKER = "rust-affected-clippy-debt"
+    BASELINE = f"{FakeCargoStep.DEBT_DIR}/corelink-server.txt"
+
+    def stage(self, *, base: str | None, committed: str | None) -> None:
+        """The baseline at the base revision (None: no file there) and as
+        committed in the change under test (None: no file)."""
+        self.commit_base({} if base is None else {self.BASELINE: base})
+        path = self.repo / self.BASELINE
+        if committed is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_text(committed, encoding="utf-8")
 
     def write_baseline(self, text: str) -> None:
-        (self.debt_dir / "corelink-server.txt").write_text(text, encoding="utf-8")
+        """An unchanged baseline: the base revision and the change agree."""
+        self.stage(base=text, committed=text)
 
     def run_debt(self, out: str, *, debt: str = DEBT, scope: str = "--workspace", rc: int = 0) -> tuple[int, str]:
         return self.run_step(scope=scope, debt=debt, out=out, rc=rc, pkgid=PKGID)
@@ -817,6 +966,7 @@ class ClippyDebtStep(FakeCargoStep):
         code, log = self.run_debt(stream(diagnostic(**A), diagnostic(**B)))
         self.assertEqual(code, 0, log)
         self.assertIn("2 distinct diagnostics, baseline lists 2", log)
+        self.assertIn("the committed baseline lists 2, the base revision's reviewed baseline lists 2", log)
         self.assertEqual(list(self.regenerated_dir.iterdir()), [])
         self.assertEqual(self.cargo_calls(), [
             "pkgid -p corelink-server",
@@ -832,7 +982,75 @@ class ClippyDebtStep(FakeCargoStep):
         regenerated = (self.regenerated_dir / "corelink-server.txt").read_text(encoding="utf-8")
         self.assertEqual(regenerated, baseline_of(diagnostic(**A), diagnostic(**B), diagnostic(**NEW_UNWRAP)))
 
+    def test_committing_the_regenerated_baseline_does_not_admit_a_new_diagnostic(self) -> None:
+        # The source change and the baseline change land together: the
+        # baseline matches what clippy reports, so only the ratchet sees it.
+        reviewed = baseline_of(diagnostic(**A), diagnostic(**B), diagnostic(**C))
+        for name, now in (("growth", (diagnostic(**A), diagnostic(**B), diagnostic(**C), diagnostic(**NEW_UNWRAP))),
+                          ("swap", (diagnostic(**A), diagnostic(**B), diagnostic(**NEW_UNWRAP)))):
+            with self.subTest(name):
+                self.stage(base=reviewed, committed=baseline_of(*now))
+                code, log = self.run_debt(stream(*now))
+                self.assertEqual(code, 1, log)
+                self.assertIn("ADDS 1 entry(ies) the base revision's reviewed baseline does not list", log)
+                self.assertIn("parse(y).unwrap()", log)
+                self.assertNotIn("NEW diagnostic", log)
+
+    def test_a_higher_multiplicity_is_an_addition(self) -> None:
+        copy_of_a = {**A, "line": 11}
+        now = (diagnostic(**A), diagnostic(**copy_of_a))
+        self.stage(base=baseline_of(diagnostic(**A)), committed=baseline_of(*now))
+        code, log = self.run_debt(stream(*now))
+        self.assertEqual(code, 1, log)
+        self.assertIn("ADDED x1 (committed baseline lists 2, base revision lists 1)", log)
+
+    def test_a_shrunk_baseline_is_green(self) -> None:
+        self.stage(base=baseline_of(diagnostic(**A), diagnostic(**B), diagnostic(**C)),
+                   committed=baseline_of(diagnostic(**A), diagnostic(**B)))
+        code, log = self.run_debt(stream(diagnostic(**A), diagnostic(**B)))
+        self.assertEqual(code, 0, log)
+        self.assertIn("the committed baseline lists 2, the base revision's reviewed baseline lists 3", log)
+
+    def test_no_baseline_at_the_base_revision_is_a_declared_bootstrap(self) -> None:
+        self.stage(base=None, committed=baseline_of(diagnostic(**A), diagnostic(**NEW_UNWRAP)))
+        code, log = self.run_debt(stream(diagnostic(**A), diagnostic(**NEW_UNWRAP)))
+        self.assertEqual(code, 0, log)
+        self.assertIn("::warning::clippy debt 'corelink-server': BOOTSTRAP", log)
+        self.assertIn("none of the 2 entries", log)
+
+    def test_a_bootstrap_still_has_to_match(self) -> None:
+        self.stage(base=None, committed=baseline_of(diagnostic(**A)))
+        code, log = self.run_debt(stream(diagnostic(**A), diagnostic(**NEW_UNWRAP)))
+        self.assertEqual(code, 1, log)
+        self.assertIn("1 NEW diagnostic(s)", log)
+
+    def test_an_unselected_package_is_still_ratcheted(self) -> None:
+        self.stage(base=baseline_of(diagnostic(**A)), committed=baseline_of(diagnostic(**A), diagnostic(**B)))
+        code, log = self.run_debt(stream(), scope="-p corelink-hash")
+        self.assertEqual(code, 1, log)
+        self.assertEqual(self.cargo_calls(), [])
+        self.assertIn("ADDS 1 entry(ies)", log)
+
+    def test_no_base_revision_is_red(self) -> None:
+        self.write_baseline(baseline_of(diagnostic(**A)))
+        for base in ("", "HEAD", "0" * 39):
+            with self.subTest(base=base):
+                self.debt_base = base
+                code, log = self.run_debt(stream(diagnostic(**A)))
+                self.assertEqual(code, 1, log)
+                self.assertIn("named no clippy-debt base revision", log)
+        self.assertEqual(self.cargo_calls(), [])
+
+    def test_an_unreachable_base_revision_is_red(self) -> None:
+        self.write_baseline(baseline_of(diagnostic(**A)))
+        self.debt_base = "0123456789abcdef0123456789abcdef01234567"
+        code, log = self.run_debt(stream(diagnostic(**A)))
+        self.assertEqual(code, 1, log)
+        self.assertIn("cannot fetch the clippy-debt base revision", log)
+        self.assertEqual(self.cargo_calls(), [])
+
     def test_missing_baseline_is_red(self) -> None:
+        self.stage(base=None, committed=None)
         code, log = self.run_debt(stream())
         self.assertEqual(code, 1, log)
         self.assertIn("reviewed baseline", log)
@@ -850,6 +1068,7 @@ class ClippyDebtStep(FakeCargoStep):
         self.assertEqual(code, 0, log)
         self.assertEqual(self.cargo_calls(), [])
         self.assertIn("not selected by this change", log)
+        self.assertIn("only the ratchet ran", log)
 
     def test_malformed_entries_are_red(self) -> None:
         self.write_baseline(baseline_of(diagnostic(**A)))

@@ -23,26 +23,50 @@ identical text in one file are two entries of the same identity.
 
 VERDICT
 -------
-The current identities must equal the baseline, entry for entry:
+Two checks, both required.
+
+RATCHET: the committed baseline against the base revision's. The baseline in
+the checkout under test is part of the change, so on its own it proves
+nothing: a change that adds a diagnostic could commit the regenerated baseline
+that lists it. The workflow therefore also hands over the same baseline file
+as committed at the base revision (`--reviewed-baseline`), and the committed
+baseline must be a sub-multiset of it. An identity the base revision does not
+list, or lists fewer times, is ADDED, and that is red. The one exception is
+`--bootstrap`, which the workflow passes only when the base revision has no
+baseline file for the package at all, i.e. the change that introduces it.
+That run prints a warning that none of its entries were held to a base.
+
+MATCH: what clippy reported against the committed baseline, entry for entry.
 * an identity that occurs more often than the baseline lists it is a NEW
   diagnostic. That is red, and each one is printed with its location.
 * an identity the baseline lists more often than it occurs is FIXED debt.
-  That is also red until the baseline drops it, so the baseline only shrinks.
+  That is also red until the baseline drops it.
 Comparing totals would admit a new diagnostic whenever an old one is fixed.
-This compares identities, so it does not.
+This compares identities, so it does not. Together the two checks hold the
+current diagnostics to a subset of the base revision's reviewed baseline.
+
+Without `--messages` only the ratchet runs. The workflow does that for a
+ledger package the change did not select, so its baseline is still held to
+the base revision's although clippy did not lint it.
 
 WHAT IT DOES NOT SEE: a new diagnostic whose identity equals a fixed one —
 the same lint and message on byte-identical code in the same file — in the
 same change. Seeing it would need line numbers, and then every unrelated edit
-above a diagnostic would turn the lane red.
+above a diagnostic would turn the lane red. Nor does it guard the lane against
+an edit to the lane itself: the workflow, this script and the ledger are read
+from the change under test, so a change to any of them is reviewed as a
+change to the gate. That includes renaming the baseline directory, which
+turns every ledger entry into a bootstrap.
 
 FAIL-CLOSED
 -----------
-A missing, unreadable or non-canonical baseline, a clippy stream that does not
-end in a successful `build-finished`, a stream with no `compiler-artifact` for
-the package (clippy did not check it, so its silence proves nothing), and an
-empty baseline that matches an empty result (the package is clean: delete the
-ledger entry) are all failures.
+A missing, unreadable or non-canonical baseline (committed or reviewed), no
+statement of which reviewed baseline applies (`--reviewed-baseline` or
+`--bootstrap` is required), a clippy stream that does not end in a successful
+`build-finished`, a stream with no `compiler-artifact` for the package (clippy
+did not check it, so its silence proves nothing), and an empty baseline that
+matches an empty result (the package is clean: delete the ledger entry) are
+all failures.
 """
 from __future__ import annotations
 
@@ -229,6 +253,27 @@ def render_baseline(package: str, current: Counter) -> str:
     return BASELINE_HEADER.format(package=package) + "".join(f"{line}\n" for line in lines)
 
 
+def ratchet(package: str, baseline: Counter, reviewed: Counter | None) -> tuple[bool, list[str]]:
+    """The committed baseline may only lose entries against the base revision's
+    reviewed baseline. `reviewed` is None only for a bootstrap: the base
+    revision has no baseline file for the package."""
+    if reviewed is None:
+        return True, [f"::warning::clippy debt '{package}': BOOTSTRAP — the base revision has no baseline for "
+                      f"this package, so none of the {sum(baseline.values())} entries this change commits was "
+                      "held to a base; review every one"]
+    added = baseline - reviewed
+    report = [f"clippy debt '{package}': the committed baseline lists {sum(baseline.values())}, the base "
+              f"revision's reviewed baseline lists {sum(reviewed.values())}"]
+    if added:
+        report.append(f"::error::the baseline of '{package}' ADDS {sum(added.values())} entry(ies) the base "
+                      "revision's reviewed baseline does not list — it only shrinks; fix the diagnostic "
+                      "instead of listing it:")
+        for identity in sorted(added, key=encode):
+            report.append(f"ADDED x{added[identity]} (committed baseline lists {baseline[identity]}, base "
+                          f"revision lists {reviewed[identity]}): {encode(identity)}")
+    return not added, report
+
+
 def compare(package: str, found: list[Occurrence], baseline: Counter) -> tuple[bool, list[str]]:
     current = Counter(o.identity for o in found)
     new = current - baseline
@@ -255,29 +300,50 @@ def compare(package: str, found: list[Occurrence], baseline: Counter) -> tuple[b
     return not new and not fixed, report
 
 
+def _read(path: Path, what: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise DebtError(f"cannot read {what} {path}: {error}") from error
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--package", required=True)
-    parser.add_argument("--package-id", required=True, help="`cargo pkgid -p <package>`")
-    parser.add_argument("--messages", type=Path, required=True,
-                        help="stdout of `cargo clippy -p <package> --message-format=json`")
-    parser.add_argument("--baseline", type=Path, required=True)
+    parser.add_argument("--baseline", type=Path, required=True,
+                        help="the baseline committed in the checkout under test")
+    reviewed = parser.add_mutually_exclusive_group(required=True)
+    reviewed.add_argument("--reviewed-baseline", type=Path,
+                          help="the same baseline file as committed at the base revision")
+    reviewed.add_argument("--bootstrap", action="store_true",
+                          help="the base revision has no baseline file for the package: this change introduces it")
+    parser.add_argument("--package-id", help="`cargo pkgid -p <package>`; required with --messages")
+    parser.add_argument("--messages", type=Path,
+                        help="stdout of `cargo clippy -p <package> --message-format=json`; without it only "
+                             "the ratchet runs")
     parser.add_argument("--regenerated", type=Path, help="write the baseline that would match this run here")
     args = parser.parse_args(argv)
+    if args.messages is None and (args.package_id or args.regenerated):
+        parser.error("--package-id and --regenerated need --messages")
+    if args.messages is not None and not args.package_id:
+        parser.error("--messages needs --package-id")
     try:
-        try:
-            stream = args.messages.read_text(encoding="utf-8")
-        except OSError as error:
-            raise DebtError(f"cannot read the clippy output {args.messages}: {error}") from error
-        found = occurrences(stream, args.package_id)
-        if args.regenerated:
-            args.regenerated.write_text(render_baseline(args.package, Counter(o.identity for o in found)),
-                                        encoding="utf-8")
-        try:
-            baseline_text = args.baseline.read_text(encoding="utf-8")
-        except OSError as error:
-            raise DebtError(f"cannot read the reviewed baseline {args.baseline}: {error}") from error
-        ok, report = compare(args.package, found, read_baseline(baseline_text))
+        found = None
+        if args.messages is not None:
+            found = occurrences(_read(args.messages, "the clippy output"), args.package_id)
+            if args.regenerated:
+                args.regenerated.write_text(render_baseline(args.package, Counter(o.identity for o in found)),
+                                            encoding="utf-8")
+        baseline = read_baseline(_read(args.baseline, "the committed baseline"))
+        base = None if args.bootstrap else read_baseline(
+            _read(args.reviewed_baseline, "the base revision's reviewed baseline"))
+        ok, report = ratchet(args.package, baseline, base)
+        if found is None:
+            report.append(f"clippy debt '{args.package}': not linted by this run; only the ratchet ran")
+        else:
+            matched, compared = compare(args.package, found, baseline)
+            ok = ok and matched
+            report.extend(compared)
     except DebtError as error:
         print(f"::error title=rust-affected-tests clippy debt::{args.package}: {error}")
         return 1
