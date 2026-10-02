@@ -101,11 +101,18 @@ grep -rEn 'card_number|cvv|cvc|\bpan\b' \
 #  note in the SAQ-A doc).
 
 # 2. Inspect the Content-Security-Policy every CoreLink console page carries,
-#    including the public pricing page where an upgrade to a paid tier starts.
-#    Card entry itself happens on Stripe-hosted Checkout, not on our pages.
-curl -sI https://humangr.com/corelink/pricing | grep -i content-security-policy
+#    on the rendered public pricing page where an upgrade to a paid tier
+#    starts. Card entry itself happens on Stripe-hosted Checkout, not on our
+#    pages. Fetch the page itself: the locale-less /corelink/pricing is only a
+#    redirect, and a redirect's headers say nothing about the page behind it.
+#    The first command refuses anything but a 200 HTML response, so the policy
+#    the second prints is the one the rendered page was served with.
+curl -sS -o /dev/null -D pricing-headers.txt -w '%{http_code} %{content_type}\n' \
+  https://humangr.com/corelink/en/pricing | grep -E '^200 text/html' &&
+  grep -i '^content-security-policy:' pricing-headers.txt
 
-# Expected (source: apps/admin-ui/src/lib/csp.ts): script-src allows 'self',
+# Expected: `200 text/html; charset=utf-8`, then the policy
+# (source: apps/admin-ui/src/lib/csp.ts): script-src allows 'self',
 # a per-request nonce, and exactly four third-party hosts — Clerk
 # (clerk.corelink-app.humangr.com), Cloudflare Turnstile
 # (challenges.cloudflare.com), Plausible analytics (plausible.io) and Stripe

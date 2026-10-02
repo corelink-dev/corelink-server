@@ -551,7 +551,7 @@
         "removed": "2026-10-01",
         "removed_by": "g-docs (expired-suppression sweep)",
         "old_reason": "TODO(dead-host-sweep): Admin-plane host in docs/marketing/auth doc-comments; the admin plane is served from the flat names behind CF Access.",
-        "verdict": "Status-page component C8 (STATUS-PAGE-SPEC, STATUSPAGE-INIT) repointed to `humangr.com/corelink/admin`; the stale eight-component list in the de/es-419/pt-BR incident-response mirrors replaced by the EN two-component correction; WebAuthn doc examples moved to the RFC 2606 `example.com` (no production RP-ID exists — the production engine is a stub); ROADMAP row rewritten to the path mount.",
+        "verdict": "Status-page component C8 (STATUS-PAGE-SPEC, STATUSPAGE-INIT) repointed to `humangr.com/corelink/en/admin/tenants`, an implemented console page (apps/admin-ui/src/app/[locale]/(authenticated)/admin/tenants/page.tsx) — there is no bare or localized `/admin` index; the stale eight-component list in the de/es-419/pt-BR incident-response mirrors replaced by the EN two-component correction; WebAuthn doc examples moved to the RFC 2606 `example.com` (no production RP-ID exists — the production engine is a stub); ROADMAP row rewritten to the path mount.",
         "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
       },
       {
@@ -596,7 +596,7 @@
         "removed": "2026-10-01",
         "removed_by": "g-docs (expired-suppression sweep)",
         "old_reason": "TODO(dead-host-sweep): Billing host in the docs site; billing is console/Stripe, there is no such host.",
-        "verdict": "PCI-DSS self-verification step (EN + de/es-419/pt-BR) now curls `humangr.com/corelink/pricing` and states the CSP that apps/admin-ui/src/lib/csp.ts actually emits — which allows Plausible, so the old 'no analytics' expectation was false as well.",
+        "verdict": "PCI-DSS self-verification step (EN + de/es-419/pt-BR) now fetches the rendered pricing page `humangr.com/corelink/en/pricing` (apps/admin-ui/src/app/[locale]/pricing/page.tsx), refuses anything but a 200 text/html response — the locale-less `/corelink/pricing` is only the apps/admin-ui/src/app/pricing/route.ts 307 redirect — and states the CSP that apps/admin-ui/src/lib/csp.ts actually emits — which allows Plausible, so the old 'no analytics' expectation was false as well.",
         "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
       },
       {
