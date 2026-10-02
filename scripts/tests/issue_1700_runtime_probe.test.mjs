@@ -44,14 +44,15 @@ test("transport fixtures use the repository-pinned ws client", () => {
   assert.equal(createRequire(import.meta.url)("ws/package.json").version, "8.21.0");
 });
 
-test("compiled runtime window is the exact approved v13 tuple", () => {
+test("compiled runtime window is the exact approved v14 tuple", () => {
   assert.equal(approvedProbeWindow(), true);
-  assert.deepEqual(PROBE_WINDOW, { cron: "*/2 * * * *", starts_ms: Date.parse("2026-10-02T07:00:00Z"),
-    last_entry_ms: Date.parse("2026-10-02T09:00:00Z"), expires_ms: Date.parse("2026-10-02T10:15:00Z"),
-    nonce: "issue-1700-recovery-20261002-v13" });
+  assert.deepEqual(PROBE_WINDOW, { cron: "*/2 * * * *", starts_ms: Date.parse("2026-10-02T10:00:00Z"),
+    last_entry_ms: Date.parse("2026-10-02T12:00:00Z"), expires_ms: Date.parse("2026-10-02T13:15:00Z"),
+    nonce: "issue-1700-recovery-20261002-v14" });
   assert.equal(approvedProbeWindow({ ...PROBE_WINDOW, expires_ms: PROBE_WINDOW.expires_ms + 60_000 }), false);
   assert.equal(approvedProbeWindow({ ...PROBE_WINDOW, nonce: "issue-1700-recovery-20260930-v4" }), false);
-  for (const nonce of ["issue-1700-recovery-20261001-v11", "issue-1700-recovery-20261002-v12"]) {
+  for (const nonce of ["issue-1700-recovery-20261001-v11", "issue-1700-recovery-20261002-v12",
+    "issue-1700-recovery-20261002-v13"]) {
     assert.equal(approvedProbeWindow({ ...PROBE_WINDOW, nonce }), false);
   }
 });
@@ -804,8 +805,8 @@ for (const [name, cleanup] of [
   ["before host start", { ...v8Cleanup, completed_at_ms: now - 1 }],
   ["after observation", { ...v8Cleanup, completed_at_ms: now + 1 }],
   ["at host deadline", { ...v8Cleanup, completed_at_ms: now + 5 }],
-  ["before cleanup window", { ...v8Cleanup, completed_at_ms: Date.parse("2026-10-02T06:59:59.999Z") }],
-  ["at cleanup expiry", { ...v8Cleanup, completed_at_ms: Date.parse("2026-10-02T10:15:00Z") }],
+  ["before cleanup window", { ...v8Cleanup, completed_at_ms: Date.parse("2026-10-02T09:59:59.999Z") }],
+  ["at cleanup expiry", { ...v8Cleanup, completed_at_ms: Date.parse("2026-10-02T13:15:00Z") }],
   ["fractional completion", { ...v8Cleanup, completed_at_ms: now + 0.5 }],
   ["unsafe completion", { ...v8Cleanup, completed_at_ms: Number.MAX_SAFE_INTEGER + 1 }],
   ["array cleanup", []],
@@ -880,7 +881,7 @@ test("cleanup and native receipts from separate events wait for matched outer pr
 
 test("cleanup accepts inclusive window/start and observation boundaries before deadline", async () => {
   for (const elapsed of [0, 1, 999]) {
-    const startedAt = Date.parse("2026-10-02T07:00:00Z");
+    const startedAt = Date.parse("2026-10-02T10:00:00Z");
     const h = harness({ sendReceipt: false });
     h.clock.value = startedAt;
     const running = runRuntimeProbe({ token: "token", release, expectedSha: release,
