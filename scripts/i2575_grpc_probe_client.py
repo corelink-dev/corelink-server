@@ -169,6 +169,16 @@ def expect_denied(call: Any, label: str) -> str:
         raise AssertionError(f"{label} had no completed non-OK gRPC status") from exc
 
 
+def tls_client_context(alpn: str) -> ssl.SSLContext:
+    """Return a verified client context that never negotiates below TLS 1.2."""
+    context = ssl.create_default_context()
+    # Pin the floor here instead of inheriting it from the interpreter or the
+    # OpenSSL build, so TLS 1.0/1.1 are refused even where they are allowed.
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.set_alpn_protocols([alpn])
+    return context
+
+
 def http_shape_probe(context: ssl.SSLContext, path: str, content_type: str, *, alpn: str) -> dict[str, Any]:
     conn = http.client.HTTPSConnection(HOST, PORT, context=context, timeout=8)
     try:
@@ -202,9 +212,8 @@ def run() -> dict[str, Any]:
         "payload_sha256": hashlib.sha256(PAYLOAD).hexdigest(),
         "payload_length": len(PAYLOAD),
     }
-    context = ssl.create_default_context()
-    h2_context = ssl.create_default_context()
-    h2_context.set_alpn_protocols(["h2"])
+    h2_context = tls_client_context("h2")
+    http1_context = tls_client_context("http/1.1")
     with socket.create_connection((HOST, PORT), timeout=8) as raw:
         with h2_context.wrap_socket(raw, server_hostname=HOST) as tls:
             validate_alpn(tls.selected_alpn_protocol())
@@ -265,8 +274,6 @@ def run() -> dict[str, Any]:
     finally:
         channel.close()
 
-    http1_context = ssl.create_default_context()
-    http1_context.set_alpn_protocols(["http/1.1"])
     receipt["negative"]["http1_grpc"] = http_shape_probe(http1_context, BASE + "Unary", "application/grpc", alpn="HTTP/1.1")
     receipt["negative"]["grpc_web"] = http_shape_probe(http1_context, BASE + "Unary", "application/grpc-web+proto", alpn="gRPC-Web over HTTP/1.1")
     receipt["finished_at_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
