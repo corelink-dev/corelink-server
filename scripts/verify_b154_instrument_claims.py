@@ -399,7 +399,11 @@ def verify_prelaunch_resolution(root: Path) -> None:
     except (OSError, UnicodeError, ValueError) as exc:
         raise VerificationError(f"B-154 B-086 evidence input is unreadable: {exc}") from exc
     try:
-        verify_readback_record(b086, wrangler_text)
+        # B-154 binds this exact B-086 receipt below: d1.source_sha256 pins its
+        # bytes and the receipt pins wrangler.toml. Freshness belongs to B-086's
+        # own gate (default 24-hour window). This regression guard must not go
+        # red on the wall clock while no byte has changed.
+        verify_readback_record(b086, wrangler_text, max_age=None)
     except B086VerificationError as exc:
         raise VerificationError(f"B-154 relies on invalid B-086 provider evidence: {exc}") from exc
     b086_sources = b086.get("source_sha256", {})
@@ -496,19 +500,31 @@ def self_test(dpa_text: str, sla_text: str) -> None:
     )
     b086 = json.loads((ROOT / B086_RESOLUTION).read_text(encoding="utf-8"))
     wrangler_text = (ROOT / WRANGLER).read_text(encoding="utf-8")
+    # Content mutations must fail through the exact binding call B-154 uses
+    # (no wall-clock window).
     for label, mutate in (
         ("missing D1 readback", lambda value: value.pop("provider_readback", None)),
-        ("stale D1 readback", lambda value: value["provider_readback"].update(captured_at="2000-01-01T00:00:00Z")),
+        ("future-dated D1 readback", lambda value: value["provider_readback"].update(captured_at="2999-01-01T00:00:00Z")),
+        ("timezone-naive D1 readback", lambda value: value["deployed_active_readback"].update(captured_at="2026-09-30T14:37:23")),
         ("physical location inferred", lambda value: value["provider_readback"].update(physical_location_conclusion="PHYSICAL_LOCATION_GUARANTEED")),
         ("wrong active D1 binding", lambda value: value["deployed_active_readback"]["active_workers"][0].update(CONFIG_DB_database_id="00000000-0000-4000-8000-000000000000")),
     ):
         mutated = json.loads(json.dumps(b086))
         mutate(mutated)
         try:
-            verify_readback_record(mutated, wrangler_text)
+            verify_readback_record(mutated, wrangler_text, max_age=None)
         except B086VerificationError:
             continue
         raise AssertionError(f"B-154 D1 evidence mutation unexpectedly passed: {label}")
+    # Freshness stays B-086's gate: its default window still rejects an old readback.
+    stale = json.loads(json.dumps(b086))
+    stale["provider_readback"]["captured_at"] = "2000-01-01T00:00:00Z"
+    try:
+        verify_readback_record(stale, wrangler_text)
+    except B086VerificationError:
+        pass
+    else:
+        raise AssertionError("B-086 default freshness window unexpectedly accepted a stale D1 readback")
 
 
 def main() -> int:

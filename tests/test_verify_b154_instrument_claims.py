@@ -172,3 +172,75 @@ def test_sentence_scope_does_not_borrow_an_unrelated_prior_negation() -> None:
     dpa += "\nNo unrelated retention feature is guaranteed. Immutable R2 with Object Lock is active.\n"
     with pytest.raises(MODULE.VerificationError):
         MODULE.verify_texts(dpa, sla)
+
+
+def _b086_inputs() -> tuple[dict, str]:
+    b086 = json.loads((ROOT / MODULE.B086_RESOLUTION).read_text(encoding="utf-8"))
+    wrangler = (ROOT / MODULE.WRANGLER).read_text(encoding="utf-8")
+    return b086, wrangler
+
+
+def test_b154_binding_does_not_decay_on_the_wall_clock_but_b086_still_does() -> None:
+    b086, wrangler = _b086_inputs()
+    aged = copy.deepcopy(b086)
+    aged["provider_readback"]["captured_at"] = "2000-01-01T00:00:00Z"
+    aged["deployed_active_readback"]["captured_at"] = "2000-01-01T00:00:00Z"
+    # The binding call B-154 uses has no wall-clock window...
+    MODULE.verify_readback_record(aged, wrangler, max_age=None)
+    # ...while B-086's default gate keeps its 24-hour freshness window.
+    with pytest.raises(MODULE.B086VerificationError, match="24-hour limit"):
+        MODULE.verify_readback_record(aged, wrangler)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value["provider_readback"].update(captured_at="2999-01-01T00:00:00Z"),
+        lambda value: value["deployed_active_readback"].update(captured_at="2026-09-30T14:37:23"),
+        lambda value: value["provider_readback"].update(physical_location_conclusion="PHYSICAL_LOCATION_GUARANTEED"),
+        lambda value: value["deployed_active_readback"]["active_workers"][0].update(
+            CONFIG_DB_database_id="00000000-0000-4000-8000-000000000000"
+        ),
+    ],
+    ids=["future-dated", "timezone-naive", "physical-location-inferred", "wrong-active-binding"],
+)
+def test_b154_binding_still_rejects_b086_content_drift(mutate) -> None:
+    b086, wrangler = _b086_inputs()
+    mutated = copy.deepcopy(b086)
+    mutate(mutated)
+    with pytest.raises(MODULE.B086VerificationError):
+        MODULE.verify_readback_record(mutated, wrangler, max_age=None)
+
+
+def test_b154_resolution_uses_the_hash_bound_no_window_call(monkeypatch) -> None:
+    seen: list[object] = []
+    real = MODULE.verify_readback_record
+
+    def spy(record, wrangler_text, **kwargs):
+        seen.append(kwargs.get("max_age", "default"))
+        return real(record, wrangler_text, **kwargs)
+
+    monkeypatch.setattr(MODULE, "verify_readback_record", spy)
+    MODULE.verify_prelaunch_resolution(ROOT)
+    assert seen == [None]
+
+
+def test_b154_resolution_rejects_a_b086_receipt_that_is_not_hash_pinned(tmp_path, monkeypatch) -> None:
+    b086, _ = _b086_inputs()
+    rebound = copy.deepcopy(b086)
+    rebound["provider_readback"]["captured_at"] = "2000-01-01T00:00:00Z"
+    original_read_text = Path.read_text
+    original_read_bytes = Path.read_bytes
+    target = (ROOT / MODULE.B086_RESOLUTION).resolve()
+    replacement = json.dumps(rebound)
+
+    def read_text(self, *args, **kwargs):
+        return replacement if self.resolve() == target else original_read_text(self, *args, **kwargs)
+
+    def read_bytes(self):
+        return replacement.encode("utf-8") if self.resolve() == target else original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    with pytest.raises(MODULE.VerificationError):
+        MODULE.verify_prelaunch_resolution(ROOT)
