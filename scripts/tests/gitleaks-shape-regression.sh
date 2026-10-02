@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Executable regression for the custom raw-hex gitleaks rule.
+# Executable regression for the custom raw-hex gitleaks rule, and for the
+# generic-api-key allowlist that admits the B-156 published-claims digests.
 #
 # This invokes the pinned scanner supplied by the workflow.  It deliberately
 # exercises every path class in the rule, legacy and opaque names, boundary
-# values, and a rule-removal mutation.  A missing scanner/config or malformed
-# mutation is an error; it must never degrade to a green skip.
+# values, and a rule-removal mutation; then each conjunct of the digest
+# allowlist, with one mutation per conjunct.  A missing scanner/config or
+# malformed mutation is an error; it must never degrade to a green skip.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -101,4 +103,122 @@ pathlib.Path(sys.argv[2]).write_text(prefix + mutated, encoding="utf-8")
 PY
 run_scan "$positive_root" "$broken" 2 "invalid-regex-mutation"
 
-echo "gitleaks shape regression: PASS (path classes, opaque/legacy names, boundaries, allowlist, fail-closed mutations)"
+# ── B-156 published-claims digest allowlist (generic-api-key) ────────────────
+# That allowlist is keyed on a REPO-RELATIVE path, so these cells scan with a
+# relative source from inside each fixture root, as the CI range scan does at
+# the repo root. With an absolute source `^scripts/...` can never match and a
+# cell would pass on the line shape alone. Every scan must report EXACTLY the
+# expected number of findings, all from generic-api-key: another rule firing,
+# or a line that never tripped the heuristic, cannot stand in for this one.
+run_rel_scan() {
+  local root="$1" config_path="$2" expected="$3" label="$4" report status
+  report="${tmpdir}/${label}.json"
+  set +e
+  (cd "$root" && gitleaks detect --no-git --source . --config "$config_path" \
+    --redact --no-banner --exit-code 1 --report-format json \
+    --report-path "$report") >"${tmpdir}/${label}.out" 2>&1
+  status=$?
+  set -e
+  if ! python3 - "$report" "$expected" "$label" "$status" <<'PY'
+import json
+import sys
+
+report, expected, label, status = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+if status not in (0, 1):
+    raise SystemExit(f"{label}: scanner exit {status} is neither clean nor findings")
+findings = json.load(open(report, encoding="utf-8"))
+rules = sorted({finding["RuleID"] for finding in findings})
+count_ok = len(findings) > 0 if expected == "some" else len(findings) == int(expected)
+if not count_ok or (findings and rules != ["generic-api-key"]):
+    raise SystemExit(
+        f"{label}: expected {expected} generic-api-key finding(s), got {len(findings)} {rules}"
+    )
+if (status == 1) != bool(findings):
+    raise SystemExit(f"{label}: scanner exit {status} disagrees with {len(findings)} finding(s)")
+PY
+  then
+    sed -n '1,80p' "${tmpdir}/${label}.out" >&2
+    exit 1
+  fi
+}
+
+claims_rel="scripts/published_claims_inventory.json"
+# README.md carries no keyword; the other three keys each trip the heuristic,
+# exactly as `apps/docs/tests/reapi-gen.test.ts` did on PR #2872. Script
+# extensions are used on purpose: upstream already lets a keyword key ending
+# `.md`/`.mdx`/`.html` through (measured on 8.30.1), so such a cell would be
+# green without this allowlist.
+write_claims_digests() {
+  mkdir -p "$(dirname "$1")"
+  printf '{\n  "population": {\n    "file_hashes": {\n      "README.md": "%s",\n      "apps/docs/tests/reapi-gen.test.ts": "%s",\n      "legal/api-terms.js": "%s",\n      "marketing/launch/token-pricing.tsx": "%s"\n    }\n  }\n}\n' \
+    "$probe" "$probe" "$probe" "$probe" >"$1"
+}
+# Derived at run time so no credential-shaped literal is committed here.
+opaque_value="$(printf '%s' "${probe:0:40}" | tr 'abcdef0123' 'QwErTyUiOp')"
+upper_probe="$(printf '%s' "$probe" | tr 'a-f' 'A-F')"
+
+claims_root="${tmpdir}/claims"
+write_claims_digests "${claims_root}/digest/${claims_rel}"
+write_claims_digests "${claims_root}/elsewhere/scripts/other_inventory.json"
+write_claims_digests "${claims_root}/nested/vendor/${claims_rel}"
+mkdir -p "${claims_root}/real/scripts"
+cp "${repo_root}/${claims_rel}" "${claims_root}/real/${claims_rel}"
+mkdir -p "${claims_root}/real-elsewhere/scripts"
+cp "${repo_root}/${claims_rel}" "${claims_root}/real-elsewhere/scripts/other_inventory.json"
+# Each line misses exactly one conjunct of the line shape: a non-path key, a
+# root outside the census, an uppercase value, a character outside the key
+# alphabet, an extension outside the census.
+mkdir -p "${claims_root}/reject/scripts"
+printf '{\n  "api_key": "%s",\n  "scripts/deploy-api.ts": "%s",\n  "apps/docs/api.ts": "%s",\n  "apps/docs/api notes.ts": "%s",\n  "apps/docs/api.py": "%s"\n}\n' \
+  "$opaque_value" "$probe" "$upper_probe" "$probe" "$probe" \
+  >"${claims_root}/reject/${claims_rel}"
+
+run_rel_scan "${claims_root}/elsewhere" "$config" 3 "claims-digest-lines-trip-elsewhere"
+run_rel_scan "${claims_root}/nested" "$config" 3 "claims-path-anchored-at-root"
+run_rel_scan "${claims_root}/digest" "$config" 0 "claims-digest-lines-allowlisted"
+run_rel_scan "${claims_root}/real-elsewhere" "$config" some "claims-real-inventory-trips-elsewhere"
+run_rel_scan "${claims_root}/real" "$config" 0 "claims-real-inventory-allowlisted"
+run_rel_scan "${claims_root}/reject" "$config" 5 "claims-non-digest-lines-still-fire"
+
+# Three content mutations of that one block, each asserted to apply exactly once.
+claims_mutant() {
+  python3 - "$config" "$1" "$2" <<'PY'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+marker = "description = \"B-156's generated published-claims file digests"
+if source.count(marker) != 1:
+    raise SystemExit("B-156 allowlist marker must occur exactly once")
+start = source.rindex("[[rules.allowlists]]", 0, source.index(marker))
+end = source.index("\n[", start + 1) + 1
+block = source[start:end]
+kind = sys.argv[3]
+if kind == "drop-and":
+    needle, replacement = 'condition = "AND"\n', ""
+elif kind == "unanchor-path":
+    needle = "paths = ['''^scripts/published_claims_inventory\\.json$''']"
+    replacement = needle.replace("'''^", "'''")
+elif kind == "remove-block":
+    needle, replacement = block, ""
+else:
+    raise SystemExit(f"unknown mutation {kind}")
+if block.count(needle) != 1:
+    raise SystemExit(f"{kind}: needle matched {block.count(needle)} times, expected 1")
+mutated = source[:start] + block.replace(needle, replacement) + source[end:]
+if mutated == source:
+    raise SystemExit(f"{kind}: mutation did not change the config")
+pathlib.Path(sys.argv[2]).write_text(mutated, encoding="utf-8")
+PY
+}
+claims_mutant "${tmpdir}/claims-or.toml" drop-and
+claims_mutant "${tmpdir}/claims-unanchored.toml" unanchor-path
+claims_mutant "${tmpdir}/claims-removed.toml" remove-block
+# Default OR: the path alone mutes every line of the reject fixture.
+run_rel_scan "${claims_root}/reject" "${tmpdir}/claims-or.toml" 0 "claims-or-mutation"
+# Unanchored: a same-named file in a subtree is admitted.
+run_rel_scan "${claims_root}/nested" "${tmpdir}/claims-unanchored.toml" 0 "claims-unanchored-mutation"
+# Removed: the generated digests fire again.
+run_rel_scan "${claims_root}/digest" "${tmpdir}/claims-removed.toml" 3 "claims-removed-mutation"
+
+echo "gitleaks shape regression: PASS (path classes, opaque/legacy names, boundaries, allowlist, published-claims digests, fail-closed mutations)"
