@@ -19,7 +19,7 @@ store and use `--input /restricted/path/d1-residency.json`; do not commit it.
 | State | Exit | Meaning | Operator action |
 | --- | ---: | --- | --- |
 | `COMPLIANT` | 0 | Every customer row is `satisfied`; every reserved `_public` row has canonical `wnam` region and an allowed public event type. | Archive the JSON output with the change/attestation record. |
-| `DOCUMENTED_EXCEPTION` | 0 | No `violated` and no `unevaluable` row; the only non-satisfied customer rows are `erased_lineage_exception` (#1669 policy B). | Never attest plain compliance. Attest compliance with the documented erased-lineage exception, citing the policy and `states.erased_lineage_exception`. |
+| `DOCUMENTED_EXCEPTION` | 0 | No `violated` and no `unevaluable` row, and no owner-attested reference is missing; the only non-satisfied customer rows are `erased_lineage_exception` (#1669 policy B) and/or `owner_attested_prelaunch_test_traffic` (owner attestation, 2026-10-02). | Never attest plain compliance. Attest compliance with the documented exceptions, citing both authorities and reporting `states.erased_lineage_exception`, `states.owner_attested_prelaunch_test_traffic` and `states.violated`. |
 | `FAILED` | 1 | At least one known mismatch (`violated`) or unprovable row (`unevaluable`) exists. | Do not attest compliance. Preserve evidence and investigate the named buckets. |
 | `INDETERMINATE` | 2 | Credentials, timeout, response shape, control, or full-population partition cannot be trusted. | Restore read access/query health and rerun; never interpret this as zero violations. |
 
@@ -60,6 +60,35 @@ specifically so they cannot disappear from the denominator. The exception
 covers only rows with a recorded erasure; it never covers a missing tenant with
 no erasure record.
 
+## Owner-attested prelaunch test traffic (row-scoped)
+
+On 2026-10-02 the owner attested that the 13 unexplained historical rows of
+#1669 are their own prelaunch test traffic
+(<https://github.com/HuGR-dev/corelink-server/issues/1669#issuecomment-5959812722>).
+`scripts/i1669_owner_attested_rows.json` records that decision. It holds
+exactly 13 opaque row references, each
+`sha256("corelink.issue-1669.audit-row-ref.v1" + NUL + audit_outbox.id)`, plus
+the authority URL and `log_confirmed: false`. No tenant id, row id or payload
+is in the repository; the restricted crosswalk stays with the data owner.
+
+`RESIDUAL_REFS_SQL` reads the ids of the unexplained residual. The ids are
+hashed in memory and never retained or printed, and a residual of more than 64
+rows is indeterminate. The hashed references are matched against the ledger:
+
+- a residual row whose reference is in the ledger is
+  `owner_attested_prelaunch_test_traffic`: its own category, not
+  log-confirmed, never `COMPLIANT`;
+- any other residual row (for example a 14th unexplained row) stays
+  `unevaluable` and the check fails;
+- a ledger reference absent from the residual is reported as
+  `attestation.attested_refs_missing` and the check fails with the reason
+  "owner-attested row references are missing…". It is never silently passed.
+
+The verifier applies the attestation only when given the residual read
+(`--residual-refs-input` alongside `--input`, or a live `--database-id` read);
+without it the 13 rows stay `unevaluable`. Changing the ledger needs a new
+recorded owner decision, and the count of 13 is also pinned in code.
+
 ## Offline classification of a retained hosted receipt
 
 The manual #1669 workflow uploads aggregate counts and SHA-256 bindings only;
@@ -84,6 +113,16 @@ restricted owner reconciliation**. Neither class is treated as
 residency-compliant, and the command cannot assign an individual tenant
 identity from aggregate-only evidence. `overall_disposition` is `COMPLIANT`,
 `DOCUMENTED_EXCEPTION` (exit 0 for both), or `KEEP_OPEN` (exit 1).
+
+A schema-v2 receipt (`corelink.issue-1669.read-only-residency.v2`) adds the
+`residual_refs` query, the hashed residual references and an `attestation`
+block. The classifier recomputes the attestation from those references and
+the current ledger, and rejects a receipt whose block differs. That covers a
+forged count or a receipt bound to another ledger version. Attested rows are
+classified `owner_attested_prelaunch_test_traffic` with the
+**`DOCUMENTED_EXCEPTION_OWNER_ATTESTED_NOT_LOG_CONFIRMED`** disposition.
+Schema-v1 receipts carry no references, so the attestation is never applied to
+them.
 
 Keep the restricted crosswalk and any row-level evidence in the approved
 restricted store. Do not rewrite or delete retained audit rows to make the

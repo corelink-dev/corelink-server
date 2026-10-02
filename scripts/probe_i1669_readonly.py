@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Run the bounded, read-only production evidence lane for issue #1669.
 
-The lane has no SQL input.  It sends only the three aggregate statements in
-``QUERY_ALLOWLIST`` to Cloudflare D1, retains no row payload, and emits a
-redacted receipt containing counts and SHA-256 bindings.  It never performs a
+The lane has no SQL input.  It sends only the statements in
+``QUERY_ALLOWLIST`` to Cloudflare D1: three aggregates, plus the bounded
+``residual_refs`` read of the unexplained residual's row ids (at most
+``MAX_RESIDUAL_REFS``). Those ids are hashed in memory into opaque row
+references and discarded; the receipt (schema v2) retains only counts, the
+references and SHA-256 bindings, never a row id, tenant id or payload. The
+references are matched against the owner-attested ledger. It never performs a
 backfill or changes D1, DSR, or audit data.
 
 Exit status: 0 when the full non-empty population is provably satisfied
@@ -88,7 +92,12 @@ QUERY_ALLOWLIST = {
     "residency": RESIDENCY.RESIDENCY_SQL,
     "population": POPULATION_SQL,
     "backfill_completeness": BACKFILL_COMPLETENESS_SQL,
+    "residual_refs": RESIDENCY.RESIDUAL_REFS_SQL,
 }
+# Schema v1 receipts (before the owner attestation) carry only these three.
+AGGREGATE_QUERY_NAMES = ("residency", "population", "backfill_completeness")
+RECEIPT_SCHEMA_V1 = "corelink.issue-1669.read-only-residency.v1"
+RECEIPT_SCHEMA_V2 = "corelink.issue-1669.read-only-residency.v2"
 POPULATION_FIELDS = ("audit_rows", "audit_tenants", "blank_tenant_rows")
 BACKFILL_FIELDS = (
     "audit_rows",
@@ -192,14 +201,14 @@ def _write(path: Path, receipt: dict[str, object]) -> None:
         raise
 
 
-def run(account_id: str, database_id: str, token: str, output: Path) -> int:
+def run(account_id: str, database_id: str, token: str, output: Path, ledger: Any = None) -> int:
     if not ACCOUNT_ID.fullmatch(account_id) or not DATABASE_ID.fullmatch(database_id):
         raise ProbeError("account ID or D1 UUID is malformed")
     if not token:
         raise ProbeError("Cloudflare API token is missing")
     _validate_allowlist()
     receipt: dict[str, object] = {
-        "schema": "corelink.issue-1669.read-only-residency.v1",
+        "schema": RECEIPT_SCHEMA_V2,
         "issue": 1669,
         "mode": "production_read_only",
         "captured_at": datetime.now(timezone.utc).isoformat(),
@@ -208,17 +217,28 @@ def run(account_id: str, database_id: str, token: str, output: Path) -> int:
         "queries": [],
     }
     try:
-        observations: dict[str, dict[str, int]] = {}
+        observations: dict[str, object] = {}
+        residual_refs: tuple[str, ...] = ()
         for name, query in QUERY_ALLOWLIST.items():
             payload, payload_hash = _request(account_id, token, database_id, query)
-            fields = tuple(RESIDENCY.COUNT_FIELDS) if name == "residency" else POPULATION_FIELDS if name == "population" else BACKFILL_FIELDS
-            observations[name] = _aggregate(payload, fields)
-            receipt["queries"].append({"name": name, "query_sha256": _hash(query), "response_sha256": payload_hash, "row_count": 1})
+            if name == "residual_refs":
+                # Row ids become opaque references here; the payload is dropped.
+                residual_refs = RESIDENCY.parse_residual_refs(payload)
+                del payload
+                observations[name] = {"residual_rows": len(residual_refs), "row_refs": list(residual_refs)}
+                row_count = len(residual_refs)
+            else:
+                fields = tuple(RESIDENCY.COUNT_FIELDS) if name == "residency" else POPULATION_FIELDS if name == "population" else BACKFILL_FIELDS
+                observations[name] = _aggregate(payload, fields)
+                row_count = 1
+            receipt["queries"].append({"name": name, "query_sha256": _hash(query), "response_sha256": payload_hash, "row_count": row_count})
         # Preserve aggregate-only diagnostics even when a reconciliation gate
-        # fails below.  No row payload or tenant identifier is retained.
+        # fails below.  No row id, payload or tenant identifier is retained.
         receipt["counts"] = observations
         counts = RESIDENCY.Counts(**observations["residency"])
-        state, reason = RESIDENCY.assess(counts, environment="production")
+        attestation = RESIDENCY.attest(residual_refs, ledger if ledger is not None else RESIDENCY.load_ledger())
+        receipt["attestation"] = attestation.summary()
+        state, reason = RESIDENCY.assess(counts, environment="production", attestation=attestation)
         population = observations["population"]
         completeness = observations["backfill_completeness"]
         if population["audit_rows"] == 0 or population["audit_rows"] != counts.total_rows:

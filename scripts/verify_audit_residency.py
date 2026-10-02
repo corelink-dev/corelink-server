@@ -19,9 +19,21 @@ lineage reports ``DOCUMENTED_EXCEPTION``. The aggregate SQL is unchanged, so
 the raw ``unevaluable_rows`` count still includes those rows; ``partition()``
 is the classification that separates them.
 
-The command is read-only.  Use ``--input`` to validate a saved Cloudflare D1
-JSON response, or provide credentials plus ``--database-id`` for one live
-read.  It never loads, writes, or prints credentials.
+The second documented exception is row-scoped: the unexplained orphans whose
+opaque row reference (``row_ref``: a domain-separated SHA-256 of
+``audit_outbox.id``) is in the owner-attested ledger
+``scripts/i1669_owner_attested_rows.json`` are
+``owner_attested_prelaunch_test_traffic`` (owner decision 2026-10-02, cited by
+URL in the ledger). They are not log-confirmed and are never ``COMPLIANT``.
+Only the exact ledger references qualify: any other unexplained orphan stays
+``unevaluable``, and an attested reference absent from the residual is reported
+and fails the check. ``RESIDUAL_REFS_SQL`` returns the residual's row ids,
+which are hashed in memory and never retained or printed.
+
+The command is read-only.  Use ``--input`` (plus ``--residual-refs-input`` to
+evaluate the attestation) to validate saved Cloudflare D1 JSON responses, or
+provide credentials plus ``--database-id`` for one live read of both queries.
+It never loads, writes, or prints credentials or row identifiers.
 
 Exit status: 0 compliant or documented exception; 1 violated or unevaluable;
 2 indeterminate.
@@ -30,11 +42,14 @@ Exit status: 0 compliant or documented exception; 1 violated or unevaluable;
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -139,6 +154,26 @@ COUNT_FIELDS = (
     "erasure_log_rows",
 )
 
+# Row ids of the unexplained residual only (no tenant row, not ``_public``, no
+# erasure record): the exact complement used for ``unexplained_orphan_rows``.
+# The id embeds identifiers, so callers hash it immediately (``row_ref``) and
+# never retain or print it. The LIMIT is one above the enumeration bound so an
+# oversized residual is detected rather than truncated.
+MAX_RESIDUAL_REFS = 64
+RESIDUAL_REFS_SQL = f"""
+SELECT a.id AS audit_row_id
+FROM audit_outbox AS a
+LEFT JOIN tenant AS t ON t.tenant_id = a.tenant_id
+WHERE a.tenant_id != '_public'
+  AND t.tenant_id IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM dsr_erasure_log AS d
+      WHERE d.tenant_id = a.tenant_id
+  )
+ORDER BY a.id
+LIMIT {MAX_RESIDUAL_REFS + 1}
+""".strip()
+
 
 COMPLIANT = "COMPLIANT"
 DOCUMENTED_EXCEPTION = "DOCUMENTED_EXCEPTION"
@@ -149,17 +184,143 @@ ERASED_LINEAGE_POLICY = (
     "erasure are retained Art. 5(2) audit evidence and a documented exception "
     "(erased lineage), not non-compliant and not satisfied"
 )
+OWNER_ATTESTED_CATEGORY = "owner_attested_prelaunch_test_traffic"
+OWNER_ATTESTED_AUTHORITY = "https://github.com/HuGR-dev/corelink-server/issues/1669#issuecomment-5959812722"
+OWNER_ATTESTED_ROW_COUNT = 13
+OWNER_ATTESTED_LEDGER = Path(__file__).resolve().with_name("i1669_owner_attested_rows.json")
+LEDGER_SCHEMA = "corelink.issue-1669.owner-attested-rows.v1"
+LEDGER_FIELDS = ("schema", "issue", "category", "authority", "decided_on", "log_confirmed", "ref_scheme", "refs")
+ROW_REF_DOMAIN = "corelink.issue-1669.audit-row-ref.v1"
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 FAILED_REASON = "known violations or unevaluable rows exist; neither may be reported compliant"
+ATTESTED_MISSING_REASON = (
+    "owner-attested row references are missing from the unexplained residual; "
+    "the attestation cannot be applied as recorded"
+)
 DOCUMENTED_EXCEPTION_REASON = (
-    "no violated or unevaluable rows; the only non-satisfied customer rows are erased "
-    "lineage retained under the #1669 policy B documented exception, never reported compliant"
+    "no violated or unevaluable rows; every non-satisfied customer row is a documented #1669 "
+    "exception (policy B erased lineage, or owner-attested prelaunch test traffic that is not "
+    "log-confirmed), never reported compliant"
 )
 COMPLIANT_REASON = "all customer rows are satisfied and all public rows meet the reserved-namespace contract"
-STATE_FIELDS = ("satisfied", "violated", "erased_lineage_exception", "unevaluable", "reserved_public")
+STATE_FIELDS = (
+    "satisfied",
+    "violated",
+    "erased_lineage_exception",
+    OWNER_ATTESTED_CATEGORY,
+    "unevaluable",
+    "reserved_public",
+)
 
 
 class Indeterminate(ValueError):
     """Evidence is absent, malformed, partial, or otherwise not trustworthy."""
+
+
+def row_ref(audit_row_id: str) -> str:
+    """Opaque, domain-separated reference to one ``audit_outbox.id``."""
+    return hashlib.sha256(f"{ROW_REF_DOMAIN}\x00{audit_row_id}".encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class Ledger:
+    """The owner-attested row references; exactly the recorded decision."""
+
+    refs: frozenset[str]
+    sha256: str
+
+
+def load_ledger(path: Path = OWNER_ATTESTED_LEDGER) -> Ledger:
+    """Load and strictly validate the ledger; any deviation is indeterminate."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise Indeterminate(f"owner-attested ledger is unreadable: {exc}") from exc
+    if not isinstance(data, dict) or set(data) != set(LEDGER_FIELDS):
+        raise Indeterminate("owner-attested ledger fields are missing or unexpected")
+    if (
+        data["schema"] != LEDGER_SCHEMA
+        or data["issue"] != 1669
+        or data["category"] != OWNER_ATTESTED_CATEGORY
+        or data["authority"] != OWNER_ATTESTED_AUTHORITY
+        or data["log_confirmed"] is not False
+    ):
+        raise Indeterminate("owner-attested ledger schema, category, authority, or log_confirmed is unexpected")
+    refs = data["refs"]
+    if (
+        not isinstance(refs, list)
+        or len(refs) != OWNER_ATTESTED_ROW_COUNT
+        or len(set(refs)) != len(refs)
+        or not all(isinstance(ref, str) and _HEX64.fullmatch(ref) for ref in refs)
+    ):
+        raise Indeterminate(f"owner-attested ledger must hold exactly {OWNER_ATTESTED_ROW_COUNT} unique row references")
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return Ledger(refs=frozenset(refs), sha256=hashlib.sha256(canonical).hexdigest())
+
+
+@dataclass(frozen=True)
+class Attestation:
+    """Ledger applied to the observed unexplained residual (references only)."""
+
+    residual_refs: tuple[str, ...]
+    attested_rows: int
+    unattested_rows: int
+    attested_refs_missing: int
+    ledger_sha256: str
+
+    def summary(self) -> dict[str, object]:
+        return {
+            "category": OWNER_ATTESTED_CATEGORY,
+            "authority": OWNER_ATTESTED_AUTHORITY,
+            "log_confirmed": False,
+            "ledger_sha256": self.ledger_sha256,
+            "residual_rows": len(self.residual_refs),
+            "attested_rows": self.attested_rows,
+            "unattested_rows": self.unattested_rows,
+            "attested_refs_missing": self.attested_refs_missing,
+        }
+
+
+def attest(residual_refs: Iterable[str], ledger: Ledger) -> Attestation:
+    refs = tuple(sorted(residual_refs))
+    if len(set(refs)) != len(refs) or not all(isinstance(ref, str) and _HEX64.fullmatch(ref) for ref in refs):
+        raise Indeterminate("residual row references are duplicated or malformed")
+    observed = set(refs)
+    attested = observed & ledger.refs
+    return Attestation(
+        residual_refs=refs,
+        attested_rows=len(attested),
+        unattested_rows=len(observed - ledger.refs),
+        attested_refs_missing=len(ledger.refs - observed),
+        ledger_sha256=ledger.sha256,
+    )
+
+
+def parse_residual_refs(payload: object) -> tuple[str, ...]:
+    """Parse the RESIDUAL_REFS_SQL response into hashed references only."""
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        raise Indeterminate("residual D1 response is missing success=true")
+    result = payload.get("result")
+    if not isinstance(result, list) or len(result) != 1 or not isinstance(result[0], dict):
+        raise Indeterminate("residual D1 response must contain exactly one result set")
+    if result[0].get("success") is not True:
+        raise Indeterminate("residual D1 result set is missing success=true")
+    rows = result[0].get("results")
+    if not isinstance(rows, list):
+        raise Indeterminate("residual D1 rows are missing")
+    if len(rows) > MAX_RESIDUAL_REFS:
+        raise Indeterminate(f"unexplained residual exceeds {MAX_RESIDUAL_REFS} rows; it cannot be enumerated")
+    refs: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"audit_row_id"}:
+            raise Indeterminate("residual row fields are missing or unexpected")
+        value = row["audit_row_id"]
+        if not isinstance(value, str) or not value:
+            raise Indeterminate("residual row id is missing or not text")
+        refs.append(row_ref(value))
+    if len(set(refs)) != len(refs):
+        raise Indeterminate("residual row ids are duplicated")
+    return tuple(sorted(refs))
 
 
 @dataclass(frozen=True)
@@ -211,8 +372,11 @@ def parse_d1_response(payload: object) -> Counts:
     return Counts(**{field: _count(row, field) for field in COUNT_FIELDS})
 
 
-def assess(counts: Counts, *, environment: str) -> tuple[str, str]:
-    """Return the explicit state and reason after checking partition invariants."""
+def assess(counts: Counts, *, environment: str, attestation: Attestation | None = None) -> tuple[str, str]:
+    """Return the explicit state and reason after checking partition invariants.
+
+    Without an ``attestation`` every unexplained orphan stays unevaluable.
+    """
     if counts.total_rows == 0:
         raise Indeterminate("audit_outbox population is empty; no residency claim is proven")
     if counts.customer_rows + counts.public_rows != counts.total_rows:
@@ -239,29 +403,41 @@ def assess(counts: Counts, *, environment: str) -> tuple[str, str]:
         raise Indeterminate("weur orphan count exceeds the weur audit population")
     if environment == "production" and counts.erasure_log_rows == 0:
         raise Indeterminate("production DSR-erasure control is empty; orphan classification is unproven")
-    states = partition(counts)
+    if attestation is not None and (
+        attestation.attested_rows + attestation.unattested_rows != counts.unexplained_orphan_rows
+    ):
+        raise Indeterminate("residual row references do not reconcile with the unexplained-orphan count")
+    states = partition(counts, attestation)
     if states["violated"] or states["unevaluable"]:
         return (FAILED, FAILED_REASON)
-    if states["erased_lineage_exception"]:
+    if attestation is not None and attestation.attested_refs_missing:
+        return (FAILED, ATTESTED_MISSING_REASON)
+    if states["erased_lineage_exception"] or states[OWNER_ATTESTED_CATEGORY]:
         return (DOCUMENTED_EXCEPTION, DOCUMENTED_EXCEPTION_REASON)
     return (COMPLIANT, COMPLIANT_REASON)
 
 
-def partition(counts: Counts) -> dict[str, int]:
+def partition(counts: Counts, attestation: Attestation | None = None) -> dict[str, int]:
     """Disjoint, exhaustive residency states under the #1669 policy B contract.
 
-    Only rows counted by ``erased_orphan_rows`` leave the failing bucket: the
-    unexplained orphans, the other unevaluable customer rows and the invalid
-    public rows stay ``unevaluable``. Callers must run the ``assess`` partition
-    invariants first; this function re-checks conservation and fails closed.
+    Only rows counted by ``erased_orphan_rows`` and, with an attestation, the
+    unexplained orphans whose reference is in the owner-attested ledger leave
+    the failing bucket. Every other unexplained orphan, the other unevaluable
+    customer rows and the invalid public rows stay ``unevaluable``. Callers
+    must run the ``assess`` invariants first; this function re-checks
+    conservation and fails closed.
     """
-    unevaluable = counts.unevaluable_rows - counts.erased_orphan_rows
+    attested = attestation.attested_rows if attestation is not None else 0
+    if attested > counts.unexplained_orphan_rows:
+        raise Indeterminate("owner-attested rows exceed the unexplained-orphan bucket")
+    unevaluable = counts.unevaluable_rows - counts.erased_orphan_rows - attested
     if unevaluable < 0 or counts.erased_orphan_rows > counts.customer_unevaluable_rows:
         raise Indeterminate("erased-lineage rows exceed the customer unevaluable bucket")
     states = {
         "satisfied": counts.satisfied_rows,
         "violated": counts.violated_rows,
         "erased_lineage_exception": counts.erased_orphan_rows,
+        OWNER_ATTESTED_CATEGORY: attested,
         "unevaluable": unevaluable,
         "reserved_public": counts.reserved_public_rows,
     }
@@ -270,10 +446,12 @@ def partition(counts: Counts) -> dict[str, int]:
     return states
 
 
-def _live_payload(account_id: str, token: str, database_id: str, timeout: int) -> object:
+def _live_payload(account_id: str, token: str, database_id: str, timeout: int, sql: str = RESIDENCY_SQL) -> object:
+    if sql not in (RESIDENCY_SQL, RESIDUAL_REFS_SQL):
+        raise Indeterminate("refusing a query outside the verifier allowlist")
     request = urllib.request.Request(
         f"https://api.cloudflare.com/client/v4/accounts/{account_id}/d1/database/{database_id}/query",
-        data=json.dumps({"sql": RESIDENCY_SQL}).encode("utf-8"),
+        data=json.dumps({"sql": sql}).encode("utf-8"),
         method="POST",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
@@ -293,6 +471,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--environment", choices=("production", "staging", "test"), required=True)
     parser.add_argument("--input", type=Path, help="saved raw Cloudflare D1 JSON response")
+    parser.add_argument(
+        "--residual-refs-input",
+        type=Path,
+        help="saved raw D1 response for RESIDUAL_REFS_SQL; without it the owner attestation is not applied",
+    )
     parser.add_argument("--database-id", help="D1 database UUID for a read-only live query")
     parser.add_argument("--account-id", default=os.environ.get("CLOUDFLARE_ACCOUNT_ID"))
     parser.add_argument("--api-token", default=os.environ.get("CLOUDFLARE_API_TOKEN"))
@@ -305,16 +488,28 @@ def main(argv: list[str] | None = None) -> int:
         _indeterminate("choose exactly one evidence source: --input or --database-id")
     if not args.input and not args.database_id:
         _indeterminate("missing evidence source: provide --input or --database-id")
+    if args.residual_refs_input and not args.input:
+        _indeterminate("--residual-refs-input requires --input")
 
     try:
+        residual_payload: object | None = None
         if args.input:
             payload = json.loads(args.input.read_text(encoding="utf-8"))
+            if args.residual_refs_input:
+                residual_payload = json.loads(args.residual_refs_input.read_text(encoding="utf-8"))
         else:
             if not args.account_id or not args.api_token:
                 raise Indeterminate("live query requires account ID and API token")
             payload = _live_payload(args.account_id, args.api_token, args.database_id, args.timeout_seconds)
+            residual_payload = _live_payload(
+                args.account_id, args.api_token, args.database_id, args.timeout_seconds, RESIDUAL_REFS_SQL
+            )
         counts = parse_d1_response(payload)
-        state, reason = assess(counts, environment=args.environment)
+        attestation = (
+            attest(parse_residual_refs(residual_payload), load_ledger()) if residual_payload is not None else None
+        )
+        state, reason = assess(counts, environment=args.environment, attestation=attestation)
+        states = partition(counts, attestation)
     except (OSError, json.JSONDecodeError, Indeterminate) as exc:
         _indeterminate(str(exc))
 
@@ -325,8 +520,9 @@ def main(argv: list[str] | None = None) -> int:
                 "status": state,
                 "reason": reason,
                 "counts": asdict(counts),
-                "states": partition(counts),
+                "states": states,
                 "exception_policy": ERASED_LINEAGE_POLICY,
+                "attestation": attestation.summary() if attestation is not None else None,
             },
             sort_keys=True,
         )

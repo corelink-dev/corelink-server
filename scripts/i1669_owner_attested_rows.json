@@ -1,0 +1,24 @@
+{
+  "schema": "corelink.issue-1669.owner-attested-rows.v1",
+  "issue": 1669,
+  "category": "owner_attested_prelaunch_test_traffic",
+  "authority": "https://github.com/HuGR-dev/corelink-server/issues/1669#issuecomment-5959812722",
+  "decided_on": "2026-10-02",
+  "log_confirmed": false,
+  "ref_scheme": "sha256(\"corelink.issue-1669.audit-row-ref.v1\" + NUL + audit_outbox.id), lowercase hex",
+  "refs": [
+    "13d989a6d99d27622cf7019321d0eca5f2a9d025d07ec21b4ccbb53a9e901a37",
+    "269d2f537de0bb9efbd004bda72f3b4b514ee9a408b749f5e3b196e01d7fabab",
+    "2bc53c7abb01104457701899cb4340aab19c374758027a2b98258633d2e5eff8",
+    "48463afc395140bb5cd9f0685f23f6fcbe8a6fa604c83b2a076ffb240c61723a",
+    "49d079442d3f18ee099264566b7aea5bf59815fb98da885c211c984326a96563",
+    "4a44b790336695c3687034797a046fa31f4472c4b24d497c2789ad7fe550b037",
+    "56bb21233df58d640008971f43758a7fd9e3661301bcab3363fbb20d24f622b6",
+    "5bebb76e0cf84f67087e6496e0b122e1f1843e5eca63823945f018b337406a2e",
+    "6a8c2259029acc0e22b12f0ca80bc99fc0cb6fbccc4473f6b37aff2f4dad4397",
+    "8a38f32b084181768d37a24c70e8dedede7787a1fb9eb532dd4da63f8de446ee",
+    "a2a50bda756ef72c90f7e596185d628479abf3ee2892358ce51055410d47b767",
+    "da04353855db79c4e84884e60a5a624728a1eec1dc1534a179ec6d4a5c73964d",
+    "f91fd79e24f4bf3dfcd7298e5a88f6b35f90c03326feacda6244b4f183f30523"
+  ]
+}

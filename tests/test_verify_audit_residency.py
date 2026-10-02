@@ -225,6 +225,7 @@ def test_retained_dsr_orphan_is_a_documented_exception_never_compliant() -> None
         "satisfied": 9,
         "violated": 0,
         "erased_lineage_exception": 1,
+        "owner_attested_prelaunch_test_traffic": 0,
         "unevaluable": 0,
         "reserved_public": 0,
     }
@@ -272,6 +273,7 @@ def test_sql_unexplained_orphan_beside_erased_orphan_still_fails() -> None:
         "satisfied": 1,
         "violated": 0,
         "erased_lineage_exception": 1,
+        "owner_attested_prelaunch_test_traffic": 0,
         "unevaluable": 1,
         "reserved_public": 0,
     }
@@ -297,6 +299,7 @@ def test_retained_production_population_fails_on_the_13_unexplained_rows_only() 
         "satisfied": 81315,
         "violated": 0,
         "erased_lineage_exception": 3526,
+        "owner_attested_prelaunch_test_traffic": 0,
         "unevaluable": 13,
         "reserved_public": 131,
     }
@@ -333,6 +336,214 @@ def test_cli_exit_code_and_states_follow_policy_b(
     assert sum(report["states"].values()) == report["counts"]["total_rows"]
     assert report["states"]["erased_lineage_exception"] == report["counts"]["erased_orphan_rows"]
     assert "policy B" in report["exception_policy"]
+    # Without residual references the owner attestation is never applied.
+    assert report["attestation"] is None
+
+
+# --- owner-attested prelaunch test traffic (owner decision 2026-10-02) -------
+
+ATTESTED = "owner_attested_prelaunch_test_traffic"
+AUTHORITY = "https://github.com/HuGR-dev/corelink-server/issues/1669#issuecomment-5959812722"
+LEDGER_PATH = Path(__file__).parents[1] / "scripts" / "i1669_owner_attested_rows.json"
+
+
+def ledger_of(*row_ids: str) -> "verifier.Ledger":
+    return verifier.Ledger(refs=frozenset(verifier.row_ref(i) for i in row_ids), sha256="e" * 64)
+
+
+THIRTEEN = tuple(f"synthetic-row-{n:02d}" for n in range(13))
+
+
+def production_with_unexplained(unexplained: int, **extra: int) -> "verifier.Counts":
+    base = dict(RETAINED_PRODUCTION_COUNTS)
+    delta = unexplained - base["unexplained_orphan_rows"]
+    base.update(
+        unexplained_orphan_rows=unexplained,
+        orphan_rows=base["orphan_rows"] + delta,
+        customer_unevaluable_rows=base["customer_unevaluable_rows"] + delta,
+        unevaluable_rows=base["unevaluable_rows"] + delta,
+        satisfied_rows=base["satisfied_rows"] - delta,
+    )
+    base.update(extra)
+    return verifier.Counts(**base)
+
+
+def test_repository_ledger_is_exactly_13_opaque_refs_citing_the_owner_decision() -> None:
+    ledger = verifier.load_ledger()
+    assert len(ledger.refs) == 13
+    data = json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
+    assert data["authority"] == AUTHORITY
+    assert data["category"] == ATTESTED
+    assert data["log_confirmed"] is False
+    assert all(len(ref) == 64 and set(ref) <= set("0123456789abcdef") for ref in data["refs"])
+    # Opaque: no UUID-shaped tenant/row identifier anywhere in the ledger.
+    import re
+
+    assert not re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", LEDGER_PATH.read_text())
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d["refs"].append("0" * 64),  # a 14th reference
+        lambda d: d["refs"].pop(),  # only 12
+        lambda d: d.__setitem__("refs", d["refs"][:12] + d["refs"][:1]),  # duplicate
+        lambda d: d.__setitem__("authority", "https://example.invalid/decision"),
+        lambda d: d.__setitem__("log_confirmed", True),
+        lambda d: d.__setitem__("category", "satisfied"),
+        lambda d: d.__setitem__("tenant_ids", []),  # unexpected field
+        lambda d: d["refs"].__setitem__(0, "not-a-hash"),
+    ],
+)
+def test_ledger_is_rejected_unless_it_is_exactly_the_recorded_decision(tmp_path: Path, mutate) -> None:
+    data = json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
+    mutate(data)
+    path = tmp_path / "ledger.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(verifier.Indeterminate):
+        verifier.load_ledger(path)
+
+
+def test_row_ref_is_domain_separated_sha256() -> None:
+    import hashlib
+
+    assert verifier.row_ref("x") != hashlib.sha256(b"x").hexdigest()
+    assert verifier.row_ref("x") == verifier.row_ref("x") != verifier.row_ref("y")
+
+
+def test_all_13_attested_with_erased_lineage_is_documented_exception_never_compliant() -> None:
+    counts = production_with_unexplained(13)
+    attestation = verifier.attest([verifier.row_ref(i) for i in THIRTEEN], ledger_of(*THIRTEEN))
+    state, reason = verifier.assess(counts, environment="production", attestation=attestation)
+    assert state == "DOCUMENTED_EXCEPTION" != "COMPLIANT"
+    assert "not log-confirmed" in reason
+    states = verifier.partition(counts, attestation)
+    assert states == {
+        "satisfied": 81315,
+        "violated": 0,
+        "erased_lineage_exception": 3526,
+        ATTESTED: 13,
+        "unevaluable": 0,
+        "reserved_public": 131,
+    }
+    summary = attestation.summary()
+    assert summary["authority"] == AUTHORITY and summary["log_confirmed"] is False
+    assert (summary["attested_rows"], summary["unattested_rows"], summary["attested_refs_missing"]) == (13, 0, 0)
+
+
+def test_attested_only_population_is_still_never_compliant() -> None:
+    counts = verifier.Counts(**{**response(**ERASED_ONLY)["result"][0]["results"][0],
+                                "erased_orphan_rows": 0, "erased_orphan_tenants": 0,
+                                "unexplained_orphan_rows": 1, "unexplained_orphan_tenants": 1})
+    attestation = verifier.attest([verifier.row_ref("only")], ledger_of("only"))
+    assert verifier.assess(counts, environment="production", attestation=attestation)[0] == "DOCUMENTED_EXCEPTION"
+
+
+def test_a_14th_unexplained_row_outside_the_ledger_still_fails() -> None:
+    counts = production_with_unexplained(14)
+    refs = [verifier.row_ref(i) for i in (*THIRTEEN, "a-fourteenth-row")]
+    attestation = verifier.attest(refs, ledger_of(*THIRTEEN))
+    assert verifier.assess(counts, environment="production", attestation=attestation) == (
+        "FAILED", verifier.FAILED_REASON)
+    states = verifier.partition(counts, attestation)
+    assert (states[ATTESTED], states["unevaluable"]) == (13, 1)
+
+
+def test_an_attested_reference_missing_from_the_residual_is_reported_and_fails() -> None:
+    counts = production_with_unexplained(12)
+    attestation = verifier.attest([verifier.row_ref(i) for i in THIRTEEN[:12]], ledger_of(*THIRTEEN))
+    assert attestation.summary()["attested_refs_missing"] == 1
+    assert verifier.assess(counts, environment="production", attestation=attestation) == (
+        "FAILED", verifier.ATTESTED_MISSING_REASON)
+
+
+def test_attestation_does_not_absorb_a_violation() -> None:
+    counts = production_with_unexplained(13, satisfied_rows=81314, violated_rows=1)
+    attestation = verifier.attest([verifier.row_ref(i) for i in THIRTEEN], ledger_of(*THIRTEEN))
+    assert verifier.assess(counts, environment="production", attestation=attestation)[0] == "FAILED"
+
+
+def test_residual_references_must_reconcile_with_the_unexplained_count() -> None:
+    counts = production_with_unexplained(13)
+    attestation = verifier.attest([verifier.row_ref(i) for i in THIRTEEN[:12]], ledger_of(*THIRTEEN[:12]))
+    with pytest.raises(verifier.Indeterminate, match="do not reconcile"):
+        verifier.assess(counts, environment="production", attestation=attestation)
+
+
+def residual_db() -> sqlite3.Connection:
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        """
+        CREATE TABLE tenant (tenant_id TEXT PRIMARY KEY, primary_region TEXT);
+        CREATE TABLE audit_outbox (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, region TEXT,
+                                   event_type TEXT NOT NULL DEFAULT 'customer.event');
+        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL);
+        INSERT INTO tenant VALUES ('live', 'enam');
+        INSERT INTO dsr_erasure_log VALUES ('erased');
+        INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('row-live', 'live', 'enam');
+        INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('row-erased', 'erased', 'weur');
+        INSERT INTO audit_outbox (id, tenant_id, region, event_type)
+            VALUES ('row-public', '_public', 'wnam', 'public.revoke');
+        INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('row-u1', 'gone', 'apac');
+        INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('row-u2', 'gone', 'apac');
+        """
+    )
+    return connection
+
+
+def d1(rows: list[dict]) -> dict:
+    return {"success": True, "result": [{"success": True, "results": rows}]}
+
+
+def test_residual_refs_sql_selects_exactly_the_unexplained_orphans() -> None:
+    connection = residual_db()
+    rows = [{"audit_row_id": r[0]} for r in connection.execute(verifier.RESIDUAL_REFS_SQL)]
+    assert rows == [{"audit_row_id": "row-u1"}, {"audit_row_id": "row-u2"}]
+    counts = verifier.Counts(**dict(zip((c[0] for c in connection.execute(verifier.RESIDENCY_SQL).description),
+                                        connection.execute(verifier.RESIDENCY_SQL).fetchone(), strict=True)))
+    assert counts.unexplained_orphan_rows == len(rows)
+    assert verifier.parse_residual_refs(d1(rows)) == tuple(sorted(verifier.row_ref(r["audit_row_id"]) for r in rows))
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"audit_row_id": "a", "tenant_id": "leak"}],
+        [{"audit_row_id": ""}],
+        [{"audit_row_id": 7}],
+        [{"audit_row_id": "a"}, {"audit_row_id": "a"}],
+        [{"audit_row_id": f"r{n}"} for n in range(65)],
+    ],
+)
+def test_residual_parse_fails_closed(rows: list[dict]) -> None:
+    with pytest.raises(verifier.Indeterminate):
+        verifier.parse_residual_refs(d1(rows))
+
+
+def test_cli_applies_the_attestation_without_printing_row_ids(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connection = residual_db()
+    residency = dict(zip((c[0] for c in connection.execute(verifier.RESIDENCY_SQL).description),
+                         connection.execute(verifier.RESIDENCY_SQL).fetchone(), strict=True))
+    residual = [{"audit_row_id": r[0]} for r in connection.execute(verifier.RESIDUAL_REFS_SQL)]
+    (tmp_path / "residency.json").write_text(json.dumps(d1([residency])), encoding="utf-8")
+    (tmp_path / "residual.json").write_text(json.dumps(d1(residual)), encoding="utf-8")
+    monkeypatch.setattr(verifier, "load_ledger", lambda: ledger_of("row-u1", "row-u2"))
+    code = verifier.main(["--environment", "production", "--input", str(tmp_path / "residency.json"),
+                          "--residual-refs-input", str(tmp_path / "residual.json")])
+    out = capsys.readouterr().out
+    report = json.loads(out)
+    assert (code, report["status"]) == (0, "DOCUMENTED_EXCEPTION")
+    assert report["states"][ATTESTED] == 2 and report["states"]["erased_lineage_exception"] == 1
+    assert report["attestation"]["attested_rows"] == 2
+    assert "row-u1" not in out and "gone" not in out
+
+
+def test_cli_residual_input_requires_the_residency_input(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exited:
+        verifier.main(["--environment", "test", "--database-id", "x", "--residual-refs-input", str(tmp_path / "r")])
+    assert exited.value.code == 2
 
 
 def test_unexplained_orphan_and_weur_orphan_remain_in_the_denominator() -> None:
