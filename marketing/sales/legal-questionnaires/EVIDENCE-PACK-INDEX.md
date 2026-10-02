@@ -24,7 +24,7 @@ tags: ["sales", "legal", "questionnaire", "evidence-pack", "procurement", "audit
 > **⛔ CoreLink is not open source.** There is no public source repository. No row in this index may invite an auditor to "go read the code" — the platform source is private and is shared only under NDA. The only artifacts anyone can fetch without auth are release **binaries and checksums** (see PUBLIC-REPO). Verified 2026-08-02: `HumanGuardrail/corelink` and `HuGR-Labs/corelink` both return **HTTP 404** — that repo has never existed in either org, so this is not org-rename drift.
 >
 > **Access model:**
-> - **PUBLIC** = visible on `apps/docs/docs/` or on the live docs site `https://humangr.com/corelink/docs/` (the old `https://docs.corelink.humangr.com/` hostname is NXDOMAIN; `corelink-docs.humangr.com` 301s to the same live base).
+> - **PUBLIC** = visible on `apps/docs/docs/` or on the live docs site `https://humangr.com/corelink/docs/` (the old dotted `docs.corelink.` hostname is NXDOMAIN; `corelink-docs.humangr.com` 301s to the same live base).
 > - **PUBLIC-REPO** = a **release artifact** (binary, checksum) downloadable without auth from `HuGR-Labs/corelink-cli` (HTTP 200) or `HuGR-Labs/clw-releases` (HTTP 200). Both publish **build outputs only — no source**.
 > - **NDA** = shareable with countersigned NDA on file via `trust@humangr.com`. Turnaround: 1 business day.
 > - **AUDITOR-ONLY** = shared with engaged 3PAO / external auditor only; not distributed even with NDA.

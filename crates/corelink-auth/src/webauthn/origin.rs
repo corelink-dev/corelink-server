@@ -3,17 +3,17 @@
 //!
 //! # Threat model
 //!
-//! - **RP-ID confusion**: `evil.corelink.humangr.com.attacker.com` browser
-//!   reports `rp_id = "corelink.humangr.com"` but origin
-//!   `evil.corelink.humangr.com.attacker.com`. Browsers reject; weak servers
+//! - **RP-ID confusion**: `evil.example.com.attacker.com` browser
+//!   reports `rp_id = "example.com"` but origin
+//!   `evil.example.com.attacker.com`. Browsers reject; weak servers
 //!   may accept. We reject by demanding origin ∈ allowlist with **exact
 //!   match**.
 //! - **Origin allowlist bypass**: `localhost` left in allowlist for
 //!   prod. We make `RpId::new` reject `localhost` plus 127.0.0.1 +
 //!   `0.0.0.0` + `::1` so a misconfigured deploy fails closed.
-//! - **Subdomain elevation**: `RpId` is the eTLD+1 (`corelink.humangr.com`).
-//!   The allowlist origins MAY be subdomains (`app.corelink.humangr.com`,
-//!   `admin.corelink.humangr.com`) provided they share the canonical RP-ID
+//! - **Subdomain elevation**: `RpId` is the eTLD+1 (`example.com`).
+//!   The allowlist origins MAY be subdomains (`app.example.com`,
+//!   `admin.example.com`) provided they share the canonical RP-ID
 //!   suffix. The construction-time guard rejects mismatch.
 
 use std::collections::BTreeSet;

@@ -32,24 +32,234 @@ GREP = re.compile(
 GREP_UNQUOTED = re.compile(
     r"\bgrep\s+(?P<options>(?:-[A-Za-z0-9-]+\s+)*)(?P<pattern>[^\s;&|()<>]+)"
 )
-COMMAND_BOUNDARY = re.compile(
-    r"(?:^|[;&|(!]|\$\(|\b(?:if|elif|then|while|until|do|command|builtin|exec)\b)"
-    r"\s*(?:!\s*)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S+)\s*)*$"
+# --- Command-boundary grammars (linear time) --------------------------------
+#
+# Until #1674 the three boundaries below were regexes of the shape
+#
+#   (?:^|[;&|(!]|\$\(|\b(?:if|elif|...|exec)\b)
+#   \s*(?:!\s*)?(?:NAME=(?:'[^']*'|"[^"]*"|\S+)\s*)* <tail> $
+#
+# CPython's backtracking engine needed exponential time to reject them (CodeQL
+# py/redos): an unquoted value ``\S+`` can swallow the next ``NAME=VALUE`` when
+# no whitespace separates them, and a redirection target ``[^\s;&|()]+`` can
+# swallow the next redirection.  ``"A=" + "!A=" * 20 + " x"`` took 2.6 s, and
+# ``"<<!" * 12 + " x"`` (38 characters) took 27 s, over ten times longer per
+# two more repetitions; the 8 KiB line cap added by #2852 cannot bound that, and
+# CodeQL judges the pattern, not the cap.  The overlap is inherent to the
+# language: a quote after ``NAME=`` may open a quoted value or be the first
+# character of an unquoted one, and which reading succeeds depends on text
+# arbitrarily far ahead, so an unambiguous regex for it would be unreviewable.
+# The grammar is therefore kept below, term for term, as data, and matched by
+# a Thompson simulation over a lazily built DFA: every character is read once,
+# so a search is O(len(text)) for every input, and the accepted language is
+# exactly that of the replaced regexes, including Unicode ``\s``/``\d`` and
+# ``$`` before a final newline.
+_SPACE_CHAR = re.compile(r"\s").fullmatch
+_DIGIT_CHAR = re.compile(r"\d").fullmatch
+_BOUNDARY_CHARS = frozenset(";&|(!")
+_SUBSHELL_OPEN = re.compile(r"\$\(")
+_CONTROL_WORD = re.compile(r"\b(?:if|elif|then|while|until|do|command|builtin|exec)\b")
+
+
+def _is_space(char: str) -> bool:
+    return _SPACE_CHAR(char) is not None
+
+
+def _is_name_start(char: str) -> bool:
+    return char == "_" or ("A" <= char <= "Z") or ("a" <= char <= "z")
+
+
+def _is_name_char(char: str) -> bool:
+    return _is_name_start(char) or "0" <= char <= "9"
+
+
+def _lit(text: str) -> tuple:
+    return ("seq", tuple(("char", lambda char, expected=expected: char == expected) for expected in text))
+
+
+def _cls(predicate) -> tuple:
+    return ("char", predicate)
+
+
+def _seq(*parts: tuple) -> tuple:
+    return ("seq", parts)
+
+
+def _alt(*parts: tuple) -> tuple:
+    return ("alt", parts)
+
+
+def _star(part: tuple) -> tuple:
+    return ("star", part)
+
+
+def _plus(part: tuple) -> tuple:
+    return _seq(part, _star(part))
+
+
+def _opt(part: tuple) -> tuple:
+    return _alt(part, _seq())
+
+
+def _boundary_ends(text: str) -> set[int]:
+    """End offsets of every ``(?:^|[;&|(!]|\\$\\(|\\b(?:if|...)\\b)`` match."""
+    ends = {0}
+    ends.update(index + 1 for index, char in enumerate(text) if char in _BOUNDARY_CHARS)
+    ends.update(match.end() for match in _SUBSHELL_OPEN.finditer(text))
+    # A control word between two \b is a whole \w run, so matches cannot
+    # overlap and finditer reports every one of them.
+    ends.update(match.end() for match in _CONTROL_WORD.finditer(text))
+    return ends
+
+
+class _BoundaryGrammar:
+    """``search``-compatible matcher for ``<boundary> <tail> $``.
+
+    ``search(text)`` returns ``True`` exactly when the replaced regex's
+    ``search`` returned a match, and ``None`` otherwise.
+    """
+
+    def __init__(self, tail: tuple) -> None:
+        self._epsilon: list[list[int]] = []
+        self._edges: list[list[tuple[object, int]]] = []
+        entry, self._accept = self._build(tail)
+        self._entry = self._closure((entry,))
+        # Lazily built DFA: each state is an interned set of NFA states.  The
+        # automaton is finite, so these tables are bounded by the grammar.
+        self._sets: list[frozenset[int]] = []
+        self._ids: dict[frozenset[int], int] = {}
+        self._dead = self._intern(frozenset())
+        self._moves: dict[tuple[int, object], int] = {}
+        self._entered: dict[int, int] = {}
+
+    def _state(self) -> int:
+        self._epsilon.append([])
+        self._edges.append([])
+        return len(self._edges) - 1
+
+    def _build(self, node: tuple) -> tuple[int, int]:
+        kind, value = node
+        start = self._state()
+        if kind == "char":
+            end = self._state()
+            self._edges[start].append((value, end))
+        elif kind == "seq":
+            end = start
+            for part in value:
+                part_start, part_end = self._build(part)
+                self._epsilon[end].append(part_start)
+                end = part_end
+        elif kind == "alt":
+            end = self._state()
+            for part in value:
+                part_start, part_end = self._build(part)
+                self._epsilon[start].append(part_start)
+                self._epsilon[part_end].append(end)
+        elif kind == "star":
+            end = self._state()
+            part_start, part_end = self._build(value)
+            self._epsilon[start] += [part_start, end]
+            self._epsilon[part_end] += [part_start, end]
+        else:  # pragma: no cover - the grammar below is closed
+            raise ValueError(f"unknown grammar node {kind!r}")
+        return start, end
+
+    def _closure(self, states) -> frozenset[int]:
+        pending = list(states)
+        seen = set(pending)
+        while pending:
+            for following in self._epsilon[pending.pop()]:
+                if following not in seen:
+                    seen.add(following)
+                    pending.append(following)
+        return frozenset(seen)
+
+    def _intern(self, states: frozenset[int]) -> int:
+        found = self._ids.get(states)
+        if found is None:
+            found = self._ids[states] = len(self._sets)
+            self._sets.append(states)
+        return found
+
+    def _move(self, state: int, char: str) -> int:
+        # Every predicate depends only on an ASCII character's identity or,
+        # beyond ASCII, on whether it is \s or \d, so that class is the key.
+        key: object = char if char < "\x80" else (_is_space(char), _DIGIT_CHAR(char) is not None)
+        target = self._moves.get((state, key))
+        if target is None:
+            target = self._moves[(state, key)] = self._intern(self._closure([
+                following
+                for current in self._sets[state]
+                for predicate, following in self._edges[current]
+                if predicate(char)
+            ]))
+        return target
+
+    def _enter(self, state: int) -> int:
+        """Start another match attempt here, as ``search`` does at a boundary."""
+        target = self._entered.get(state)
+        if target is None:
+            target = self._entered[state] = self._intern(self._sets[state] | self._entry)
+        return target
+
+    def search(self, text: str) -> bool | None:
+        starts = _boundary_ends(text)
+        length = len(text)
+        state = self._dead
+        for index in range(length + 1):
+            if index in starts:
+                state = self._enter(state)
+            # ``$`` matches at the end and before a final newline.
+            if self._accept in self._sets[state] and (
+                index == length or (index == length - 1 and text[index] == "\n")
+            ):
+                return True
+            if index < length:
+                state = self._move(state, text[index])
+        return None
+
+
+_SPACE = _cls(_is_space)
+_SPACES = _star(_SPACE)
+_NAME = _seq(_cls(_is_name_start), _star(_cls(_is_name_char)))
+_SINGLE_QUOTED = _seq(_lit("'"), _star(_cls(lambda char: char != "'")), _lit("'"))
+_DOUBLE_QUOTED = _seq(_lit('"'), _star(_cls(lambda char: char != '"')), _lit('"'))
+_WORD = _plus(_cls(lambda char: not _is_space(char)))  # \S+
+_OPERAND = _plus(_cls(lambda char: not _is_space(char) and char not in ";&|()"))  # [^\s;&|()]+
+# \s*(?:!\s*)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|\S+)\s*)*
+_ASSIGNMENT_PREFIX = _seq(
+    _SPACES,
+    _opt(_seq(_lit("!"), _SPACES)),
+    _star(_seq(_NAME, _lit("="), _alt(_SINGLE_QUOTED, _DOUBLE_QUOTED, _WORD), _SPACES)),
 )
+COMMAND_BOUNDARY = _BoundaryGrammar(_ASSIGNMENT_PREFIX)
 # These are still shell command boundaries: the grep executable is wrapped
 # rather than invoked as the first word.  Keeping the wrappers explicit avoids
 # treating prose such as `echo sudo grep ...` as an assertion while covering
 # the common command forms used by backlog verifies.
-WRAPPED_COMMAND_BOUNDARY = re.compile(
-    r"(?:^|[;&|(!]|\$\(|\b(?:if|elif|then|while|until|do|command|builtin|exec)\b)"
-    r"\s*(?:!\s*)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S+)\s*)*"
-    r"(?:(?:sudo|env|git|xargs)(?:\s+-[^\s;&|()]+|\s+[A-Za-z_][A-Za-z0-9_]*=[^\s;&|()]+)*\s+)+$"
-)
-REDIRECTION_BOUNDARY = re.compile(
-    r"(?:^|[;&|(!]|\$\(|\b(?:if|elif|then|while|until|do|command|builtin|exec)\b)"
-    r"\s*(?:!\s*)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S+)\s*)*"
-    r"(?:\d*(?:>>>|<<<|>>|<<|>|<)\s*(?:'[^']*'|\"[^\"]*\"|[^\s;&|()]+)\s*)+$"
-)
+# (?:(?:sudo|env|git|xargs)(?:\s+-[^\s;&|()]+|\s+NAME=[^\s;&|()]+)*\s+)+
+WRAPPED_COMMAND_BOUNDARY = _BoundaryGrammar(_seq(
+    _ASSIGNMENT_PREFIX,
+    _plus(_seq(
+        _alt(_lit("sudo"), _lit("env"), _lit("git"), _lit("xargs")),
+        _star(_alt(
+            _seq(_plus(_SPACE), _lit("-"), _OPERAND),
+            _seq(_plus(_SPACE), _NAME, _lit("="), _OPERAND),
+        )),
+        _plus(_SPACE),
+    )),
+))
+# (?:\d*(?:>>>|<<<|>>|<<|>|<)\s*(?:'[^']*'|"[^"]*"|[^\s;&|()]+)\s*)+
+REDIRECTION_BOUNDARY = _BoundaryGrammar(_seq(
+    _ASSIGNMENT_PREFIX,
+    _plus(_seq(
+        _star(_cls(lambda char: _DIGIT_CHAR(char) is not None)),
+        _alt(*(_lit(operator) for operator in (">>>", "<<<", ">>", "<<", ">", "<"))),
+        _SPACES,
+        _alt(_SINGLE_QUOTED, _DOUBLE_QUOTED, _OPERAND),
+        _SPACES,
+    )),
+))
 NESTED_SHELL = re.compile(r"\b(?:bash|sh|zsh)\s+-c\b")
 ID = re.compile(r"^B-\d{3}$")
 COMMENT_PREFIXES = ("//", "#", "/*", "<!--", "*", "--")

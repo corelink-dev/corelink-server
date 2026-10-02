@@ -10,7 +10,7 @@ source_files:
 source_blobs:
   - "crates/corelink-container/src/byte_accounting/b126_m2_impl_01.rs@c0c4fa248f7be243efe0ea0d44016a56311c30af"
   - "crates/corelink-container/src/byte_accounting/b126_m2_impl_02.rs@bd65dfc70297a7fea8ef25cb614c6404feac220e"
-  - "crates/corelink-rate-headers/src/headers.rs@b73eb6bd8c9cd9faa5cde21d2405f69d4effffc2"
+  - "crates/corelink-rate-headers/src/headers.rs@fd8664f17eeb5f7128f09c8280ccc0766aa1b02c"
 checkpoint_sha: "a65c7d7caed03adf00acd3a227dc20c4e857f7f0"
 provenance: "AUTHORED"
 tags: ["tenancy", "quota", "storage", "byte-accounting", "rfc-9331", "fail-closed"]

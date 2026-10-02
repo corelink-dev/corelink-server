@@ -5,7 +5,7 @@
 //! ```sh
 //! DT_API_KEY=my-secret cargo run --example ingest_dt_retry -- \
 //!   --input /tmp/sbom.cdx.json \
-//!   --dt-url https://dt.corelink.humangr.com \
+//!   --dt-url https://dependency-track.example.com \
 //!   --project-name corelink-server \
 //!   --project-version 0.1.0
 //! ```
@@ -26,7 +26,7 @@ async fn main() {
     let mut args = std::env::args().skip(1);
 
     let mut input = String::from("/tmp/sbom.cdx.json");
-    let mut dt_url_str = String::from("https://dt.corelink.humangr.com");
+    let mut dt_url_str = String::from("https://dependency-track.example.com");
     let mut api_key_env = String::from("DT_API_KEY");
     let mut project_name = String::from("corelink-server");
     let mut project_version = String::from("0.0.0");

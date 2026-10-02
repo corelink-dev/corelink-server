@@ -32,7 +32,7 @@
 //!     "v0.1.0",
 //!     "abc123def456abc123def456abc123def456abc1",
 //!     "refs/tags/v0.1.0",
-//!     DeployTarget::new("corelink-worker", "a".repeat(32), "api.corelink.humangr.com/*"),
+//!     DeployTarget::new("corelink-worker", "a".repeat(32), "corelink-api.humangr.com/*"),
 //!     GitHubActor::new(
 //!         "github-actions[bot]",
 //!         "HuGR-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0",

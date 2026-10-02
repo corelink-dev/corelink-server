@@ -311,12 +311,12 @@
     }
   ],
   "hostname": {
-    "_README": "Registry for [hostname-liveness] in scripts/validate_docs_reality.py. `live_allow` is a FACT REGISTRY, not a mute: every entry was verified to resolve AND serve on the date in its reason (re-derive with `python3 scripts/validate_docs_reality.py --verify-dns`). `live_patterns` covers name FAMILIES that are infrastructure records rather than enumerable hosts (DKIM selectors). `tracked_dead` is the SUPPRESSION bucket: non-fatal in the normal gate, FAILS under --strict, and every entry MUST carry a reason, an owner and an ISO `expires` — a missing or past expiry is a hard failure, because an expiring suppression that never expires is a permanent mute wearing a date. Any *.humangr.com hostname on a shipped surface that is in neither bucket FAILS.",
+    "_README": "Registry for [hostname-liveness] in scripts/validate_docs_reality.py. `live_allow` is a FACT REGISTRY, not a mute: every entry was verified to resolve AND serve on the date in its reason (re-derive with `python3 scripts/validate_docs_reality.py --verify-dns`). `live_patterns` covers name FAMILIES that are infrastructure records rather than enumerable hosts (DKIM selectors). `tracked_dead` is the SUPPRESSION bucket: non-fatal in the normal gate, FAILS under --strict, and every entry MUST carry a reason, an owner, an ISO `expires` and the exact repo-relative `files` it covers — a missing or past expiry is a hard failure, because an expiring suppression that never expires is a permanent mute wearing a date; a missing `files` list is a hard failure, and a mention of a suppressed host in a file the entry does not list FAILS, because a host-wide mute would silence a NEW mention of the same dead host on any other page. Any *.humangr.com hostname on a shipped surface that is in neither bucket FAILS.",
     "_REFRESH_RECIPE": [
       "The gate NEVER touches the network: CI here runs on the founder's own Mac, and a DNS-dependent gate is a flaky gate that trains everyone to re-run it.",
       "To refresh: `python3 scripts/validate_docs_reality.py --verify-dns` (opt-in, networked). It probes every hostname found on a shipped surface plus every allowlisted one, with DNS resolution + a TLS handshake on :443.",
       "LIVE  -> belongs in live_allow, with the probe date in the reason string.",
-      "DEAD / DNS-ONLY -> fix the DOCS (preferred) or add a tracked_dead entry. Do NOT add it to live_allow: that bucket asserts the host exists.",
+      "DEAD / DNS-ONLY -> fix the DOCS (preferred) or add a tracked_dead entry listing the exact `files` it covers. Do NOT add it to live_allow: that bucket asserts the host exists.",
       "`python3 scripts/validate_docs_reality.py --list-hosts` dumps the current corpus with per-host verdicts and mention counts."
     ],
     "live_allow": {
@@ -353,161 +353,132 @@
         "added": "2026-08-22",
         "owner": "tech-lead",
         "expires": "2026-11-30",
-        "ref": "dead-host-sweep / BetterUptime custom-domain registration"
+        "ref": "dead-host-sweep / BetterUptime custom-domain registration",
+        "files": [
+          "BACKLOG.md",
+          "RELEASE-NOTES-v1.0.0-GA.md",
+          "apps/docs/docusaurus.config.ts",
+          "apps/docs/src/statuspage-url.ts",
+          "marketing/launch/STATUS-PAGE-SPEC.md",
+          "marketing/launch/STATUSPAGE-INIT.md",
+          "marketing/launch/STATUSPAGE-PRE-LAUNCH-TEST.md",
+          "marketing/launch/STATUSPAGE-SUBSCRIBER-IMPORT.md"
+        ]
       },
       "corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Legacy second-level brand host (`corelink.humangr.com` and everything under it) that was never provisioned — NXDOMAIN. The shipped surfaces are corelink-api / corelink-docs / corelink-get / corelink-signup .humangr.com (flat, not dotted).",
+        "reason": "NXDOMAIN (dig 2026-10-01). Every docs, marketing, SECURITY.md, README, ROADMAP and admin-ui LINK mention was removed or repointed on 2026-10-01. What remains is not a link a customer is sent to but a runtime IDENTIFIER, or code built for this never-provisioned name, each a code/contract change outside a docs lane: crates/corelink-dsr/src/receipt.rs RECEIPT_ISSUER (the DSR receipt JWT `iss`, pinned by the WI-S11-001 contract and prop tests); crates/corelink-privacy/src/residency/audit_emit.rs (the CloudEvents `source` URI of emitted residency audit records); crates/corelink-privacy/src/residency/assert_request.rs (documents region_from_host, which parses `<tenant>.<region>.corelink.humangr.com` — a scheme that can never reach production); apps/admin-ui/src/app/[locale]/(authenticated)/customer/audit/visualization/page.tsx (the JSON-LD `@context` of the client-side export bundle — no context document exists on any host, and the CLI ignores @context on read). Plus BACKLOG.md B-164/B-166 evidence narrating this host as dead. Owner decision per identifier: move it to a live host, or keep it as an opaque identifier and say so in its contract.",
         "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
+        "renewed": "2026-10-01",
+        "owner": "tech-lead",
+        "expires": "2026-10-31",
+        "files": [
+          "BACKLOG.md",
+          "apps/admin-ui/src/app/[locale]/(authenticated)/customer/audit/visualization/page.tsx",
+          "crates/corelink-dsr/src/receipt.rs",
+          "crates/corelink-privacy/src/residency/assert_request.rs",
+          "crates/corelink-privacy/src/residency/audit_emit.rs"
+        ],
+        "ref": "g-docs 2026-10-01 — gate health F5 (Docs Reality red on main since 2026-10-01T00:04Z)"
       },
       "go.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Short-link host used across the docs site; never provisioned.",
+        "reason": "NXDOMAIN (dig 2026-10-01), but this is the Go MODULE PATH of the published SDK (sdks/go/go.mod: `module go.corelink.humangr.com/corelink-go`; v0.1.0 is served from apps/docs/static/goproxy/), not a page a customer browses. Every listed page pairs it with the mandatory `GOPROXY=https://humangr.com/corelink/docs/goproxy,...` and states the host has no DNS. Removing it from the docs would be wrong while the module path stands, and changing the path breaks every importer. Owner decision: provision the vanity host (a third-level name, outside Universal SSL's one-level `*.humangr.com` coverage) or cut a renamed module major.",
         "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "app.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Console host in docs + release notes; the console lives under the flat corelink-app.humangr.com Clerk names.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "docs.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Docs host in the dotted form; the real docs host is corelink-docs.humangr.com.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "signup.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Signup host in the dotted form; the real one is corelink-signup.humangr.com. Also present in openapi/corelink-v1.{json,yaml} (machine-read config, not just prose).",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "admin.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Admin-plane host in docs/marketing/auth doc-comments; the admin plane is served from the flat names behind CF Access.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "api.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Dotted API host in corelink-ops deploy doc-comments/examples and CLI samples; the API is corelink-api.humangr.com.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
+        "renewed": "2026-10-01",
+        "owner": "owner",
+        "expires": "2026-10-31",
+        "files": [
+          "apps/docs/docs/how-to/sdk-go/01-authenticate.mdx",
+          "apps/docs/docs/how-to/sdk-go/02-upload-blob.mdx",
+          "apps/docs/docs/how-to/sdk-go/06-ci-integration.mdx",
+          "apps/docs/docs/how-to/sdk-go/07-troubleshooting.mdx",
+          "apps/docs/docs/reference/reapi/_examples/ByteStream/go-read.mdx",
+          "apps/docs/docs/reference/reapi/_examples/ByteStream/go-write.mdx",
+          "apps/docs/docs/reference/reapi/_examples/Capabilities/go-get-capabilities.mdx",
+          "apps/docs/docs/reference/reapi/_examples/Capabilities/go-pick-digest.mdx",
+          "apps/docs/docs/reference/reapi/_examples/ContentAddressableStorage/go-batch-read.mdx",
+          "apps/docs/docs/reference/reapi/_examples/ContentAddressableStorage/go-find-missing.mdx",
+          "apps/docs/docs/reference/reapi/_examples/Health/go-check.mdx",
+          "apps/docs/docs/reference/reapi/_examples/Health/go-readiness-gate.mdx",
+          "apps/docs/docs/tutorial/05-native-ffi-quickstart.mdx",
+          "apps/docs/docs/tutorials/quickstart-faq.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/how-to/sdk-go/01-authenticate.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/how-to/sdk-go/02-upload-blob.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/how-to/sdk-go/06-ci-integration.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/how-to/sdk-go/07-troubleshooting.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ByteStream/go-read.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ByteStream/go-write.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Capabilities/go-get-capabilities.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Capabilities/go-pick-digest.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ContentAddressableStorage/go-batch-read.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ContentAddressableStorage/go-find-missing.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Health/go-check.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Health/go-readiness-gate.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/tutorial/05-native-ffi-quickstart.mdx",
+          "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/tutorials/quickstart-faq.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/how-to/sdk-go/01-authenticate.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/how-to/sdk-go/02-upload-blob.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/how-to/sdk-go/06-ci-integration.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/how-to/sdk-go/07-troubleshooting.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ByteStream/go-read.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ByteStream/go-write.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Capabilities/go-get-capabilities.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Capabilities/go-pick-digest.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ContentAddressableStorage/go-batch-read.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ContentAddressableStorage/go-find-missing.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Health/go-check.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Health/go-readiness-gate.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/tutorial/05-native-ffi-quickstart.mdx",
+          "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/tutorials/quickstart-faq.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/how-to/sdk-go/01-authenticate.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/how-to/sdk-go/02-upload-blob.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/how-to/sdk-go/06-ci-integration.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/how-to/sdk-go/07-troubleshooting.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ByteStream/go-read.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ByteStream/go-write.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Capabilities/go-get-capabilities.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Capabilities/go-pick-digest.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ContentAddressableStorage/go-batch-read.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/reference/reapi/_examples/ContentAddressableStorage/go-find-missing.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Health/go-check.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/reference/reapi/_examples/Health/go-readiness-gate.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/tutorial/05-native-ffi-quickstart.mdx",
+          "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/tutorials/quickstart-faq.mdx"
+        ],
+        "ref": "g-docs 2026-10-01 — gate health F5 (Docs Reality red on main since 2026-10-01T00:04Z)"
       },
       "corelink-app.humangr.com": {
-        "reason": "TODO(dead-host-sweep): The bare app host is NOT provisioned — only the Clerk-owned `clerk.` and `accounts.` names under it resolve. examples/** and README-class copy point readers at the bare name.",
+        "reason": "The bare app name has no address record (dig 2026-10-01: NOERROR with no A — it exists only as the parent of the Clerk `clerk.`/`accounts.` records). Every shipped mention was rewritten on 2026-10-01 (README production-status paragraph, admin-ui route-matcher comment). The ONE remaining mention is BACKLOG.md, a historical B-item record that narrates this host as retired — correctly. BACKLOG.md is edited by the backlog owner, not by a docs lane; delete this entry when that line is reworded.",
         "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "dt.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Dependency-Track host referenced by tools/sbom-publish + tools/dt-reconcile; not provisioned.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "cas.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): CAS-plane host in docs + FAQ; the CAS plane is served under corelink-api.humangr.com.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "docs.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Docs host referenced from apps/admin-ui; the real docs host is corelink-docs.humangr.com.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "billing.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Billing host in the docs site; billing is console/Stripe, there is no such host.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "evil.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Adversary hostname in the WebAuthn RP-ID-confusion doc-comments (crates/corelink-auth/src/webauthn*). It MUST NOT exist — but it lives in a live src/ tree the gate scans, so it is tracked rather than silently exempted.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "grafana.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Grafana host in marketing launch/retention runbooks; not provisioned.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "bytestream.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): ByteStream endpoint host in the docs site; the REAPI/bytestream surface is served under corelink-api.humangr.com.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
+        "renewed": "2026-10-01",
+        "owner": "tech-lead",
+        "expires": "2026-10-31",
+        "files": [
+          "BACKLOG.md"
+        ],
+        "ref": "g-docs 2026-10-01 — gate health F5 (Docs Reality red on main since 2026-10-01T00:04Z)"
       },
       "telemetry.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Telemetry sink host in tools/cli; not provisioned.",
+        "reason": "NXDOMAIN (dig 2026-10-01). tools/cli/src/telemetry.rs:24 is the RUNTIME endpoint of the opt-in (default-off) CLI telemetry emitter: an opted-in CLI posts to a name that does not resolve and the failure is swallowed by design, so opted-in events are silently dropped. No telemetry ingest exists on any host, so there is nothing truthful to repoint it to; the fix (stand up an ingest, or remove the emitter and its opt-in) is a product decision, not a docs edit. BACKLOG.md B-164/B-166 narrate the same finding.",
         "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "trust.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Trust-center host in ROADMAP-TO-GA.md; not provisioned.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "pilot.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Pilot host in marketing/launch; not provisioned.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "releases.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Releases host in marketing/launch; downloads are served from dl.humangr.com.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "survey.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Survey-link host rendered by crates/corelink-ops/src/survey/token.rs into customer-facing survey URLs; not provisioned.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
-      },
-      "cache.corelink.humangr.com": {
-        "reason": "TODO(dead-host-sweep): Cache host in the GA FAQ; the cache surfaces are served under corelink-api.humangr.com.",
-        "added": "2026-08-22",
-        "owner": "dead-host-sweep",
-        "expires": "2026-09-30",
-        "ref": "dead-host-sweep — concurrent cleanup PRs; each landing PR should DELETE its entry here (the gate WARNs [suppression-hygiene] once an entry stops matching)"
+        "renewed": "2026-10-01",
+        "owner": "owner",
+        "expires": "2026-10-31",
+        "files": [
+          "BACKLOG.md",
+          "tools/cli/src/telemetry.rs"
+        ],
+        "ref": "g-docs 2026-10-01 — gate health F5 (Docs Reality red on main since 2026-10-01T00:04Z)"
       },
       "staging.corelink.humangr.com": {
         "reason": "No staging environment is deployed: staging.corelink.humangr.com does not resolve (NXDOMAIN) and the `staging` GitHub environment carries none of the K6_* secrets the load suites read. Named on shipped surfaces (BACKLOG B-029, the load-test-nightly header, the owner decision brief) precisely to state that it is NOT live and to route the stand-up-or-retire call to the owner. Cannot be made live from this repo — it needs a staging Worker/container deployment plus its own D1/R2 and secrets, an owner cost decision — so this is a suppression with an expiry, not a docs edit. Delete this entry in the same change that stands up staging (or retires the staging-targeted suites).",
         "added": "2026-08-24",
         "owner": "owner",
         "expires": "2026-11-30",
-        "ref": "B-029 / owner decision brief item 8"
+        "ref": "B-029 / owner decision brief item 8",
+        "files": [
+          "BACKLOG.md",
+          "worker/src/grpc_staging_authorization.ts"
+        ]
       }
     },
     "_retired": [
@@ -546,6 +517,159 @@
         "old_reason": "TODO(dead-host-sweep): Example-tenant host baked into the generated REAPI reference examples (apps/docs/docs/reference/reapi/_examples/**). Illustrative, but it is copy-pasteable prod-shaped config on a live docs page.",
         "verdict": "Swept from the generated REAPI reference examples by the concurrent dead-host-sweep PRs before this gate landed; caught as a zero-match entry by [suppression-hygiene] on rebase and deleted rather than left armed.",
         "zero_matches_verified": "gate run 2026-08-22 on feat/docs-reality-hostname-liveness rebased onto main"
+      },
+      {
+        "host": "app.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Console host in docs + release notes; the console lives under the flat corelink-app.humangr.com Clerk names.",
+        "verdict": "Blog 'sandbox' line (no sandbox exists) replaced by the real PAT page `humangr.com/corelink/en/customer/keys`; GA release-notes signup step repointed to `humangr.com/corelink/sign-up`; WebAuthn doc examples moved to `example.com`.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "docs.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Docs host in the dotted form; the real docs host is corelink-docs.humangr.com.",
+        "verdict": "Release notes, GA FAQ and ROADMAP repointed to `humangr.com/corelink/docs/...`; RATE-LIMIT-FAQ JSON now mirrors the frozen corelink-rate-headers constants; rate-headers lib.rs doc fixed; the headers.rs regression test now asserts the live `https://corelink-docs.humangr.com/` prefix (an allowlist) instead of denying two dead strings; evidence-pack note no longer spells the name.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "signup.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Signup host in the dotted form; the real one is corelink-signup.humangr.com. Also present in openapi/corelink-v1.{json,yaml} (machine-read config, not just prose).",
+        "verdict": "Code-comment narrations in crates/corelink-container/src/routes/signup.rs and apps/docs/src/pages/pilot/apply.tsx no longer spell the dead name; nothing used it at runtime.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "admin.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Admin-plane host in docs/marketing/auth doc-comments; the admin plane is served from the flat names behind CF Access.",
+        "verdict": "Status-page component C8 (STATUS-PAGE-SPEC, STATUSPAGE-INIT) repointed to `humangr.com/corelink/en/admin/tenants`, an implemented console page (apps/admin-ui/src/app/[locale]/(authenticated)/admin/tenants/page.tsx) — there is no bare or localized `/admin` index; the stale eight-component list in the de/es-419/pt-BR incident-response mirrors replaced by the EN two-component correction; WebAuthn doc examples moved to the RFC 2606 `example.com` (no production RP-ID exists — the production engine is a stub); ROADMAP row rewritten to the path mount.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "api.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Dotted API host in corelink-ops deploy doc-comments/examples and CLI samples; the API is corelink-api.humangr.com.",
+        "verdict": "corelink-ops deploy route examples and fixtures repointed to the real `corelink-api.humangr.com/*` route (wrangler.toml); the Python SDK comment no longer spells the dead name.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "dt.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Dependency-Track host referenced by tools/sbom-publish + tools/dt-reconcile; not provisioned.",
+        "verdict": "Internal Dependency-Track tool examples/defaults moved to the RFC 2606 `dependency-track.example.com`; no CoreLink Dependency-Track instance exists, and dt-reconcile's default sits in an unused stub variable.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "cas.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): CAS-plane host in docs + FAQ; the CAS plane is served under corelink-api.humangr.com.",
+        "verdict": "GA FAQ Buck2 grpcs snippet replaced with the documented 'not supported today' (no gRPC ingress); i18n api-stability mirrors fixed; the bazel_init regression test now refuses any `grpcs://` scheme, strictly stronger than naming one dead host.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "docs.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Docs host referenced from apps/admin-ui; the real docs host is corelink-docs.humangr.com.",
+        "verdict": "admin-ui welcome cards and Connect page now link real pages under `humangr.com/corelink/docs/` (quickstart; integrations/bazel, turborepo, sccache-cargo, npm, pip, raw-curl); the Workspaces 'How Workspaces work' button was removed — no such docs page exists anywhere.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "billing.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Billing host in the docs site; billing is console/Stripe, there is no such host.",
+        "verdict": "PCI-DSS self-verification step (EN + de/es-419/pt-BR) now fetches the rendered pricing page `humangr.com/corelink/en/pricing` (apps/admin-ui/src/app/[locale]/pricing/page.tsx), refuses anything but a 200 text/html response — the locale-less `/corelink/pricing` is only the apps/admin-ui/src/app/pricing/route.ts 307 redirect — and states the CSP that apps/admin-ui/src/lib/csp.ts actually emits — which allows Plausible, so the old 'no analytics' expectation was false as well.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "evil.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Adversary hostname in the WebAuthn RP-ID-confusion doc-comments (crates/corelink-auth/src/webauthn*). It MUST NOT exist — but it lives in a live src/ tree the gate scans, so it is tracked rather than silently exempted.",
+        "verdict": "WebAuthn RP-ID-confusion doc example is now `evil.example.com.attacker.com` against RP-ID `example.com`.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "grafana.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Grafana host in marketing launch/retention runbooks; not provisioned.",
+        "verdict": "Support-dashboard spec now states no hosted instance exists (as the health-dashboard spec already did); the customer response template suggests the live status page instead of a Grafana panel that never existed.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "bytestream.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): ByteStream endpoint host in the docs site; the REAPI/bytestream surface is served under corelink-api.humangr.com.",
+        "verdict": "de/es-419/pt-BR api-stability mirrors replaced with the EN audience/scope text (CoreLink has no gRPC ingress; REAPI is served over REST under corelink-api).",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "trust.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Trust-center host in ROADMAP-TO-GA.md; not provisioned.",
+        "verdict": "ROADMAP rows point at the live trust page `humangr.com/corelink/docs/trust/overview`.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "pilot.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Pilot host in marketing/launch; not provisioned.",
+        "verdict": "Hypothetical outbound sending subdomain reworded; none is provisioned.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "releases.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Releases host in marketing/launch; downloads are served from dl.humangr.com.",
+        "verdict": "60-second demo now shows the real `corelink version` output (tools/cli/src/commands/version.rs has carried no slsa field since B-166).",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "survey.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Survey-link host rendered by crates/corelink-ops/src/survey/token.rs into customer-facing survey URLs; not provisioned.",
+        "verdict": "token.rs doc no longer claims a host; no code renders a survey host.",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
+      },
+      {
+        "host": "cache.corelink.humangr.com",
+        "bucket": "tracked_dead",
+        "removed": "2026-10-01",
+        "removed_by": "g-docs (expired-suppression sweep)",
+        "old_reason": "TODO(dead-host-sweep): Cache host in the GA FAQ; the cache surfaces are served under corelink-api.humangr.com.",
+        "verdict": "GA FAQ Bazel snippet replaced with the documented `corelink-api.humangr.com/bazel/cache` alias + host-scoped credential helper (apps/docs/docs/integrations/bazel.md).",
+        "zero_matches_verified": "gate run 2026-10-01 on claude/w1-g-docs (dig 2026-10-01: NXDOMAIN)"
       }
     ]
   },

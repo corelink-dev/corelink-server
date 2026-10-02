@@ -773,16 +773,15 @@ mod tests {
         );
     }
 
-    /// Regression guard: the 429-body URLs must never regress to the
-    /// unprovisioned dotted subdomains (`corelink.humangr.com` /
-    /// `docs.corelink.humangr.com` — both NXDOMAIN, verified live).
+    /// Regression guard: the 429-body URLs must stay on the live flat docs
+    /// host. An allowlist, not a denylist: it refuses the unprovisioned dotted
+    /// `corelink.` / `docs.corelink.` subdomains (both NXDOMAIN) and any other.
     #[test]
     fn urls_use_live_flat_hosts_not_dotted_subdomains() {
         for url in [TIER_UPGRADE_URL, DOCS_URL] {
             assert!(
-                !url.contains("://corelink.humangr.com")
-                    && !url.contains("://docs.corelink.humangr.com"),
-                "dead dotted host resurrected in {url}"
+                url.starts_with("https://corelink-docs.humangr.com/"),
+                "429-body URL left the live flat docs host: {url}"
             );
             assert!(url.starts_with("https://"), "non-https URL: {url}");
         }

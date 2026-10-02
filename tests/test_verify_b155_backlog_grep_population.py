@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import itertools
+import re
 import subprocess
 import sys
 import unittest
@@ -452,6 +455,145 @@ class B155VerifierTests(unittest.TestCase):
             ["bash", "-n"], input=payload, text=True, capture_output=True, check=False
         )
         self.assertEqual(parsed.returncode, 0, parsed.stderr)
+
+
+class B155BoundaryGrammarTests(unittest.TestCase):
+    """#1674: command boundaries match in linear time and keep the regex language.
+
+    Every expected value below was captured by running the replaced regexes
+    (unchanged from #2852 through origin/main 12cb082ca), so these tests pin
+    the old language, not the new implementation's opinion of it; both
+    equivalence tests also pass against the old regexes.
+    """
+
+    GRAMMARS = ("COMMAND_BOUNDARY", "WRAPPED_COMMAND_BOUNDARY", "REDIRECTION_BOUNDARY")
+
+    def verdicts(self, text: str) -> tuple[bool, ...]:
+        return tuple(getattr(verifier, name).search(text) is not None for name in self.GRAMMARS)
+
+    def test_golden_prefixes_keep_the_replaced_regex_verdicts(self) -> None:
+        # (text, (command, wrapped, redirection)).  The second half is the
+        # adversarial set: values adjacent to quoted values, a quote opened
+        # inside another quote, the ReDoS witness shapes, ``$`` before a final
+        # newline, and Unicode \s, \d and \w around the boundary words.
+        cases = (
+            ("", (True, False, False)),
+            ("  ", (True, False, False)),
+            ("FOO=1 ", (True, False, False)),
+            ("if ", (True, False, False)),
+            ("if ! ", (True, False, False)),
+            ("then ", (True, False, False)),
+            ("x && ", (True, False, False)),
+            ("x || ", (True, False, False)),
+            ("a | ", (True, False, False)),
+            ("$( ", (True, False, False)),
+            ("( ", (True, False, False)),
+            ("echo foo ", (False, False, False)),
+            ("echo sudo ", (False, False, False)),
+            ("sudo ", (False, True, False)),
+            ("sudo -u root ", (False, False, False)),
+            ("env A=1 ", (False, True, False)),
+            ("git -C repo ", (False, False, False)),
+            ("xargs -0 ", (False, True, False)),
+            ("2>/dev/null ", (False, False, True)),
+            ("< file.rs ", (False, False, True)),
+            ("cat file | ", (True, False, False)),
+            ("A='x y' ", (True, False, False)),
+            ('A="x y" ', (True, False, False)),
+            ("A=x B='y z' ", (True, False, False)),
+            ("if x=1; then ", (True, False, False)),
+            ("A=1 sudo ", (False, True, False)),
+            ("! sudo env B=2 git ", (False, True, False)),
+            ("x; >>> y", (False, False, True)),
+            ("A=xB='y z'", (True, False, False)),
+            ("A='x B=y'z", (True, False, False)),
+            ("A='x B=\"y z' w\"", (True, False, False)),
+            ("A='x y", (False, False, False)),
+            ("A=xsudo ", (True, True, False)),
+            ("x; A=1 2>&1 <<<'h i' ", (False, False, False)),
+            ("A=" + "!A=" * 6 + " x", (False, False, False)),
+            ("<<!" * 4 + " x", (False, False, False)),
+            (">" + "!<" * 4 + ")", (False, False, False)),
+            ("A=1\n", (True, False, False)),
+            ("A=1\nB", (False, False, False)),
+            ("\u00a0", (True, False, False)),
+            ("\u0663>x ", (False, False, True)),
+            ("\u00e9if ", (False, False, False)),
+            ("elif ", (True, False, False)),
+            ("do", (True, False, False)),
+            ("done ", (False, False, False)),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.verdicts(text), expected)
+
+    def test_engine_dollar_also_matches_before_a_final_newline(self) -> None:
+        # The three real tails end in \s* or \s+, which absorb a final
+        # newline, so that half of ``$`` is only observable on a tail that
+        # cannot: compare the engine itself with ``re`` on such a tail.
+        parser = verifier._parser
+        engine = parser._BoundaryGrammar(parser._lit("x"))
+        regex = re.compile(
+            r"(?:^|[;&|(!]|\$\(|\b(?:if|elif|then|while|until|do|command|builtin|exec)\b)x$"
+        )
+        for text in ("x", "x\n", "x\n\n", "x\ny", "\nx", "ax\n", ";x\n", "; x\n", "$(x\n", "ifx\n"):
+            with self.subTest(text=text):
+                self.assertEqual(engine.search(text), True if regex.search(text) else None)
+
+    def test_exhaustive_token_domain_keeps_the_replaced_regex_language(self) -> None:
+        # Every concatenation of up to three tokens, one verdict bit per
+        # grammar.  The digest and counts are the replaced regexes' output on
+        # this exact enumeration (wider one-off differentials while authoring
+        # #1674: 1,727,605 exhaustive and 600,000 seeded random strings, no
+        # verdict differed).
+        tokens = ("A=", "B", "=", "'", '"', " ", "x", "!", ";", ">", "<<", "2", "sudo", "env", "-u",
+                  "(", "$(", "if", "\t", "\n", "\u00a0", "\u0663", "'a b'", "B=1", "|", "do")
+        digest = hashlib.sha256()
+        positives = [0, 0, 0]
+        total = 0
+        for length in range(4):
+            for parts in itertools.product(tokens, repeat=length):
+                bits = 0
+                for index, matched in enumerate(self.verdicts("".join(parts))):
+                    if matched:
+                        bits |= 1 << index
+                        positives[index] += 1
+                digest.update(bytes([bits]))
+                total += 1
+        self.assertEqual(total, 18_279)
+        self.assertEqual(positives, [6_954, 120, 1_790])
+        self.assertEqual(
+            digest.hexdigest(), "42fb0db6d7d65024153f66a18553b58cd5dda1f28eb512b78e80e601d4433b29"
+        )
+
+    def test_redos_witnesses_at_the_line_cap_finish_in_bounded_time(self) -> None:
+        # Each witness made the replaced regexes backtrack exponentially
+        # ("<<!" * 12 + " x", 38 characters, took 27 s and two more
+        # repetitions multiply it by more than ten), so at the verify-line
+        # cap they never finish; the linear matcher needs milliseconds.  Run
+        # them, directly and through the nested shell scanner that consumes
+        # the boundary, in a child process so a regression fails on the
+        # timeout instead of hanging the suite.
+        program = (
+            "import importlib.util, sys\n"
+            "spec = importlib.util.spec_from_file_location('b155_parser_redos', sys.argv[1])\n"
+            "parser = importlib.util.module_from_spec(spec)\n"
+            "sys.modules[spec.name] = parser\n"
+            "spec.loader.exec_module(parser)\n"
+            "grammars = (parser.COMMAND_BOUNDARY, parser.WRAPPED_COMMAND_BOUNDARY, parser.REDIRECTION_BOUNDARY)\n"
+            "for witness in ('A=' + '!A=' * 2700 + ' x', '<<!' * 2700 + ' x', '>' + '!<' * 4000 + ')'):\n"
+            "    verify = witness + \" bash -c 'grep -q y f.rs'\"\n"
+            "    assert len(verify.encode()) <= parser.MAX_VERIFY_LINE_BYTES\n"
+            "    print(*(grammar.search(witness) is not None for grammar in grammars))\n"
+            "    print(parser._grep_checks({'id': 'B-155', 'verify': verify})[1])\n"
+        )
+        parser = ROOT / "scripts/b155_backlog_grep_parser.py"
+        result = subprocess.run(
+            [sys.executable, "-c", program, str(parser)],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["False False False", "0"] * 3)
 
 
 if __name__ == "__main__":

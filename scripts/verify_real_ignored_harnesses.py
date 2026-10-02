@@ -84,7 +84,7 @@ REQUIRED_TARGET_SOURCES = {
 # boundary; this manifest binds the repository-owned selector/source inputs.
 SOURCE_SHA256 = {
     "crates/corelink-container/src/routes/tier_select_store.rs": "adcecd88d1705a97e5017aa03bbc35dbbcef2b2c090bbd35584b294c7039b5d0",
-    "crates/corelink-container/src/storage/d1_http.rs": "258e068b53867a06a1b97ca9991b9ce616322af17ccfb0004d12b5d5962e33d5",
+    "crates/corelink-container/src/storage/d1_http.rs": "60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d",
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "cb65c3016cfd62fcf40e63811ae509e4585e174000b297462477997aa70e1269",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "aefc11f79bff187a2014d13ddc2096de6dd2250cbd6cd631cf8a68fc75771b46",
@@ -95,6 +95,10 @@ SOURCE_SHA256 = {
 # The #1700 delivery changes this source and its staging topology together.
 # Keep the trusted preimage usable until that exact delivery lands, then bind
 # the source to the new topology state so reverting only the Rust file fails.
+# Every accepted topology byte state is listed here and maps to exactly one
+# source digest; any other topology byte fails before source comparison. The
+# manifest entry for the source must equal the proxy source target, so it
+# cannot drift silently behind the transition table again (it did after #2811).
 STAGING_D1_PROXY_TOPOLOGY_PATH = "infra/staging/topology.json"
 STAGING_D1_PROXY_SOURCE_PATH = "crates/corelink-container/src/storage/d1_http.rs"
 STAGING_D1_PROXY_TOPOLOGY_PREIMAGE_SHA256 = (
@@ -108,6 +112,15 @@ STAGING_D1_PROXY_SOURCE_PREIMAGE_SHA256 = (
 )
 STAGING_D1_PROXY_SOURCE_TARGET_SHA256 = (
     "60cc92cf76aef0041e329f5dcde689e16c622cb242e85adf154fe3e2dc5e1b8d"
+)
+# Reviewed successor of the proxy target (#2846, Refs #1700). Its only
+# structural difference from STAGING_D1_PROXY_TOPOLOGY_TARGET_SHA256 is
+# validated_inputs.runner_label "corelink" -> "ubuntu-24.04". The D1 proxy
+# state this pairing exists for (corelink-staging no longer requires
+# CF_API_TOKEN) is unchanged and d1_http.rs was not touched, so this state stays
+# bound to the proxy source target, never to the pre-proxy source.
+STAGING_D1_PROXY_TOPOLOGY_HOSTED_RUNNER_SHA256 = (
+    "4855688905257f05c174d0f02c71bc1a9ffb23c2506a6bd00531d7b655eecd52"
 )
 
 
@@ -176,6 +189,9 @@ CONTRACT_TRIGGER_INPUTS = (
     "scripts/stripe_test_mode_evidence.py",
     "tests/test_stripe_test_mode_evidence.py",
     ".github/workflows/issue-1649-stripe-test-mode.yml",
+    # verify_source_digests reads the topology, so a topology-only PR must run
+    # this pack before merge (#2846 did not, and main went red).
+    STAGING_D1_PROXY_TOPOLOGY_PATH,
     *SOURCE_SHA256.keys(),
 )
 
@@ -266,6 +282,12 @@ def fail(message: str) -> None:
     raise AssertionError(message)
 
 
+def verify_d1_proxy_manifest_entry() -> None:
+    """Keep the D1 proxy source manifest entry equal to the reviewed target."""
+    if SOURCE_SHA256.get(STAGING_D1_PROXY_SOURCE_PATH) != STAGING_D1_PROXY_SOURCE_TARGET_SHA256:
+        fail("D1 proxy source manifest entry drifted from the reviewed transition target")
+
+
 def verify_source_digests(root: Path = ROOT, overrides: dict[str, bytes] | None = None) -> None:
     """Fail before semantic parsing if any bound source byte changed."""
     def read(relative: str) -> bytes:
@@ -273,11 +295,13 @@ def verify_source_digests(root: Path = ROOT, overrides: dict[str, bytes] | None 
             return overrides[relative]
         return (root / relative).read_bytes()
 
+    verify_d1_proxy_manifest_entry()
     expected_sources = dict(SOURCE_SHA256)
     topology_digest = hashlib.sha256(read(STAGING_D1_PROXY_TOPOLOGY_PATH)).hexdigest()
     source_digest = {
         STAGING_D1_PROXY_TOPOLOGY_PREIMAGE_SHA256: STAGING_D1_PROXY_SOURCE_PREIMAGE_SHA256,
         STAGING_D1_PROXY_TOPOLOGY_TARGET_SHA256: STAGING_D1_PROXY_SOURCE_TARGET_SHA256,
+        STAGING_D1_PROXY_TOPOLOGY_HOSTED_RUNNER_SHA256: STAGING_D1_PROXY_SOURCE_TARGET_SHA256,
     }.get(topology_digest)
     if source_digest is None:
         fail("staging topology digest is outside the reviewed D1 source transition")
@@ -1100,6 +1124,46 @@ def mutation_checks(workflow: str, runner: str, contract_workflow: str) -> None:
             pass
         else:
             fail(f"byte mutation was accepted for source digest: {relative}")
+    # The staging topology is a digest input with a closed set of reviewed
+    # states. Each refusal is pinned exactly, so an unrelated AssertionError
+    # (for example a topology refusal masking a source one) cannot satisfy it.
+    topology_bytes = (ROOT / STAGING_D1_PROXY_TOPOLOGY_PATH).read_bytes()
+    d1_source_bytes = (ROOT / STAGING_D1_PROXY_SOURCE_PATH).read_bytes()
+    for label, overrides, refusal in (
+        (
+            "unreviewed staging topology byte",
+            {STAGING_D1_PROXY_TOPOLOGY_PATH: topology_bytes + b"\n"},
+            "staging topology digest is outside the reviewed D1 source transition",
+        ),
+        (
+            "D1 source changed alone under the reviewed topology",
+            {STAGING_D1_PROXY_SOURCE_PATH: d1_source_bytes + b"\n// B-068 topology pairing mutation\n"},
+            f"source digest mismatch (reviewed manifest required): {STAGING_D1_PROXY_SOURCE_PATH}",
+        ),
+    ):
+        try:
+            verify_source_digests(overrides=overrides)
+        except AssertionError as exc:
+            if str(exc) != refusal:
+                fail(f"{label} was rejected for the wrong reason: {exc}")
+        else:
+            fail(f"{label} was accepted")
+    # Drive the drift guard through verify_source_digests, so dropping its call
+    # is caught here and not only deleting the helper. The entry is restored.
+    reviewed_entry = SOURCE_SHA256[STAGING_D1_PROXY_SOURCE_PATH]
+    SOURCE_SHA256[STAGING_D1_PROXY_SOURCE_PATH] = STAGING_D1_PROXY_SOURCE_PREIMAGE_SHA256
+    try:
+        verify_source_digests()
+    except AssertionError as exc:
+        drift_refusal: str | None = str(exc)
+    else:
+        drift_refusal = None
+    finally:
+        SOURCE_SHA256[STAGING_D1_PROXY_SOURCE_PATH] = reviewed_entry
+    if drift_refusal is None:
+        fail("drifted D1 proxy manifest entry was accepted")
+    if drift_refusal != "D1 proxy source manifest entry drifted from the reviewed transition target":
+        fail(f"drifted D1 proxy manifest entry was rejected for the wrong reason: {drift_refusal}")
     cfg_attr_mutation = source_bytes.replace(b"#[ignore", b"#[cfg_attr(any(), ignore)]\n#[ignore", 1)
     try:
         verify_source_digests(overrides={REQUIRED_TARGET_SOURCES[source_target]: cfg_attr_mutation})
