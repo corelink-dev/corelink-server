@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +26,7 @@ import {
   assertConfigTargetNames,
   assertProviderRequest,
   assertWranglerCommand,
+  validateRouteOwnedRevision,
   requireReceiverResourceName,
   preparePrivateReceiverConfig,
   validateD1InventoryPage,
@@ -103,7 +105,21 @@ const errorCode = (fn, code) => {
   throw new Error(`expected route rejection: ${code}`);
 };
 
-function routeHarness({ migration, sha, existing = false, wrongInitialDatabase = false, failInitialDeploy = false, malformedRoutes = false, failFinalDeploymentReadback = false, failFinalSubdomainReadback = false } = {}) {
+// The zone the shared account's zone list returns in these harnesses.
+const ZONE_ID = "f".repeat(32);
+// A pre-existing receiver revision this route produced: final tag, exact bindings.
+const ROUTE_OWNED_TAG = `b216-${"e".repeat(40)}`;
+const routeOwnedBindings = () => [
+  { type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID },
+  { type: "secret_text", name: TARGET.workerSecret },
+];
+
+function routeHarness({ migration, sha, existing = false, foreignPreimage = null, wrongInitialDatabase = false, failInitialDeploy = false, malformedRoutes = false, failFinalDeploymentReadback = false, failFinalSubdomainReadback = false, ingress = {} } = {}) {
+  const {
+    domains = [], zoneRoutes = [], serviceRoutes = [], routesAfterDeploy = null,
+    domainsStatus = 200, zonesStatus = 200, zoneRoutesStatus = 200, serviceRoutesStatus = 200,
+    zonesResultInfo = null, failDelete = false, ineffectiveDelete = false,
+  } = ingress;
   const initialId = "323e4567-e89b-42d3-a456-426614174000";
   const sourceId = "423e4567-e89b-42d3-a456-426614174000";
   const finalId = "523e4567-e89b-42d3-a456-426614174000";
@@ -111,11 +127,14 @@ function routeHarness({ migration, sha, existing = false, wrongInitialDatabase =
   const sourceTag = `b216-source-${sha}`;
   const finalTag = `b216-${sha}`;
   const targetDb = wrongInitialDatabase ? "723e4567-e89b-42d3-a456-426614174000" : DATABASE_ID;
+  const preimageTag = foreignPreimage?.tag ?? ROUTE_OWNED_TAG;
+  const preimageBindings = foreignPreimage?.bindings ?? routeOwnedBindings();
   const state = {
     script: existing,
+    deleted: false,
     workersDev: false,
     previewsEnabled: false,
-    versions: existing ? [{ id: originalId, metadata: { annotations: { "workers/tag": "b216-existing" } } }] : [],
+    versions: existing ? [{ id: originalId, metadata: { annotations: { "workers/tag": preimageTag } } }] : [],
     details: new Map(),
     deployments: existing ? [{ id: "823e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: originalId, percentage: 100 }] }] : [],
     commands: [],
@@ -129,7 +148,7 @@ function routeHarness({ migration, sha, existing = false, wrongInitialDatabase =
     failFinalDeploymentReadback,
     failFinalSubdomainReadback,
   };
-  if (existing) state.details.set(originalId, { id: originalId, metadata: { annotations: { "workers/tag": "b216-existing" } }, resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID }] } });
+  if (existing) state.details.set(originalId, { id: originalId, metadata: { annotations: { "workers/tag": preimageTag } }, resources: { bindings: preimageBindings } });
   const receiptSql = migration.trim().replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE");
   const tables = [
     { name: "_cf_KV", sql: "CREATE TABLE _cf_KV (key TEXT PRIMARY KEY, value BLOB)" },
@@ -144,8 +163,34 @@ function routeHarness({ migration, sha, existing = false, wrongInitialDatabase =
     const parsed = new URL(url);
     const path = parsed.pathname.replace(/^\/client\/v4(?=\/)/, "");
     const method = options.method ?? "GET";
-    state.requests.push({ path, method });
+    state.requests.push({ path, method, search: parsed.search });
     if (path === `/accounts/${TARGET.accountId}`) return json({ id: TARGET.accountId });
+    const workerScriptPath = `/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`;
+    // Ingress proof reads: account custom domains, zone list, zone routes, service routes.
+    if (path === `/accounts/${TARGET.accountId}/workers/domains`) return domainsStatus === 200 ? json(domains) : json(null, domainsStatus);
+    if (path === "/zones") {
+      if (zonesStatus !== 200) return json(null, zonesStatus);
+      return Response.json({ success: true, result: [{ id: ZONE_ID, account: { id: TARGET.accountId } }], result_info: zonesResultInfo ?? { page: Number(parsed.searchParams.get("page")), per_page: 50, count: 1, total_count: 1, total_pages: 1 } });
+    }
+    if (path === `/zones/${ZONE_ID}/workers/routes`) {
+      if (zoneRoutesStatus !== 200) return json(null, zoneRoutesStatus);
+      return json(state.finalDeployed && routesAfterDeploy ? routesAfterDeploy : zoneRoutes);
+    }
+    if (path === `/accounts/${TARGET.accountId}/workers/services/${TARGET.workerName}/environments/production/routes`) {
+      if (!state.script) return json(null, 404);
+      return serviceRoutesStatus === 200 ? json(serviceRoutes) : json(null, serviceRoutesStatus);
+    }
+    if (path === workerScriptPath && method === "DELETE") {
+      if (failDelete) return json(null, 500);
+      // The API answers success but the Worker is still listed afterwards.
+      if (ineffectiveDelete) return json(null);
+      state.script = false;
+      state.deleted = true;
+      state.versions = [];
+      state.deployments = [];
+      state.workersDev = false;
+      return json(null);
+    }
     if (path === `/accounts/${TARGET.accountId}/d1/database`) return json([{ name: TARGET.databaseName, uuid: DATABASE_ID, account_id: TARGET.accountId }]);
     if (path.endsWith(`/d1/database/${DATABASE_ID}/query`)) {
       const sql = JSON.parse(options.body).sql;
@@ -263,17 +308,46 @@ describe("B-216 protected receiver route admission", () => {
     expect(harness.state.deployments[0].versions).toEqual([{ version_id: "623e4567-e89b-42d3-a456-426614174000", percentage: 100 }]);
   });
 
-  it("disables first-create ingress after its enable readback fails", async () => {
+  it("deletes the Worker it created when the first-create enable readback fails", async () => {
     const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
     const harness = routeHarness({ migration, sha: goodContext.sha, failFinalSubdomainReadback: true });
-    await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "provider_response_rejected" });
-    expect(harness.state.requests.filter(({ path, method }) => path.endsWith("/subdomain") && method === "POST")).toHaveLength(2);
-    expect(harness.state.workersDev).toBe(false);
-    expect(harness.state.previewsEnabled).toBe(false);
+    const receiptDir = await mkdtemp(join(tmpdir(), "b216-route-test-"));
+    const receiptPath = join(receiptDir, "receipt.json");
+    try {
+      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, receiptPath, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "provider_response_rejected" });
+      const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+      expect(receipt).toMatchObject({ rollback_target: "delete_worker_created_this_run", rollback_status: "created_worker_deleted" });
+      expect(receipt.rollback_ingress).toEqual({ zones_checked: 1, zone_routes: 0, custom_domains: 0, service_routes: "worker_absent" });
+    } finally {
+      await rm(receiptDir, { recursive: true, force: true });
+    }
+    expect(harness.state.requests.filter(({ method }) => method === "DELETE")).toEqual([{ path: `/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`, method: "DELETE", search: "" }]);
+    expect(harness.state.deleted).toBe(true);
+    expect(harness.state.script).toBe(false);
+    expect(harness.state.commands.some(({ args }) => args[0] === "rollback")).toBe(false);
   });
 
-  it("stops on wrong first-deploy D1 binding before receiver secret or final deployment", async () => {
+  it("reports cleanup as ambiguous unless the deletion is read back as absent", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    for (const ingress of [{ ineffectiveDelete: true }, { failDelete: true }]) {
+      const harness = routeHarness({ migration, sha: goodContext.sha, failFinalSubdomainReadback: true, ingress });
+      const receiptDir = await mkdtemp(join(tmpdir(), "b216-route-test-"));
+      const receiptPath = join(receiptDir, "receipt.json");
+      try {
+        await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, receiptPath, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "provider_response_rejected" });
+        const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+        expect(receipt.rollback_status, JSON.stringify(ingress)).toBe("ambiguous_do_not_retry");
+        expect(harness.state.requests.filter(({ method }) => method === "DELETE")).toHaveLength(1);
+        expect(harness.state.script).toBe(true);
+      } finally {
+        await rm(receiptDir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("stops on wrong first-deploy D1 binding before receiver secret or final deployment, and deletes what it created", async () => {
     const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
     const harness = routeHarness({ migration, sha: goodContext.sha, wrongInitialDatabase: true });
@@ -281,6 +355,7 @@ describe("B-216 protected receiver route admission", () => {
     expect(harness.state.commands.map(({ args }) => args[0])).toEqual(["deploy"]);
     expect(harness.state.secretPut).toBe(false);
     expect(harness.state.workersDev).toBe(false);
+    expect(harness.state.deleted).toBe(true);
   });
 
   it("rejects malformed or present preexisting routes before invoking Wrangler", async () => {
@@ -1014,6 +1089,10 @@ describe("B-216 protected receiver route admission", () => {
       if (url.includes(`/d1/database/${DATABASE_ID}/query`)) {
         return Response.json({ success: true, result: [{ success: true, results: [] }] });
       }
+      // The ingress proof: no domains, one zone, no routes.
+      if (url.endsWith("/workers/domains")) return Response.json({ success: true, result: [] });
+      if (url.includes("/zones?account.id=")) return Response.json({ success: true, result: [{ id: ZONE_ID }], result_info: { page: 1, per_page: 50, count: 1, total_count: 1, total_pages: 1 } });
+      if (url.endsWith(`/zones/${ZONE_ID}/workers/routes`)) return Response.json({ success: true, result: [] });
       if (url.endsWith("/d1/database") && options.method === "POST") {
         creates += 1;
         throw new Error("retry must not create another D1");
@@ -1237,7 +1316,9 @@ describe("B-216 protected receiver route admission", () => {
     expect(workflow).not.toContain("secrets." + "CLOUDFLARE_API_TOKEN");
     expect(workflow).not.toContain("env.CLOUDFLARE_API_TOKEN");
     expect(workflow).not.toMatch(/runs-on:\s*\[?self-hosted/i);
-    expect(route).not.toMatch(/method:\s*["']DELETE["']/i);
+    // One DELETE in the whole route: the created receiver Worker, after arming.
+    expect(route.match(/method:\s*["']DELETE["']/gi)).toHaveLength(1);
+    expect(route).toContain('api.armWorkerDeletion();\n            await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`, { method: "DELETE" });');
   });
 });
 
@@ -1315,83 +1396,228 @@ describe("B-216 receiver on the shared main account", () => {
     }
   });
 
-  it("sends only the allowlisted requests for the exact Worker and the adopted D1", () => {
+  it("sends only the allowlisted requests for the exact Worker, the adopted D1 and the adopted zones", () => {
     const account = `/accounts/${TARGET.accountId}`;
     const worker = `${account}/workers/scripts/${TARGET.workerName}`;
     const d1List = `${account}/d1/database?name=${TARGET.databaseName}&page=1&per_page=100`;
+    const adopted = { database: DATABASE_ID, zones: new Set([ZONE_ID]), deletion: false };
     for (const [path, method] of [
-      [account, "GET"], [`${account}/workers/scripts`, "GET"], [`${account}/workers/subdomain`, "GET"],
+      [account, "GET"], [`${account}/workers/scripts`, "GET"], [`${account}/workers/subdomain`, "GET"], [`${account}/workers/domains`, "GET"],
       [`${worker}/deployments`, "GET"], [`${worker}/secrets`, "GET"], [`${worker}/subdomain`, "GET"], [`${worker}/subdomain`, "POST"],
       [`${worker}/versions?per_page=100&deployable=true`, "GET"], [`${worker}/versions/123e4567-e89b-42d3-a456-426614174000`, "GET"],
       [d1List, "GET"], [`${account}/d1/database/${DATABASE_ID}/query`, "POST"],
+      [`/zones?account.id=${TARGET.accountId}&page=1&per_page=50`, "GET"], [`/zones/${ZONE_ID}/workers/routes`, "GET"],
+      [`${account}/workers/services/${TARGET.workerName}/environments/production/routes`, "GET"],
     ]) {
-      expect(assertProviderRequest(path, method, DATABASE_ID), `${method} ${path}`).toBe(true);
+      expect(assertProviderRequest(path, method, adopted), `${method} ${path}`).toBe(true);
     }
-    for (const [path, method, adopted] of [
-      [`${account}/d1/database/${DATABASE_ID}/query`, "POST", null],
-      [`${account}/d1/database/123e4567-e89b-42d3-a456-426614174000/query`, "POST", DATABASE_ID],
-      [`${account}/workers/scripts/corelink-signup-worker/subdomain`, "POST", DATABASE_ID],
-      [`${account}/workers/scripts/corelink-staging/deployments`, "GET", DATABASE_ID],
-      [`${account}/workers/scripts/${TARGET.workerName}`, "PUT", DATABASE_ID],
-      [`${account}/workers/scripts/${TARGET.workerName}`, "GET", DATABASE_ID],
-      [`${worker}/subdomain`, "DELETE", DATABASE_ID],
-      [`${worker}/secrets`, "POST", DATABASE_ID],
-      [`${worker}/../corelink-prod/subdomain`, "POST", DATABASE_ID],
-      [`${account}/d1/database?name=corelink-config-prod&page=1&per_page=100`, "GET", DATABASE_ID],
-      [`${account}/d1/database`, "POST", DATABASE_ID],
-      ["/accounts/51284495e71acdb5a7677e7383ab026b/workers/scripts", "GET", DATABASE_ID],
-      [`${account}/workers/scripts/${TARGET.workerName}-copy/subdomain`, "POST", DATABASE_ID],
-      [`${account}/queues`, "GET", DATABASE_ID],
+    expect(assertProviderRequest(worker, "DELETE", { ...adopted, deletion: true })).toBe(true);
+    for (const [path, method, state] of [
+      [`${account}/d1/database/${DATABASE_ID}/query`, "POST", { ...adopted, database: null }],
+      [`${account}/d1/database/123e4567-e89b-42d3-a456-426614174000/query`, "POST", adopted],
+      [`${account}/workers/scripts/corelink-signup-worker/subdomain`, "POST", adopted],
+      [`${account}/workers/scripts/corelink-staging/deployments`, "GET", adopted],
+      [`${account}/workers/scripts/${TARGET.workerName}`, "PUT", adopted],
+      [`${account}/workers/scripts/${TARGET.workerName}`, "GET", adopted],
+      [worker, "DELETE", adopted],
+      [`${account}/workers/scripts/corelink-api`, "DELETE", { ...adopted, deletion: true }],
+      [`${worker}/subdomain`, "DELETE", { ...adopted, deletion: true }],
+      [`${worker}/secrets`, "POST", adopted],
+      [`${worker}/../corelink-prod/subdomain`, "POST", adopted],
+      [`${account}/d1/database?name=corelink-config-prod&page=1&per_page=100`, "GET", adopted],
+      [`${account}/d1/database`, "POST", adopted],
+      ["/accounts/51284495e71acdb5a7677e7383ab026b/workers/scripts", "GET", adopted],
+      [`${account}/workers/scripts/${TARGET.workerName}-copy/subdomain`, "POST", adopted],
+      [`${account}/queues`, "GET", adopted],
+      [`/zones/${"a".repeat(32)}/workers/routes`, "GET", adopted],
+      [`/zones/${ZONE_ID}/workers/routes`, "GET", { ...adopted, zones: null }],
+      [`/zones/${ZONE_ID}/workers/routes`, "POST", adopted],
+      [`/zones?account.id=51284495e71acdb5a7677e7383ab026b&page=1&per_page=50`, "GET", adopted],
+      [`/zones`, "GET", adopted],
+      [`${account}/workers/domains`, "POST", adopted],
+      [`${account}/workers/services/corelink-api/environments/production/routes`, "GET", adopted],
     ]) {
-      errorCode(() => assertProviderRequest(path, method, adopted), "provider_path_refused");
+      errorCode(() => assertProviderRequest(path, method, state), "provider_path_refused");
     }
   });
 
-  it("refuses a D1 query before adoption and a second adoption of another UUID, before any fetch", async () => {
+  it("refuses a D1 query before adoption, a second adoption, an unadopted zone and an unarmed DELETE, before any fetch", async () => {
     const calls = [];
     const api = makeCloudflareApi("token", async (url) => { calls.push(url); return Response.json({ success: true, result: [{ success: true, results: [] }] }); });
     await expect(api(`/accounts/${TARGET.accountId}/d1/database/${DATABASE_ID}/query`, { method: "POST", body: { sql: "SELECT 1" } })).rejects.toMatchObject({ code: "provider_path_refused" });
     await expect(api(`/accounts/${TARGET.accountId}/workers/scripts/corelink-prod/subdomain`, { method: "POST", body: { enabled: false } })).rejects.toMatchObject({ code: "provider_path_refused" });
+    await expect(api(`/zones/${ZONE_ID}/workers/routes`)).rejects.toMatchObject({ code: "provider_path_refused" });
+    await expect(api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`, { method: "DELETE" })).rejects.toMatchObject({ code: "provider_path_refused" });
     expect(calls).toHaveLength(0);
     expect(api.adoptDatabase(DATABASE_ID)).toBe(DATABASE_ID);
     expect(api.adoptDatabase(DATABASE_ID)).toBe(DATABASE_ID);
     errorCode(() => api.adoptDatabase("123e4567-e89b-42d3-a456-426614174000"), "database_adoption_changed");
     errorCode(() => api.adoptDatabase(TARGET.placeholderId), "database_identity_mismatch");
+    errorCode(() => api.adoptZones(["not-a-zone"]), "ingress_zones_ambiguous");
+    errorCode(() => api.adoptZones([ZONE_ID, ZONE_ID]), "ingress_zones_ambiguous");
+    expect(api.adoptZones([ZONE_ID])).toBe(1);
     await api(`/accounts/${TARGET.accountId}/d1/database/${DATABASE_ID}/query`, { method: "POST", body: { sql: "SELECT 1" } });
-    expect(calls).toHaveLength(1);
+    await api(`/zones/${ZONE_ID}/workers/routes`);
+    api.armWorkerDeletion();
+    await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`, { method: "DELETE" });
+    await expect(api(`/accounts/${TARGET.accountId}/workers/scripts/corelink-api`, { method: "DELETE" })).rejects.toMatchObject({ code: "provider_path_refused" });
+    expect(calls).toHaveLength(3);
   });
 
-  it("runs only the exact Wrangler command shapes against the run's pinned config", () => {
+  it("runs only the exact Wrangler command shapes against the exact configs this run wrote, unchanged", async () => {
     const sha = "a".repeat(40);
     const entry = "/runner/work/corelink-server/apps/dsr-alert-receiver/src/index.ts";
-    const config = "/runner/_temp/b216-123e4567-e89b-42d3-a456-426614174000/wrangler.toml";
-    const privateConfig = "/runner/_temp/b216-123e4567-e89b-42d3-a456-426614174000/wrangler-initial-private.toml";
-    const version = "223e4567-e89b-42d3-a456-426614174000";
-    for (const args of [
-      ["d1", "migrations", "apply", TARGET.databaseName, "--remote", "--config", config],
-      ["deploy", entry, "--config", privateConfig, "--message", `B-216 private initial revision ${sha}`],
-      ["versions", "upload", entry, "--config", config, "--tag", `b216-source-${sha}`, "--message", `B-216 reviewed main ${sha}`],
-      ["versions", "secret", "put", TARGET.workerSecret, "--config", config, "--tag", `b216-${sha}`, "--message", `B-216 reviewed main ${sha}`],
-      ["versions", "deploy", `${version}@100%`, "--yes", "--config", config],
-      ["rollback", version, "--config", config, "--message", "B-216 exact preimage rollback"],
-    ]) {
-      expect(assertWranglerCommand(args), args.join(" ")).toBe(true);
+    const dir = await mkdtemp(join(tmpdir(), "b216-123e4567-e89b-42d3-a456-426614174000-"));
+    try {
+      const config = join(dir, "wrangler.toml");
+      const privateConfig = join(dir, "wrangler-initial-private.toml");
+      const stray = join(dir, "other.toml");
+      const digest = (text) => createHash("sha256").update(text).digest("hex");
+      await writeFile(config, "final = true\n");
+      await writeFile(privateConfig, "initial = true\n");
+      await writeFile(stray, "final = true\n");
+      const configs = new Map([[config, { kind: "final", sha256: digest("final = true\n") }], [privateConfig, { kind: "initial_private", sha256: digest("initial = true\n") }]]);
+      const guard = { configs, entrypoint: entry };
+      const version = "223e4567-e89b-42d3-a456-426614174000";
+      for (const args of [
+        ["d1", "migrations", "apply", TARGET.databaseName, "--remote", "--config", config],
+        ["deploy", entry, "--config", privateConfig, "--message", `B-216 private initial revision ${sha}`],
+        ["versions", "upload", entry, "--config", config, "--tag", `b216-source-${sha}`, "--message", `B-216 reviewed main ${sha}`],
+        ["versions", "secret", "put", TARGET.workerSecret, "--config", config, "--tag", `b216-${sha}`, "--message", `B-216 reviewed main ${sha}`],
+        ["versions", "deploy", `${version}@100%`, "--yes", "--config", config],
+        ["rollback", version, "--config", config, "--message", "B-216 exact preimage rollback"],
+      ]) {
+        expect(assertWranglerCommand(args, guard), args.join(" ")).toBe(true);
+      }
+      errorCode(() => assertWranglerCommand(["d1", "migrations", "apply", "corelink-config-prod", "--remote", "--config", config], guard), "protected_resource_name_refused");
+      for (const [args, options] of [
+        [["d1", "execute", TARGET.databaseName, "--remote", "--command", "DROP TABLE x", "--config", config], guard],
+        [["deploy", entry, "--config", privateConfig, "--message", "m", "--name", "corelink-prod"], guard],
+        [["deploy", entry, "--config", "/repo/wrangler.toml", "--message", "m"], guard],
+        [["deploy", entry, "--config", stray, "--message", "m"], guard],
+        [["deploy", entry, "--config", config, "--message", "m"], guard],
+        [["versions", "upload", entry, "--config", privateConfig, "--tag", "t", "--message", "m"], guard],
+        [["deploy", "/elsewhere/apps/dsr-alert-receiver/src/index.ts", "--config", privateConfig, "--message", "m"], guard],
+        [["deploy", entry, "--config", privateConfig, "--env=production", "m"], guard],
+        [["versions", "upload", entry, "--config", config, "--tag", "t", "--message", "--name=corelink-api"], guard],
+        [["versions", "upload", entry, "--config", config, "--tag", "-x", "--message", "m"], guard],
+        [["versions", "upload", entry, "--config", config, "--tag", "t", "--message", "-m"], guard],
+        [["versions", "secret", "put", TARGET.workerSecret, "--config", config, "--tag", "--dry-run", "--message", "m"], guard],
+        [["rollback", version, "--config", config, "--message", "--force"], guard],
+        [["deploy", entry, "--config", privateConfig, "--message", ""], guard],
+        [["versions", "secret", "put", "OTHER_SECRET", "--config", config, "--tag", "t", "--message", "m"], guard],
+        [["versions", "deploy", `${version}@50%`, "--yes", "--config", config], guard],
+        [["delete", "--config", config], guard],
+        [["secret", "put", TARGET.workerSecret, "--config", config], guard],
+        [["rollback", "latest", "--config", config, "--message", "m"], guard],
+        ["deploy", guard],
+        [["versions", "deploy", `${version}@100%`, "--yes", "--config", config], {}],
+        [["versions", "deploy", `${version}@100%`, "--yes", "--config", config], { configs: new Map([[config, { kind: "final", sha256: digest("other\n") }]]), entrypoint: entry }],
+      ]) {
+        errorCode(() => assertWranglerCommand(args, options), "wrangler_command_refused");
+      }
+      // A config edited after it was recorded no longer matches its hash.
+      await writeFile(config, "final = true\nname = \"corelink-prod\"\n");
+      errorCode(() => assertWranglerCommand(["versions", "deploy", `${version}@100%`, "--yes", "--config", config], guard), "wrangler_command_refused");
+      await rm(config);
+      errorCode(() => assertWranglerCommand(["versions", "deploy", `${version}@100%`, "--yes", "--config", config], guard), "wrangler_command_refused");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
-    errorCode(() => assertWranglerCommand(["d1", "migrations", "apply", "corelink-config-prod", "--remote", "--config", config]), "protected_resource_name_refused");
-    for (const args of [
-      ["d1", "execute", TARGET.databaseName, "--remote", "--command", "DROP TABLE x", "--config", config],
-      ["deploy", entry, "--config", privateConfig, "--message", "m", "--name", "corelink-prod"],
-      ["deploy", entry, "--config", "/repo/wrangler.toml", "--message", "m"],
-      ["deploy", entry, "--config", privateConfig, "--env=production", "m"],
-      ["versions", "upload", entry, "--config", config, "--tag", "t", "--message", "--name=corelink-api"],
-      ["versions", "secret", "put", "OTHER_SECRET", "--config", config, "--tag", "t", "--message", "m"],
-      ["versions", "deploy", `${version}@50%`, "--yes", "--config", config],
-      ["delete", "--config", config],
-      ["secret", "put", TARGET.workerSecret, "--config", config],
-      ["rollback", "latest", "--config", config, "--message", "m"],
-      "deploy",
+  });
+
+  it("proves zero custom domains and zero zone routes before any write, and refuses otherwise", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    for (const [ingress, existing, code] of [
+      [{ domains: [{ id: "d1", hostname: "alerts.example.com", service: TARGET.workerName, zone_id: ZONE_ID }] }, false, "worker_custom_domain_present"],
+      [{ zoneRoutes: [{ id: "r1", pattern: "api.example.com/*", script: TARGET.workerName }] }, false, "worker_zone_route_present"],
+      [{ serviceRoutes: [{ id: "r2", pattern: "api.example.com/alerts" }] }, true, "worker_zone_route_present"],
+      [{ domainsStatus: 403 }, false, "ingress_custom_domains_permission_denied"],
+      [{ domainsStatus: 500 }, false, "ingress_custom_domains_unreadable"],
+      [{ zonesStatus: 403 }, false, "ingress_zones_permission_denied"],
+      [{ zoneRoutesStatus: 401 }, false, "ingress_zone_routes_permission_denied"],
+      [{ zoneRoutesStatus: 502 }, false, "ingress_zone_routes_unreadable"],
+      [{ serviceRoutesStatus: 403 }, true, "ingress_service_routes_permission_denied"],
+      [{ zonesResultInfo: { page: 1, per_page: 50, count: 1, total_count: 2, total_pages: 1 } }, false, "ingress_zones_truncated"],
+      [{ zonesResultInfo: { page: 1, per_page: 50, count: 1 } }, false, "ingress_zones_unreadable"],
+      [{ domains: [{ id: "d2", hostname: "x.example.com" }] }, false, "ingress_custom_domains_unreadable"],
     ]) {
-      errorCode(() => assertWranglerCommand(args), "wrangler_command_refused");
+      const harness = routeHarness({ migration, sha: goodContext.sha, existing, ingress });
+      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" }), JSON.stringify(ingress)).rejects.toMatchObject({ code });
+      expect(harness.state.commands, JSON.stringify(ingress)).toHaveLength(0);
+      expect(harness.state.requests.filter(({ method, path }) => method !== "GET" && !path.endsWith("/query")), JSON.stringify(ingress)).toHaveLength(0);
+    }
+    // Other services' domains and routes on the shared account are not the receiver's.
+    const harness = routeHarness({ migration, sha: goodContext.sha, ingress: {
+      domains: [{ id: "d3", hostname: "api.example.com", service: "corelink-api" }],
+      zoneRoutes: [{ id: "r3", pattern: "api.example.com/*", script: "corelink-prod" }, { id: "r4", pattern: "static.example.com/*" }],
+    } });
+    const receipt = await runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" });
+    expect(receipt.ingress_preimage).toEqual({ zones_checked: 1, zone_routes: 0, custom_domains: 0, service_routes: "worker_absent" });
+    expect(receipt.ingress_after_create).toEqual({ zones_checked: 1, zone_routes: 0, custom_domains: 0, service_routes: 0 });
+    expect(receipt.ingress_postflight).toEqual({ zones_checked: 1, zone_routes: 0, custom_domains: 0, service_routes: 0 });
+  });
+
+  it("re-proves ingress after deploy and removes a created Worker that gained a route", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha, ingress: { routesAfterDeploy: [{ id: "r5", pattern: "api.example.com/*", script: TARGET.workerName }] } });
+    const receiptDir = await mkdtemp(join(tmpdir(), "b216-route-test-"));
+    const receiptPath = join(receiptDir, "receipt.json");
+    try {
+      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, receiptPath, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "worker_zone_route_present" });
+      const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+      expect(receipt.failed_stage).toBe("ingress_postflight");
+      // The Worker is deleted; the route still names it, so cleanup is not clean.
+      expect(harness.state.deleted).toBe(true);
+      expect(receipt.rollback_status).toBe("ambiguous_do_not_retry");
+    } finally {
+      await rm(receiptDir, { recursive: true, force: true });
+    }
+    const service = routeHarness({ migration, sha: goodContext.sha, ingress: { serviceRoutes: [{ id: "r6", pattern: "api.example.com/alerts" }] } });
+    await expect(runRoute({ context: goodContext, config, migration, fetchImpl: service.fetchImpl, command: service.command, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "worker_zone_route_present" });
+    expect(service.state.commands.map(({ args }) => args[0])).toEqual(["deploy"]);
+    expect(service.state.secretPut).toBe(false);
+    expect(service.state.deleted).toBe(true);
+  });
+
+  it("refuses a pre-existing receiver Worker that this route did not produce, before any write", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    for (const [foreignPreimage, code] of [
+      [{ tag: "b216-existing" }, "worker_preimage_not_route_owned"],
+      [{ tag: "production-release" }, "worker_preimage_not_route_owned"],
+      [{ tag: "" }, "worker_preimage_not_route_owned"],
+      [{ bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID }] }, "worker_preimage_bindings_not_exact"],
+      [{ bindings: [...routeOwnedBindings(), { type: "service", name: "API", service: "corelink-api" }] }, "worker_preimage_bindings_not_exact"],
+      [{ bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: "123e4567-e89b-42d3-a456-426614174000" }, { type: "secret_text", name: TARGET.workerSecret }] }, "worker_preimage_bindings_not_exact"],
+      [{ bindings: [{ type: "d1", name: "DB", database_id: DATABASE_ID }, { type: "secret_text", name: TARGET.workerSecret }] }, "worker_preimage_bindings_not_exact"],
+    ]) {
+      const harness = routeHarness({ migration, sha: goodContext.sha, existing: true, foreignPreimage });
+      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" }), JSON.stringify(foreignPreimage)).rejects.toMatchObject({ code });
+      expect(harness.state.commands).toHaveLength(0);
+      expect(harness.state.requests.filter(({ method, path }) => method !== "GET" && !path.endsWith("/query"))).toHaveLength(0);
+      expect(harness.state.deleted).toBe(false);
+    }
+    errorCode(() => validateRouteOwnedRevision({ id: "not-a-uuid", metadata: { annotations: { "workers/tag": ROUTE_OWNED_TAG } }, resources: { bindings: routeOwnedBindings() } }, DATABASE_ID), "worker_preimage_not_route_owned");
+    expect(validateRouteOwnedRevision({ id: "623e4567-e89b-42d3-a456-426614174000", metadata: { annotations: { "workers/tag": ROUTE_OWNED_TAG } }, resources: { bindings: routeOwnedBindings() } }, DATABASE_ID)).toBe("623e4567-e89b-42d3-a456-426614174000");
+  });
+
+  it("rolls back only to the proven route-owned revision and re-proves ingress after it", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha, existing: true, failFinalDeploymentReadback: true });
+    const receiptDir = await mkdtemp(join(tmpdir(), "b216-route-test-"));
+    const receiptPath = join(receiptDir, "receipt.json");
+    try {
+      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, receiptPath, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "provider_response_rejected" });
+      const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+      expect(receipt).toMatchObject({ worker_preimage_owner: "this_route_exact_bindings", rollback_target: "623e4567-e89b-42d3-a456-426614174000", rollback_status: "restored_route_owned_revision" });
+      expect(receipt.rollback_ingress).toEqual({ zones_checked: 1, zone_routes: 0, custom_domains: 0, service_routes: 0 });
+      expect(harness.state.deleted).toBe(false);
+    } finally {
+      await rm(receiptDir, { recursive: true, force: true });
     }
   });
 
@@ -1428,9 +1654,21 @@ describe("B-216 receiver on the shared main account", () => {
     const exercise = await readFile(new URL("../scripts/synthetic-exercise.mjs", import.meta.url), "utf8");
     const runRouteSource = route.slice(route.indexOf("export async function runRoute("), route.indexOf("async function queryDatabase("));
     expect(runRouteSource.length).toBeGreaterThan(1000);
-    expect(runRouteSource).toMatch(/const command = \(args, options\) => \{\n\s+assertWranglerCommand\(args\);\n\s+return runCommand\(args, options\);\n\s+\};/);
+    expect(runRouteSource).toMatch(/const command = \(args, options\) => \{\n\s+assertWranglerCommand\(args, \{ configs: generatedConfigs, entrypoint \}\);\n\s+return runCommand\(args, options\);\n\s+\};/);
     expect(runRouteSource).not.toMatch(/\brunCommand\(\[/);
-    expect(route).toMatch(/async function request\(path, \{ method = "GET", body \} = \{\}\) \{\n\s+assertProviderRequest\(path, method, adoptedDatabase\);/);
+    // Every Wrangler config is written through writeRunConfig, which records its hash.
+    expect(runRouteSource.match(/await writeFile\(/g)).toHaveLength(1);
+    expect(runRouteSource.match(/await writeRunConfig\(/g)).toHaveLength(2);
+    expect(route).toMatch(/async function request\(path, \{ method = "GET", body \} = \{\}\) \{\n\s+assertProviderRequest\(path, method, state\);/);
+    // The ingress proof precedes the first write; ownership is proven before it.
+    const ownership = runRouteSource.indexOf("validateRouteOwnedRevision(");
+    const ingress = runRouteSource.indexOf('receipt.ingress_preimage = await proveNoExternalIngress(api, { workerExists: Boolean(priorWorker) });');
+    const firstWrite = runRouteSource.indexOf("await writeRunConfig(tempConfig");
+    expect(ownership).toBeGreaterThan(0);
+    expect(ingress).toBeGreaterThan(ownership);
+    expect(firstWrite).toBeGreaterThan(ingress);
+    expect(runRouteSource).toContain('receipt.ingress_after_create = await proveNoExternalIngress(api, { workerExists: true });');
+    expect(runRouteSource).toContain('receipt.ingress_postflight = await proveNoExternalIngress(api, { workerExists: true });');
     const tracked = route.slice(route.indexOf("export function validateTrackedInputs("), route.indexOf("export function selectNamedResource("));
     expect(tracked).toContain("assertConfigTargetNames(config);");
     expect(route).toContain("receipt.database_id = api.adoptDatabase(validateDatabaseIdentity(priorDatabase));");
@@ -1443,11 +1681,12 @@ describe("B-216 receiver on the shared main account", () => {
     const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
     const harness = routeHarness({ migration, sha: goodContext.sha });
-    await runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" });
-    expect(harness.state.commands.length).toBeGreaterThan(0);
-    for (const { args } of harness.state.commands) expect(assertWranglerCommand(args)).toBe(true);
+    const receipt = await runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" });
+    expect(receipt.status).toBe("deployed");
+    expect(harness.state.commands.map(({ args }) => args.slice(0, 2).join(" "))).toEqual(["deploy " + "/runner/work/corelink-server/apps/dsr-alert-receiver/src/index.ts", "versions upload", "versions secret", "versions deploy"]);
     expect(harness.state.requests.length).toBeGreaterThan(0);
-    expect(harness.state.requests.every(({ path }) => path.startsWith(`/accounts/${TARGET.accountId}`))).toBe(true);
+    expect(harness.state.requests.every(({ path, search }) => path.startsWith(`/accounts/${TARGET.accountId}`) || (path === "/zones" && search.startsWith(`?account.id=${TARGET.accountId}&`)) || path === `/zones/${ZONE_ID}/workers/routes`)).toBe(true);
     expect(harness.state.requests.some(({ path }) => /corelink-(?:prod|api|signup-worker|staging)/.test(path))).toBe(false);
+    expect(harness.state.requests.filter(({ method }) => method === "DELETE")).toHaveLength(0);
   });
 });
