@@ -525,6 +525,7 @@ class FakeCargoStep(unittest.TestCase):
         self.log = Path(self._tmp.name) / "cargo.log"
         self.debt_dir = Path(self._tmp.name) / "clippy-debt"
         self.debt_dir.mkdir()
+        self.regenerated_dir = Path(self._tmp.name) / "regenerated"
 
     def run_step(self, *, scope: str, debt: str, out: str = "", rc: int = 0,
                  pkgid: str = "") -> tuple[int, str]:
@@ -533,6 +534,7 @@ class FakeCargoStep(unittest.TestCase):
             "CARGO_SCOPE": scope,
             "CLIPPY_DEBT": debt,
             "CLIPPY_DEBT_DIR": str(self.debt_dir),
+            "CLIPPY_DEBT_REGENERATED": str(self.regenerated_dir),
             "SELECTED": "n",
             "FAKE_CARGO_LOG": str(self.log),
             "FAKE_CARGO_OUT": out,
@@ -815,17 +817,20 @@ class ClippyDebtStep(FakeCargoStep):
         code, log = self.run_debt(stream(diagnostic(**A), diagnostic(**B)))
         self.assertEqual(code, 0, log)
         self.assertIn("2 distinct diagnostics, baseline lists 2", log)
+        self.assertEqual(list(self.regenerated_dir.iterdir()), [])
         self.assertEqual(self.cargo_calls(), [
             "pkgid -p corelink-server",
             "clippy --locked --keep-going --all-targets -p corelink-server --message-format=json "
             "-- -D warnings --cap-lints warn"])
 
-    def test_a_swap_is_red_and_prints_the_matching_baseline(self) -> None:
+    def test_a_swap_is_red_and_leaves_the_matching_baseline_for_upload(self) -> None:
         self.write_baseline(baseline_of(diagnostic(**A), diagnostic(**B), diagnostic(**C)))
         code, log = self.run_debt(stream(diagnostic(**A), diagnostic(**B), diagnostic(**NEW_UNWRAP)))
         self.assertEqual(code, 1, log)
         self.assertIn("1 NEW diagnostic(s)", log)
-        self.assertIn("::group::baseline that matches this run for 'corelink-server'", log)
+        self.assertIn("corelink-server.txt in the clippy-debt-baselines artifact", log)
+        regenerated = (self.regenerated_dir / "corelink-server.txt").read_text(encoding="utf-8")
+        self.assertEqual(regenerated, baseline_of(diagnostic(**A), diagnostic(**B), diagnostic(**NEW_UNWRAP)))
 
     def test_missing_baseline_is_red(self) -> None:
         code, log = self.run_debt(stream())
