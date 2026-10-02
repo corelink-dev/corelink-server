@@ -166,10 +166,20 @@ jobs:
                    'operation_id':os.environ['GITHUB_RUN_ID'], 'expected_release':os.environ['GITHUB_SHA'],
                    'preimage_deployment_id':os.environ['PREIMAGE_DEPLOYMENT_ID'],
                    'preimage_version_id':os.environ['PREIMAGE_VERSION_ID']}
-          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','start',
-                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
-                         input=json.dumps(payload),text=True,check=True,
-                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
+          broker=os.environ['RUNNER_TEMP']+'/staging-http-broker'
+          env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ}
+          try:
+              subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','start',broker],
+                             input=json.dumps(payload),text=True,check=True,
+                             env=env)
+          except subprocess.CalledProcessError:
+              # ONE redacted line: phase, endpoint, HTTP status, CF error codes, message class,
+              # failed validation, timeout/abort. Enums and integers only, re-validated by the reader.
+              try:
+                  subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','failure',broker],timeout=30,env=env)
+              except Exception:
+                  print('issue-1700 bootstrap failure unavailable')
+              raise SystemExit(1)
           PY
 
       - name: Deploy root with container rollout and no route

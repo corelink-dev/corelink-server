@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertReadbackPath, assertTokenDiagnosticPath, READBACK_TARGET, ReadbackError, readTokenPolicyDiagnostic, readWorkerInventory, validateReadbackContext, writeReadbackReceipt } from "../scripts/readback-route.mjs";
+import { assertReadbackPath, assertTokenDiagnosticPath, READBACK_TARGET, ReadbackError, readTokenPolicyDiagnostic, readWorkerInventory, tokenVerifies, validateReadbackContext, writeReadbackReceipt } from "../scripts/readback-route.mjs";
 
 const context = {
   repository: READBACK_TARGET.repository,
@@ -645,6 +645,118 @@ describe("B-216 read-only Worker inventory", () => {
     } finally {
       await rm(runnerTemp, { recursive: true, force: true });
     }
+  });
+
+  // Run 36977214852 recorded only `provider_response_rejected`: no endpoint, and no
+  // token diagnostic, because the diagnostic ran after the refused inventory read.
+  it("runs the token diagnostic first and keeps it, plus the classified refused read, when inventory fails", async () => {
+    const runnerTemp = await mkdtemp(join(tmpdir(), "b216-readback-refused-"));
+    const tokenId = "5".repeat(32);
+    const order = [];
+    try {
+      const receipt = await writeReadbackReceipt({ ...context, runnerTemp }, {
+        fetchImpl: async (url) => {
+          const path = new URL(url).pathname;
+          order.push(path);
+          if (path === userVerifyPath) return new Response("private user rejection body", { status: 401 });
+          if (path === accountVerifyPath) return Response.json({ success: true, result: { id: tokenId, status: "active" } });
+          if (path === `${accountTokensPath}/${tokenId}`) return Response.json({ success: false, errors: [{ code: 9109, message: "private detail" }] }, { status: 403 });
+          return Response.json({ success: false, errors: [{ code: 10000, message: `Authentication error for ${READBACK_TARGET.accountId}` }] }, { status: 403 });
+        },
+        includeTokenPolicyDiagnostic: true,
+      });
+      expect(receipt).toMatchObject({
+        status: "failed_closed",
+        failure_code: "provider_response_rejected",
+        read_failure: { endpoint: "scripts_list", http_status: 403, cf_error_codes: [10000], message_class: "authentication" },
+        token_verifies: true,
+        token_policy_diagnostic: { status: "unknown_access", token_active: true, verification: { token_kind: "account", active_status: "active" } },
+      });
+      // Each refused token request goes through the same classifier as the inventory.
+      expect(receipt.token_read_failures).toEqual([
+        { endpoint: "token_verify_user", http_status: 401, cf_error_codes: [], message_class: "malformed_response" },
+        { endpoint: "token_details_account", http_status: 403, cf_error_codes: [9109], message_class: "authentication" },
+      ]);
+      expect(order.slice(0, 3)).toEqual([userVerifyPath, accountVerifyPath, `${accountTokensPath}/${tokenId}`]);
+      expect(order[3]).toBe(`/client/v4/accounts/${READBACK_TARGET.accountId}/workers/scripts`);
+      const saved = await readFile(join(runnerTemp, "b216-receiver-readback-receipt.json"), "utf8");
+      for (const secret of [context.apiToken, tokenId, "private user rejection body", "private detail", "Authentication error for"]) {
+        expect(saved).not.toContain(secret);
+      }
+    } finally {
+      await rm(runnerTemp, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies two refused verify requests with their codes", async () => {
+    const runnerTemp = await mkdtemp(join(tmpdir(), "b216-readback-verify-403-"));
+    try {
+      const receipt = await writeReadbackReceipt({ ...context, runnerTemp }, {
+        fetchImpl: async (url) => {
+          const path = new URL(url).pathname;
+          if (path === userVerifyPath) return Response.json({ success: false, errors: [{ code: 9109, message: "Unauthorized to access requested resource" }] }, { status: 403 });
+          if (path === accountVerifyPath) return Response.json({ success: false, errors: [{ code: 10000, message: "private detail" }, { code: 7003, message: "x" }] }, { status: 403 });
+          return Response.json({ success: false, errors: [{ code: 10000, message: "private detail" }] }, { status: 403 });
+        },
+        includeTokenPolicyDiagnostic: true,
+      });
+      expect(receipt.token_verifies).toBe(false);
+      expect(receipt.token_read_failures).toEqual([
+        { endpoint: "token_verify_user", http_status: 403, cf_error_codes: [9109], message_class: "authentication" },
+        { endpoint: "token_verify_account", http_status: 403, cf_error_codes: [10000, 7003], message_class: "authentication" },
+      ]);
+      expect(receipt.read_failure).toEqual({ endpoint: "scripts_list", http_status: 403, cf_error_codes: [10000], message_class: "authentication" });
+      expect(JSON.stringify(receipt)).not.toContain("private detail");
+    } finally {
+      await rm(runnerTemp, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a bad dispatch context before any provider request, token diagnostic included", async () => {
+    const runnerTemp = await mkdtemp(join(tmpdir(), "b216-readback-context-"));
+    let calls = 0;
+    try {
+      const receipt = await writeReadbackReceipt({ ...context, repository: "attacker/fork", runnerTemp }, {
+        fetchImpl: async () => { calls += 1; return Response.json({ success: true, result: {} }); },
+        includeTokenPolicyDiagnostic: true,
+      });
+      expect(calls).toBe(0);
+      expect(receipt).toMatchObject({ status: "failed_closed", failure_code: "repository_mismatch", read_failure: null });
+      expect(receipt).not.toHaveProperty("token_policy_diagnostic");
+      expect(receipt).not.toHaveProperty("token_read_failures");
+    } finally {
+      await rm(runnerTemp, { recursive: true, force: true });
+    }
+  });
+
+  it("records a token that cannot verify at all, and the refused read that followed", async () => {
+    const runnerTemp = await mkdtemp(join(tmpdir(), "b216-readback-unverified-"));
+    try {
+      const receipt = await writeReadbackReceipt({ ...context, runnerTemp }, {
+        fetchImpl: async (url) => {
+          const path = new URL(url).pathname;
+          if (path.endsWith("/verify")) return Response.json({ success: false, errors: [{ code: 1000, message: "Invalid API Token" }] }, { status: 401 });
+          if (path.endsWith("/versions")) return new Response("not json", { status: 500 });
+          return Response.json({ success: true, result: [{ id: READBACK_TARGET.workerName, routes: [] }] });
+        },
+        includeTokenPolicyDiagnostic: true,
+      });
+      expect(receipt).toMatchObject({
+        status: "failed_closed",
+        token_verifies: false,
+        read_failure: { endpoint: "worker_versions", http_status: 500, cf_error_codes: [], message_class: "malformed_response" },
+      });
+      expect(receipt.token_policy_diagnostic.verification.token_kind).toBe("unknown");
+      expect(receipt.token_read_failures).toEqual([
+        { endpoint: "token_verify_user", http_status: 401, cf_error_codes: [1000], message_class: "authentication" },
+        { endpoint: "token_verify_account", http_status: 401, cf_error_codes: [1000], message_class: "authentication" },
+      ]);
+    } finally {
+      await rm(runnerTemp, { recursive: true, force: true });
+    }
+    expect(tokenVerifies({ status: "token_missing" })).toBeNull();
+    expect(tokenVerifies(null)).toBeNull();
+    expect(tokenVerifies({ status: "details_read", verification: { token_kind: "user" } })).toBe(true);
   });
 
   it("writes an account-owned token diagnostic to the receipt without the token, its ID, or bodies", async () => {
