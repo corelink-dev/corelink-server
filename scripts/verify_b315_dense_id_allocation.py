@@ -173,7 +173,9 @@ REQUIRED = (
     '[ "$api_ok" -eq 1 ] || unproven "merge_response_not_success',
     'backlog_lock_healthy || refuse "local allocation lock lost before the merge call',
     "lock_held_after_put=1; backlog_lock_healthy || lock_held_after_put=0",
-    'case "$stat" in ""|Z*) return 1 ;; esac',
+    'case "$stat" in [RSIDU]*) ;; *) return 1 ;; esac',
+    '[ -n "$LOCK_IDENTITY" ] && [ "$now" = "$LOCK_IDENTITY" ]',
+    'kill -CONT "$LOCK_PID"',
 )
 
 # Retired designs. The first three were the pre-B-315 squash CLI; the rest are

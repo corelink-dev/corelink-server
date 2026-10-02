@@ -70,6 +70,13 @@ class Census:
 # (review round 6). So the structure is checked line by line first, on its
 # own terms, and the parser's blocks must be exactly the ones it delimits.
 LOOSE_OPENER_RE = re.compile(r"^\s*(?:`{3,}|~{3,})\s*backlog", re.IGNORECASE)
+# Item headings get the same treatment (review round 7): HEADING_RE counts only
+# `### B-NNN`, so `###  B-004`, `###\tB-004` or ` ### B-004` with no block
+# was not a heading to it at all, and its missing block went unnoticed. Any
+# level-3 line that reads as an item heading, whatever its indentation,
+# spacing, case or separator, is detected here and must be canonical. Other
+# heading levels are prose (BACKLOG.md uses `#### B-054 dependency ledger`).
+LOOSE_HEADING_RE = re.compile(r"^[ \t]*###(?!#)[ \t]*B\W{0,3}\d", re.IGNORECASE | re.MULTILINE)
 
 
 def _structure(text: str, source: str) -> list[int]:
@@ -97,6 +104,11 @@ def _structure(text: str, source: str) -> list[int]:
             if heading is not None:
                 raise AllocationError(f"{source}:{heading[0]}: item heading {heading[1]} has no backlog block")
             heading = (number, match.group(1))
+        elif LOOSE_HEADING_RE.match(line):
+            raise AllocationError(
+                f"{source}:{number}: non-canonical item heading {line!r}; only `### B-NNN` is counted, so its "
+                "item would be missed"
+            )
         elif line == "```backlog":
             if heading is None:
                 raise AllocationError(f"{source}:{number}: backlog block has no `### B-NNN` heading before it")
@@ -112,7 +124,7 @@ def _structure(text: str, source: str) -> list[int]:
         raise AllocationError(f"{source}:{open_line}: backlog block is never closed")
     if heading is not None:
         raise AllocationError(f"{source}:{heading[0]}: item heading {heading[1]} has no backlog block")
-    headings = len(backlog_verify.HEADING_RE.findall(text))
+    headings = len(LOOSE_HEADING_RE.findall(text))
     if headings != len(openers):
         raise AllocationError(f"{source}: {headings} item headings for {len(openers)} backlog blocks")
     return openers
@@ -272,7 +284,11 @@ def _hold_lock(path: Path, ready: Path, common_dir: Path) -> int:
         except BlockingIOError:
             ready.write_text("busy\n", encoding="utf-8")
             return 75
-        ready.write_text(f"locked pid={os.getpid()}\n", encoding="utf-8")
+        # The inode actually locked, from the held fd: the merge helper checks
+        # the lock path against it, so a lock file replaced while this holder
+        # cannot notice (it is stopped, say) reads as lost.
+        held = os.fstat(fd)
+        ready.write_text(f"locked pid={os.getpid()} dev={held.st_dev} ino={held.st_ino}\n", encoding="utf-8")
         stop = False
 
         def request_stop(_signum: int, _frame: object) -> None:
@@ -329,6 +345,9 @@ def _self_test() -> None:
         ("unclosed block", unclosed),
         ("opener with a trailing space", baseline + item(4).replace("```backlog\n", "```backlog \n")),
         ("orphan heading", baseline + "### B-004 — fixture\n\nno block\n"),
+        ("orphan heading with two spaces", baseline + "###  B-004 — fixture\n\nno block\n"),
+        ("orphan heading with a tab", baseline + "###\tB-004 — fixture\n\nno block\n"),
+        ("orphan indented heading", baseline + " ### B-004 — fixture\n\nno block\n"),
     ):
         try:
             allocation(baseline, mutated, base_text=baseline)

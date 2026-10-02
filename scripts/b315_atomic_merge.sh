@@ -59,6 +59,14 @@
 #   anything else exits MERGED_INTO_UNEXPECTED_BASE (4) with recovery steps.
 #   This helper never writes main itself, so the worst case is a merge into
 #   another branch that is detected and reported, never a silent one.
+#   Prevention was looked for and is not available to a client (review round
+#   7): the REST merge endpoint accepts sha, merge_method, commit_title and
+#   commit_message, GraphQL mergePullRequest pins expectedHeadOid only, and
+#   no API call locks a PR's base. Moving the merge itself to GitHub's side
+#   (a merge queue on main) is a branch-protection change for the owner, not
+#   something this helper can do, and whether it closes the window would have
+#   to be verified first. The window also includes the lock-health check that
+#   is the last statement before the PUT (one python3 -I -S start-up).
 #
 # ── Local object substitution (2026-10-01 review) ───────────────────────────
 # Every read below names an oid that GitHub also names, and the claim "the
@@ -91,7 +99,11 @@
 # or released during the boundary reads is a refusal) and the FIRST after it (a
 # loss during the call is reported loudly and the landing exits 3). It asks the
 # process table, so a holder that died but is not yet reaped (a zombie, which
-# no longer holds the flock) reads as lost.
+# no longer holds the flock) reads as lost, and so does a STOPPED holder: it
+# still holds the flock, but it can no longer notice the lock path being
+# replaced. And it compares the lock path's current device:inode with the one
+# the holder reports locking (from its held fd), so a lock file replaced while
+# the holder could not react reads as lost too (review round 7).
 #
 # Exit status: 0 = merged and proven (or a clean dry run); 1 = refused and NOT
 # merged; 2 = bad arguments; 3 = LANDED_UNPROVEN (GitHub says MERGED but the
@@ -116,7 +128,7 @@ MERGED_INTO_UNEXPECTED_BASE=4
 MERGED_BY_OTHER_ACTOR=5
 REMOTE_LEASE_REF=refs/heads/corelink-backlog-id-merge-lock
 REMOTE_LEASE_OID=; REMOTE_LEASE_HELD=0; REMOTE_LEASE_CONFIRMED=0
-LOCK_PID=; LOCK_READY=; TMP=
+LOCK_PID=; LOCK_READY=; LOCK_PATH=; LOCK_IDENTITY=; TMP=
 BACKLOG_TMP=
 CAPTURED_HEAD=; CAPTURED_BASE=; CAPTURED_MAIN=
 
@@ -132,7 +144,9 @@ cleanup_lease() {
 }
 release_remote_backlog_lease() { cleanup_lease; }
 stop_backlog_allocation_lock() {
-  if [ -n "$LOCK_PID" ]; then kill "$LOCK_PID" 2>/dev/null || true; wait "$LOCK_PID" 2>/dev/null || true; LOCK_PID=; fi
+  # SIGCONT after SIGTERM: a stopped holder handles TERM only once it runs
+  # again; without it, `wait` would block on it forever.
+  if [ -n "$LOCK_PID" ]; then kill "$LOCK_PID" 2>/dev/null || true; kill -CONT "$LOCK_PID" 2>/dev/null || true; wait "$LOCK_PID" 2>/dev/null || true; LOCK_PID=; fi
   [ -z "$LOCK_READY" ] || rm -f -- "$LOCK_READY"; LOCK_READY=
 }
 cleanup() {
@@ -152,24 +166,34 @@ graft_file="$(git rev-parse --path-format=absolute --git-path info/grafts 2>/dev
 start_backlog_allocation_lock() {
 common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 [ -n "$common_dir" ] && [ -d "$common_dir" ] && [ ! -L "$common_dir" ] || { echo "⛔ invalid git common-dir lock authority." >&2; exit 1; }
-lock="$common_dir/corelink-backlog-id-allocation.lock"; LOCK_READY="$(mktemp "$common_dir/backlogalloc.ready.XXXXXX")"
-python3 "$ALLOC" --hold-lock "$lock" --common-dir "$common_dir" --ready "$LOCK_READY" </dev/null & LOCK_PID=$!
+LOCK_PATH="$common_dir/corelink-backlog-id-allocation.lock"; LOCK_READY="$(mktemp "$common_dir/backlogalloc.ready.XXXXXX")"
+python3 "$ALLOC" --hold-lock "$LOCK_PATH" --common-dir "$common_dir" --ready "$LOCK_READY" </dev/null & LOCK_PID=$!
 for _ in $(seq 1 200); do
-  if [ -s "$LOCK_READY" ]; then grep -q '^locked ' "$LOCK_READY" && break; echo "⛔ local allocation lock busy/invalid." >&2; exit 1; fi
+  if [ -s "$LOCK_READY" ]; then
+    LOCK_IDENTITY="$(sed -n 's/^locked pid=[0-9][0-9]* dev=\([0-9][0-9]*\) ino=\([0-9][0-9]*\)$/\1:\2/p' "$LOCK_READY")"
+    [ -z "$LOCK_IDENTITY" ] || break
+    grep -q '^locked ' "$LOCK_READY" || { echo "⛔ local allocation lock busy/invalid." >&2; exit 1; }
+  fi
   kill -0 "$LOCK_PID" 2>/dev/null || { echo "⛔ local allocation lock failed." >&2; exit 1; }; sleep 0.05
 done
-grep -q '^locked ' "$LOCK_READY" || { echo "⛔ local allocation lock did not become ready." >&2; return 1; }
+[ -n "$LOCK_IDENTITY" ] || { echo "⛔ local allocation lock did not report the inode it holds." >&2; return 1; }
 }
 start_backlog_allocation_lock || exit 1
-# Healthy = the holder process exists and is not a zombie (a dead holder no
-# longer holds the flock, and `kill -0` still succeeds on an unreaped zombie),
-# and it reported the lock taken and never reported it lost.
+# Healthy = the holder process exists and is running or sleeping (not a
+# zombie, which no longer holds the flock although `kill -0` still succeeds on
+# it, and not stopped, which cannot notice the lock path changing), it reported
+# the lock taken and never reported it lost, and the lock path is still the
+# very inode it locked (a replaced lock file leaves the flock on the old one).
 backlog_lock_healthy() {
-  local stat
+  local stat now
   stat="$(ps -o stat= -p "$LOCK_PID" 2>/dev/null)" || return 1
   stat="${stat//[[:space:]]/}"
-  case "$stat" in ""|Z*) return 1 ;; esac
-  [ -s "$LOCK_READY" ] && grep -q '^locked ' "$LOCK_READY"
+  case "$stat" in [RSIDU]*) ;; *) return 1 ;; esac
+  [ -s "$LOCK_READY" ] && grep -q '^locked ' "$LOCK_READY" || return 1
+  now="$(python3 -I -S -c 'import os, stat, sys
+s = os.lstat(sys.argv[1])
+print(f"{s.st_dev}:{s.st_ino}" if stat.S_ISREG(s.st_mode) else "not-a-regular-file")' "$LOCK_PATH" 2>/dev/null)" || return 1
+  [ -n "$LOCK_IDENTITY" ] && [ "$now" = "$LOCK_IDENTITY" ]
 }
 
 # json_fields <json> <dotted.path>... prints the scalar values on one line. A

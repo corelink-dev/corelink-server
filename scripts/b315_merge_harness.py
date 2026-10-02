@@ -162,6 +162,9 @@ def malformed_backlog(kind: str) -> str:
         return head + tail.replace("```backlog\n", "```backlog \n", 1)
     if kind == "orphan_heading":
         return head + "### B-004 — fixture\n\nprose only, no backlog block\n"
+    variants = {"heading_two_spaces": "###  B-004", "heading_tab": "###\tB-004", "heading_indented": " ### B-004"}
+    if kind in variants:
+        return head + variants[kind] + " — fixture\n\nprose only, no backlog block\n"
     raise HarnessError(f"unknown malformed backlog {kind!r}")
 
 
@@ -315,10 +318,43 @@ def _inject(state: dict, origin: str, point: str) -> None:
             state["other_actor_merges_after_put"] = True
         elif action == "kill_lock_holder":
             _kill_lock_holder()
+        elif action == "stop_holder_and_replace_lock":
+            _stop_holder_and_replace_lock()
         elif action in {"land_wrong_tree", "drop_merge_response", "rewind_base_after_merge"}:
             state[action] = True
         else:
             raise HarnessError(f"unknown injection {action!r}")
+
+
+def _lock_holder_pid(lock: Path) -> int:
+    pids = []
+    for ready in lock.parent.glob("backlogalloc.ready.*"):
+        match = re.match(r"locked pid=(\d+)", ready.read_text(encoding="utf-8"))
+        if match:
+            pids.append(int(match.group(1)))
+    if len(pids) != 1:
+        raise HarnessError(f"expected exactly one lock holder, found {pids}")
+    return pids[0]
+
+
+def _stop_holder_and_replace_lock() -> None:
+    """SIGSTOP the lock holder, then replace the lock file with a new inode.
+    The stopped holder keeps its flock on the OLD inode and cannot notice;
+    the lock path itself is now unlocked (review round 7)."""
+    lock = Path(os.environ["B315_FAKE_LOCK"])
+    pid = _lock_holder_pid(lock)
+    os.kill(pid, signal.SIGSTOP)
+    deadline = time.monotonic() + 10
+    while not subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True,
+                             text=True).stdout.strip().startswith("T"):
+        if time.monotonic() > deadline:
+            raise HarnessError("the lock holder did not stop")
+        time.sleep(0.02)
+    replacement = lock.with_name(lock.name + ".replacement")
+    replacement.write_text("", encoding="utf-8")
+    os.replace(replacement, lock)
+    if lock_held(lock):
+        raise HarnessError("the replaced lock path is still locked: the replacement did not take")
 
 
 def _kill_lock_holder() -> None:
@@ -741,6 +777,8 @@ SCENARIOS: tuple[Scenario, ...] = (
              inject={"view4": ["kill_lock_holder"]}),
     Scenario("lock_holder_dies_during_merge_call_reported", 3, 1, True, "LOCK LOST DURING THE MERGE CALL",
              inject={"put": ["kill_lock_holder"]}),
+    Scenario("lock_holder_stopped_and_lock_file_replaced_refused", 1, 0, False, "lock lost before the merge call",
+             inject={"view4": ["stop_holder_and_replace_lock"]}),
     # Candidate ledgers the lenient parser reads as B-001..B-003 ("adds nothing").
     Scenario("unclosed_backlog_block_refused_before_api", 1, 0, False, "backlog block is never closed",
              candidate_text=malformed_backlog("unclosed_block")),
@@ -748,6 +786,9 @@ SCENARIOS: tuple[Scenario, ...] = (
              candidate_text=malformed_backlog("opener_trailing_space")),
     Scenario("orphan_item_heading_refused_before_api", 1, 0, False, "has no backlog block",
              candidate_text=malformed_backlog("orphan_heading")),
+    *(Scenario(f"orphan_{kind}_refused_before_api", 1, 0, False, "non-canonical item heading",
+               candidate_text=malformed_backlog(kind))
+      for kind in ("heading_two_spaces", "heading_tab", "heading_indented")),
 )
 
 

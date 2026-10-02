@@ -85,6 +85,12 @@ SKIPPED_STRUCTURE = {
     "unclosed B-005 after B-001..B-003": (_backlog(1, 2, 3) + _item(5, closer=None), "is never closed"),
     "opener with trailing whitespace": (_backlog(1, 2, 3) + _item(4, opener="```backlog "), "malformed backlog fence"),
     "orphan heading": (_backlog(1, 2, 3) + "### B-004 — fixture\n\nno block\n", "B-004 has no backlog block"),
+    # Review round 7: heading spellings HEADING_RE does not count.
+    "orphan heading with two spaces": (_backlog(1, 2, 3) + "###  B-004 — fixture\n\nno block\n",
+                                       "non-canonical item heading"),
+    "orphan heading with a tab": (_backlog(1, 2, 3) + "###\tB-004 — fixture\n\nno block\n", "non-canonical item heading"),
+    "orphan indented heading": (_backlog(1, 2, 3) + " ### B-004 — fixture\n\nno block\n", "non-canonical item heading"),
+    "lower-case orphan heading": (_backlog(1, 2, 3) + "### b-004 — fixture\n\nno block\n", "non-canonical item heading"),
     "tilde fence": (_backlog(1, 2, 3) + _item(4, opener="~~~backlog", closer="~~~"), "malformed backlog fence"),
     "block closed by a tagged fence": (_backlog(1, 2, 3) + _item(4, closer="```yaml"), "only a bare ``` may close it"),
     "block with no heading": (_backlog(1, 2, 3) + _item(4).split("\n", 2)[2], "has no `### B-NNN` heading"),
@@ -102,6 +108,12 @@ def test_backlog_structure_the_parser_skips_is_refused(label: str):
     base = _backlog(1, 2, 3)
     with pytest.raises(AllocationError, match=re.escape(named)):
         allocation(base, candidate, base_text=base)
+
+
+def test_other_heading_levels_stay_prose():
+    """BACKLOG.md uses `#### B-054 dependency ledger` inside an item's prose."""
+    candidate = _backlog(1, 2, 3) + "\n#### B-003 dependency ledger\n\nprose\n"
+    assert allocation(_backlog(1, 2, 3), candidate, base_text=_backlog(1, 2, 3)) == ()
 
 
 def test_a_heading_inside_a_block_is_counted_against_the_blocks():
@@ -423,17 +435,60 @@ def test_releasing_a_guard_before_the_merge_call_is_caught(tmp_path: Path, repla
     assert named in failures, failures
 
 
-def _lock_health(pid: int, ready: Path) -> str:
+def _lock_health(pid: int, ready: Path, lock: Path | None = None, identity: str | None = None) -> str:
     """Run the helper's own backlog_lock_healthy (extracted by its delimiters)
-    against ``pid`` and ``ready``."""
+    against a holder ``pid``, its ``ready`` file and the ``lock`` path with the
+    ``identity`` (dev:ino) the holder reported. By default the lock is a fresh
+    file next to ``ready`` and the identity is its own."""
+    if lock is None:
+        lock = ready.with_name("lock")
+        lock.touch()
+    if identity is None:
+        held = lock.stat()
+        identity = f"{held.st_dev}:{held.st_ino}"
     helper = (ROOT / "scripts/b315_atomic_merge.sh").read_text(encoding="utf-8")
     start = helper.index("backlog_lock_healthy() {")
     function = helper[start: helper.index("\n}\n", start) + 3]
     result = subprocess.run(
         ["bash", "-c", function + "backlog_lock_healthy && echo healthy || echo lost\n"],
-        env={**os.environ, "LOCK_PID": str(pid), "LOCK_READY": str(ready)}, capture_output=True, text=True, check=True,
+        env={**os.environ, "LOCK_PID": str(pid), "LOCK_READY": str(ready), "LOCK_PATH": str(lock),
+             "LOCK_IDENTITY": identity},
+        capture_output=True, text=True, check=True,
     )
     return result.stdout.strip()
+
+
+def test_lock_health_reads_a_stopped_holder_and_a_replaced_lock_file_as_lost(tmp_path: Path):
+    """Review round 7: a stopped holder keeps its flock but cannot notice the
+    lock path being replaced, and a replaced lock file leaves the flock on the
+    old inode. Each alone must read as lost."""
+    ready = tmp_path / "ready"
+    ready.write_text("locked pid=0 dev=0 ino=0\n", encoding="utf-8")
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lock = tmp_path / "lock"
+        lock.touch()
+        held = lock.stat()
+        identity = f"{held.st_dev}:{held.st_ino}"
+        assert _lock_health(holder.pid, ready, lock, identity) == "healthy"  # positive control
+        replacement = tmp_path / "replacement"
+        replacement.touch()
+        os.replace(replacement, lock)
+        assert lock.stat().st_ino != held.st_ino
+        assert _lock_health(holder.pid, ready, lock, identity) == "lost"
+        fresh = lock.stat()
+        identity = f"{fresh.st_dev}:{fresh.st_ino}"
+        assert _lock_health(holder.pid, ready, lock, identity) == "healthy"
+        os.kill(holder.pid, signal.SIGSTOP)
+        deadline = time.monotonic() + 10
+        while not subprocess.run(["ps", "-o", "stat=", "-p", str(holder.pid)], capture_output=True,
+                                 text=True).stdout.strip().startswith("T"):
+            assert time.monotonic() < deadline, "the probe never stopped"
+            time.sleep(0.02)
+        assert _lock_health(holder.pid, ready, lock, identity) == "lost"
+    finally:
+        holder.kill()
+        holder.wait()
 
 
 def test_lock_health_reads_an_unreaped_zombie_holder_as_lost(tmp_path: Path):
@@ -499,6 +554,7 @@ def test_a_dry_run_that_mutates_anything_is_caught(tmp_path: Path, planted: str)
      (["api", "-fbody=x", "repos/o/r/issues/7/comments"], True), (["api", "--input=req.json", "repos/o/r/x"], True),
      (["api", "--input", "req.json", "repos/o/r/x"], True), (["api", "repos/o/r/x", "--raw-field=body=x"], True),
      (["api", "--field=body=x", "repos/o/r/x"], True), (["api", "-X=GET", "repos/o/r/x"], False),
+     (["api", "--method=GET", "repos/o/r/x"], False),
      (["api", "-HAccept: x", "repos/o/r/x"], False), (["api", "--paginate", "repos/o/r/x"], False),
      # forms the parser does not model are writes
      (["api", "--some-new-flag", "repos/o/r/x"], True), (["api", "repos/o/r/x", "extra"], True), (["api", "-X"], True)],
