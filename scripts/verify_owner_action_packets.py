@@ -49,7 +49,15 @@ B089_SURFACES = (
     "apps/docs/src/pages/legal/terms.tsx",
     "apps/docs/src/lib/pricing.ts",
 )
-B089_HISTORICAL_V1_SHA256 = "4b6e39a0891eecf32640e9815386436e155e3334cd655ea180ca6f3bc1af6d09"
+# Exact bytes of legal/sla/v1.0.0.md, re-pinned after #2799 (99468014e,
+# owner-authored), which relabeled the file as a PRELAUNCH internal draft
+# because its earlier text falsely claimed an approved, effective SLA. Do not
+# restore the superseded pin
+# 4b6e39a0891eecf32640e9815386436e155e3334cd655ea180ca6f3bc1af6d09: those bytes
+# carry the false approval claim, and B-154 requires the #2799 status markers.
+# The credit clauses are byte-identical across #2799; the full rationale sits
+# beside the twin pin, HISTORICAL_V1_SHA256 in verify_b089_credit_contract.py.
+B089_HISTORICAL_V1_SHA256 = "fbf7afe106cd3a815e177a4d4f289052bbf03dc12080d81c1f273e63f20c3d4f"
 ITEM_FIELDS = {
     "id", "owner", "status", "action_type", "procedure",
     "inputs_and_credentials_boundary", "evidence", "expected_postcondition",
@@ -744,7 +752,7 @@ def _check_b089_surface_contract(item: dict[str, object], root: Path = ROOT) -> 
 
     historical_path = root / B089_SURFACES[0]
     if hashlib.sha256(historical_path.read_bytes()).hexdigest() != B089_HISTORICAL_V1_SHA256:
-        raise PacketError("B-089 historical v1.0.0 SHA-256 differs from the approved base bytes")
+        raise PacketError("B-089 historical v1.0.0 SHA-256 differs from the pinned post-#2799 prelaunch bytes")
     draft_path = root / "legal/sla/v1.1.0.md"
     if draft_path.is_symlink() or not draft_path.is_file():
         raise PacketError("B-089 v1.1.0 prelaunch draft missing or non-regular")

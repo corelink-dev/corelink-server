@@ -9,7 +9,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CLAIM = re.compile(r"issued automatically|automatic(?:ly)?[^\n]*credit", re.I)
 TOKENS = re.compile(r"\b(?:service_credit|sla_credit|credit_note|balance_transaction)\b")
-HISTORICAL_V1_SHA256 = "4b6e39a0891eecf32640e9815386436e155e3334cd655ea180ca6f3bc1af6d09"
+# Exact bytes of legal/sla/v1.0.0.md. Re-pinned after #2799 (99468014e, 2026-09-30,
+# owner-authored), which relabeled the file as a PRELAUNCH internal draft
+# (effective_date null, legal_review_status pending) because the earlier text
+# falsely claimed an approved, effective SLA with counsel sign-off. The owner
+# confirms there are no customers. Reverting to the superseded pin
+# 4b6e39a0891eecf32640e9815386436e155e3334cd655ea180ca6f3bc1af6d09 would restore
+# that false claim, and verify_b154_instrument_claims.py requires the #2799 status
+# markers. #2799 left every credit clause byte-identical (§1 tiers, §2 uptime and
+# latency targets and coverage, §4.1-4.5 rates, cap and remedy, §7 claim window,
+# §8 termination). Outside the status text it removed only the BYOK kill-switch
+# SLO (no §4 credit row; v1.1.0 already excludes it) and the CMK-revocation
+# carve-out tied to it. Twin pin: B089_HISTORICAL_V1_SHA256 in
+# verify_owner_action_packets.py.
+HISTORICAL_V1_SHA256 = "fbf7afe106cd3a815e177a4d4f289052bbf03dc12080d81c1f273e63f20c3d4f"
 
 
 def fail(message: str) -> None:
@@ -89,7 +102,7 @@ def check_draft(text: str) -> None:
 
 def check_historical(raw: bytes) -> None:
     if hashlib.sha256(raw).hexdigest() != HISTORICAL_V1_SHA256:
-        fail("historical v1.0.0 SHA-256 differs from the approved base bytes")
+        fail("historical v1.0.0 SHA-256 differs from the pinned post-#2799 prelaunch bytes")
 
 
 def check_credit_tables(text: str) -> None:
