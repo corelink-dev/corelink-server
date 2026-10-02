@@ -672,12 +672,58 @@ describe("B-216 read-only Worker inventory", () => {
         token_verifies: true,
         token_policy_diagnostic: { status: "unknown_access", token_active: true, verification: { token_kind: "account", active_status: "active" } },
       });
+      // Each refused token request goes through the same classifier as the inventory.
+      expect(receipt.token_read_failures).toEqual([
+        { endpoint: "token_verify_user", http_status: 401, cf_error_codes: [], message_class: "malformed_response" },
+        { endpoint: "token_details_account", http_status: 403, cf_error_codes: [9109], message_class: "authentication" },
+      ]);
       expect(order.slice(0, 3)).toEqual([userVerifyPath, accountVerifyPath, `${accountTokensPath}/${tokenId}`]);
       expect(order[3]).toBe(`/client/v4/accounts/${READBACK_TARGET.accountId}/workers/scripts`);
       const saved = await readFile(join(runnerTemp, "b216-receiver-readback-receipt.json"), "utf8");
       for (const secret of [context.apiToken, tokenId, "private user rejection body", "private detail", "Authentication error for"]) {
         expect(saved).not.toContain(secret);
       }
+    } finally {
+      await rm(runnerTemp, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies two refused verify requests with their codes", async () => {
+    const runnerTemp = await mkdtemp(join(tmpdir(), "b216-readback-verify-403-"));
+    try {
+      const receipt = await writeReadbackReceipt({ ...context, runnerTemp }, {
+        fetchImpl: async (url) => {
+          const path = new URL(url).pathname;
+          if (path === userVerifyPath) return Response.json({ success: false, errors: [{ code: 9109, message: "Unauthorized to access requested resource" }] }, { status: 403 });
+          if (path === accountVerifyPath) return Response.json({ success: false, errors: [{ code: 10000, message: "private detail" }, { code: 7003, message: "x" }] }, { status: 403 });
+          return Response.json({ success: false, errors: [{ code: 10000, message: "private detail" }] }, { status: 403 });
+        },
+        includeTokenPolicyDiagnostic: true,
+      });
+      expect(receipt.token_verifies).toBe(false);
+      expect(receipt.token_read_failures).toEqual([
+        { endpoint: "token_verify_user", http_status: 403, cf_error_codes: [9109], message_class: "authentication" },
+        { endpoint: "token_verify_account", http_status: 403, cf_error_codes: [10000, 7003], message_class: "authentication" },
+      ]);
+      expect(receipt.read_failure).toEqual({ endpoint: "scripts_list", http_status: 403, cf_error_codes: [10000], message_class: "authentication" });
+      expect(JSON.stringify(receipt)).not.toContain("private detail");
+    } finally {
+      await rm(runnerTemp, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a bad dispatch context before any provider request, token diagnostic included", async () => {
+    const runnerTemp = await mkdtemp(join(tmpdir(), "b216-readback-context-"));
+    let calls = 0;
+    try {
+      const receipt = await writeReadbackReceipt({ ...context, repository: "attacker/fork", runnerTemp }, {
+        fetchImpl: async () => { calls += 1; return Response.json({ success: true, result: {} }); },
+        includeTokenPolicyDiagnostic: true,
+      });
+      expect(calls).toBe(0);
+      expect(receipt).toMatchObject({ status: "failed_closed", failure_code: "repository_mismatch", read_failure: null });
+      expect(receipt).not.toHaveProperty("token_policy_diagnostic");
+      expect(receipt).not.toHaveProperty("token_read_failures");
     } finally {
       await rm(runnerTemp, { recursive: true, force: true });
     }
@@ -701,6 +747,10 @@ describe("B-216 read-only Worker inventory", () => {
         read_failure: { endpoint: "worker_versions", http_status: 500, cf_error_codes: [], message_class: "malformed_response" },
       });
       expect(receipt.token_policy_diagnostic.verification.token_kind).toBe("unknown");
+      expect(receipt.token_read_failures).toEqual([
+        { endpoint: "token_verify_user", http_status: 401, cf_error_codes: [1000], message_class: "authentication" },
+        { endpoint: "token_verify_account", http_status: 401, cf_error_codes: [1000], message_class: "authentication" },
+      ]);
     } finally {
       await rm(runnerTemp, { recursive: true, force: true });
     }

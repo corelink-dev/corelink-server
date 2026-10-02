@@ -12,6 +12,7 @@ import {
   proveNoExternalIngress,
   providerFailureFields,
   queryReadOnlyDatabase,
+  recordCleanupFailure,
   selectNamedResource,
   selectPriorRevision,
   validateCandidateVersion,
@@ -186,11 +187,13 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
       receipt.workers_dev_cleanup = "halted_external_ingress_detected";
       receipt.escalation = "lead_review_required";
     } else {
+      receipt.cleanup_failures = [];
       try {
         const cleanupState = await api(`${WORKER_PATH}/subdomain`);
         workersDevWasEnabled ||= cleanupState?.enabled === true || cleanupState?.previews_enabled === true;
         if (typeof cleanupState?.enabled !== "boolean" || typeof cleanupState?.previews_enabled !== "boolean") fail("workers_dev_cleanup_state_ambiguous");
-      } catch {
+      } catch (cleanupError) {
+        recordCleanupFailure(receipt, cleanupError);
         receipt.workers_dev_cleanup = "ambiguous_manual_disable_required";
       }
       if (workersDevWasEnabled && receipt.workers_dev_cleanup !== "ambiguous_manual_disable_required") {
@@ -198,7 +201,8 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
           const cleanup = await disableWorkersDev({ api, now });
           receipt.workers_dev_cleanup = cleanup.status === "already_disabled" ? "already_disabled_verified" : cleanup.status;
           receipt.cleanup_completed_at = cleanup.captured_at;
-        } catch {
+        } catch (cleanupError) {
+          recordCleanupFailure(receipt, cleanupError);
           receipt.workers_dev_cleanup = "ambiguous_do_not_retry";
         }
       } else if (receipt.workers_dev_cleanup !== "ambiguous_manual_disable_required") {

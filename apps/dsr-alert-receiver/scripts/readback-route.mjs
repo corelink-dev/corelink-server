@@ -302,13 +302,18 @@ function summarizeTokenPolicies(policies) {
   });
 }
 
-export async function readTokenPolicyDiagnostic({ apiToken, fetchImpl = fetch, now = () => Date.now() } = {}) {
+// `onReadFailure` receives the allowlisted classification (read-failure.mjs) of each
+// token request that did not succeed, so the receipt can name it.
+export async function readTokenPolicyDiagnostic({ apiToken, fetchImpl = fetch, now = () => Date.now(), onReadFailure = () => {} } = {}) {
   if (typeof apiToken !== "string" || apiToken.length === 0) return unknownTokenPolicyDiagnostic("token_missing");
   const deadline = now() + TOKEN_DIAGNOSTIC_TIMEOUT_MS;
   const request = async (path) => {
     assertTokenDiagnosticPath(path);
     const remaining = deadline - now();
-    if (remaining <= 0) return { kind: "timeout", exchange: verifyExchangeDiagnostic({ errorClass: "timeout" }) };
+    if (remaining <= 0) {
+      onReadFailure(classifyReadFailure({ path, transport: true }));
+      return { kind: "timeout", exchange: verifyExchangeDiagnostic({ errorClass: "timeout" }) };
+    }
     let response;
     try {
       response = await fetchImpl(`${API}${path}`, {
@@ -319,21 +324,28 @@ export async function readTokenPolicyDiagnostic({ apiToken, fetchImpl = fetch, n
       });
     } catch (error) {
       const timedOut = error instanceof Error && error.name === "TimeoutError";
+      onReadFailure(classifyReadFailure({ path, transport: true }));
       return { kind: timedOut ? "timeout" : "transport_unknown", exchange: verifyExchangeDiagnostic({ errorClass: timedOut ? "timeout" : "transport_error" }) };
     }
+    let payload;
+    let malformed = false;
+    try { payload = await response.json(); } catch { malformed = true; }
     if (response.status !== 200) {
+      onReadFailure(classifyReadFailure({ path, status: response.status, payload, malformed }));
       return {
         kind: response.status === 403 ? "unknown_access" : "http_unknown",
         exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "http_response" }),
       };
     }
-    let payload;
-    try { payload = await response.json(); } catch {
+    if (malformed) {
+      onReadFailure(classifyReadFailure({ path, status: response.status, malformed: true }));
       return { kind: "response_unknown", exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "malformed_json" }) };
     }
-    return payload?.success === true && payload.result && typeof payload.result === "object" && !Array.isArray(payload.result)
-      ? { kind: "ok", result: payload.result, exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "none" }) }
-      : { kind: "response_unknown", exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "malformed_payload" }) };
+    if (payload?.success === true && payload.result && typeof payload.result === "object" && !Array.isArray(payload.result)) {
+      return { kind: "ok", result: payload.result, exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "none" }) };
+    }
+    onReadFailure(classifyReadFailure({ path, status: response.status, payload }));
+    return { kind: "response_unknown", exchange: verifyExchangeDiagnostic({ httpStatus: response.status, errorClass: "malformed_payload" }) };
   };
 
   // A user-owned token verifies at /user/tokens/verify. An account-owned token
@@ -391,15 +403,23 @@ export function tokenVerifies(diagnostic) {
 
 export async function writeReadbackReceipt(context, options = {}) {
   const outputPath = join(context.runnerTemp || tmpdir(), "b216-receiver-readback-receipt.json");
-  // The token diagnostic runs first and on its own, so its result is recorded even
-  // when a later inventory read is refused.
+  // Order: refuse a bad dispatch context before any provider call; then the token
+  // diagnostic, on its own so it is recorded even when a later read is refused;
+  // then the inventory, which validates the same context again and so refuses it
+  // with the same code before its first request.
+  let contextValid = true;
+  try { validateReadbackContext(context); } catch { contextValid = false; }
   let tokenDiagnostic = null;
-  if (options.includeTokenPolicyDiagnostic === true) {
+  // At most three entries: the diagnostic makes at most three requests (user
+  // verify, account verify, token details).
+  const tokenReadFailures = [];
+  if (contextValid && options.includeTokenPolicyDiagnostic === true) {
     try {
       tokenDiagnostic = await readTokenPolicyDiagnostic({
         apiToken: context.apiToken,
         fetchImpl: options.fetchImpl,
         now: options.nowMs,
+        onReadFailure: (failure) => { tokenReadFailures.push(sanitizeReadFailure(failure)); },
       });
     } catch {
       tokenDiagnostic = unknownTokenPolicyDiagnostic();
@@ -424,6 +444,7 @@ export async function writeReadbackReceipt(context, options = {}) {
   if (tokenDiagnostic) {
     receipt.token_policy_diagnostic = tokenDiagnostic;
     receipt.token_verifies = tokenVerifies(tokenDiagnostic);
+    receipt.token_read_failures = tokenReadFailures;
   }
   await mkdir(context.runnerTemp || tmpdir(), { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });

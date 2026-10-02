@@ -654,6 +654,24 @@ export function providerFailureFields(error) {
     ...(error?.writeFailure ? { write_failure: sanitizeReadFailure(error.writeFailure) } : {}),
   };
 }
+
+const MAX_CLEANUP_FAILURES = 4;
+const CLEANUP_FAILURE_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+// A step that fails during cleanup is recorded beside the primary failure, never
+// in place of it: its failure code plus the same allowlisted request
+// classification (read_failure / write_failure, or wrangler_failure for a CLI
+// call), at most four entries. Never a body, message, ID, or token.
+export function recordCleanupFailure(receipt, error) {
+  if (!Array.isArray(receipt.cleanup_failures)) receipt.cleanup_failures = [];
+  if (receipt.cleanup_failures.length >= MAX_CLEANUP_FAILURES) return;
+  const code = typeof error?.code === "string" && CLEANUP_FAILURE_CODE.test(error.code) ? error.code : "cleanup_failed_closed";
+  receipt.cleanup_failures.push(Object.freeze({
+    failure_code: code,
+    ...providerFailureFields(error),
+    ...(error instanceof RouteError && error.providerFailure ? { wrangler_failure: sanitizeProviderFailure(error.providerFailure) } : {}),
+  }));
+}
 const PROVIDER_ACCOUNT_PATH = `/accounts/${TARGET.accountId}`;
 const PROVIDER_WORKER_PATH = `${PROVIDER_ACCOUNT_PATH}/workers/scripts/${TARGET.workerName}`;
 const UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -1143,6 +1161,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       receipt.escalation = "lead_review_required";
     } else if (workerMutationStarted && tempConfig) {
       receipt.rollback_target = priorWorkerVersion ?? "delete_worker_created_this_run";
+      receipt.cleanup_failures = [];
       try {
         if (priorWorkerVersion) {
           // The prior revision was proven route-owned with exact bindings above. A
@@ -1157,7 +1176,10 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
           // The preimage was absent, so cleanup removes the Worker this run created,
           // but only once zero ingress is proven immediately before the delete.
           let inventory;
-          try { inventory = await readInventory(); } catch { inventory = null; }
+          try { inventory = await readInventory(); } catch (inventoryError) {
+            recordCleanupFailure(receipt, inventoryError);
+            inventory = null;
+          }
           if (inventory?.worker?.exists === false && inventory.inventory_consistency === "worker_absent") {
             receipt.rollback_status = "absent_preimage_verified";
           } else {
@@ -1174,6 +1196,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
           receipt.rollback_ingress = await proveNoExternalIngress(api, { workerExists: false });
         }
       } catch (cleanupError) {
+        recordCleanupFailure(receipt, cleanupError);
         if (isExternalIngressError(cleanupError)) {
           receipt.rollback_status = "halted_external_ingress_detected";
           receipt.escalation = "lead_review_required";
