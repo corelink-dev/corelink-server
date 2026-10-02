@@ -302,9 +302,9 @@ What we validated on our side:
 What we'd like you to verify:
 - {{specific_customer_action — e.g., "re-run your failing CI job and
   confirm cache hits resume"}}
-- {{specific_customer_action — e.g., "check your dashboard at
-  https://grafana.corelink.humangr.com/lighthouse/{{slot}} for the SLO panel
-  returning"}}
+- {{specific_customer_action — e.g., "confirm the status page at
+  https://hugrl.betteruptime.com shows the affected component as
+  Operational"}}
 
 Once you confirm on your side, I'll close the ticket as resolved. If
 the issue persists or recurs, reply here immediately — we'll reopen

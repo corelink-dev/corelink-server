@@ -51,18 +51,17 @@ down, the status page is up. It is served from the vendor's own hostname on
 purpose: a branded name would have to be served through infrastructure we run, and a status page that shares our fate goes quiet in
 exactly the incident it exists to report.
 
-Eight components are tracked:
+Two components are tracked today:
 
-1. **API ingress** — `corelink-api.humangr.com` egress.
-2. **CAS read path** — content-addressable read operations.
-3. **CAS write path** — content-addressable write operations.
-4. **Action cache** — REAPI v2 action-result reads/writes.
-5. **Audit chain** — append + read + Merkle proof endpoints.
-6. **Admin plane** — `admin.corelink.humangr.com`, dashboard, billing.
-7. **Identity (Clerk)** — sign-in, MFA, token refresh.
-8. **BYOK envelope** — KMS round-trip per provider.
+1. **CoreLink API Health**
+2. **CoreLink Container Storage**
 
-Per-region status is shown for each component (where applicable).
+This page previously listed eight components — API ingress, CAS read, CAS
+write, action cache, audit chain, admin plane, identity and BYOK envelope — and
+promised per-region status for each. The status page has never carried them.
+The list is corrected here rather than left as an aspiration, because a
+component a customer cannot see the state of is not a component that is being
+reported on.
 
 ### Subscribe
 
@@ -154,7 +153,7 @@ acknowledged:
 | Security vulnerability or active exploit | `security@humangr.com` — see [Security policy](/security/policy) |
 | Service outage or degradation not on status page | `support@humangr.com` — we'll page on-call |
 | Privacy incident or data-subject concern | `privacy@humangr.com` |
-| Pentest finding under coordinated disclosure | `security@humangr.com` — PGP key at [`/.well-known/security-pgp.asc`](https://corelink.humangr.com/.well-known/security-pgp.asc) |
+| Pentest finding under coordinated disclosure | `security@humangr.com` — no PGP key is published; send the report over plain email |
 
 24/7 paging is in place across three regions per PagerDuty rotation. A
 weekly synthetic page (sent every Monday 14:00 UTC, sustained for 30 days

@@ -39,8 +39,8 @@ def http_deployment_receipts():
     del runtime["schedule_restored_empty"], runtime["tail_deleted"]
     native = {
         "contract": "corelink-staging-d1-binding-runtime-v1", "outcome": "pass",
-        "probe_nonce": "issue-1700-recovery-20261002-v13", "worker_release": SHA,
-        "scheduled_time_ms": 1790924400000,
+        "probe_nonce": "issue-1700-recovery-20261002-v15", "worker_release": SHA,
+        "scheduled_time_ms": 1790964000000,
         "parameterized_select": True, "failed_batch_observed": True,
         "rollback_absence_verified": True, "probe_table_dropped": True,
         "d1_binding_intercepted": True, "authorization_absent": True, "cf_api_token_absent": True,
@@ -64,7 +64,7 @@ def http_deployment_receipts():
             "old_nonce": "issue-1700-recovery-20261001-" + version, "worker_release": SHA,
             "prior_execution": "unknown", "prior_admission_present": False,
             "container_stopped": True, "alarm_absent": True, "tables_absent": True,
-            "completed_at_ms": 1790924401000,
+            "completed_at_ms": 1790964001000,
         }
     runtime.update(carrier="authenticated_http", probe_nonce=native["probe_nonce"],
                    origin="https://corelink-staging.gmhelmold.workers.dev", http_proof=proof,
@@ -112,6 +112,8 @@ class HttpReadinessEvidenceTests(unittest.TestCase):
             ("probe_nonce", "issue-1700-recovery-20261001-v9"),
             ("probe_nonce", "issue-1700-recovery-20261001-v11"),
             ("probe_nonce", "issue-1700-recovery-20261002-v12"),
+            ("probe_nonce", "issue-1700-recovery-20261002-v13"),
+            ("probe_nonce", "issue-1700-recovery-20261002-v14"),
             ("schedules_empty", False), ("tails_empty", False), ("tails_empty", 1),
             ("http_proof", None), ("schedule_restored_empty", True), ("tail_deleted", True),
         ):
@@ -140,13 +142,17 @@ class HttpReadinessEvidenceTests(unittest.TestCase):
             ("worker_release", "c" * 40), ("probe_nonce", "issue-1700-recovery-20261001-v9"),
             ("old_probe_release", "c" * 40), ("v5_probe_release", "c" * 40),
             ("v5_prior_execution", "complete"), ("outcome", "fail"),
-            ("scheduled_time_ms", 1790924280000), ("scheduled_time_ms", 1790931720000),
-            ("scheduled_time_ms", 1790924400001), ("scheduled_time_ms", True),
-            ("scheduled_time_ms", 1790924400000.0), ("parameterized_select", 1),
-            # Retired tuples: expired v11 and superseded v12 start buckets/nonces.
+            ("scheduled_time_ms", 1790963880000), ("scheduled_time_ms", 1790971320000),
+            ("scheduled_time_ms", 1790964000001), ("scheduled_time_ms", True),
+            ("scheduled_time_ms", 1790964000000.0), ("parameterized_select", 1),
+            # Retired tuples: expired v11, superseded v12, failed-closed v13 and expired v14
+            # start buckets/nonces.
             ("probe_nonce", "issue-1700-recovery-20261001-v11"),
             ("probe_nonce", "issue-1700-recovery-20261002-v12"),
+            ("probe_nonce", "issue-1700-recovery-20261002-v13"),
+            ("probe_nonce", "issue-1700-recovery-20261002-v14"),
             ("scheduled_time_ms", 1790884800000), ("scheduled_time_ms", 1790953200000),
+            ("scheduled_time_ms", 1790924400000), ("scheduled_time_ms", 1790935200000),
         ]
         for key, value in mutations:
             with self.subTest(key=key, value=value):
@@ -157,7 +163,7 @@ class HttpReadinessEvidenceTests(unittest.TestCase):
 
     def test_wrapper_native_receipt_must_match_and_cannot_alias_integer_true(self):
         runtime = http_deployment_receipts()[1]
-        runtime["receipt"]["scheduled_time_ms"] = 1790924520000
+        runtime["receipt"]["scheduled_time_ms"] = 1790964120000
         self.assert_rejected(runtime)
         runtime = http_deployment_receipts()[1]
         runtime["receipt"]["parameterized_select"] = 1
@@ -166,12 +172,12 @@ class HttpReadinessEvidenceTests(unittest.TestCase):
     def test_requires_both_exact_old_cleanup_proofs(self):
         for version in ("v8", "v9"):
             for key, value in (
-                ("old_release", SHA), ("old_nonce", "issue-1700-recovery-20261002-v13"),
+                ("old_release", SHA), ("old_nonce", "issue-1700-recovery-20261002-v15"),
                 ("worker_release", "c" * 40), ("prior_execution", "complete"),
                 ("prior_admission_present", 1), ("container_stopped", False),
                 ("alarm_absent", False), ("tables_absent", False),
-                ("completed_at_ms", 1790924399999), ("completed_at_ms", 1790936100000),
-                ("completed_at_ms", True), ("completed_at_ms", 1790924401000.0),
+                ("completed_at_ms", 1790963999999), ("completed_at_ms", 1790975700000),
+                ("completed_at_ms", True), ("completed_at_ms", 1790964001000.0),
             ):
                 with self.subTest(version=version, key=key, value=value):
                     runtime = http_deployment_receipts()[1]

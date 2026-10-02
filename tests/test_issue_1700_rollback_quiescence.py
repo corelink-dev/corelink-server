@@ -64,7 +64,8 @@ def never_execute_fixture(state='enabled'):
                            'subdomain': {'enabled': False, 'previews_enabled': False}},
               'post_secret': {'deployment_id': ids[4], 'version_id': ids[5], 'created_at_ms': started + 1000},
               'post_delete': None, 'candidate': candidate,
-              'preimage_bindings': [{'name': f'BINDING_{index}', 'type': 'plain_text'} for index in range(35)], 'pid': 1234}
+              'preimage_bindings': [{'name': f'BINDING_{index}', 'type': 'plain_text'} for index in range(35)],
+              'failure': None, 'pid': 1234}
     if state == 'cleaned':
         broker.update(subdomain_enabled=False, subdomain_restore_attempted=True, subdomain_restored=True,
                       secret_delete_attempted=True, secret_deleted=True, rollback_safe=True, cleanup_basis='never_execute',
@@ -162,6 +163,12 @@ class QuiescenceTests(unittest.TestCase):
             lambda o, s: s['broker']['preimage_bindings'][0].update(name='CORELINK_ADMIN_AUTH_KEY'),
             lambda o, s: s['broker'].update(extra='private'),
             lambda o, s: s['broker'].pop('admission_closed'),
+            # A recorded provider-call failure means the broker is not a clean never-execute owner.
+            lambda o, s: s['broker'].update(failure={'phase': 'cleanup_delete_secret', 'endpoint_label': 'secret_named',
+                                                      'http_status': 403, 'cf_error_codes': [10000],
+                                                      'cf_message_class': 'authentication', 'validation_failed': None,
+                                                      'timed_out': False, 'aborted': False}),
+            lambda o, s: s['broker'].pop('failure'),
         ]
         for change in changes:
             options, observation = never_execute_fixture()
@@ -297,6 +304,13 @@ class QuiescenceTests(unittest.TestCase):
         self.assertNotIn('secrets.CORELINK_ADMIN_AUTH_KEY', deploy)
         self.assertIn("input=json.dumps(payload),text=True,check=True", deploy)
         self.assertIn("env={key:os.environ[key] for key in ('PATH','HOME','LANG')", deploy)
+        start = deploy.split('        id: http_bootstrap\n', 1)[1].split('      - name:', 1)[0]
+        # A failed start prints one redacted classification line, then still fails the step.
+        failed = start.split('except subprocess.CalledProcessError:', 1)[1]
+        self.assertIn("'scripts/issue_1700_http_bootstrap.mjs','failure',broker]", failed)
+        self.assertLess(failed.index("'failure',broker"), failed.index('raise SystemExit(1)'))
+        self.assertNotIn('CLOUDFLARE_API_TOKEN', failed)
+        self.assertNotIn('payload', failed)
         runtime = deploy.split('        id: runtime_probe\n', 1)[1].split('      - name:', 1)[0]
         self.assertIn('issue_1700_http_bootstrap.mjs probe', runtime)
         self.assertNotIn('issue_1700_runtime_probe.mjs', runtime)

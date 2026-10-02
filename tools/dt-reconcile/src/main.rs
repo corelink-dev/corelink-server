@@ -17,7 +17,7 @@
 //!
 //! # Environment Variables
 //!
-//! - `DT_API_URL` — DT instance API base URL (e.g. `https://dt.corelink.humangr.com/api/v1`).
+//! - `DT_API_URL` — DT instance API base URL (e.g. `https://dependency-track.example.com/api/v1`).
 //! - `DT_API_KEY` — DT API key for authenticated findings query.
 //! - `DT_WEBHOOK_SECRET` — HMAC shared secret for DLQ replay signing.
 //!
@@ -83,7 +83,7 @@ async fn main() {
 
 async fn run_reconciliation() -> Result<ReconcileResult, Box<dyn std::error::Error>> {
     let _dt_api_url = std::env::var("DT_API_URL")
-        .unwrap_or_else(|_| "https://dt.corelink.humangr.com/api/v1".to_owned());
+        .unwrap_or_else(|_| "https://dependency-track.example.com/api/v1".to_owned());
     let _dt_api_key = std::env::var("DT_API_KEY").unwrap_or_default();
     let secret = std::env::var("DT_WEBHOOK_SECRET")
         .map(|s| s.into_bytes())

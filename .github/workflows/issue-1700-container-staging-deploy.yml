@@ -58,7 +58,7 @@ jobs:
     environment: staging
     timeout-minutes: 100
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: 6a1fc1c626fc2628823e60b9db01f5cd
     steps:
       - name: Confirm exact protected route-free operation
@@ -166,10 +166,20 @@ jobs:
                    'operation_id':os.environ['GITHUB_RUN_ID'], 'expected_release':os.environ['GITHUB_SHA'],
                    'preimage_deployment_id':os.environ['PREIMAGE_DEPLOYMENT_ID'],
                    'preimage_version_id':os.environ['PREIMAGE_VERSION_ID']}
-          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','start',
-                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
-                         input=json.dumps(payload),text=True,check=True,
-                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
+          broker=os.environ['RUNNER_TEMP']+'/staging-http-broker'
+          env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ}
+          try:
+              subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','start',broker],
+                             input=json.dumps(payload),text=True,check=True,
+                             env=env)
+          except subprocess.CalledProcessError:
+              # ONE redacted line: phase, endpoint, HTTP status, CF error codes, message class,
+              # failed validation, timeout/abort. Enums and integers only, re-validated by the reader.
+              try:
+                  subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','failure',broker],timeout=30,env=env)
+              except Exception:
+                  print('issue-1700 bootstrap failure unavailable')
+              raise SystemExit(1)
           PY
 
       - name: Deploy root with container rollout and no route
@@ -521,7 +531,7 @@ jobs:
           CANDIDATE_DEPLOYMENT_ID: ${{ steps.verify_candidate.outputs.candidate_deployment_id }}
           IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
           DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
-          WORKER_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+          WORKER_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: |
           set -euo pipefail
           pnpm exec wrangler deployments list \
@@ -608,7 +618,7 @@ jobs:
           CANDIDATE_DEPLOYMENT_ID: ${{ steps.verify_candidate.outputs.candidate_deployment_id }}
           DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
           ROLLBACK_MARKER: issue-1700-route-free-rollback-${{ github.run_id }}-${{ github.sha }}
-          WORKER_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+          WORKER_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           EXPECTED_SHA: ${{ github.sha }}
           HTTP_PROBE_STEP_OUTCOME: ${{ steps.runtime_probe.outcome }}
         run: |
@@ -799,7 +809,7 @@ jobs:
       actions: read
       contents: read
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Confirm exact protected read-only verification
@@ -925,7 +935,7 @@ jobs:
       actions: read
       contents: read
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: 6a1fc1c626fc2628823e60b9db01f5cd
       ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
       GH_TOKEN: ${{ github.token }}

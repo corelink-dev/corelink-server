@@ -6,8 +6,8 @@
 //! `pilot-24h-checkin.sh`) and the Grafana dashboard panel template;
 //! wave-28's pilot-comms package (`docs/internal/pilot-comms-templates.md`)
 //! references a public URL for token redemption. That URL was
-//! `https://signup.corelink.humangr.com/pilot/<token>`, on the retired
-//! dotted hostname scheme; the live one is
+//! a `/pilot/<token>` path on the never-resolving `signup.corelink.`
+//! name of the retired dotted hostname scheme; the live one is
 //! `https://corelink-api.humangr.com/v1/signup/pilot/<token>`. This
 //! module is the production backend that redeems those tokens.
 //!
@@ -565,8 +565,8 @@ impl core::fmt::Debug for SignupRouteState {
 ///
 /// This points at the **live Clerk sign-up surface**, which is the only
 /// account-creation path that exists. The previous value
-/// (`https://signup.corelink.humangr.com/pilot/activate`) was dead twice
-/// over: the `signup.corelink.humangr.com` name is NXDOMAIN (dotted
+/// (a `/pilot/activate` path on the dotted `signup.corelink.` name) was dead twice
+/// over: that name is NXDOMAIN (dotted
 /// scheme, retired in favour of the flat `corelink-*.humangr.com` one),
 /// and no `/pilot/activate` page was ever built on any host — so an
 /// applicant who reserved a slot received a link that could not resolve

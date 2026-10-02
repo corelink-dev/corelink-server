@@ -8,7 +8,7 @@
 //! - **Non-blocking**: network failure is silently swallowed; CLI invocation is never blocked.
 //! - **Timeout 1s**: prevents CLI hang on unreachable endpoint (R-004 risk register).
 //! - **Separate domain** `telemetry.corelink.humangr.com` (§9.4): customers can firewall it without
-//!   impacting the data plane (`corelink.humangr.com`).
+//!   impacting the data plane (`corelink-api.humangr.com`).
 //!
 //! # LINDDUN compliance
 //!

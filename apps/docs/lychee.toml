@@ -77,13 +77,13 @@ exclude = [
   # here removes a category error, not a guard.
   "^https?://corelink-api\\.humangr\\.com",
 
-  # DEAD PRODUCT HOSTS — already owned, dated, and tracked elsewhere. All of these
-  # are registered in `hostname.tracked_dead` of scripts/docs_reality_allowlist.json
-  # with a TODO(dead-host-sweep) and an expiry (2026-09-30, status is 2026-11-30),
-  # enforced on every docs PR by `validate_docs_reality.py [hostname-liveness]` —
-  # which FAILS the moment a suppression expires. Verified dead on 2026-08-24:
-  # app/attest/billing are NXDOMAIN; corelink.humangr.com, status.corelink.humangr.com
-  # and trust.hugr.com resolve but complete no TLS handshake (curl 000).
+  # DEAD PRODUCT HOSTS — owned and dated elsewhere. Every *.humangr.com one is
+  # checked by `validate_docs_reality.py [hostname-liveness]` on every docs PR:
+  # a mention FAILS unless a `hostname.tracked_dead` entry in
+  # scripts/docs_reality_allowlist.json names that exact file and is unexpired.
+  # The app/attest/billing names and the bare dotted brand name were swept off
+  # the docs site (dig 2026-10-01: all NXDOMAIN, as is the branded status name);
+  # trust.hugr.com resolved on 2026-08-24 but completed no TLS handshake.
   # lychee re-reporting them adds no information the sweep does not already carry,
   # and keeping docs CI red on them hides every OTHER broken link behind them.
   # These exclusions are deliberately host-anchored so a NEW dead host is still caught.

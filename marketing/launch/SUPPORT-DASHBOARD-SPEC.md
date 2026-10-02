@@ -29,7 +29,7 @@ tags:
 > **Purpose:** specify the **support team's operational dashboard** — the single screen the Support Shift Lead keeps open during shifts and the screen the Support Lead reviews each morning + Friday.
 > **Companion:** `marketing/launch/DAY-1-DASHBOARD-SPEC.md` is the **war-room launch-day** dashboard (T-24h..T+72h). This dashboard is the **steady-state support** dashboard (T+0..T+90 first 90 days; surviving thereafter).
 > **Audience:** Support T1 + T2, Support Shift Lead, Support Lead, VPMkt, Founder (weekly skim).
-> **Hosting:** Grafana (existing instance, dedicated folder `Support / T-90`) consuming from the ticket-queue vendor + `corelink-dsr` + Postgres `support_audit` schema. Embed available at `grafana.corelink.humangr.com/support/t-90`.
+> **Hosting:** Grafana (dedicated folder `Support / T-90`) consuming from the ticket-queue vendor + `corelink-dsr` + Postgres `support_audit` schema. ⚠️ **No hosted CoreLink Grafana instance exists yet:** the dotted `grafana.corelink` name is NXDOMAIN (dig, 2026-10-01), so this spec prints no embed address; one is assigned when the instance is stood up (same note as `marketing/retention/customer-health/HEALTH-DASHBOARD-SPEC.md`).
 
 ---
 

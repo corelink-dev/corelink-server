@@ -5,10 +5,14 @@ import { dirname, join } from "node:path";
 import {
   TARGET,
   RouteError,
+  isExternalIngressError,
   listNamedD1Databases,
   makeCloudflareApi,
   normalizeDeploymentList,
-  queryBootstrapDatabase,
+  proveNoExternalIngress,
+  providerFailureFields,
+  queryReadOnlyDatabase,
+  recordCleanupFailure,
   selectNamedResource,
   selectPriorRevision,
   validateCandidateVersion,
@@ -18,6 +22,7 @@ import {
   validateMigrationLedger,
   validatePostflight,
   validateReceiptSchema,
+  validateRouteOwnedRevision,
 } from "./deploy-route.mjs";
 import { readWorkerInventory } from "./readback-route.mjs";
 
@@ -39,6 +44,9 @@ function validateActiveWorker(inventory, version, secrets, databaseId) {
   if (typeof tag !== "string") fail("worker_revision_readback_mismatch");
   validateCandidateVersion(version, databaseId, tag);
   validatePostflight({ versionId: activeVersion, deployment: inventory.deployments.active, bindings: version?.resources?.bindings ?? [], secrets, expectedTag: tag }, databaseId, tag);
+  // The same exact check as rollback: route-created, and the receiver D1 and secret
+  // are its only bindings. Extra production bindings refuse before any send.
+  validateRouteOwnedRevision(version, databaseId);
   return activeVersion;
 }
 
@@ -80,7 +88,7 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
     account_id: TARGET.accountId,
     worker_name: TARGET.workerName,
     database_name: TARGET.databaseName,
-    database_id: TARGET.databaseId,
+    database_id: null,
     binding: TARGET.databaseBinding,
     event_id: eventId,
     customer_data_included: false,
@@ -93,15 +101,16 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
   };
   let workersDevWasEnabled = false;
   let exerciseError = null;
+  let externalIngress = false;
   try {
     const account = await api(`/accounts/${TARGET.accountId}`);
     if (account?.id !== TARGET.accountId) fail("account_identity_mismatch");
     const database = selectNamedResource(await listNamedD1Databases(api), TARGET.databaseName, "database");
-    const databaseId = validateDatabaseIdentity(database);
-    if (databaseId !== TARGET.databaseId) fail("database_identity_mismatch");
-    const tables = await queryBootstrapDatabase(api, databaseId, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+    const databaseId = api.adoptDatabase(validateDatabaseIdentity(database));
+    receipt.database_id = databaseId;
+    const tables = await queryReadOnlyDatabase(api, databaseId, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
     if (validateReceiptSchema(tables, migration) !== "applied") fail("database_schema_not_applied");
-    validateMigrationLedger(await queryBootstrapDatabase(api, databaseId, "SELECT name FROM d1_migrations ORDER BY name"));
+    validateMigrationLedger(await queryReadOnlyDatabase(api, databaseId, "SELECT name FROM d1_migrations ORDER BY name"));
 
     const inventory = await readInventory({
       context: { repository: context.repository, ref: context.ref, sha: context.sha, checkoutSha: context.checkoutSha, readbackOnly: "true", apiToken: context.apiToken },
@@ -121,6 +130,9 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
       api(`/accounts/${TARGET.accountId}/workers/subdomain`),
     ]);
     validateActiveWorker(inventory, version, secrets, databaseId);
+    // The same zero-ingress proof as deploy: no custom domain, no zone route and an
+    // empty Worker route list. Unreadable or unknown refuses before any send.
+    receipt.ingress_preflight = await proveNoExternalIngress(api, { workerExists: true });
     const endpoint = safeWorkersDevUrl(accountSubdomain?.subdomain);
     receipt.worker_revision = versionId;
     receipt.workers_dev_url = endpoint;
@@ -157,7 +169,7 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
       fail("receiver_acceptance_missing");
     }
     receipt.alert_acceptance = "http_202_accepted";
-    const rows = await queryBootstrapDatabase(api, databaseId,
+    const rows = await queryReadOnlyDatabase(api, databaseId,
       "SELECT event_id, schema_version, event, severity, component, exhausted, requeue_count, received_at_ms FROM dsr_alert_receipts WHERE event_id = ?",
       [eventId]);
     validateDsrReceiptRow(rows, eventId);
@@ -166,24 +178,36 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
   } catch (error) {
     exerciseError = error instanceof RouteError ? error.code : "synthetic_exercise_failed_closed";
     receipt.failure_code = exerciseError;
+    Object.assign(receipt, providerFailureFields(error));
+    externalIngress = isExternalIngressError(error);
   } finally {
-    try {
-      const cleanupState = await api(`${WORKER_PATH}/subdomain`);
-      workersDevWasEnabled ||= cleanupState?.enabled === true || cleanupState?.previews_enabled === true;
-      if (typeof cleanupState?.enabled !== "boolean" || typeof cleanupState?.previews_enabled !== "boolean") fail("workers_dev_cleanup_state_ambiguous");
-    } catch {
-      receipt.workers_dev_cleanup = "ambiguous_manual_disable_required";
-    }
-    if (workersDevWasEnabled && receipt.workers_dev_cleanup !== "ambiguous_manual_disable_required") {
+    if (externalIngress) {
+      // External ingress reaches the receiver: no further write, not even the
+      // workers.dev disable. The lead decides.
+      receipt.workers_dev_cleanup = "halted_external_ingress_detected";
+      receipt.escalation = "lead_review_required";
+    } else {
+      receipt.cleanup_failures = [];
       try {
-        const cleanup = await disableWorkersDev({ api, now });
-        receipt.workers_dev_cleanup = cleanup.status === "already_disabled" ? "already_disabled_verified" : cleanup.status;
-        receipt.cleanup_completed_at = cleanup.captured_at;
-      } catch {
-        receipt.workers_dev_cleanup = "ambiguous_do_not_retry";
+        const cleanupState = await api(`${WORKER_PATH}/subdomain`);
+        workersDevWasEnabled ||= cleanupState?.enabled === true || cleanupState?.previews_enabled === true;
+        if (typeof cleanupState?.enabled !== "boolean" || typeof cleanupState?.previews_enabled !== "boolean") fail("workers_dev_cleanup_state_ambiguous");
+      } catch (cleanupError) {
+        recordCleanupFailure(receipt, cleanupError);
+        receipt.workers_dev_cleanup = "ambiguous_manual_disable_required";
       }
-    } else if (receipt.workers_dev_cleanup !== "ambiguous_manual_disable_required") {
-      receipt.workers_dev_cleanup = "already_disabled_verified";
+      if (workersDevWasEnabled && receipt.workers_dev_cleanup !== "ambiguous_manual_disable_required") {
+        try {
+          const cleanup = await disableWorkersDev({ api, now });
+          receipt.workers_dev_cleanup = cleanup.status === "already_disabled" ? "already_disabled_verified" : cleanup.status;
+          receipt.cleanup_completed_at = cleanup.captured_at;
+        } catch (cleanupError) {
+          recordCleanupFailure(receipt, cleanupError);
+          receipt.workers_dev_cleanup = "ambiguous_do_not_retry";
+        }
+      } else if (receipt.workers_dev_cleanup !== "ambiguous_manual_disable_required") {
+        receipt.workers_dev_cleanup = "already_disabled_verified";
+      }
     }
   }
   receipt.status = exerciseError === null && receipt.alert_acceptance === "http_202_accepted"
