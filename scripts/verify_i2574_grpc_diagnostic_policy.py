@@ -38,8 +38,9 @@ EXPECTED = {
 }
 # EXPECTED above is the historical #2574 delivery target; the delivery
 # fixtures still prove it. Main has since moved four of these paths. This is
-# the reviewed successor of the same twelve paths at main da2d3f8db (#2868;
-# the causing PRs and the per-path review are the REBASELINE_LEDGER rows in
+# the reviewed successor of the same twelve paths at main da2d3f8db, with
+# durable_object.ts re-reviewed at main 3891e88f5 after #2882 (#2868; the
+# causing PRs and the per-path review are the REBASELINE_LEDGER rows in
 # verify_i2176_grpc_deny_gate.py). A BASE whose surface is exactly these bytes holds every
 # candidate to them: an ordinary candidate cannot move the surface, and cannot
 # downgrade it to EXPECTED. Any other BASE keeps the historical behavior.
@@ -51,7 +52,7 @@ REVIEWED_SURFACE = {
     "worker/src/index_fetch.ts": (0o644, "88b39d72414468291d768342610a568e48f036d3eebd03156c2a3fce6d3c7c3a"),
     "worker/src/index_env.ts": (0o644, "a6242775bc4a315db4fd8574f842498a54f2b63993e42ec178b50adb9a299daa"),
     "worker/src/index_env_contract.ts": (0o644, "ec259cf4d4f4c6bab582375b88a449c3d5a3d8d53c7680afdcb8e7728710eb9d"),
-    "worker/src/durable_object.ts": (0o644, "4efdd04cf2bf5b08b2509ace4a3dd71a1fe83a800b339017f54ed316eb469b86"),
+    "worker/src/durable_object.ts": (0o644, "f3dc2b18aa7f659c650c8c95394e8857ca01426bf1f2ba00a58c42d1a743caca"),
     "worker/src/durable_object_probes.ts": (0o644, "3b1a67b3c6883d23dfd29bd0a8cf18de9e9c3848b4e79e1d3d04539944081f78"),
     "worker/src/durable_object_start.ts": (0o644, "461bf03e2d3f3b5aafb7f9cc33fb4a83f1c278d80db562c10f26e5d0dbe77fcd"),
     "worker/tests/grpc_staging_transport.test.ts": (0o644, "ab3748063dda62d241c4c0cfdd482261514a2b8fd8a6f427d5ef4023c7fe4f96"),

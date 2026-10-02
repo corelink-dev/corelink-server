@@ -6,9 +6,11 @@
   secrets-matrix pin. It had also moved paths in all four delivery groups,
   so each group matched neither its old nor its new pin. Four #2574 surface
   paths had moved too. The pins are now re-baselined to the bytes of main
-  `da2d3f8db`, re-checked against main `51136d8d8`, where #2876 had moved two
-  more #2565 paths (its issue-1650 path filter and the B068 verifier). Both
-  verifiers accept that tree as their own BASE.
+  `da2d3f8db`, then re-checked against main `3891e88f5`. By then two more
+  PRs had moved pinned paths. #2876 moved two #2565 paths: its issue-1650
+  path filter and the B068 verifier. #2882 moved eight i1700 paths with its
+  V15 probe window, including `durable_object.ts`. Both verifiers accept
+  that tree as their own BASE.
 
   Every moved pin was reviewed first. The per-file ledger is
   `REBASELINE_LEDGER` in `scripts/verify_i2176_grpc_deny_gate.py`: 47 rows,
@@ -72,4 +74,5 @@
     verifier refuses its own BASE; reviewed re-baseline, candidate suites
     green"`.
   - If main moves a pinned path first, re-baseline and review it before
-    merging.
+    merging. An i1700 probe-window move does this, because the window
+    constants live in pinned i1700 paths (the V15 move touched eight).
