@@ -813,6 +813,12 @@ test("a bind interrupted by close or by a parse refusal is not fenced and cannot
   const parsed = fixture(); await parsed.broker.dispatch("prepare"); parsed.deploy();
   await assert.rejects(parsed.broker.dispatch("bind_candidate", { ...candidate(), image_digest: "latest" }));
   assert.equal(parsed.broker.snapshot().state, "unknown");
+  // A bind that outlives the broker lifetime is not fenced either.
+  let late;
+  late = fixture({ request: path => { if (path === "/deployments" && late.calls.length > 3) late.advance(MAX_LIFETIME_MS); } });
+  await late.broker.dispatch("prepare"); late.deploy();
+  await assert.rejects(late.broker.dispatch("bind_candidate", candidate()), /bootstrap_unknown/);
+  assert.equal(late.broker.snapshot().state, "unknown");
 });
 
 test("close and expiry remove an unconsumed key file without any provider call", async () => {

@@ -488,8 +488,10 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
       // A failed bind of a parsed candidate never executed the probe. Keep that positive fact,
       // fenced (no probe is ever admitted again), so cleanup can still prove ownership, undo any
       // attempted workers.dev enable and let the workflow restore the exact preimage.
+      // close() and expire() always end in UNKNOWN (expire before aborting, close after), so a
+      // bind they interrupt is never left fenced.
       const fenced = command === "bind_candidate" && state === "prepared" && candidate !== null && !probeSeen &&
-        !controller.signal.aborted && now() < deadline;
+        now() < deadline;
       state = fenced ? "bind_failed" : "unknown";
       if (fenced) admissionClosed = true;
       await persist().catch(() => {}); throw unknown();
