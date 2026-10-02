@@ -1,0 +1,4 @@
+# Reviewed clippy debt for corelink-server: one diagnostic per line, read by
+# scripts/rust_clippy_debt.py. Shrink-only. Fields: lint code, message, file,
+# source lines of the primary span, highlighted text, macro call sites.
+["clippy::placeholder", "PLACEHOLDER: replaced by the baseline measured on ubuntu-24.04", "crates/corelink-container/src/placeholder.rs", "", "", []]

@@ -21,19 +21,32 @@
 # workspace. The selector's docstring lists what it does NOT see — read it
 # before trusting a green run for a change outside every package directory.
 #
+# TIME BUDGET: under 25 minutes from the first job starting to the verdict.
+# The job timeouts below enforce it on the critical path, select -> the slower
+# of clippy/test -> verdict: 5 + 15 + 2 = 22 minutes, checked by
+# tests/test_rust_affected_packages.py (TimeBudget). The test job is split into
+# TEST_SHARDS matrix jobs, so the broadest selection (the whole workspace) no
+# longer runs every test binary one after another on one runner. Unsharded,
+# the whole-workspace test job took 12.6-15.9 minutes on ubuntu-24.04 with a
+# cold cache (runs 36942836179, 36937687131, 36939536126); in the fastest of
+# them 3.5 minutes compiled and 7.6 minutes ran test binaries in sequence.
+#
 # WHAT IT DOES NOT RUN: doctests (they compile one binary per example and would
 # dominate the budget); bench targets (clippy compiles and lints them, but
 # criterion's harness rejects `--skip`, so they are not executed); feature
 # combinations beyond the defaults; `PROPTEST_CASES` above 32 — full-intensity
 # property runs are not this lane's job, only the iteration count changes; and
-# the tests in the test job's SKIP_TESTS ledger, each with its reason. Tests in
-# its KNOWN_FAILING ledger are left out of the main run and then run on their
-# own, where each must still FAIL. Packages in the clippy job's CLIPPY_DEBT
-# ledger are left out of the `-D warnings` run. They are linted instead by a
-# ratchet: their distinct diagnostic count must equal the declared one.
+# the tests in the test job's SKIP_TESTS ledger, each with its reason. Every
+# other test must pass: a real failure on main is fixed, or bounded inside the
+# test itself as declared debt (B-126's main.rs line count is the example),
+# never skipped by the lane while it can still fail for a new reason. Packages
+# in the clippy job's CLIPPY_DEBT ledger are left out of the `-D warnings` run.
+# They are linted instead against a reviewed baseline, diagnostic by
+# diagnostic: any diagnostic the baseline does not list is red, however many
+# listed ones were fixed in the same change.
 #
 # THE VERDICT JOB is the single check to depend on. It fails unless the
-# selection succeeded AND either both clippy and test succeeded, or the
+# selection succeeded AND either clippy and every test shard succeeded, or the
 # selection was empty with a named reason for every changed path and both were
 # skipped for exactly that reason. A skipped job never reads as a pass.
 name: rust-affected-tests
@@ -56,7 +69,9 @@ on:
       - '**/clippy.toml'  # path-filter-allow: no clippy.toml today; a future one changes what clippy reports
       - '**/.clippy.toml'  # path-filter-allow: no .clippy.toml today; a future one changes what clippy reports
       - '.github/workflows/rust-affected-tests.yml'
+      - '.github/rust-affected-tests/**'
       - 'scripts/rust_affected_packages.py'
+      - 'scripts/rust_clippy_debt.py'
       - 'tests/test_rust_affected_packages.py'
     # rust-affected-paths:end pull_request
   # Post-merge: catches what two individually-green PRs break together inside
@@ -76,7 +91,9 @@ on:
       - '**/clippy.toml'  # path-filter-allow: mirrors the pull_request filter above
       - '**/.clippy.toml'  # path-filter-allow: mirrors the pull_request filter above
       - '.github/workflows/rust-affected-tests.yml'
+      - '.github/rust-affected-tests/**'
       - 'scripts/rust_affected_packages.py'
+      - 'scripts/rust_clippy_debt.py'
       - 'tests/test_rust_affected_packages.py'
     # rust-affected-paths:end push
   # Manual run = the whole workspace, for inputs the path mapping cannot see.
@@ -101,11 +118,13 @@ jobs:
   select:
     name: select affected packages
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Measured 25-30 s (runs 36930929982 through 36942836179).
+    timeout-minutes: 5
     outputs:
       mode: ${{ steps.select.outputs.mode }}
       count: ${{ steps.select.outputs.count }}
       cargo_args: ${{ steps.select.outputs.cargo_args }}
+      test_matrix: ${{ steps.select.outputs.test_matrix }}
     steps:
       # For pull_request this is the merge commit; depth 2 brings its first
       # parent, the exact base the PR was merged onto.
@@ -126,12 +145,16 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
+          # The test job's matrix width. The selection is dealt round-robin
+          # over this many shards, each a separate ubuntu-24.04 runner.
+          TEST_SHARDS: '3'
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/select"
           mkdir -p "$work"
           cargo metadata --format-version 1 --locked > "$work/metadata.json"
-          selector=(python3 scripts/rust_affected_packages.py --metadata "$work/metadata.json" --step-outputs "$GITHUB_OUTPUT")
+          selector=(python3 scripts/rust_affected_packages.py --metadata "$work/metadata.json"
+                    --test-shards "$TEST_SHARDS" --step-outputs "$GITHUB_OUTPUT")
 
           case "$EVENT" in
             workflow_dispatch)
@@ -180,25 +203,32 @@ jobs:
     needs: select
     if: needs.select.outputs.mode != 'none'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Measured 1.9-4.1 min for the whole workspace with a cold cache (runs
+    # 36930929982 through 36942836179).
+    timeout-minutes: 15
     env:
       # DECLARED CLIPPY DEBT — packages whose `-D warnings` failures on main
-      # are too many to fix in the lane's own PR. One entry per line:
-      #   <package> <distinct diagnostic count>
-      # A listed package is left out of the `-D warnings` run, so the rest of
-      # the workspace stays strict. The ratchet step then lints it with every
-      # lint capped at warn and counts its distinct diagnostics by rendered
-      # text, the way cargo dedupes them. The count must EQUAL the entry: more means a new lint
-      # failure, which is red; fewer means the entry must come down in the same
-      # PR, also red. An entry that reaches zero must be deleted. Shrink-only.
-      #   corelink-server 349
-      #     Measured on ubuntu-24.04 by run 36942141564 (2026-10-01), and equal
-      #     to the 349 diagnostics the strict run printed before this ledger
-      #     existed. Largest classes: indexing/slicing 178, unwrap/expect 130,
-      #     too_many_arguments 11. 39 come from the plain lib build; the
-      #     other 310 appear only when the lib is compiled for its tests.
+      # cannot be fixed in the lane's own PR. One package name per line; each
+      # has a reviewed baseline at $CLIPPY_DEBT_DIR/<package>.txt listing every
+      # diagnostic it is allowed, one per line. A listed package is left out of
+      # the `-D warnings` run, so the rest of the workspace stays strict. The
+      # baseline step then lints it with every lint capped at warn and compares
+      # what clippy reports with the baseline, diagnostic by diagnostic
+      # (scripts/rust_clippy_debt.py): any diagnostic the baseline does not
+      # list is red, and so is any listed one that is gone, until the baseline
+      # drops it. Shrink-only; a package whose baseline empties is deleted here.
+      #   corelink-server
+      #     Its strict run printed 349 diagnostics on main (run 36939536126,
+      #     2026-10-01): indexing/slicing, unwrap/expect, too_many_arguments and
+      #     a few others, almost all in code compiled only for its tests. They
+      #     stay debt because fixing them edits src/grpc_staging_probe.rs and
+      #     src/storage/d1_http.rs, whose sha256 are pinned by
+      #     scripts/verify_i2176_grpc_deny_gate.py and
+      #     scripts/verify_i2574_grpc_diagnostic_policy.py, and adds test-only
+      #     lint allowances, which this repo reviews one by one (B-324).
       CLIPPY_DEBT: |
-        corelink-server 349
+        corelink-server
+      CLIPPY_DEBT_DIR: .github/rust-affected-tests/clippy-debt
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
@@ -261,7 +291,7 @@ jobs:
             done
           fi
           if [ "${#lint[@]}" -eq 0 ]; then
-            echo "every selected package carries declared CLIPPY_DEBT; the ratchet step lints it"
+            echo "every selected package carries declared CLIPPY_DEBT; the baseline step lints it"
             exit 0
           fi
           df -h /
@@ -270,8 +300,8 @@ jobs:
           df -h /
           # rust-affected-clippy-scope:end
 
-      - name: Declared clippy debt does not grow (ratchet)
-        # Report the ratchet even when the strict run above failed.
+      - name: Declared clippy debt matches its reviewed baseline
+        # Report the baseline comparison even when the strict run above failed.
         if: success() || failure()
         env:
           CARGO_SCOPE: ${{ needs.select.outputs.cargo_args }}
@@ -281,10 +311,16 @@ jobs:
           read -ra scope <<< "$CARGO_SCOPE"
           fail=0
           ran=0
-          while read -r pkg baseline extra; do
+          while read -r pkg extra; do
             if [ -z "${pkg:-}" ]; then continue; fi
-            if [ -n "${extra:-}" ] || [[ ! "${baseline:-}" =~ ^[1-9][0-9]*$ ]]; then
-              echo "::error::malformed CLIPPY_DEBT entry '${pkg} ${baseline:-} ${extra:-}' — expected <package> <count >= 1>"
+            if [ -n "${extra:-}" ] || [[ ! "$pkg" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+              echo "::error::malformed CLIPPY_DEBT entry '${pkg} ${extra:-}' — expected one package name"
+              fail=1
+              continue
+            fi
+            baseline="$CLIPPY_DEBT_DIR/$pkg.txt"
+            if [ ! -f "$baseline" ]; then
+              echo "::error::CLIPPY_DEBT lists '$pkg' but its reviewed baseline $baseline does not exist"
               fail=1
               continue
             fi
@@ -302,7 +338,7 @@ jobs:
             ran=$((ran + 1))
             id="$(cargo pkgid -p "$pkg")"
             out="$(mktemp)"
-            rendered="$(mktemp)"
+            regenerated="$(mktemp)"
             rc=0
             cargo clippy --locked --keep-going --all-targets -p "$pkg" --message-format=json \
               -- -D warnings --cap-lints warn >"$out" || rc=$?
@@ -311,42 +347,14 @@ jobs:
               fail=1
               continue
             fi
-            count="$(python3 -c '
-          import json, sys
-          seen = {}
-          with open(sys.argv[1], encoding="utf-8") as stream:
-              for line in stream:
-                  if not line.startswith("{"):
-                      continue
-                  item = json.loads(line)
-                  if item.get("reason") != "compiler-message" or item.get("package_id") != sys.argv[2]:
-                      continue
-                  message = item["message"]
-                  primary = [span for span in message.get("spans", []) if span.get("is_primary")]
-                  if message.get("level") not in ("warning", "error") or not primary:
-                      continue
-                  # The rendered text, as cargo itself dedupes: identical for a lib
-                  # diagnostic repeated by lib-test, but distinct for two invocations
-                  # of one macro, which share a primary span.
-                  span = primary[0]
-                  text = message.get("rendered") or "{}:{}:{}: {}".format(
-                      span["file_name"], span["line_start"], span["column_start"], message["message"])
-                  seen.setdefault(text, text)
-          with open(sys.argv[3], "w", encoding="utf-8") as sink:
-              sink.write("".join(seen.values()))
-          print(len(seen))
-          ' "$out" "$id" "$rendered")"
-            echo "clippy debt '$pkg' ($id): $count distinct diagnostics, declared $baseline"
-            if [ "$count" -gt "$baseline" ]; then
-              cat "$rendered"
-              echo "::error::clippy debt in '$pkg' GREW from $baseline to $count — fix the new diagnostics (listed above)"
+            if ! python3 scripts/rust_clippy_debt.py --package "$pkg" --package-id "$id" \
+                --messages "$out" --baseline "$baseline" --regenerated "$regenerated"; then
               fail=1
-            elif [ "$count" -eq 0 ]; then
-              echo "::error::clippy debt in '$pkg' is now zero — delete its CLIPPY_DEBT entry so -D warnings covers it"
-              fail=1
-            elif [ "$count" -lt "$baseline" ]; then
-              echo "::error::clippy debt in '$pkg' shrank from $baseline to $count — lower its CLIPPY_DEBT entry to $count"
-              fail=1
+              if [ -s "$regenerated" ]; then
+                echo "::group::baseline that matches this run for '$pkg' (fix every NEW entry first; only FIXED entries may leave)"
+                cat "$regenerated"
+                echo "::endgroup::"
+              fi
             fi
           done <<< "$CLIPPY_DEBT"
           echo "clippy debt entries run: $ran"
@@ -354,11 +362,17 @@ jobs:
           # rust-affected-clippy-debt:end
 
   test:
-    name: cargo test (affected)
+    name: cargo test (affected, shard ${{ matrix.shard }})
     needs: select
     if: needs.select.outputs.mode != 'none'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Each shard compiles and runs about a third of the selection; unsharded,
+    # the whole workspace took 12.6-15.9 min (see TIME BUDGET above).
+    timeout-minutes: 15
+    strategy:
+      # Every shard reports, so one red shard does not hide another's failures.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select.outputs.test_matrix) }}
     env:
       # Most suites read PROPTEST_CASES (default 10 000; corelink-auth alone
       # took 58 min at that count when measured on 2026-08-30).
@@ -373,23 +387,6 @@ jobs:
       #     asserts the configured case count is >= 1000, i.e. it fails for any
       #     run that lowers PROPTEST_CASES below 1000, which this lane must.
       SKIP_TESTS: test_proptest_cases_runtime_configurable_s14
-      # KNOWN FAILURES — real defects on main that this lane exposed and that
-      # are not safe to fix inside the lane's own PR. One entry per line:
-      #   <package> <cargo target selector> <exact libtest name>
-      # The main run skips each by exact name; the step after it then runs each
-      # one ALONE and requires it to FAIL. Fixing the defect turns the lane red
-      # until its entry is deleted, so this ledger cannot outlive its reason.
-      # Each name must also resolve to exactly one `fn` (checked below).
-      # Shrink-only.
-      #   tests::b126_t1_files_remain_below_the_1000_line_ceiling
-      #     crates/corelink-container/src/main.rs is 1047 lines on main against
-      #     B-126's 1000-line ceiling. Its sha256 is pinned by
-      #     scripts/verify_i2176_grpc_deny_gate.py,
-      #     scripts/verify_i2574_grpc_diagnostic_policy.py and
-      #     scripts/backlog_verify.py, so splitting it belongs to the owners
-      #     of those pins, not to this lane.
-      KNOWN_FAILING: |
-        corelink-server --bin=corelink-server tests::b126_t1_files_remain_below_the_1000_line_ceiling
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # actions/checkout@v7.0.0
@@ -404,21 +401,18 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # One cache per shard: the shards build different dependency sets.
       - name: Cache cargo registry and dependency builds
         if: runner.environment == 'github-hosted'
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # Swatinem/rust-cache@v2.9.1
         with:
-          shared-key: rust-affected-test
+          shared-key: rust-affected-test-${{ matrix.shard }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Declared skips still name exactly one test
         run: |
           set -euo pipefail
           read -ra skips <<< "$SKIP_TESTS"
-          # A known failure is named by its libtest path; its `fn` is the last segment.
-          while read -r _pkg _target known _extra; do
-            if [ -n "${known:-}" ]; then skips+=("${known##*::}"); fi
-          done <<< "$KNOWN_FAILING"
           for name in "${skips[@]}"; do
             matches="$(git grep -n -E "fn ${name}\(" -- '*.rs' || true)"
             hits="$(printf '%s' "$matches" | grep -c . || true)"
@@ -434,83 +428,32 @@ jobs:
       # compiles and lints every bench; they are not executed here.
       - name: cargo test --tests --bins --examples
         env:
-          CARGO_SCOPE: ${{ needs.select.outputs.cargo_args }}
-          SELECTED: ${{ needs.select.outputs.count }}
+          CARGO_SCOPE: ${{ matrix.cargo_args }}
+          SELECTED: ${{ matrix.count }}
+          SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
           read -ra scope <<< "$CARGO_SCOPE"
           read -ra skips <<< "$SKIP_TESTS"
           if [ "${#scope[@]}" -eq 0 ]; then
-            echo "::error::the select job reported mode != none but no cargo scope — refusing to test nothing"
+            echo "::error::shard '$SHARD' has no cargo scope — refusing to test nothing"
             exit 1
           fi
-          while read -r _pkg _target known _extra; do
-            if [ -n "${known:-}" ]; then skips+=("$known"); fi
-          done <<< "$KNOWN_FAILING"
           skip_args=(--exact)
           for name in "${skips[@]}"; do skip_args+=(--skip "$name"); done
           # Measured 2026-10-01 on ubuntu-24.04: 85G free on / before any build,
           # so no SDK removal step (it cost 2.5 min). Printed so a squeeze shows.
           df -h /
-          echo "testing $SELECTED package(s): ${scope[*]} (skipping: ${skips[*]})"
+          echo "shard $SHARD: testing $SELECTED package(s): ${scope[*]} (skipping: ${skips[*]})"
           cargo test --locked --no-fail-fast --tests --bins --examples "${scope[@]}" -- "${skip_args[@]}"
           df -h /
-
-      # Strict expected-failure check for the KNOWN_FAILING ledger. The script
-      # between the markers is run verbatim, against a fake `cargo`, by
-      # tests/test_rust_affected_packages.py (KnownFailures) in the select job.
-      - name: Known failures still fail (strict)
-        env:
-          CARGO_SCOPE: ${{ needs.select.outputs.cargo_args }}
-        run: |
-          # rust-affected-xfail:begin
-          set -euo pipefail
-          read -ra scope <<< "$CARGO_SCOPE"
-          fail=0
-          ran=0
-          while read -r pkg target name extra; do
-            [ -n "${pkg:-}" ] || continue
-            if [ -z "${name:-}" ] || [ -n "${extra:-}" ]; then
-              echo "::error::malformed KNOWN_FAILING entry '${pkg} ${target:-} ${name:-} ${extra:-}' — expected <package> <target> <test>"
-              fail=1
-              continue
-            fi
-            selected=0
-            for ((i = 0; i < ${#scope[@]}; i++)); do
-              case "${scope[$i]}" in
-                --workspace) selected=1 ;;
-                -p) if [ "${scope[$((i + 1))]:-}" = "$pkg" ]; then selected=1; fi ;;
-              esac
-            done
-            if [ "$selected" -eq 0 ]; then
-              echo "known failure '$name': $pkg is not selected by this change, not run"
-              continue
-            fi
-            out="$(mktemp)"
-            rc=0
-            cargo test --locked -p "$pkg" "$target" -- --exact --color never "$name" >"$out" 2>&1 || rc=$?
-            cat "$out"
-            ran=$((ran + 1))
-            if [ "$rc" -ne 0 ] && grep -qxF "test $name ... FAILED" "$out"; then
-              echo "known failure '$name' still fails, as its ledger entry declares"
-            elif [ "$rc" -eq 0 ] && grep -qxF "test $name ... ok" "$out"; then
-              echo "::error::known failure '$name' now PASSES — delete its KNOWN_FAILING entry"
-              fail=1
-            else
-              echo "::error::known failure '$name' did not run and fail (cargo exit $rc) — the entry no longer names a failing test"
-              fail=1
-            fi
-          done <<< "$KNOWN_FAILING"
-          echo "known failures run: $ran"
-          exit "$fail"
-          # rust-affected-xfail:end
 
   verdict:
     name: rust-affected-tests
     needs: [select, clippy, test]
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 2
     steps:
       - name: Combine the results
         env:

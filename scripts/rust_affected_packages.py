@@ -20,8 +20,9 @@ WHAT IT SELECTS
    it adds; any other change (dependencies, lints, profiles, patches) applies
    to every package and selects the whole workspace.
 4. Toolchain and cargo configuration (`rust-toolchain.toml`,
-   `.cargo/config.toml`, `clippy.toml`) and this lane's own definition select
-   the whole workspace.
+   `.cargo/config.toml`, `clippy.toml`) and this lane's own definition (the
+   workflow, its two scripts, their teeth file and the reviewed clippy debt
+   baselines under `.github/rust-affected-tests/`) select the whole workspace.
 5. The seeds are closed over the `cargo metadata` resolve graph: every package
    that depends on a seed through a normal or build edge, transitively, plus
    every package that dev-depends on anything in that closure (its tests
@@ -62,13 +63,21 @@ from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 # This lane's own definition. A change here can alter what any package is
-# checked with, so it proves itself against the whole workspace.
+# checked with, so it proves itself against the whole workspace. The teeth file
+# is part of the definition: the select job runs it, and it holds the
+# workflow's marked scripts to their contract.
 LANE_FILES = frozenset(
     {
         ".github/workflows/rust-affected-tests.yml",
         "scripts/rust_affected_packages.py",
+        "scripts/rust_clippy_debt.py",
+        "tests/test_rust_affected_packages.py",
     }
 )
+
+# The lane's reviewed data (the clippy debt baselines). Every path under it is
+# part of the lane's definition too.
+LANE_DIR = ".github/rust-affected-tests/"
 
 # Configuration every package is compiled or linted under.
 WORKSPACE_WIDE_FILES = frozenset(
@@ -131,6 +140,25 @@ class Selection:
         for name in self.packages:
             args.extend(["-p", name])
         return args
+
+    def test_shards(self, shards: int) -> list[dict[str, str]]:
+        """Split the selection into at most `shards` disjoint `-p` lists for the
+        test job's matrix. Round-robin over the sorted names: deterministic,
+        every selected package in exactly one shard, no shard empty."""
+        _require(shards >= 1, f"--test-shards must be at least 1, got {shards}")
+        if self.mode == MODE_NONE:
+            return []
+        _require(bool(self.packages), f"mode {self.mode} selected no packages")
+        count = min(shards, len(self.packages))
+        out = []
+        for index in range(count):
+            names = self.packages[index::count]
+            out.append({
+                "shard": f"{index + 1}-of-{count}",
+                "count": str(len(names)),
+                "cargo_args": " ".join(arg for name in names for arg in ("-p", name)),
+            })
+        return out
 
 
 def _require(condition: bool, message: str) -> None:
@@ -329,7 +357,7 @@ def select(
     seeds: set[str] = set()
     whole = False
     for path in changed_paths:
-        if path in LANE_FILES:
+        if path in LANE_FILES or path.startswith(LANE_DIR):
             whole = True
             rows.append((path, MODE_WORKSPACE, "this lane's own definition changed; it proves itself on every package"))
         elif path in WORKSPACE_WIDE_FILES:
@@ -397,7 +425,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--all", metavar="REASON", help="select the whole workspace, for this stated reason")
     parser.add_argument("--base-manifest", type=Path, help="root Cargo.toml at the base revision")
     parser.add_argument("--base-lock", type=Path, help="Cargo.lock at the base revision")
-    parser.add_argument("--step-outputs", type=Path, help="append mode/count/packages/cargo_args here")
+    parser.add_argument("--step-outputs", type=Path,
+                        help="append mode/count/packages/cargo_args/test_matrix here")
+    parser.add_argument("--test-shards", type=int, default=1,
+                        help="split the test job's selection into at most this many matrix shards")
     args = parser.parse_args(argv)
 
     try:
@@ -416,11 +447,15 @@ def main(argv: list[str] | None = None) -> int:
                 raise SelectionError(f"cannot read the change list {args.changed}: {error}") from error
             paths = [p for p in raw.decode("utf-8").split("\0") if p]
             selection = select(workspace, paths, base_manifest=args.base_manifest, base_lock=args.base_lock)
+        shards = selection.test_shards(args.test_shards)
     except SelectionError as error:
         print(f"::error title=rust-affected-tests selection::{error}", file=sys.stderr)
         return 1
 
     report = render(selection, len(workspace.member_names))
+    if shards:
+        report += "\n\n**Test shards:** " + "; ".join(
+            f"{shard['shard']}: {shard['count']} package(s)" for shard in shards)
     print(report)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
@@ -432,6 +467,7 @@ def main(argv: list[str] | None = None) -> int:
             handle.write(f"count={len(selection.packages)}\n")
             handle.write(f"packages={' '.join(selection.packages)}\n")
             handle.write(f"cargo_args={' '.join(selection.cargo_args())}\n")
+            handle.write(f"test_matrix={json.dumps({'include': shards}, separators=(',', ':'))}\n")
     return 0
 
 
