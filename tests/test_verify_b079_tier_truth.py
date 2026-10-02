@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import itertools
+import string
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -114,6 +117,95 @@ class B079VerifierTests(unittest.TestCase):
             with self.assertRaisesRegex(verifier.VerificationError, "exceeds bounded input size"):
                 verifier.read(verifier.RUST_PATH)
         self.assertEqual(source.requested_size, verifier.MAX_PROOF_BYTES + 1)
+
+
+def reference_label_arm(line: str) -> str | None:
+    """Independent spec of the masked-arm shape (#1674), without regexes.
+
+    Blanks and pipes only, then ``=>``, blanks, ``Tier::`` plus ASCII
+    letters, blanks, one optional comma, blanks.  ``str.isspace`` is the
+    same set as the regex ``\\s``.
+    """
+    head, arrow, tail = line.partition("=>")
+    if not arrow or any(not (char.isspace() or char == "|") for char in head):
+        return None
+    tail = tail.lstrip()
+    if not tail.startswith("Tier::"):
+        return None
+    letters = tail[len("Tier::"):]
+    name_length = len(letters) - len(letters.lstrip(string.ascii_letters))
+    if name_length == 0:
+        return None
+    rest = letters[name_length:].lstrip()
+    if rest.startswith(","):
+        rest = rest[1:].lstrip()
+    return "Tier::" + letters[:name_length] if rest == "" else None
+
+
+class B079LabelArmShapeTests(unittest.TestCase):
+    def test_masked_arm_shape_matches_its_independent_spec_exhaustively(self) -> None:
+        # While authoring #1674 the replaced regex and LABEL_ARM_SHAPE agreed
+        # on 602,234 strings (fullmatch, match and search: spans and group);
+        # this test also passes with the replaced pattern put back.
+        tokens = (" ", "\t", "|", "=>", "=", ">", "Tier::Pro", "Tier::", "x", ",", "\n", "\x0b", "\u00a0")
+        total = matched = 0
+        disagreements = []
+        for length in range(5):
+            for parts in itertools.product(tokens, repeat=length):
+                line = "".join(parts)
+                found = verifier.LABEL_ARM_SHAPE.fullmatch(line)
+                if (found and found.group(1)) != reference_label_arm(line):
+                    disagreements.append(line)
+                total += 1
+                matched += found is not None
+        self.assertEqual(disagreements, [])
+        # 268 is also the replaced regex's positive count on this domain.
+        self.assertEqual((total, matched), (30_941, 268))
+
+    def test_real_and_masked_billing_arms_keep_their_tier(self) -> None:
+        cases = (
+            ('        "starter" | "team" => Tier::Team,', None),
+            ("                  |        => Tier::Team,", "Tier::Team"),
+            ("  |  |  => Tier::Business , ", "Tier::Business"),
+            ("=>Tier::Free", "Tier::Free"),
+            ("        _ => Tier::Team,", None),
+            ("  | => Tier::Team,,", None),
+            ("  | => Tier::Team2,", None),
+            ("|" + " |" * 5 + "x", None),
+        )
+        for line, tier in cases:
+            with self.subTest(line=line):
+                found = verifier.LABEL_ARM_SHAPE.fullmatch(line)
+                self.assertEqual(found and found.group(1), tier)
+        body = verifier.function_body(verifier.source_files()["rust"], "tier_for_billing_label")
+        self.assertEqual(verifier.rust_label_arm(body, "max"), "Tier::Business")
+        self.assertEqual(verifier.rust_label_arm(body, "starter"), "Tier::Team")
+
+    def test_pipe_run_redos_witness_finishes_in_bounded_time(self) -> None:
+        # "|" + " |" * 20 + "x" took 1.4 s with the replaced regex and each
+        # extra separator roughly doubled it.  Drive a line at the proof's
+        # line cap through the real resolver (the only caller of the shape)
+        # in a child process, so a regression fails on the timeout instead of
+        # hanging the suite.
+        program = (
+            "import importlib.util, sys\n"
+            "spec = importlib.util.spec_from_file_location('b079_redos', sys.argv[1])\n"
+            "verifier = importlib.util.module_from_spec(spec)\n"
+            "sys.modules[spec.name] = verifier\n"
+            "spec.loader.exec_module(verifier)\n"
+            "line = '|' + ' |' * ((verifier.MAX_PROOF_LINE_CHARS - 2) // 2) + 'x'\n"
+            "assert len(line) <= verifier.MAX_PROOF_LINE_CHARS\n"
+            "try:\n"
+            "    verifier.rust_label_arm(line + '\\n', 'max')\n"
+            "except verifier.VerificationError as error:\n"
+            "    print(error)\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", program, str(SCRIPT)],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["missing Rust billing mapping for 'max'"])
 
 
 if __name__ == "__main__":

@@ -47,6 +47,22 @@ class StagingQuarantineApplyContractTests(unittest.TestCase):
         self.assertNotIn("wrangler route", workflow)
         self.assertNotIn("wrangler dns", workflow)
 
+    def test_create_gate_preflight_never_accepts_existing_workers(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        # The quarantine create path deploys code and puts secrets; its gate
+        # must keep refusing existing Worker names instead of planning around them.
+        self.assertNotIn("--existing-worker-plan", workflow)
+        self.assertIn(
+            "python3 scripts/staging_bootstrap_provider.py --phase preflight\n", workflow
+        )
+        read_only = Path(".github/workflows/staging-provider-preflight.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "scripts/staging_bootstrap_provider.py --phase preflight --existing-worker-plan",
+            read_only,
+        )
+
     def test_workflow_requires_protected_main_and_staging_environment(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn(
