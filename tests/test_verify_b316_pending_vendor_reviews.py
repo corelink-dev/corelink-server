@@ -30,18 +30,17 @@ def _status(texts: dict[str, str], status: str) -> None:
     verifier._edit_json(verifier.PACKET, lambda d: d.__setitem__("status", status))(texts)
 
 
-def test_canonical_tree_is_open_on_the_b314_row_only(texts: dict[str, str]):
-    assert verifier.assess(texts) == "open"
-    found = verifier.blockers(texts)
-    assert len(found) == 4
-    assert all("explanation/privacy/gdpr.mdx: pending-b314-repin" in item for item in found)
-
-
-def test_resolving_the_b314_row_reaches_done(texts: dict[str, str]):
-    verifier._resolve_b314_row(texts)
-    _status(texts, "complete")
-    assert verifier.blockers(texts) == []
+def test_canonical_tree_is_done_with_no_blockers(texts: dict[str, str]):
     assert verifier.assess(texts) == "done"
+    assert verifier.blockers(texts) == []
+
+
+@pytest.mark.parametrize("path", [p for p in verifier.load() if p.endswith("explanation/privacy/gdpr.mdx")])
+def test_gdpr_rows_carry_the_b314_github_only_row(texts: dict[str, str], path: str):
+    assert verifier.B314_GDPR_ROW in texts[path].splitlines()
+    texts[path] = texts[path].replace("| GitHub | US |", "| PagerDuty / GitHub | US |", 1)
+    with pytest.raises(verifier.ReviewError, match="excluded-vendor mentions differ"):
+        verifier.assess(texts)
 
 
 def test_approved_population_is_exactly_the_eight():
@@ -118,7 +117,7 @@ def test_claim_lines_fail_on_a_parsed_surface(texts: dict[str, str], line: str):
 )
 def test_benign_lines_on_a_declared_surface_pass(texts: dict[str, str], line: str):
     verifier._append("marketing/sales/FAQ-MASTER.md", line)(texts)
-    assert verifier.assess(texts) == "open"
+    assert verifier.assess(texts) == "done"
 
 
 def test_register_columns_are_the_link_source(texts: dict[str, str]):
@@ -140,12 +139,16 @@ def test_generator_refuses_an_active_vendor_without_links(texts: dict[str, str])
 
 def test_consistent_link_pending_is_an_open_blocker(texts: dict[str, str]):
     verifier._replace_link_everywhere(GITHUB_DPA)(texts)
+    with pytest.raises(verifier.ReviewError, match="disagrees with derived open"):
+        verifier.assess(texts)
+    _status(texts, "pending")
     assert verifier.assess(texts) == "open"
     assert "github: link pending" in verifier.blockers(texts)
 
 
 def test_link_pending_for_a_vr_vendor_reopens_its_action(texts: dict[str, str]):
     verifier._replace_link_everywhere(RESEND_DPA)(texts)
+    _status(texts, "pending")
     with pytest.raises(verifier.ReviewError, match="VR-6 must be Owner/Open"):
         verifier.assess(texts)
     texts[verifier.REGISTER] = texts[verifier.REGISTER].replace(
@@ -168,15 +171,14 @@ def test_render_contract_rejects_a_filtered_admin_table(texts: dict[str, str]):
         verifier.assess(texts)
 
 
-def test_ledger_cannot_hide_the_b314_blocker(texts: dict[str, str]):
+def test_ledger_cannot_declare_a_new_pagerduty_disclosure(texts: dict[str, str]):
+    path = "apps/docs/docs/trust/index.mdx"
+    line = "PagerDuty receives incident metadata for every tenant."
+    verifier._append(path, line)(texts)
     ledger = json.loads(texts[verifier.LEDGER])
-    for entries in ledger["excluded_vendor_mentions"].values():
-        for entry in entries:
-            if entry["category"] == "pending-b314-repin":
-                entry["category"] = "historical"
+    ledger["excluded_vendor_mentions"][path] = [{"category": "pending-b314-repin", "line": line}]
     texts[verifier.LEDGER] = json.dumps(ledger)
-    _status(texts, "complete")
-    with pytest.raises(verifier.ReviewError, match="pending-b314-repin"):
+    with pytest.raises(verifier.ReviewError, match="unknown category"):
         verifier.assess(texts)
 
 
@@ -184,11 +186,11 @@ def test_mutation_suite_has_teeth(texts: dict[str, str]):
     assert verifier.mutation_self_test(texts) == len(verifier.MUTATIONS) >= 50
 
 
-def test_cli_reports_open_and_rejects_wrong_expectation():
+def test_cli_reports_done_and_rejects_wrong_expectation():
     script = ROOT / "scripts" / "verify_b316_pending_vendor_reviews.py"
-    opened = subprocess.run([sys.executable, str(script), "--expect", "open"], capture_output=True, text=True)
-    assert opened.returncode == 0, opened.stderr
-    assert opened.stdout.startswith("B-316 open: vendors=8")
-    assert "blocker: apps/docs/docs/explanation/privacy/gdpr.mdx: pending-b314-repin" in opened.stdout
-    wrong = subprocess.run([sys.executable, str(script), "--expect", "done"], capture_output=True, text=True)
+    done = subprocess.run([sys.executable, str(script), "--expect", "done"], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.startswith("B-316 done: vendors=8")
+    assert "blockers=0" in done.stdout
+    wrong = subprocess.run([sys.executable, str(script), "--expect", "open"], capture_output=True, text=True)
     assert wrong.returncode == 1

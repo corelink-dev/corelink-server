@@ -15,7 +15,7 @@ def _text(path: str) -> str:
 
 def test_done_baseline_and_mutations_pass() -> None:
     verify.verify()
-    assert verify.mutation_checks() == 25
+    assert verify.mutation_checks() == 35
 
 
 def test_wrapped_scoped_posture_is_not_a_false_negative() -> None:
@@ -26,12 +26,29 @@ def test_wrapped_scoped_posture_is_not_a_false_negative() -> None:
 
 
 @pytest.mark.parametrize("path", verify.LOCALES)
-def test_every_locale_has_only_the_signed_recipient_row(path: str) -> None:
+def test_every_locale_has_only_the_github_recipient_row(path: str) -> None:
     source = _text(path)
+    assert verify.CANONICAL_ROW == "| GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
     assert verify.CANONICAL_ROW in source.splitlines()
-    assert "PagerDuty / GitHub / Sigstore" not in source
-    with pytest.raises(verify.VerificationError):
-        verify.verify(overrides={path: source.replace(verify.CANONICAL_ROW, verify.PRE_DECISION_ROW, 1)})
+    assert "PagerDuty / GitHub" not in source
+    for superseded in (verify.PRE_DECISION_ROW, verify.SIGSTORE_DECISION_ROW):
+        with pytest.raises(verify.VerificationError):
+            verify.verify(overrides={path: source.replace(verify.CANONICAL_ROW, superseded, 1)})
+
+
+def test_repin_decision_is_unsigned_owner_chat_authority_and_signed_record_is_untouched() -> None:
+    import json
+
+    repin = json.loads(_text(verify.REPIN_EVIDENCE))
+    assert repin["authority"] == "owner decision in chat with the lead, 2026-10-02"
+    assert repin["signature"] is None and repin["signature_status"].startswith("Unsigned.")
+    assert repin["recipient_scope"]["preserved_recipients"] == ["GitHub"]
+    assert repin["supersedes"]["record"] == verify.EVIDENCE
+    signed = json.loads(_text(verify.EVIDENCE))
+    assert signed["recipient_scope"]["preserved_recipients"] == ["PagerDuty", "GitHub"]
+    for old, new in (('"signature": null', '"signature": "gmhelmold"'), ('"Unsigned.', '"Signed.')):
+        with pytest.raises(verify.VerificationError):
+            verify.verify(overrides={verify.REPIN_EVIDENCE: _text(verify.REPIN_EVIDENCE).replace(old, new, 1)})
 
 
 def test_decision_evidence_must_match_signed_receipt() -> None:

@@ -194,8 +194,9 @@ NOTICE_CLAIM_RE = re.compile(
 )
 
 LEDGER_CATEGORIES = {
-    # category -> blocks B-316 (state stays open while any line remains)
-    "pending-b314-repin": True,
+    # category -> blocks B-316 (state stays open while any line remains).
+    # The one blocking category, pending-b314-repin, was retired on 2026-10-02
+    # when the owner's B-314 re-pin made the GDPR row GitHub-only.
     "negative-status": False,
     "historical": False,
     "superseded-design": False,
@@ -203,7 +204,7 @@ LEDGER_CATEGORIES = {
     "not-a-vendor": False,
 }
 SUPERSEDED_BANNER = "> **Superseded data-store assumption (B-316, 2026-10-02).**"
-B314_PINNED_ROW = "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
+B314_GDPR_ROW = "| GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
 
 TRUST_HEADER = "| # | Vendor | Service to CoreLink | Customer-data class | Regions | Terms | DPA |"
 EXPLANATION_HEADER = "| Provider | Role | Region | Terms | DPA |"
@@ -893,9 +894,6 @@ def _discover(texts: dict[str, str], ledger: dict[str, Any]) -> tuple[list[str],
                 extra = sorted((Counter(hits) - declared).elements())
                 missing = sorted((declared - Counter(hits)).elements())
                 raise ReviewError(f"{path}: excluded-vendor mentions differ from the ledger: undeclared={extra[:2]} stale={missing[:2]}")
-            for entry in entries:
-                if (entry["line"] == B314_PINNED_ROW) != (entry["category"] == "pending-b314-repin"):
-                    raise ReviewError(f"{path}: only the B-314-pinned GDPR row may use pending-b314-repin, and it must")
             categories = Counter(entry["category"] for entry in entries)
             if "superseded-design" in categories and SUPERSEDED_BANNER not in text:
                 raise ReviewError(f"{path}: superseded-design mentions need the B-316 superseded banner")
@@ -1104,7 +1102,7 @@ MUTATIONS: tuple[tuple[str, Callable[[dict[str, str]], None]], ...] = (
     ("new page lists sub-processors", _new_file("apps/docs/docs/trust/vendors-new.mdx", "# Our sub-processors\n\nCloudflare, Stripe and Clerk process your data.\n")),
     ("Neon named on an undeclared published page", _append("apps/docs/docs/trust/index.mdx", "Billing lives in Neon.")),
     ("PagerDuty added to a declared paging file", _append("marketing/sales/FAQ-MASTER.md", "PagerDuty also receives your build logs.")),
-    ("GDPR row pinned by B-314 rewritten without the ledger", _edit("apps/docs/docs/explanation/privacy/gdpr.mdx", "| PagerDuty / GitHub | US |", "| PagerDuty / GitHub / Neon | US |")),
+    ("old B-314 GDPR row restored", _edit("apps/docs/docs/explanation/privacy/gdpr.mdx", B314_GDPR_ROW, B314_GDPR_ROW.replace("| GitHub |", "| PagerDuty / GitHub |", 1))),
     # links
     ("vendor DPA link deleted from the admin JSON", _edit_json(ADMIN_JSON, lambda d: d["items"][0].pop("dpa_url"))),
     ("terms link changed on one locale only", _edit(TRUST_PAGES[2], "[Terms](https://sentry.io/terms/)", "[Terms](https://sentry.io/terms-old/)")),
@@ -1150,25 +1148,11 @@ MUTATIONS: tuple[tuple[str, Callable[[dict[str, str]], None]], ...] = (
     ("non-claims replaced with fabricated claims", _edit_json(PACKET, lambda d: d.__setitem__("non_claims", ["All contracts signed.", "Legal approved.", "TIA done.", "SOC 2 verified."]))),
     ("VR-7 reopened while its links are confirmed", _edit(REGISTER, "| Owner | 2026-09-24 | Closed |", "| Owner | 2026-09-24 | Open |")),
     ("packet claims done while a link is pending", lambda t: (_replace_link_everywhere(_GITHUB_DPA)(t), _edit_json(PACKET, lambda d: d.__setitem__("status", "complete"))(t))),
-    ("packet claims done while the B-314 row is pending", _edit_json(PACKET, lambda d: d.__setitem__("status", "complete"))),
+    ("packet claims pending while nothing is pending", _edit_json(PACKET, lambda d: d.__setitem__("status", "pending"))),
     ("stale ledger allowlist line", _edit_json(LEDGER, lambda d: d["claim_line_allowlist"].setdefault(LEGAL, []).append({"line": "A line that does not exist.", "reason": "x"}))),
-    ("blocking mention reclassified as harmless", _edit_json(LEDGER, lambda d: [e.__setitem__("category", "negative-status") for e in d["excluded_vendor_mentions"]["apps/docs/docs/explanation/privacy/gdpr.mdx"] if e["category"] == "pending-b314-repin"])),
+    ("retired blocking category reintroduced", _edit_json(LEDGER, lambda d: d["categories"].__setitem__("pending-b314-repin", "x"))),
     ("superseded banner removed from a DPIA", _edit("legal/dpia/s10-billing-cross-border.md", SUPERSEDED_BANNER, "> **Design note.**")),
 )
-
-
-def _resolve_b314_row(texts: dict[str, str]) -> None:
-    """Fixture: what the B-314 owner's re-pin would do (GitHub-only row)."""
-    ledger = json.loads(texts[LEDGER])
-    for path in [p for p in texts if p.endswith("explanation/privacy/gdpr.mdx")]:
-        if B314_PINNED_ROW in texts[path]:
-            texts[path] = texts[path].replace(B314_PINNED_ROW, B314_PINNED_ROW.replace("PagerDuty / GitHub", "GitHub"))
-            entries = [e for e in ledger["excluded_vendor_mentions"].get(path, []) if e["category"] != "pending-b314-repin"]
-            if entries:
-                ledger["excluded_vendor_mentions"][path] = entries
-            else:
-                ledger["excluded_vendor_mentions"].pop(path, None)
-    texts[LEDGER] = json.dumps(ledger, indent=1, ensure_ascii=False) + "\n"
 
 
 def mutation_self_test(texts: dict[str, str]) -> int:
@@ -1185,19 +1169,15 @@ def mutation_self_test(texts: dict[str, str]) -> int:
         except ReviewError:
             continue
         raise ReviewError(f"mutation accepted: {name}")
-    # Positive control 1: a link pending consistently everywhere is a reported
-    # blocker (open), not an error.
+    # Positive control: a link pending consistently everywhere is a reported
+    # blocker (open), not an error; the unmutated tree has no blocker.
     changed = copy.deepcopy(texts)
     _replace_link_everywhere(_GITHUB_DPA)(changed)
     _edit_json(PACKET, lambda d: d.__setitem__("status", "pending"))(changed)
     if assess(changed) != "open" or "github: link pending" not in blockers(changed):
         raise ReviewError("consistent 'link pending' did not derive a reported open blocker")
-    # Positive control 2: once every blocker is resolved the gate reaches done.
-    changed = copy.deepcopy(texts)
-    _resolve_b314_row(changed)
-    _edit_json(PACKET, lambda d: d.__setitem__("status", "complete"))(changed)
-    if blockers(changed) or assess(changed) != "done":
-        raise ReviewError("resolving the declared blockers did not derive the done state")
+    if baseline == "done" and blockers(texts):
+        raise ReviewError("done state reported with blockers")
     return len(MUTATIONS)
 
 

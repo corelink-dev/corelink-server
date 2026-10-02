@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Fail-closed contract for the approved B-314 four-locale reconciliation.
 
-The signed prelaunch decision selects remove_sigstore_row for the four
-customer-data transfer tables. This verifier has done-state polarity: it exits
-zero only while all four tables match the exact approved row, the evidence and
-handoff agree with the signed decision, and the bounded CI workflow remains
-credentialless and exact-head.
+The signed 2026-09-27 prelaunch decision selected remove_sigstore_row for the
+four customer-data transfer tables. The owner's unsigned 2026-10-02 chat
+decision then removed PagerDuty from the same recipient cell (the owner
+deferred PagerDuty on #1648), leaving a GitHub-only row. This verifier has
+done-state polarity: it exits zero only while all four tables carry exactly the
+GitHub-only row (the Sigstore row and the PagerDuty / GitHub row both fail),
+the signed 2026-09-27 record is unchanged, the 2026-10-02 record supersedes
+only its PagerDuty half and says plainly that it is unsigned, the handoff and
+BACKLOG agree, and the bounded CI workflow remains credentialless and
+exact-head.
 
 Only the GDPR transfer-table truth is in scope.  This does not delete or judge
 ``cosign-sign.yml`` and does not decide the B-005/B-112/B-118 keep-versus-retire
@@ -35,23 +40,27 @@ LEGAL_REGISTER = "legal/sub-processors.md"
 VENDOR_REGISTER = "specs/_compliance/VENDOR-RISK-REGISTER.md"
 PACKET = "docs/handoff/2026-09-06-b314-gdpr-sigstore-transfer.json"
 EVIDENCE = "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json"
+REPIN_EVIDENCE = "evidence/owner-actions/B-314/gdpr-recipient-pagerduty-removal-2026-10-02.json"
 BACKLOG = "BACKLOG.md"
 WORKFLOW = ".github/workflows/issue-2602-b314-reconcile.yml"
 TEST = "tests/test_verify_b314_gdpr_sigstore.py"
 DECISION_REFERENCE = "https://github.com/HuGR-dev/corelink-server/issues/2601#issuecomment-5854794010"
 EFFECTIVE_TIMESTAMP = "2026-09-27T09:48:32Z"
 NOTICE_VERSION = "B-314-prelaunch-2026-09-27"
+REPIN_AUTHORITY = "owner decision in chat with the lead, 2026-10-02"
+PAGERDUTY_DEFERRAL_REFERENCE = "https://github.com/HuGR-dev/corelink-server/issues/1648"
 CHECKOUT_ACTION = "uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0"
 EMAIL_REGEX_EXPRESSION = 're.compile(r"[A-Z0-9._%+-]+" + chr(64) + r"[A-Z0-9.-]+\\.[A-Z]{2,}", re.IGNORECASE)'
 
 TABLE_HEADING = "| Recipient | Country | Mechanism | What's transferred |"
-CANONICAL_ROW = "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
+# The current row (owner decision 2026-10-02) and the two rows it replaced.
+CANONICAL_ROW = "| GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
+SIGSTORE_DECISION_ROW = "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
 PRE_DECISION_ROW = "| PagerDuty / GitHub / Sigstore | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
 ROW_PREFIX = re.compile(
-    r"^\|\s*PagerDuty\s*/\s*GitHub(?:\s*/\s*Sigstore)?\s*\|\s*US\s*\|"
+    r"^\|\s*GitHub\s*\|\s*US\s*\|"
     r"\s*DPF\s*\+\s*SCC\s*\+\s*sub-processor-specific posture\s*\|"
     r"\s*Operational metadata;\s*no end-user PII\s*\|\s*$",
-    re.IGNORECASE,
 )
 REQUIRED_PACKET_FIELDS = {
     "schema_version",
@@ -72,12 +81,13 @@ EXPECTED_CHANGED_PATHS = (
     *LOCALES,
     PACKET,
     EVIDENCE,
+    REPIN_EVIDENCE,
     BACKLOG,
     "scripts/verify_b314_gdpr_sigstore.py",
     TEST,
     WORKFLOW,
 )
-EXPECTED_WIRING = (*LOCALES, TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, EVIDENCE, BACKLOG, TEST)
+EXPECTED_WIRING = (*LOCALES, TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, EVIDENCE, REPIN_EVIDENCE, BACKLOG, TEST)
 
 
 class VerificationError(RuntimeError):
@@ -206,7 +216,7 @@ def _check_packet(packet: dict[str, Any]) -> None:
         raise VerificationError("B-314 owner_action must contain four recorded completion steps")
     if not action[0].startswith("RECEIPT:") or not action[1].startswith("RUN:") or not action[2].startswith("NOTICE:") or not action[3].startswith("VERIFY:"):
         raise VerificationError("B-314 owner_action completion boundaries drifted")
-    for marker in ("Legal Counsel", "DPO", "four", "PagerDuty", "GitHub", "effective timestamp", "non-claims"):
+    for marker in ("Legal Counsel", "DPO", "four", "remove PagerDuty", "preserve GitHub", REPIN_EVIDENCE, "effective timestamp", "non-claims"):
         if marker not in " ".join(action):
             raise VerificationError(f"B-314 owner action lost {marker}")
 
@@ -225,13 +235,13 @@ def _check_packet(packet: dict[str, Any]) -> None:
         raise VerificationError("B-314 evidence required fields drifted")
     if not isinstance(evidence["completion_rule"], str) or any(
         marker not in evidence["completion_rule"]
-        for marker in ("four exact", "signed remove_sigstore_row intent", "preserve PagerDuty and GitHub", "effective timestamp")
+        for marker in ("four exact", "signed remove_sigstore_row intent", "unsigned 2026-10-02 owner-chat decision", "remove PagerDuty", "preserve GitHub", "effective timestamp")
     ):
         raise VerificationError("B-314 evidence completion rule is not decision-bound")
     refs = packet["references"]
     if not isinstance(refs, list) or not all(isinstance(v, str) for v in refs):
         raise VerificationError("B-314 references must be a list of strings")
-    if any(path not in refs for path in ("BACKLOG.md#B-314", DECISION_REFERENCE, EVIDENCE, TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER)):
+    if any(path not in refs for path in ("BACKLOG.md#B-314", DECISION_REFERENCE, EVIDENCE, REPIN_EVIDENCE, PAGERDUTY_DEFERRAL_REFERENCE, TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER)):
         raise VerificationError("B-314 references omit the signed decision, evidence, or posture source")
 
 
@@ -293,7 +303,7 @@ def _check_evidence(evidence: dict[str, Any]) -> None:
         "reviewed_intent": "Remove only / Sigstore from the Recipient cell; preserve every other row field and all other table rows.",
         "files": list(LOCALES),
         "before": PRE_DECISION_ROW.removeprefix("| ").removesuffix(" |"),
-        "after": CANONICAL_ROW.removeprefix("| ").removesuffix(" |"),
+        "after": SIGSTORE_DECISION_ROW.removeprefix("| ").removesuffix(" |"),
         "preserved_fields": [
             "Country: US",
             "Mechanism: DPF + SCC + sub-processor-specific posture",
@@ -304,6 +314,55 @@ def _check_evidence(evidence: dict[str, Any]) -> None:
         raise VerificationError("B-314 four-locale diff intent is not exact")
     if evidence["signed_artifact_sha256_or_reference"] != DECISION_REFERENCE:
         raise VerificationError("B-314 signed artifact reference drifted")
+
+
+def _check_repin(record: dict[str, Any]) -> None:
+    """The unsigned 2026-10-02 owner-chat decision that removes PagerDuty."""
+    expected = {
+        "schema_version": 1,
+        "finding": "B-314",
+        "decision_id": "B-314-gdpr-recipient-pagerduty-removal-2026-10-02",
+        "decided_on": "2026-10-02",
+        "authority": REPIN_AUTHORITY,
+        "signature": None,
+        "supersedes": {
+            "record": EVIDENCE,
+            "part": "Only the PagerDuty half of the preserved recipient cell: recipient_scope.preserved_recipients and published_diff.after.",
+            "unchanged": "The signed 2026-09-27 remove_sigstore_row outcome, its receipt, notice version, effective timestamp and non-claims stand. That record is not edited.",
+        },
+        "recipient_scope": {
+            "table_scope": "Customer-data international-transfer disclosure only.",
+            "removed_recipient": "PagerDuty",
+            "preserved_recipients": ["GitHub"],
+        },
+        "published_diff": {
+            "files": list(LOCALES),
+            "before": SIGSTORE_DECISION_ROW.removeprefix("| ").removesuffix(" |"),
+            "after": CANONICAL_ROW.removeprefix("| ").removesuffix(" |"),
+            "preserved_fields": [
+                "Country: US",
+                "Mechanism: DPF + SCC + sub-processor-specific posture",
+                "What's transferred: Operational metadata; no end-user PII",
+            ],
+        },
+    }
+    keys = set(expected) | {"signature_status", "basis", "notice_determination", "non_claims"}
+    if set(record) != keys:
+        raise VerificationError(f"{REPIN_EVIDENCE}: fields drifted: {sorted(set(record) ^ keys)}")
+    for key, value in expected.items():
+        if record[key] != value:
+            raise VerificationError(f"{REPIN_EVIDENCE}: {key} differs from the 2026-10-02 owner decision")
+    status = record["signature_status"]
+    if not isinstance(status, str) or not status.startswith("Unsigned.") or "owner-chat authority" not in status:
+        raise VerificationError(f"{REPIN_EVIDENCE}: must say plainly that the decision is unsigned owner-chat authority")
+    basis = record["basis"]
+    if not isinstance(basis, dict) or basis.get("reference") != PAGERDUTY_DEFERRAL_REFERENCE or "deferred PagerDuty" not in str(basis.get("statement")):
+        raise VerificationError(f"{REPIN_EVIDENCE}: basis must reference the #1648 PagerDuty deferral")
+    if "No individual notice or re-consent is required" not in str(record["notice_determination"]):
+        raise VerificationError(f"{REPIN_EVIDENCE}: notice/re-consent determination drifted")
+    non_claims = record["non_claims"]
+    if not isinstance(non_claims, list) or not any("not signed" in str(c) for c in non_claims):
+        raise VerificationError(f"{REPIN_EVIDENCE}: non-claims must disclaim a signature")
 
 
 def _check_backlog(backlog: str) -> None:
@@ -323,7 +382,10 @@ def _check_backlog(backlog: str) -> None:
         DECISION_REFERENCE,
         EFFECTIVE_TIMESTAMP,
         NOTICE_VERSION,
-        "preserve PagerDuty and GitHub",
+        "remove PagerDuty",
+        "preserve GitHub",
+        REPIN_EVIDENCE,
+        "unsigned",
         "does not assert",
         "no individual notice or re-consent",
         "scripts/verify_b314_gdpr_sigstore.py",
@@ -343,11 +405,13 @@ def _check_locale(path: str, text: str) -> None:
     table_tail = lines[start + 1 :]
     table_end = next((i for i, line in enumerate(table_tail) if line.startswith("## ")), len(table_tail))
     table_rows = [line for line in table_tail[:table_end] if line.startswith("|")]
-    recipient_rows = [line for line in table_rows if "PagerDuty / GitHub" in line]
+    recipient_rows = [line for line in table_rows if re.search(r"\bGitHub\b", line.split("|")[1] if line.count("|") > 1 else "")]
     if len(recipient_rows) != 1 or recipient_rows[0] != CANONICAL_ROW:
         raise VerificationError(f"{path}: recipient row is not the exact approved value: {recipient_rows!r}")
     if any("sigstore" in line.lower() for line in table_rows):
         raise VerificationError(f"{path}: Sigstore was restored in the customer-data transfer table")
+    if any(re.search(r"pager[\s_-]*duty", line, re.IGNORECASE) for line in table_rows):
+        raise VerificationError(f"{path}: PagerDuty was restored in the customer-data transfer table")
     if ROW_PREFIX.fullmatch(recipient_rows[0]) is None:
         raise VerificationError(f"{path}: approved recipient row mechanism/categories drifted")
 
@@ -470,7 +534,7 @@ def _check_runtime(workflow: str) -> None:
 def verify(root: Path = ROOT, *, overrides: dict[str, str] | None = None) -> None:
     overrides = {} if overrides is None else dict(overrides)
     known = set(LOCALES) | {
-        TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, EVIDENCE, BACKLOG, WORKFLOW
+        TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, EVIDENCE, REPIN_EVIDENCE, BACKLOG, WORKFLOW
     }
     unknown = set(overrides) - known
     if unknown:
@@ -485,6 +549,7 @@ def verify(root: Path = ROOT, *, overrides: dict[str, str] | None = None) -> Non
     )
     _check_packet(_load_packet(_read(root, PACKET, overrides)))
     _check_evidence(_load_packet(_read(root, EVIDENCE, overrides)))
+    _check_repin(_load_packet(_read(root, REPIN_EVIDENCE, overrides)))
     _check_backlog(_read(root, BACKLOG, overrides))
     _check_runtime(_read(root, WORKFLOW, overrides))
 
@@ -497,7 +562,7 @@ def _must_reject(label: str, root: Path, overrides: dict[str, str]) -> None:
     raise VerificationError(f"self-test mutation unexpectedly passed: {label}")
 
 
-def _replace_b314_backlog_marker(text: str, old: str, new: str) -> str:
+def _replace_b314_backlog_marker(text: str, old: str, new: str, *, every: bool = False) -> str:
     start = text.find("### B-314 — ")
     end = text.find("\n### B-315 — ", start)
     if start < 0 or end < 0:
@@ -505,12 +570,12 @@ def _replace_b314_backlog_marker(text: str, old: str, new: str) -> str:
     block = text[start:end]
     if old not in block:
         raise VerificationError(f"B-314 BACKLOG self-test marker is absent: {old}")
-    return text[:start] + block.replace(old, new, 1) + text[end:]
+    return text[:start] + block.replace(old, new, -1 if every else 1) + text[end:]
 
 
 def mutation_checks(root: Path = ROOT) -> int:
     """Exercise row, decision, posture, and runtime restoration mutations."""
-    originals = {path: _read(root, path, {}) for path in (*LOCALES, TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, EVIDENCE, BACKLOG, WORKFLOW)}
+    originals = {path: _read(root, path, {}) for path in (*LOCALES, TRUST, GENERATOR, LEGAL_REGISTER, VENDOR_REGISTER, PACKET, EVIDENCE, REPIN_EVIDENCE, BACKLOG, WORKFLOW)}
     count = 0
     for path in LOCALES:
         row = next(line for line in originals[path].splitlines() if line == CANONICAL_ROW)
@@ -518,15 +583,29 @@ def mutation_checks(root: Path = ROOT) -> int:
         count += 1
         _must_reject("Sigstore restoration", root, {path: originals[path].replace(row, PRE_DECISION_ROW, 1)})
         count += 1
+        _must_reject("PagerDuty / GitHub row restoration", root, {path: originals[path].replace(row, SIGSTORE_DECISION_ROW, 1)})
+        count += 1
         _must_reject("mechanism mutation", root, {path: originals[path].replace("DPF + SCC + sub-processor-specific posture", "SCC only", 1)})
         count += 1
     _must_reject("decision outcome mutation", root, {PACKET: originals[PACKET].replace('"selected_outcome": "remove_sigstore_row"', '"selected_outcome": "retain_and_document_transfer"', 1)})
     count += 1
     _must_reject("signed receipt reference mutation", root, {EVIDENCE: originals[EVIDENCE].replace("issuecomment-5854794010", "issuecomment-1", 1)})
     count += 1
+    _must_reject("signed record edited to drop PagerDuty", root, {EVIDENCE: originals[EVIDENCE].replace('"preserved_recipients": ["PagerDuty", "GitHub"]', '"preserved_recipients": ["GitHub"]', 1)})
+    count += 1
+    _must_reject("re-pin claims a signature", root, {REPIN_EVIDENCE: originals[REPIN_EVIDENCE].replace('"signature": null', '"signature": "gmhelmold"', 1)})
+    count += 1
+    _must_reject("re-pin keeps PagerDuty", root, {REPIN_EVIDENCE: originals[REPIN_EVIDENCE].replace('"preserved_recipients": ["GitHub"]', '"preserved_recipients": ["PagerDuty", "GitHub"]', 1)})
+    count += 1
+    _must_reject("re-pin hides that it is unsigned", root, {REPIN_EVIDENCE: originals[REPIN_EVIDENCE].replace('"signature_status": "Unsigned.', '"signature_status": "Signed.', 1)})
+    count += 1
+    _must_reject("re-pin loses the #1648 basis", root, {REPIN_EVIDENCE: originals[REPIN_EVIDENCE].replace(PAGERDUTY_DEFERRAL_REFERENCE, "https://example.invalid/1648", 1)})
+    count += 1
     _must_reject("backlog done-state mutation", root, {BACKLOG: _replace_b314_backlog_marker(originals[BACKLOG], "status: done", "status: open")})
     count += 1
     _must_reject("backlog signed receipt removal", root, {BACKLOG: _replace_b314_backlog_marker(originals[BACKLOG], DECISION_REFERENCE, "https://example.invalid/decision")})
+    count += 1
+    _must_reject("backlog re-pin record removal", root, {BACKLOG: _replace_b314_backlog_marker(originals[BACKLOG], REPIN_EVIDENCE, "evidence/owner-actions/B-314/missing.json", every=True)})
     count += 1
     trust_mutation = originals[TRUST].replace("no customer-data path is wired", "customer-data path is wired", 1)
     _must_reject("trust current-flow posture removal", root, {TRUST: trust_mutation})
@@ -569,7 +648,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"B-314 done-state reconciliation FAIL: {exc}", file=sys.stderr)
         return 1
     suffix = f"; mutations={mutations}" if args.self_test else ""
-    print(f"B-314 done-state reconciliation PASS: exact four-locale removal + signed decision evidence{suffix}")
+    print(f"B-314 done-state reconciliation PASS: exact four-locale GitHub-only row + signed 2026-09-27 and unsigned 2026-10-02 owner decisions{suffix}")
     return 0
 
 

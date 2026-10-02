@@ -3,7 +3,6 @@
  "backlog_id": "B-316",
  "purpose": "Declared exceptions for scripts/verify_b316_pending_vendor_reviews.py. Every published line that names PagerDuty or Neon, every unparsed file that lists sub-processors, every allowed dated/approval line, and every locale-copy difference is declared here with a reason; anything else on the published tree fails the gate.",
  "categories": {
-  "pending-b314-repin": "The GDPR transfer-table row '| PagerDuty / GitHub | US | ... |' is held byte-exact by the signed B-314 decision (evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json) and its verifier. It still names the deferred vendor, so B-316 stays open until the B-314 owner re-pins it.",
   "negative-status": "States that the vendor is not shipped or not applicable; it is not a disclosure that the vendor processes data.",
   "historical": "Inside a document explicitly marked as preserved historical, non-operative text; it states no current processing.",
   "superseded-design": "Inside a draft that carries the B-316 superseded-design banner stating Neon was never used and none of its measures are in place.",
@@ -29,10 +28,6 @@
    {
     "category": "negative-status",
     "line": "| Neon PITR backup | Neon PITR not shipped; no Neon backups to tombstone |"
-   },
-   {
-    "category": "pending-b314-repin",
-    "line": "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
    }
   ],
   "apps/docs/docs/explanation/privacy/lgpd-full.mdx": [
@@ -73,10 +68,6 @@
    {
     "category": "negative-status",
     "line": "| Neon-PITR-Backup | Neon-PITR nicht ausgeliefert; keine Neon-Backups zum Tombstonen |"
-   },
-   {
-    "category": "pending-b314-repin",
-    "line": "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
    }
   ],
   "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/privacy/lgpd-full.mdx": [
@@ -117,10 +108,6 @@
    {
     "category": "negative-status",
     "line": "| Backup PITR de Neon | El PITR de Neon no está implementado; no hay backups de Neon para aplicar tombstone |"
-   },
-   {
-    "category": "pending-b314-repin",
-    "line": "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
    }
   ],
   "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/explanation/privacy/lgpd-full.mdx": [
@@ -161,10 +148,6 @@
    {
     "category": "negative-status",
     "line": "| Backup PITR do Neon | O PITR do Neon não foi lançado; não há backups do Neon para aplicar tombstone |"
-   },
-   {
-    "category": "pending-b314-repin",
-    "line": "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
    }
   ],
   "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/privacy/lgpd-full.mdx": [

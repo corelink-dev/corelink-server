@@ -10,6 +10,7 @@ on:
       - "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx"
       - "docs/handoff/2026-09-06-b314-gdpr-sigstore-transfer.json"
       - "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json"
+      - "evidence/owner-actions/B-314/gdpr-recipient-pagerduty-removal-2026-10-02.json"
       - "BACKLOG.md"
       - "scripts/verify_b314_gdpr_sigstore.py"
       - "tests/test_verify_b314_gdpr_sigstore.py"
@@ -48,6 +49,7 @@ jobs:
               "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx",
               "docs/handoff/2026-09-06-b314-gdpr-sigstore-transfer.json",
               "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json",
+              "evidence/owner-actions/B-314/gdpr-recipient-pagerduty-removal-2026-10-02.json",
               "BACKLOG.md",
               "scripts/verify_b314_gdpr_sigstore.py",
               "tests/test_verify_b314_gdpr_sigstore.py",

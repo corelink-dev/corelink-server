@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "finding": "B-314",
+  "decision_id": "B-314-gdpr-recipient-pagerduty-removal-2026-10-02",
+  "decided_on": "2026-10-02",
+  "authority": "owner decision in chat with the lead, 2026-10-02",
+  "signature": null,
+  "signature_status": "Unsigned. Recorded as owner-chat authority, like the owner's other 2026-10-01 and 2026-10-02 decisions. There is no signed issue comment and no Legal Counsel or DPO signature for this decision.",
+  "supersedes": {
+    "record": "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json",
+    "part": "Only the PagerDuty half of the preserved recipient cell: recipient_scope.preserved_recipients and published_diff.after.",
+    "unchanged": "The signed 2026-09-27 remove_sigstore_row outcome, its receipt, notice version, effective timestamp and non-claims stand. That record is not edited."
+  },
+  "basis": {
+    "reference": "https://github.com/HuGR-dev/corelink-server/issues/1648",
+    "statement": "The owner deferred PagerDuty on 2026-10-01 in an owner-decision comment on #1648 (2026-10-01T21:32:06Z). PagerDuty is not in the approved launch sub-processor set (B-316, #2593)."
+  },
+  "recipient_scope": {
+    "table_scope": "Customer-data international-transfer disclosure only.",
+    "removed_recipient": "PagerDuty",
+    "preserved_recipients": ["GitHub"]
+  },
+  "published_diff": {
+    "files": [
+      "apps/docs/docs/explanation/privacy/gdpr.mdx",
+      "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx",
+      "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx",
+      "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx"
+    ],
+    "before": "PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII",
+    "after": "GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII",
+    "preserved_fields": ["Country: US", "Mechanism: DPF + SCC + sub-processor-specific posture", "What's transferred: Operational metadata; no end-user PII"]
+  },
+  "notice_determination": "No individual notice or re-consent is required: there are no customers and all four GDPR pages remain drafts not approved for publication.",
+  "non_claims": [
+    "This record is not signed and does not claim a Legal Counsel or DPO signature.",
+    "It does not claim that PagerDuty ever received customer personal data, or that it never did.",
+    "It does not establish or change GitHub's transfer basis; the row's country, mechanism and description are carried over unchanged from the signed 2026-09-27 decision."
+  ]
+}
