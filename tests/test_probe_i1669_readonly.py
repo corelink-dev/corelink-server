@@ -127,18 +127,26 @@ def _ledger(*row_ids: str):
     return residency.Ledger(refs=frozenset(residency.row_ref(i) for i in row_ids), sha256="e" * 64)
 
 
-def _run_against(connection: sqlite3.Connection, tmp_path: Path, monkeypatch, ledger) -> tuple[int, dict, str]:
+PRODUCTION_DB = probe.RESIDENCY.OWNER_ATTESTED_DATABASE_ID
+STAGING_DB = "00000000-1111-2222-3333-444444444444"
+
+
+def _run_against(
+    connection: sqlite3.Connection, tmp_path: Path, monkeypatch, ledger, *, database_id: str = PRODUCTION_DB, tamper=None
+) -> tuple[int, dict, str]:
     def fake_request(account_id: str, token: str, database_id: str, query: str):
         assert query in probe.QUERY_ALLOWLIST.values()
         cursor = connection.execute(query)
         names = [c[0] for c in cursor.description]
         rows = [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+        if tamper is not None:
+            tamper(query, rows)
         payload = {"success": True, "result": [{"success": True, "results": rows}]}
         return payload, "d" * 64
 
     monkeypatch.setattr(probe, "_request", fake_request)
     output = tmp_path / "receipt.json"
-    code = probe.run("a" * 32, "11111111-1111-1111-1111-111111111111", "token", output, ledger=ledger)
+    code = probe.run("a" * 32, database_id, "token", output, ledger=ledger)
     text = output.read_text(encoding="utf-8")
     return code, json.loads(text), text
 
@@ -189,6 +197,32 @@ def test_a_vanished_attested_row_is_reported_and_exits_1(tmp_path: Path, monkeyp
 def test_an_oversized_residual_is_indeterminate_not_truncated(tmp_path: Path, monkeypatch) -> None:
     code, receipt, _ = _run_against(_policy_b_population(unexplained=65), tmp_path, monkeypatch, _ledger())
     assert (code, receipt["status"]) == (2, "INDETERMINATE")
+    # Pins LIMIT MAX+1: with LIMIT MAX the read would be truncated silently and
+    # only a later reconciliation would fire, for a different reason.
+    assert "exceeds 64 rows" in receipt["reason"]
+
+
+def test_the_attestation_is_never_applied_to_a_non_production_database(tmp_path: Path, monkeypatch) -> None:
+    # Review fix 2: the owner decision covers the production D1 only. Against
+    # any other database the ledger is not consulted, even when it would match.
+    ids = [f"unexplained-row-{n:02d}" for n in range(3)]
+    code, receipt, _ = _run_against(
+        _policy_b_population(unexplained=3), tmp_path, monkeypatch, _ledger(*ids), database_id=STAGING_DB
+    )
+    assert (code, receipt["status"], receipt["reason"]) == (1, "FAILED", probe.RESIDENCY.FAILED_REASON)
+    assert receipt["attestation"] is None
+
+
+def test_backfill_erased_rows_must_reconcile_with_residency(tmp_path: Path, monkeypatch) -> None:
+    def tamper(query: str, rows: list[dict]) -> None:
+        if query is probe.BACKFILL_COMPLETENESS_SQL:
+            rows[0]["erased_orphan_rows"] = 0
+
+    code, receipt, _ = _run_against(
+        _policy_b_population(unexplained=0), tmp_path, monkeypatch, _ledger(), tamper=tamper
+    )
+    assert (code, receipt["status"]) == (2, "INDETERMINATE")
+    assert receipt["reason"] == "backfill completeness does not reconcile with residency"
 
 
 def test_residual_refs_query_is_allowlisted_and_read_only() -> None:

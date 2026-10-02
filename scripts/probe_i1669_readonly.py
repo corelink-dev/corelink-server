@@ -7,7 +7,9 @@ The lane has no SQL input.  It sends only the statements in
 ``MAX_RESIDUAL_REFS``). Those ids are hashed in memory into opaque row
 references and discarded; the receipt (schema v2) retains only counts, the
 references and SHA-256 bindings, never a row id, tenant id or payload. The
-references are matched against the owner-attested ledger. It never performs a
+references are matched against the owner-attested ledger only when the
+database is the production D1 the owner decision covers; against any other
+database the receipt's ``attestation`` is ``null``. It never performs a
 backfill or changes D1, DSR, or audit data.
 
 Exit status: 0 when the full non-empty population is provably satisfied
@@ -236,8 +238,12 @@ def run(account_id: str, database_id: str, token: str, output: Path, ledger: Any
         # fails below.  No row id, payload or tenant identifier is retained.
         receipt["counts"] = observations
         counts = RESIDENCY.Counts(**observations["residency"])
-        attestation = RESIDENCY.attest(residual_refs, ledger if ledger is not None else RESIDENCY.load_ledger())
-        receipt["attestation"] = attestation.summary()
+        # The owner decision covers the production D1 only: against any other
+        # database the ledger is never consulted and the block is null.
+        attestation = None
+        if RESIDENCY.attestation_applies("production", database_id):
+            attestation = RESIDENCY.attest(residual_refs, ledger if ledger is not None else RESIDENCY.load_ledger())
+        receipt["attestation"] = attestation.summary() if attestation is not None else None
         state, reason = RESIDENCY.assess(counts, environment="production", attestation=attestation)
         population = observations["population"]
         completeness = observations["backfill_completeness"]

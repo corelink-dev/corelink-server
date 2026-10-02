@@ -66,10 +66,31 @@ On 2026-10-02 the owner attested that the 13 unexplained historical rows of
 #1669 are their own prelaunch test traffic
 (<https://github.com/HuGR-dev/corelink-server/issues/1669#issuecomment-5959812722>).
 `scripts/i1669_owner_attested_rows.json` records that decision. It holds
-exactly 13 opaque row references, each
+exactly 13 row references, each
 `sha256("corelink.issue-1669.audit-row-ref.v1" + NUL + audit_outbox.id)`, plus
-the authority URL and `log_confirmed: false`. No tenant id, row id or payload
-is in the repository; the restricted crosswalk stays with the data owner.
+the authority URL, the decision date and `log_confirmed: false`. No tenant id,
+row id or payload is in the repository; the restricted crosswalk stays with
+the data owner. The references are **unkeyed** hashes: they do not reveal an
+id, but anyone who can guess a candidate id (the id embeds tenant, event type,
+digest, principal and time) can confirm it. Treat them as confirmable, not
+secret.
+
+The ledger's canonical SHA-256
+(`aa62625a9dc979442e356603512968d51e69e9fd61b03ef313cc1d3d24c13cae`) is pinned
+in code as `OWNER_ATTESTED_LEDGER_SHA256`. A ledger that differs in any way is
+rejected, including a swap of one reference for another valid-looking one;
+changing it needs a reviewed code change. Record that digest on #1669 next to
+the decision so the authority binds the exact content.
+
+The attestation applies only in the `production` environment against the
+production D1 (`d64742ea-e102-40b2-a844-ff02e3f94562`) the decision covers:
+
+- a live `staging`/`test` run, or a `production` run against another database
+  id, never reads the residual and never consults the ledger;
+- `--residual-refs-input` is refused (exit 2) outside `--environment production`;
+- a probe receipt from another database records `attestation: null`;
+- the classifier rejects an attestation block on any receipt whose
+  `database_id_sha256` is not the production D1's.
 
 `RESIDUAL_REFS_SQL` reads the ids of the unexplained residual. The ids are
 hashed in memory and never retained or printed, and a residual of more than 64
@@ -85,9 +106,10 @@ rows is indeterminate. The hashed references are matched against the ledger:
   "owner-attested row references are missing…". It is never silently passed.
 
 The verifier applies the attestation only when given the residual read
-(`--residual-refs-input` alongside `--input`, or a live `--database-id` read);
-without it the 13 rows stay `unevaluable`. Changing the ledger needs a new
-recorded owner decision, and the count of 13 is also pinned in code.
+(`--residual-refs-input` alongside `--input`, or a live `--database-id` read
+of the production D1); without it the 13 rows stay `unevaluable`. Changing the
+ledger needs a new recorded owner decision and a reviewed change of the pinned
+digest; the count of 13 is also pinned in code.
 
 ## Offline classification of a retained hosted receipt
 
@@ -123,6 +145,15 @@ classified `owner_attested_prelaunch_test_traffic` with the
 **`DOCUMENTED_EXCEPTION_OWNER_ATTESTED_NOT_LOG_CONFIRMED`** disposition.
 Schema-v1 receipts carry no references, so the attestation is never applied to
 them.
+
+Each receipt's recorded verdict is verified under the rule it was written
+with. Schema v1 predates policy B, so a v1 verdict is checked against the
+pre-policy-B rule (every unevaluable row, erased lineage included, is
+`FAILED`) and reported exactly as recorded in `source_status`, with
+`verdict_rule: pre_policy_b`. The policy-B reading of the same counts appears
+separately as `current_policy_status` and never changes `overall_disposition`.
+A historical receipt is never upgraded; closure needs a fresh schema-v2
+receipt.
 
 Keep the restricted crosswalk and any row-level evidence in the approved
 restricted store. Do not rewrite or delete retained audit rows to make the

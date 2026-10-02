@@ -383,24 +383,26 @@ def test_repository_ledger_is_exactly_13_opaque_refs_citing_the_owner_decision()
 
 
 @pytest.mark.parametrize(
-    "mutate",
+    ("mutate", "message"),
     [
-        lambda d: d["refs"].append("0" * 64),  # a 14th reference
-        lambda d: d["refs"].pop(),  # only 12
-        lambda d: d.__setitem__("refs", d["refs"][:12] + d["refs"][:1]),  # duplicate
-        lambda d: d.__setitem__("authority", "https://example.invalid/decision"),
-        lambda d: d.__setitem__("log_confirmed", True),
-        lambda d: d.__setitem__("category", "satisfied"),
-        lambda d: d.__setitem__("tenant_ids", []),  # unexpected field
-        lambda d: d["refs"].__setitem__(0, "not-a-hash"),
+        # Each case matches its OWN check's message, so removing that check is
+        # caught even though the pinned digest would also reject the ledger.
+        (lambda d: d["refs"].append("0" * 64), "exactly 13"),  # a 14th reference
+        (lambda d: d["refs"].pop(), "exactly 13"),  # only 12
+        (lambda d: d.__setitem__("refs", d["refs"][:12] + d["refs"][:1]), "exactly 13"),  # duplicate
+        (lambda d: d.__setitem__("authority", "https://example.invalid/decision"), "authority"),
+        (lambda d: d.__setitem__("log_confirmed", True), "log_confirmed"),
+        (lambda d: d.__setitem__("category", "satisfied"), "category"),
+        (lambda d: d.__setitem__("tenant_ids", []), "fields are missing or unexpected"),
+        (lambda d: d["refs"].__setitem__(0, "not-a-hash"), "exactly 13"),
     ],
 )
-def test_ledger_is_rejected_unless_it_is_exactly_the_recorded_decision(tmp_path: Path, mutate) -> None:
+def test_ledger_is_rejected_unless_it_is_exactly_the_recorded_decision(tmp_path: Path, mutate, message: str) -> None:
     data = json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
     mutate(data)
     path = tmp_path / "ledger.json"
     path.write_text(json.dumps(data), encoding="utf-8")
-    with pytest.raises(verifier.Indeterminate):
+    with pytest.raises(verifier.Indeterminate, match=message):
         verifier.load_ledger(path)
 
 
@@ -538,6 +540,124 @@ def test_cli_applies_the_attestation_without_printing_row_ids(
     assert report["states"][ATTESTED] == 2 and report["states"]["erased_lineage_exception"] == 1
     assert report["attestation"]["attested_rows"] == 2
     assert "row-u1" not in out and "gone" not in out
+
+
+# --- review fix 3: the ledger content is pinned to the reviewed decision -----
+
+def test_a_forged_ledger_with_one_reference_swapped_is_rejected(tmp_path: Path) -> None:
+    data = json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
+    swapped = "f" * 64
+    assert swapped not in data["refs"]
+    data["refs"] = sorted([swapped, *data["refs"][1:]])  # still 13 unique, valid-looking hex refs
+    forged = tmp_path / "ledger.json"
+    forged.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    with pytest.raises(verifier.Indeterminate, match="digest pinned in code"):
+        verifier.load_ledger(forged)
+
+
+def test_the_pinned_digest_is_the_repository_ledger() -> None:
+    assert verifier.load_ledger().sha256 == verifier.OWNER_ATTESTED_LEDGER_SHA256
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("decided_on", "2030-01-01"), ("ref_scheme", "sha256(audit_outbox.id)")],
+)
+def test_ledger_decision_date_and_scheme_are_checked_explicitly(tmp_path: Path, field: str, value: str) -> None:
+    data = json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
+    data[field] = value
+    path = tmp_path / "ledger.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(verifier.Indeterminate, match="decision date or reference scheme"):
+        verifier.load_ledger(path)
+
+
+def test_partition_refuses_more_attested_rows_than_unexplained_orphans() -> None:
+    counts = production_with_unexplained(13)
+    over = verifier.Attestation(residual_refs=(), attested_rows=14, unattested_rows=0,
+                                attested_refs_missing=0, ledger_sha256="e" * 64)
+    with pytest.raises(verifier.Indeterminate, match="owner-attested rows exceed"):
+        verifier.partition(counts, over)
+
+
+# --- review fix 2: the owner ledger applies to the production D1 only --------
+
+def clean_db() -> sqlite3.Connection:
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        """
+        CREATE TABLE tenant (tenant_id TEXT PRIMARY KEY, primary_region TEXT);
+        CREATE TABLE audit_outbox (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, region TEXT,
+                                   event_type TEXT NOT NULL DEFAULT 'customer.event');
+        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL);
+        INSERT INTO tenant VALUES ('t', 'enam');
+        INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('r1', 't', 'enam');
+        INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('r2', 't', 'enam');
+        INSERT INTO dsr_erasure_log VALUES ('someone-else');
+        """
+    )
+    return connection
+
+
+def run_live(monkeypatch: pytest.MonkeyPatch, connection: sqlite3.Connection, argv: list[str]) -> tuple[int, list[str]]:
+    sent: list[str] = []
+
+    def fake_live(account_id, token, database_id, timeout, sql=verifier.RESIDENCY_SQL):
+        sent.append("residual" if sql == verifier.RESIDUAL_REFS_SQL else "residency")
+        cursor = connection.execute(sql)
+        names = [c[0] for c in cursor.description]
+        return d1([dict(zip(names, row, strict=True)) for row in cursor.fetchall()])
+
+    monkeypatch.setattr(verifier, "_live_payload", fake_live)
+    code = verifier.main(argv + ["--account-id", "a" * 32, "--api-token", "token"])
+    return code, sent
+
+
+@pytest.mark.parametrize("environment", ["staging", "test"])
+def test_live_clean_non_production_database_is_compliant_and_never_reads_the_residual(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], environment: str
+) -> None:
+    code, sent = run_live(monkeypatch, clean_db(),
+                          ["--environment", environment, "--database-id", "00000000-1111-2222-3333-444444444444"])
+    report = json.loads(capsys.readouterr().out)
+    assert (code, report["status"], report["attestation"]) == (0, "COMPLIANT", None)
+    assert sent == ["residency"]
+
+
+def test_live_production_environment_against_another_database_never_applies_the_ledger(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, sent = run_live(monkeypatch, clean_db(),
+                          ["--environment", "production", "--database-id", "00000000-1111-2222-3333-444444444444"])
+    report = json.loads(capsys.readouterr().out)
+    assert (code, report["status"], report["attestation"]) == (0, "COMPLIANT", None)
+    assert sent == ["residency"]
+
+
+def test_live_production_d1_reads_the_residual_and_applies_the_ledger(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Positive control for the two tests above: the scope check is not simply "never".
+    code, sent = run_live(monkeypatch, clean_db(),
+                          ["--environment", "production", "--database-id", verifier.OWNER_ATTESTED_DATABASE_ID])
+    report = json.loads(capsys.readouterr().out)
+    assert sent == ["residency", "residual"]
+    # The clean database lacks the 13 attested rows: reported, and it fails.
+    assert (code, report["reason"]) == (1, verifier.ATTESTED_MISSING_REASON)
+    assert report["attestation"]["attested_refs_missing"] == 13
+
+
+@pytest.mark.parametrize("environment", ["staging", "test"])
+def test_cli_refuses_residual_input_outside_production(tmp_path: Path, environment: str) -> None:
+    connection = clean_db()
+    residency = dict(zip((c[0] for c in connection.execute(verifier.RESIDENCY_SQL).description),
+                         connection.execute(verifier.RESIDENCY_SQL).fetchone(), strict=True))
+    (tmp_path / "residency.json").write_text(json.dumps(d1([residency])), encoding="utf-8")
+    (tmp_path / "residual.json").write_text(json.dumps(d1([])), encoding="utf-8")
+    with pytest.raises(SystemExit) as exited:
+        verifier.main(["--environment", environment, "--input", str(tmp_path / "residency.json"),
+                       "--residual-refs-input", str(tmp_path / "residual.json")])
+    assert exited.value.code == 2
 
 
 def test_cli_residual_input_requires_the_residency_input(tmp_path: Path) -> None:

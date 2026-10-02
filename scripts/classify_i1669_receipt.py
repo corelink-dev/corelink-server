@@ -9,8 +9,16 @@ ledger (owner decision 2026-10-02) are the
 ``owner_attested_prelaunch_test_traffic`` class with the
 ``DOCUMENTED_EXCEPTION_OWNER_ATTESTED_NOT_LOG_CONFIRMED`` disposition; the
 attestation is recomputed from the receipt's references and the current
-ledger. Every other unexplained orphan remains unevaluable and keeps the issue
-open; v1 receipts carry no references, so all of their unexplained orphans do.
+ledger, and applies only when the receipt's database is the production D1 the
+owner decision covers. Every other unexplained orphan remains unevaluable and
+keeps the issue open; v1 receipts carry no references, so all of their
+unexplained orphans do.
+
+A receipt's recorded verdict is verified under the rule it was written with:
+schema v1 predates policy B, so a v1 verdict is checked against
+``assess_pre_policy_b`` and kept exactly as recorded (``source_status``). The
+current-policy reading is reported separately as ``current_policy_status`` and
+never changes ``overall_disposition``.
 """
 
 from __future__ import annotations
@@ -152,16 +160,25 @@ def classify(receipt: object, ledger: Any = None) -> dict[str, Any]:
             raise ReceiptError("receipt residual references exceed the enumeration bound")
         if residual["residual_rows"] != len(refs) or queries[-1]["row_count"] != len(refs):
             raise ReceiptError("receipt residual row count does not match its references")
-        try:
-            # Recomputed from the references and the CURRENT ledger: the probe's
-            # own attestation block is checked against this, never trusted.
-            attestation = PROBE.RESIDENCY.attest(
-                refs, ledger if ledger is not None else PROBE.RESIDENCY.load_ledger()
-            )
-        except PROBE.RESIDENCY.Indeterminate as exc:
-            raise ReceiptError(f"owner attestation is indeterminate: {exc}") from exc
-        if receipt.get("attestation") != attestation.summary():
-            raise ReceiptError("receipt attestation does not match its references and the current ledger")
+        in_scope = receipt["database_id_sha256"] == PROBE.RESIDENCY.database_id_digest(
+            PROBE.RESIDENCY.OWNER_ATTESTED_DATABASE_ID
+        )
+        if not in_scope:
+            # The owner decision covers the production D1 only.
+            if receipt.get("attestation") is not None:
+                raise ReceiptError("receipt applies the owner attestation outside the production D1 it covers")
+        else:
+            try:
+                # Recomputed from the references and the CURRENT ledger: the
+                # probe's own attestation block is checked against this, never
+                # trusted.
+                attestation = PROBE.RESIDENCY.attest(
+                    refs, ledger if ledger is not None else PROBE.RESIDENCY.load_ledger()
+                )
+            except PROBE.RESIDENCY.Indeterminate as exc:
+                raise ReceiptError(f"owner attestation is indeterminate: {exc}") from exc
+            if receipt.get("attestation") != attestation.summary():
+                raise ReceiptError("receipt attestation does not match its references and the current ledger")
     residency = _nonnegative_fields(counts["residency"], PROBE.RESIDENCY.COUNT_FIELDS, "residency")
     population = _nonnegative_fields(counts["population"], PROBE.POPULATION_FIELDS, "population")
     completeness = _nonnegative_fields(
@@ -175,7 +192,15 @@ def classify(receipt: object, ledger: Any = None) -> dict[str, Any]:
     ):
         raise ReceiptError("tenant counts exceed their orphan row counts")
     try:
+        # The current policy (B + owner attestation) and, separately, the rule
+        # the receipt was written under: v1 receipts predate policy B and are
+        # verified against the pre-policy-B rule, exactly as recorded.
         state, reason = PROBE.RESIDENCY.assess(model, environment="production", attestation=attestation)
+        if is_v2:
+            recorded_state, recorded_reason, verdict_rule = state, reason, "policy_b_owner_attestation"
+        else:
+            recorded_state, recorded_reason = PROBE.RESIDENCY.assess_pre_policy_b(model, environment="production")
+            verdict_rule = "pre_policy_b"
     except PROBE.RESIDENCY.Indeterminate as exc:
         raise ReceiptError(f"residency partition is indeterminate: {exc}") from exc
     total = model.total_rows
@@ -196,7 +221,7 @@ def classify(receipt: object, ledger: Any = None) -> dict[str, Any]:
     for key in ("orphan_rows", "reserved_public_rows", "invalid_public_rows", "erased_orphan_rows"):
         if completeness[key] != residency[key]:
             raise ReceiptError(f"backfill {key} does not reconcile with residency")
-    if receipt.get("status") != state or receipt.get("reason") != reason:
+    if receipt.get("status") != recorded_state or receipt.get("reason") != recorded_reason:
         raise ReceiptError("receipt verdict does not match its counts")
 
     attested_rows = attestation.attested_rows if attestation is not None else 0
@@ -268,9 +293,12 @@ def classify(receipt: object, ledger: Any = None) -> dict[str, Any]:
         )
     ):
         raise ReceiptError("disposition classes do not match the policy-B residency states")
-    if state == PROBE.RESIDENCY.COMPLIANT:
+    # The disposition follows the verdict the receipt RECORDED (verified under
+    # its own rule); the current-policy re-reading is reported separately and
+    # never upgrades a historical receipt.
+    if recorded_state == PROBE.RESIDENCY.COMPLIANT:
         overall = "COMPLIANT"
-    elif state == PROBE.RESIDENCY.DOCUMENTED_EXCEPTION:
+    elif recorded_state == PROBE.RESIDENCY.DOCUMENTED_EXCEPTION:
         overall = "DOCUMENTED_EXCEPTION"
     else:
         overall = "KEEP_OPEN"
@@ -278,8 +306,11 @@ def classify(receipt: object, ledger: Any = None) -> dict[str, Any]:
         "schema": "corelink.issue-1669.aggregate-classification.v2",
         "issue": 1669,
         "receipt_sha256": digest,
-        "source_status": state,
-        "source_reason": reason,
+        "receipt_schema": schema,
+        "verdict_rule": verdict_rule,
+        "source_status": recorded_state,
+        "source_reason": recorded_reason,
+        "current_policy_status": state,
         "classification_scope": "aggregate_counts_only",
         "exception_policy": PROBE.RESIDENCY.ERASED_LINEAGE_POLICY,
         "attestation": attestation.summary() if attestation is not None else None,

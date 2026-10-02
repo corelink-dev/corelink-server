@@ -1,8 +1,11 @@
 name: issue-1669 read-only residency evidence
 
-# Manual owner lane for #1669.  It runs only aggregate SELECT statements from
-# scripts/probe_i1669_readonly.py.  It never performs a backfill, migration,
-# DSR operation, audit rewrite, deploy, or issue mutation.
+# Manual owner lane for #1669.  It runs only the read-only SELECT allowlist of
+# scripts/probe_i1669_readonly.py: three aggregates plus one bounded row-id
+# read of the unexplained residual (at most 64 audit_outbox ids). Those ids
+# embed identifiers; the probe hashes them in memory and the receipt keeps
+# only opaque references and counts, never an id.  It never performs a
+# backfill, migration, DSR operation, audit rewrite, deploy, or issue mutation.
 on:
   workflow_dispatch:
     inputs:
