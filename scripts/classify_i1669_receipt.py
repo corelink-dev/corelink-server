@@ -14,11 +14,15 @@ owner decision covers. Every other unexplained orphan remains unevaluable and
 keeps the issue open; v1 receipts carry no references, so all of their
 unexplained orphans do.
 
-A receipt's recorded verdict is verified under the rule it was written with:
-schema v1 predates policy B, so a v1 verdict is checked against
-``assess_pre_policy_b`` and kept exactly as recorded (``source_status``). The
-current-policy reading is reported separately as ``current_policy_status`` and
-never changes ``overall_disposition``.
+A receipt is verified under the contract it was written with. Its query hashes
+are checked against the hashes pinned for its schema (``QUERY_SHA256_V1`` /
+``QUERY_SHA256_V2``). Schema v1 predates policy B, so a v1 verdict is checked
+against ``assess_pre_policy_b`` and kept exactly as recorded
+(``source_status``). v1 counted erased lineage as ANY ``dsr_erasure_log`` row,
+while v2 counts only a completed d1 erasure, so a v1 receipt is not re-judged:
+its ``current_policy_status`` and ``states`` are ``null`` and its erased class
+keeps the pre-policy ``PRESERVE_AUDIT_EVIDENCE`` disposition. For v2,
+``current_policy_status`` equals the recorded verdict.
 """
 
 from __future__ import annotations
@@ -116,6 +120,8 @@ def classify(receipt: object, ledger: Any = None) -> dict[str, Any]:
 
     queries = receipt.get("queries")
     expected_names = tuple(PROBE.QUERY_ALLOWLIST) if is_v2 else PROBE.AGGREGATE_QUERY_NAMES
+    # Each schema is verified against the query hashes pinned for it.
+    pinned_hashes = PROBE.QUERY_SHA256_V2 if is_v2 else PROBE.QUERY_SHA256_V1
     if not isinstance(queries, list) or len(queries) != len(expected_names):
         raise ReceiptError("receipt does not contain the complete query allowlist")
     for item, name in zip(queries, expected_names, strict=True):
@@ -123,7 +129,7 @@ def classify(receipt: object, ledger: Any = None) -> dict[str, Any]:
             raise ReceiptError(f"receipt query {name} fields are missing or unexpected")
         if item.get("name") != name:
             raise ReceiptError("receipt query order or name is unexpected")
-        if item.get("query_sha256") != PROBE._hash(PROBE.QUERY_ALLOWLIST[name]):
+        if item.get("query_sha256") != pinned_hashes[name]:
             raise ReceiptError(f"receipt query hash does not match {name}")
         if not isinstance(item.get("query_sha256"), str) or not re.fullmatch(
             r"[0-9a-f]{64}", item["query_sha256"]
@@ -243,7 +249,9 @@ def classify(receipt: object, ledger: Any = None) -> dict[str, Any]:
             "class": "erased_orphan_retained_audit",
             "rows": model.erased_orphan_rows,
             "tenants": model.erased_orphan_tenants,
-            "disposition": "DOCUMENTED_EXCEPTION_ERASED_LINEAGE",
+            # v1 counted ANY dsr_erasure_log row as erased; only v2 measures the
+            # completed d1 erasure that policy B's exception requires.
+            "disposition": "DOCUMENTED_EXCEPTION_ERASED_LINEAGE" if is_v2 else "PRESERVE_AUDIT_EVIDENCE",
         },
         {
             "class": PROBE.RESIDENCY.OWNER_ATTESTED_CATEGORY,
@@ -280,9 +288,13 @@ def classify(receipt: object, ledger: Any = None) -> dict[str, Any]:
     if sum(item["rows"] for item in classes) != total:
         raise ReceiptError("disposition classes do not conserve the full population")
     by_class = {item["class"]: item["rows"] for item in classes}
-    states = PROBE.RESIDENCY.partition(model, attestation)
+    # v1 counts measured erased lineage with the pre-narrowing predicate (ANY
+    # dsr_erasure_log row), so they cannot be re-judged under policy B: no
+    # policy-B states and no current-policy status for a v1 receipt.
+    states = PROBE.RESIDENCY.partition(model, attestation) if is_v2 else None
+    current_status = state if is_v2 else None
     category = PROBE.RESIDENCY.OWNER_ATTESTED_CATEGORY
-    if (
+    if states is not None and (
         states["erased_lineage_exception"] != by_class["erased_orphan_retained_audit"]
         or states[category] != by_class[category]
         or states["unevaluable"]
@@ -310,7 +322,7 @@ def classify(receipt: object, ledger: Any = None) -> dict[str, Any]:
         "verdict_rule": verdict_rule,
         "source_status": recorded_state,
         "source_reason": recorded_reason,
-        "current_policy_status": state,
+        "current_policy_status": current_status,
         "classification_scope": "aggregate_counts_only",
         "exception_policy": PROBE.RESIDENCY.ERASED_LINEAGE_POLICY,
         "attestation": attestation.summary() if attestation is not None else None,

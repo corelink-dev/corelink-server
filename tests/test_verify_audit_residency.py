@@ -97,10 +97,10 @@ def sql_counts(
             tenant_id TEXT NOT NULL, region TEXT,
             event_type TEXT NOT NULL DEFAULT 'corelink.cas.read.served'
         );
-        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL);
+        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL, backend TEXT, outcome TEXT);
         INSERT INTO tenant VALUES ('tenant-e', 'enam');
         INSERT INTO audit_outbox (tenant_id, region) VALUES ('tenant-e', 'enam');
-        INSERT INTO dsr_erasure_log VALUES ('erased-tenant');
+        INSERT INTO dsr_erasure_log VALUES ('erased-tenant', 'd1', 'erased');
         """
     )
     if include_mismatch:
@@ -479,9 +479,9 @@ def residual_db() -> sqlite3.Connection:
         CREATE TABLE tenant (tenant_id TEXT PRIMARY KEY, primary_region TEXT);
         CREATE TABLE audit_outbox (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, region TEXT,
                                    event_type TEXT NOT NULL DEFAULT 'customer.event');
-        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL);
+        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL, backend TEXT, outcome TEXT);
         INSERT INTO tenant VALUES ('live', 'enam');
-        INSERT INTO dsr_erasure_log VALUES ('erased');
+        INSERT INTO dsr_erasure_log VALUES ('erased', 'd1', 'erased');
         INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('row-live', 'live', 'enam');
         INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('row-erased', 'erased', 'weur');
         INSERT INTO audit_outbox (id, tenant_id, region, event_type)
@@ -542,6 +542,109 @@ def test_cli_applies_the_attestation_without_printing_row_ids(
     assert "row-u1" not in out and "gone" not in out
 
 
+# --- erased lineage = a COMPLETED d1 erasure (TL decision, 2026-10-02) -------
+
+PROBE_SPEC = importlib.util.spec_from_file_location(
+    "probe_for_erasure_tests", Path(__file__).parents[1] / "scripts" / "probe_i1669_readonly.py"
+)
+assert PROBE_SPEC and PROBE_SPEC.loader
+probe_module = importlib.util.module_from_spec(PROBE_SPEC)
+sys.modules[PROBE_SPEC.name] = probe_module
+PROBE_SPEC.loader.exec_module(probe_module)
+
+
+def erasure_db(*log_rows: tuple) -> sqlite3.Connection:
+    """One live tenant, one orphan tenant 'gone' with one audit row, and its erasure-log rows."""
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        """
+        CREATE TABLE tenant (tenant_id TEXT PRIMARY KEY, primary_region TEXT);
+        CREATE TABLE audit_outbox (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, region TEXT,
+                                   event_type TEXT NOT NULL DEFAULT 'customer.event');
+        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL, backend TEXT, outcome TEXT);
+        INSERT INTO tenant VALUES ('live', 'enam');
+        INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('row-live', 'live', 'enam');
+        INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('row-gone', 'gone', 'wnam');
+        """
+    )
+    connection.executemany("INSERT INTO dsr_erasure_log VALUES ('gone', ?, ?)", log_rows)
+    return connection
+
+
+def erasure_view(connection: sqlite3.Connection) -> tuple[int, int, int]:
+    """(erased_orphan_rows, unexplained_orphan_rows, residual ids) from all three SQL statements."""
+    cursor = connection.execute(verifier.RESIDENCY_SQL)
+    residency = dict(zip((c[0] for c in cursor.description), cursor.fetchone(), strict=True))
+    cursor = connection.execute(probe_module.BACKFILL_COMPLETENESS_SQL)
+    backfill = dict(zip((c[0] for c in cursor.description), cursor.fetchone(), strict=True))
+    assert backfill["erased_orphan_rows"] == residency["erased_orphan_rows"]
+    residual = connection.execute(verifier.RESIDUAL_REFS_SQL).fetchall()
+    return residency["erased_orphan_rows"], residency["unexplained_orphan_rows"], len(residual)
+
+
+def test_erased_lineage_values_are_named_and_match_the_erasure_code() -> None:
+    assert verifier.ERASED_LINEAGE_BACKEND == "d1"
+    assert verifier.ERASED_LINEAGE_OUTCOMES == ("erased",)
+    root = Path(__file__).parents[1] / "crates"
+    event = (root / "corelink-privacy-erasure-worker" / "src" / "event.rs").read_text(encoding="utf-8")
+    adapter = (root / "corelink-container" / "src" / "routes" / "dsr" / "adapter_d1.rs").read_text(encoding="utf-8")
+    # The value is the erasure code's own mnemonic for a completed effective erasure ...
+    assert 'Self::Erased { .. } => "erased"' in event
+    # ... the d1 backend deletes the tenant root row and reports Erased ...
+    assert 'self.count_then_delete("tenant", "tenant_id", &tid)' in adapter
+    assert "Ok(BackendErasureOutcome::Erased {" in adapter
+    # ... and its NotApplicable is a legal-hold PRESERVE, which is why it is excluded.
+    assert "if legal_hold {\n            return Ok(BackendErasureOutcome::NotApplicable);" in adapter
+
+
+@pytest.mark.parametrize(
+    "log_rows",
+    [
+        (("d1", "erased"),),
+        # an earlier failed attempt followed by a completed one still completed
+        (("d1", "failed"), ("d1", "erased")),
+        (("stripe", "not_applicable"), ("d1", "erased")),
+    ],
+)
+def test_a_completed_d1_erasure_is_erased_lineage(log_rows: tuple) -> None:
+    assert erasure_view(erasure_db(*log_rows)) == (1, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "log_rows",
+    [
+        (("d1", "pseudonymized"),),
+        (("d1", "partial_failure"),),
+        (("d1", "failed"),),
+        (("d1", "not_applicable"),),  # legal hold: the data was preserved
+        (("d1", "ERASED"),),  # unknown spelling
+        (("d1", "bogus"),),  # unknown value
+        (("d1", None),),  # NULL outcome
+        (("d1", ""),),
+        ((None, "erased"),),  # NULL backend
+        (("stripe", "erased"),),  # another backend completed, d1 did not
+        (("kv", "erased"), ("neon_main", "erased"), ("d1", "failed")),
+        (),  # no erasure-log row at all
+    ],
+)
+def test_any_other_outcome_leaves_the_row_unevaluable_and_in_the_residual(log_rows: tuple) -> None:
+    connection = erasure_db(*log_rows)
+    assert erasure_view(connection) == (0, 1, 1)
+    cursor = connection.execute(verifier.RESIDENCY_SQL)
+    counts = verifier.Counts(**dict(zip((c[0] for c in cursor.description), cursor.fetchone(), strict=True)))
+    environment = "production" if counts.erasure_log_rows else "staging"
+    assert verifier.assess(counts, environment=environment)[0] == "FAILED"
+    assert verifier.partition(counts)["unevaluable"] == 1
+
+
+def test_query_hashes_are_pinned_per_receipt_schema() -> None:
+    live = {name: probe_module._hash(query) for name, query in probe_module.QUERY_ALLOWLIST.items()}
+    assert live == probe_module.QUERY_SHA256_V2
+    # v1 = the queries of the retained receipts (evidence SHA 58228ac2), unchanged forever.
+    assert probe_module.QUERY_SHA256_V1["residency"] != probe_module.QUERY_SHA256_V2["residency"]
+    assert probe_module.QUERY_SHA256_V1["population"] == probe_module.QUERY_SHA256_V2["population"]
+
+
 # --- review fix 3: the ledger content is pinned to the reviewed decision -----
 
 def test_a_forged_ledger_with_one_reference_swapped_is_rejected(tmp_path: Path) -> None:
@@ -589,11 +692,11 @@ def clean_db() -> sqlite3.Connection:
         CREATE TABLE tenant (tenant_id TEXT PRIMARY KEY, primary_region TEXT);
         CREATE TABLE audit_outbox (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, region TEXT,
                                    event_type TEXT NOT NULL DEFAULT 'customer.event');
-        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL);
+        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL, backend TEXT, outcome TEXT);
         INSERT INTO tenant VALUES ('t', 'enam');
         INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('r1', 't', 'enam');
         INSERT INTO audit_outbox (id, tenant_id, region) VALUES ('r2', 't', 'enam');
-        INSERT INTO dsr_erasure_log VALUES ('someone-else');
+        INSERT INTO dsr_erasure_log VALUES ('someone-else', 'd1', 'erased');
         """
     )
     return connection

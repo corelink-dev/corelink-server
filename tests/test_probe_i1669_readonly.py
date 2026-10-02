@@ -30,7 +30,7 @@ def aggregate_fixture(*, invalid_public_region: bool = False) -> tuple[dict, dic
             region TEXT NOT NULL,
             event_type TEXT NOT NULL
         );
-        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL);
+        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL, backend TEXT, outcome TEXT);
         INSERT INTO tenant VALUES ('tenant-e', 'enam');
         INSERT INTO tenant VALUES ('tenant-w', 'wnam');
         INSERT INTO audit_outbox VALUES ('tenant-e', 'enam', 'customer.event');
@@ -38,7 +38,7 @@ def aggregate_fixture(*, invalid_public_region: bool = False) -> tuple[dict, dic
         INSERT INTO audit_outbox VALUES ('erased-tenant', 'weur', 'customer.event');
         INSERT INTO audit_outbox VALUES ('unexplained-tenant', 'apac', 'customer.event');
         INSERT INTO audit_outbox VALUES ('_public', 'wnam', 'public.revoke');
-        INSERT INTO dsr_erasure_log VALUES ('erased-tenant');
+        INSERT INTO dsr_erasure_log VALUES ('erased-tenant', 'd1', 'erased');
         """
     )
     if invalid_public_region:
@@ -106,12 +106,12 @@ def _policy_b_population(*, unexplained: int) -> sqlite3.Connection:
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL, region TEXT NOT NULL, event_type TEXT NOT NULL
         );
-        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL);
+        CREATE TABLE dsr_erasure_log (tenant_id TEXT NOT NULL, backend TEXT, outcome TEXT);
         INSERT INTO tenant VALUES ('tenant-e', 'enam');
         INSERT INTO audit_outbox VALUES ('row-live', 'tenant-e', 'enam', 'customer.event');
         INSERT INTO audit_outbox VALUES ('row-erased', 'erased-tenant', 'weur', 'customer.event');
         INSERT INTO audit_outbox VALUES ('row-public', '_public', 'wnam', 'public.revoke');
-        INSERT INTO dsr_erasure_log VALUES ('erased-tenant');
+        INSERT INTO dsr_erasure_log VALUES ('erased-tenant', 'd1', 'erased');
         """
     )
     for n in range(unexplained):
@@ -223,6 +223,29 @@ def test_backfill_erased_rows_must_reconcile_with_residency(tmp_path: Path, monk
     )
     assert (code, receipt["status"]) == (2, "INDETERMINATE")
     assert receipt["reason"] == "backfill completeness does not reconcile with residency"
+
+
+def test_the_probe_refuses_an_allowlist_that_drifted_from_its_pinned_hashes(monkeypatch) -> None:
+    drifted = dict(probe.QUERY_ALLOWLIST)
+    drifted["residency"] = drifted["residency"] + " "
+    monkeypatch.setattr(probe, "QUERY_ALLOWLIST", drifted)
+    try:
+        probe._validate_allowlist()
+    except probe.ProbeError as exc:
+        assert "pinned v2 hashes" in str(exc)
+    else:
+        raise AssertionError("a drifted allowlist was accepted")
+
+
+def test_an_orphan_whose_d1_erasure_failed_is_residual_not_erased_lineage(tmp_path: Path, monkeypatch) -> None:
+    connection = _policy_b_population(unexplained=0)
+    connection.execute("INSERT INTO audit_outbox VALUES ('failed-row', 'failed-tenant', 'enam', 'customer.event')")
+    connection.execute("INSERT INTO dsr_erasure_log VALUES ('failed-tenant', 'd1', 'failed')")
+    code, receipt, _ = _run_against(connection, tmp_path, monkeypatch, _ledger())
+    residency = receipt["counts"]["residency"]
+    assert (residency["erased_orphan_rows"], residency["unexplained_orphan_rows"]) == (1, 1)
+    assert receipt["counts"]["residual_refs"]["residual_rows"] == 1
+    assert (code, receipt["status"]) == (1, "FAILED")
 
 
 def test_residual_refs_query_is_allowlisted_and_read_only() -> None:

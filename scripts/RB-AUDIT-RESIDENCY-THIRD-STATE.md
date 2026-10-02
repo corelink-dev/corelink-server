@@ -48,17 +48,33 @@ visible through `weur_orphan_rows`; it cannot become a green result.
 
 Erased tenants remain legitimate retained audit evidence. Their residency
 cannot be re-proven because their `primary_region` no longer exists. Under the
-#1669 **policy B** owner decision (2026-10-01), a customer row whose tenant has
-no `tenant` row but does have a `dsr_erasure_log` entry (`erased_orphan_rows`)
-is a documented exception: the `states` object reports it as
-`erased_lineage_exception`, separately from `unevaluable`. It is never
-`satisfied` and never `COMPLIANT`, and it does not by itself fail the check. The
-aggregate SQL is unchanged, so the raw `counts.unevaluable_rows` still includes
-these rows; `states.unevaluable = unevaluable_rows - erased_orphan_rows` is the
-failing bucket. The unexplained-orphan counts stay in `states.unevaluable`
-specifically so they cannot disappear from the denominator. The exception
-covers only rows with a recorded erasure; it never covers a missing tenant with
-no erasure record.
+#1669 **policy B** owner decision (2026-10-01), a customer row is erased lineage
+(`erased_orphan_rows`) when its tenant has no `tenant` row and its tenant's
+**D1 erasure completed**. That means a `dsr_erasure_log` entry with
+`backend = 'd1' AND outcome = 'erased'` (`ERASED_LINEAGE_BACKEND`,
+`ERASED_LINEAGE_OUTCOMES`). The `d1` backend is the one that deletes the
+`tenant` row, and `erased` is its only outcome that means the row was removed.
+
+The erasure code's generic success set (`erased`, `pseudonymized`,
+`not_applicable`) is deliberately not used. For `d1`, `not_applicable` means a
+legal hold **preserved** the data, and `pseudonymized` never applies. A tenant
+whose erasure log shows only `partial_failure`, `failed`, `not_applicable`, an
+unknown value, NULL, or another backend's success stays `unevaluable`, and its
+rows join the unexplained residual. A failed or pending erasure never hides a
+row that was not erased.
+
+`states` reports these rows as `erased_lineage_exception`, separately from
+`unevaluable`. They are never `satisfied` and never `COMPLIANT`, and they do
+not by themselves fail the check. The raw `counts.unevaluable_rows` still
+includes them; `states.unevaluable = unevaluable_rows - erased_orphan_rows`
+(minus owner-attested rows) is the failing bucket. The unexplained-orphan
+counts stay in `states.unevaluable` specifically so they cannot disappear from
+the denominator.
+
+On 2026-10-02 a read-only aggregate read of production found all 3,526
+erased-lineage rows (170 tenants) covered by a `d1`/`erased` entry, with no
+`failed` or `partial_failure` on any backend. The narrowing removed no row
+from the exception.
 
 ## Owner-attested prelaunch test traffic (row-scoped)
 
@@ -146,12 +162,20 @@ classified `owner_attested_prelaunch_test_traffic` with the
 Schema-v1 receipts carry no references, so the attestation is never applied to
 them.
 
-Each receipt's recorded verdict is verified under the rule it was written
-with. Schema v1 predates policy B, so a v1 verdict is checked against the
-pre-policy-B rule (every unevaluable row, erased lineage included, is
-`FAILED`) and reported exactly as recorded in `source_status`, with
-`verdict_rule: pre_policy_b`. The policy-B reading of the same counts appears
-separately as `current_policy_status` and never changes `overall_disposition`.
+Each receipt is verified under the contract it was written with.
+
+- **Query hashes:** they are pinned per schema in `QUERY_SHA256_V1` and
+  `QUERY_SHA256_V2` (probe). The probe refuses to run if its live allowlist
+  drifts from the v2 pin.
+- **v1 receipts:** schema v1 predates policy B, so a v1 verdict is checked
+  against the pre-policy-B rule (every unevaluable row, erased lineage
+  included, is `FAILED`). It is reported exactly as recorded in
+  `source_status`, with `verdict_rule: pre_policy_b`.
+- **No re-judging of v1:** v1 counted *any* `dsr_erasure_log` row as erased
+  lineage, so its counts cannot be judged under the narrowed policy. A v1
+  receipt therefore has `current_policy_status: null` and `states: null`, and
+  its erased class keeps the pre-policy `PRESERVE_AUDIT_EVIDENCE` disposition.
+
 A historical receipt is never upgraded; closure needs a fresh schema-v2
 receipt.
 

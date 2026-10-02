@@ -10,8 +10,10 @@ or event type are unevaluable, not an automatic exception.
 An unevaluable row is evidence that the predicate cannot be proven; it is a
 failing result, never a clean result.
 
-A retained DSR-erasure orphan (``erased_orphan_rows``: no tenant row, but the
-tenant has a ``dsr_erasure_log`` entry) is NOT unevaluable under the #1669
+A retained DSR-erasure orphan (``erased_orphan_rows``: no tenant row, and the
+tenant has a ``dsr_erasure_log`` entry recording a COMPLETED D1 erasure,
+``backend='d1' AND outcome='erased'``; see ``ERASED_LINEAGE_OUTCOMES``) is NOT
+unevaluable under the #1669
 policy B owner decision of 2026-10-01: it is classified in its own
 ``erased_lineage_exception`` state. That state is never ``satisfied`` and never
 ``COMPLIANT``; a population whose only non-satisfied customer rows are erased
@@ -74,9 +76,28 @@ PUBLIC_EVENTS = (
 )
 _PUBLIC_EVENTS_SQL = ", ".join(f"'{event}'" for event in PUBLIC_EVENTS)
 
+# Erased lineage = the tenant's D1 erasure COMPLETED. The ``d1`` backend is the
+# one that deletes the ``tenant`` row (crates/corelink-container/src/routes/
+# dsr/adapter_d1.rs, "the root identity row LAST"), and ``erased`` is its only
+# outcome that means the row was removed. The erasure code's generic success
+# set (``BackendErasureOutcome::is_successful``: erased, pseudonymized,
+# not_applicable) is deliberately NOT used: for ``d1``, ``not_applicable``
+# means a legal hold PRESERVED the data, and ``pseudonymized`` never applies to
+# an effective backend. ``partial_failure``, ``failed``, any unknown value and
+# NULL never qualify, so a tenant whose erasure did not complete stays in the
+# failing bucket.
+ERASED_LINEAGE_BACKEND = "d1"
+ERASED_LINEAGE_OUTCOMES = ("erased",)
+_ERASED_OUTCOMES_SQL = ", ".join(f"'{outcome}'" for outcome in ERASED_LINEAGE_OUTCOMES)
 # ``EXISTS`` is intentional: an erased tenant can have one row per erased
-# backend, and joining that table would multiply audit rows and corrupt the
-# denominator this control is protecting.
+# backend (and per DSR), and joining that table would multiply audit rows and
+# corrupt the denominator this control is protecting.
+_COMPLETED_ERASURE_SQL = f"""EXISTS (
+                      SELECT 1 FROM dsr_erasure_log AS d
+                      WHERE d.tenant_id = a.tenant_id
+                        AND d.backend = '{ERASED_LINEAGE_BACKEND}'
+                        AND d.outcome IN ({_ERASED_OUTCOMES_SQL})
+                  )"""
 RESIDENCY_SQL = f"""
 WITH classified AS (
     SELECT
@@ -99,10 +120,7 @@ WITH classified AS (
             ELSE 'violated'
         END AS residency_state,
         CASE WHEN a.tenant_id != '_public' AND t.tenant_id IS NULL
-                  AND EXISTS (
-                      SELECT 1 FROM dsr_erasure_log AS d
-                      WHERE d.tenant_id = a.tenant_id
-                  )
+                  AND {_COMPLETED_ERASURE_SQL}
              THEN 1 ELSE 0 END AS erased_orphan
     FROM audit_outbox AS a
     LEFT JOIN tenant AS t ON t.tenant_id = a.tenant_id
@@ -160,10 +178,11 @@ COUNT_FIELDS = (
 )
 
 # Row ids of the unexplained residual only (no tenant row, not ``_public``, no
-# erasure record): the exact complement used for ``unexplained_orphan_rows``.
-# The id embeds identifiers, so callers hash it immediately (``row_ref``) and
-# never retain or print it. The LIMIT is one above the enumeration bound so an
-# oversized residual is detected rather than truncated.
+# COMPLETED d1 erasure): the exact complement used for
+# ``unexplained_orphan_rows``. The id embeds identifiers, so callers hash it
+# immediately (``row_ref``) and never retain or print it. The LIMIT is one
+# above the enumeration bound so an oversized residual is detected rather
+# than truncated.
 MAX_RESIDUAL_REFS = 64
 RESIDUAL_REFS_SQL = f"""
 SELECT a.id AS audit_row_id
@@ -171,10 +190,7 @@ FROM audit_outbox AS a
 LEFT JOIN tenant AS t ON t.tenant_id = a.tenant_id
 WHERE a.tenant_id != '_public'
   AND t.tenant_id IS NULL
-  AND NOT EXISTS (
-      SELECT 1 FROM dsr_erasure_log AS d
-      WHERE d.tenant_id = a.tenant_id
-  )
+  AND NOT {_COMPLETED_ERASURE_SQL}
 ORDER BY a.id
 LIMIT {MAX_RESIDUAL_REFS + 1}
 """.strip()

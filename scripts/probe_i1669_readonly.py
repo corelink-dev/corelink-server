@@ -81,12 +81,14 @@ SELECT
                        OR a.event_type IS NULL
                        OR a.event_type NOT IN ({public_events}))
         THEN 1 ELSE 0 END) AS invalid_public_rows,
-    SUM(CASE WHEN t.tenant_id IS NULL AND a.tenant_id <> '_public' AND EXISTS (
-        SELECT 1 FROM dsr_erasure_log AS d WHERE d.tenant_id = a.tenant_id
-    ) THEN 1 ELSE 0 END) AS erased_orphan_rows
+    SUM(CASE WHEN t.tenant_id IS NULL AND a.tenant_id <> '_public'
+                  AND {completed_erasure}
+        THEN 1 ELSE 0 END) AS erased_orphan_rows
 FROM audit_outbox AS a
 LEFT JOIN tenant AS t ON t.tenant_id = a.tenant_id
-""".format(public_events=RESIDENCY._PUBLIC_EVENTS_SQL).strip()
+""".format(
+    public_events=RESIDENCY._PUBLIC_EVENTS_SQL, completed_erasure=RESIDENCY._COMPLETED_ERASURE_SQL
+).strip()
 
 # Do not accept a caller-provided SQL string.  Every request must be one of
 # these exact aggregate SELECTs; the write verbs are absent by construction.
@@ -100,6 +102,25 @@ QUERY_ALLOWLIST = {
 AGGREGATE_QUERY_NAMES = ("residency", "population", "backfill_completeness")
 RECEIPT_SCHEMA_V1 = "corelink.issue-1669.read-only-residency.v1"
 RECEIPT_SCHEMA_V2 = "corelink.issue-1669.read-only-residency.v2"
+# Query hashes pinned per receipt schema. A receipt is verified against the
+# queries of ITS schema, so editing the SQL never breaks a historical receipt
+# and never passes silently: the probe refuses to run when the live allowlist
+# drifts from the v2 pin (``_validate_allowlist``).
+# v1: the queries of every receipt up to and including run 35697251287
+# (evidence SHA 58228ac2), where erased lineage was any dsr_erasure_log row.
+QUERY_SHA256_V1 = {
+    "residency": "24c0a9cfb8eda6b0260ef95f05316bbb0549fc42d4a377f0b524fc27a2b8b5c3",
+    "population": "3fbaecd933f27ca1b9dc8491b7956517204c090e580a04d3ae004640652b66f6",
+    "backfill_completeness": "e2f7426c44a430cb3e082c558f5c4480acd3d8ce481178036e8c831e4b90db66",
+}
+# v2: erased lineage narrowed to a completed d1 erasure (backend='d1' AND
+# outcome='erased'), plus the residual_refs read.
+QUERY_SHA256_V2 = {
+    "residency": "e4ace2558c42d051d5df66ccba8cd46f10d720448a66aca6073ee4d6d3738e86",
+    "population": "3fbaecd933f27ca1b9dc8491b7956517204c090e580a04d3ae004640652b66f6",
+    "backfill_completeness": "09cd36fa4be8e20d8117470bdec07ad8b34526fa7155dadfa2f1ab28a1dbb70a",
+    "residual_refs": "96a23ca98187b30088b14ae176a4cfe6eff0de4d501d5ee622fe8214cc223042",
+}
 POPULATION_FIELDS = ("audit_rows", "audit_tenants", "blank_tenant_rows")
 BACKFILL_FIELDS = (
     "audit_rows",
@@ -124,6 +145,8 @@ def _hash(value: object) -> str:
 
 
 def _validate_allowlist() -> None:
+    if {name: _hash(query) for name, query in QUERY_ALLOWLIST.items()} != QUERY_SHA256_V2:
+        raise ProbeError("query allowlist does not match its pinned v2 hashes")
     for name, query in QUERY_ALLOWLIST.items():
         normalized = re.sub(r"\s+", " ", query).strip().lower()
         if query not in QUERY_ALLOWLIST.values() or not (

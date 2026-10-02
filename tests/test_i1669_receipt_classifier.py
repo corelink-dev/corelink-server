@@ -33,7 +33,7 @@ def receipt_fixture() -> dict:
         "queries": [
             {
                 "name": name,
-                "query_sha256": probe._hash(probe.QUERY_ALLOWLIST[name]),
+                "query_sha256": probe.QUERY_SHA256_V1[name],
                 "response_sha256": "c" * 64,
                 "row_count": 1,
             }
@@ -191,6 +191,8 @@ class OwnerAttestationTests(unittest.TestCase):
         self.assertEqual(attested["disposition"], "DOCUMENTED_EXCEPTION_OWNER_ATTESTED_NOT_LOG_CONFIRMED")
         self.assertEqual(classes["unexplained_orphan"]["rows"], 0)
         self.assertEqual(classes["erased_orphan_retained_audit"]["rows"], 1)
+        self.assertEqual(classes["erased_orphan_retained_audit"]["disposition"], "DOCUMENTED_EXCEPTION_ERASED_LINEAGE")
+        self.assertEqual(report["current_policy_status"], "DOCUMENTED_EXCEPTION")
         self.assertEqual(report["states"]["owner_attested_prelaunch_test_traffic"], 1)
         self.assertEqual(report["states"]["violated"], 0)
         self.assertEqual(report["attestation"]["authority"], AUTHORITY)
@@ -310,6 +312,23 @@ class OwnerAttestationTests(unittest.TestCase):
         with self.assertRaisesRegex(classifier.ReceiptError, "backfill erased_orphan_rows does not reconcile"):
             classifier.classify(receipt, ledger=ledger)
 
+    # --- erased-lineage narrowing: query hashes are pinned per schema ---------
+
+    def test_v1_receipt_is_verified_against_the_v1_query_hashes(self) -> None:
+        receipt = receipt_fixture()
+        receipt["queries"][0]["query_sha256"] = classifier.PROBE.QUERY_SHA256_V2["residency"]
+        resign(receipt)
+        with self.assertRaisesRegex(classifier.ReceiptError, "query hash does not match residency"):
+            classifier.classify(receipt)
+
+    def test_v2_receipt_is_verified_against_the_v2_query_hashes(self) -> None:
+        ledger = ledger_of("row-a")
+        receipt = v2_fixture(("row-a",), ledger, "DOCUMENTED_EXCEPTION", RESIDENCY.DOCUMENTED_EXCEPTION_REASON)
+        receipt["queries"][0]["query_sha256"] = classifier.PROBE.QUERY_SHA256_V1["residency"]
+        resign(receipt)
+        with self.assertRaisesRegex(classifier.ReceiptError, "query hash does not match residency"):
+            classifier.classify(receipt, ledger=ledger)
+
     def test_v1_receipt_never_applies_the_attestation(self) -> None:
         report = classifier.classify(receipt_fixture(), ledger=ledger_of("anything"))
         self.assertIsNone(report["attestation"])
@@ -325,18 +344,17 @@ class ReceiptClassifierTests(unittest.TestCase):
 
         self.assertEqual(report["overall_disposition"], "KEEP_OPEN")
         self.assertFalse(report["tenant_identity_dispositions_complete"])
-        self.assertEqual(
-            classes["erased_orphan_retained_audit"]["disposition"],
-            "DOCUMENTED_EXCEPTION_ERASED_LINEAGE",
-        )
+        # v1 measured erased lineage with the pre-narrowing predicate, so its
+        # erased class keeps the pre-policy disposition and gets no policy-B states.
+        self.assertEqual(classes["erased_orphan_retained_audit"]["disposition"], "PRESERVE_AUDIT_EVIDENCE")
+        self.assertIsNone(report["states"])
+        self.assertIsNone(report["current_policy_status"])
         self.assertEqual(classes["unexplained_orphan"]["rows"], 1)
         self.assertEqual(
             classes["unexplained_orphan"]["disposition"],
             "PRESERVE_AND_REQUIRE_RESTRICTED_OWNER_RECONCILIATION",
         )
         self.assertEqual(sum(item["rows"] for item in report["classes"]), 5)
-        self.assertEqual(report["states"]["erased_lineage_exception"], 1)
-        self.assertEqual(report["states"]["unevaluable"], 1)
 
     def test_pre_policy_b_v1_receipt_with_only_erased_orphans_verifies_exactly_as_recorded(self) -> None:
         # Review fix 1: an unchanged v1 receipt written before policy B, whose
@@ -348,7 +366,9 @@ class ReceiptClassifierTests(unittest.TestCase):
         self.assertEqual(report["receipt_schema"], "corelink.issue-1669.read-only-residency.v1")
         self.assertEqual(report["verdict_rule"], "pre_policy_b")
         self.assertEqual((report["source_status"], report["source_reason"]), ("FAILED", residency.FAILED_REASON))
-        self.assertEqual(report["current_policy_status"], "DOCUMENTED_EXCEPTION")
+        # Not re-judged: v1 counted ANY erasure-log row as erased lineage.
+        self.assertIsNone(report["current_policy_status"])
+        self.assertIsNone(report["states"])
         self.assertEqual(report["overall_disposition"], "KEEP_OPEN")
 
     def test_v1_receipt_cannot_claim_a_verdict_its_rule_never_produced(self) -> None:
