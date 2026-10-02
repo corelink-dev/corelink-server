@@ -39,7 +39,7 @@ fn make_webhook(tag: &str) -> CfDeployWebhook {
         DeployTarget::new(
             "corelink-worker",
             "a".repeat(32),
-            "api.corelink.humangr.com/*",
+            "corelink-api.humangr.com/*",
         ),
         GitHubActor::new(
             "github-actions[bot]",

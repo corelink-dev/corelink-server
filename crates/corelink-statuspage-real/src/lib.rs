@@ -5,7 +5,7 @@
 //! # Purpose
 //!
 //! WI-S11-002 §6 mandates publication of aggregated DSR completion
-//! stats to `corelink.humangr.com/status`. This crate is the canonical wiring
+//! stats to the public status page. This crate is the canonical wiring
 //! that publishes the rolling 24h DSR completion summary (count of
 //! `VerifiedComplete`, count of `VerifiedPartial`, p95 resolution-hours
 //! observation, count of `SlaBreached`) to the Atlassian Statuspage

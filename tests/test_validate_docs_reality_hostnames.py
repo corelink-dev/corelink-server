@@ -32,6 +32,14 @@ The regression targets, one test each:
   * a suppression that matched NOTHING is reported ([suppression-hygiene]), and a
     suppression with a missing or past `expires` is fatal — an expiring
     suppression that never expires is a permanent mute wearing a date;
+  * a suppression is scoped to the exact `files` it names: a missing `files`
+    list is fatal, a mention of the suppressed host in any OTHER file fails,
+    and a declared file that no longer mentions the host is reported — so a
+    renewal justified by one historical record cannot mute the same dead host
+    on a customer page;
+  * a console path written in place of a retired host names a page the admin
+    console actually RENDERS, decided against the App Router table — not a
+    redirect handler, and not a path with no page at all;
   * the gate performs NO network I/O (DNS/TLS live only in the opt-in
     `--verify-dns` mode), because CI here runs on the founder's own Mac and a
     networked gate is a flaky gate.
@@ -49,6 +57,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -270,10 +279,12 @@ def test_the_real_repo_scan_clears_both_floors():
 # --- suppression machinery ----------------------------------------------------
 
 
-def _tracked(host: str, expires: str = "2099-01-01") -> dict:
+def _tracked(host: str, expires: str = "2099-01-01",
+             files: list[str] | None = None) -> dict:
     return {**BASE_CFG, "tracked_dead": {
         host: {"reason": "TODO(dead-host-sweep): fixture",
-               "added": "2026-08-22", "owner": "fixture", "expires": expires}}}
+               "added": "2026-08-22", "owner": "fixture", "expires": expires,
+               "files": ["README.md"] if files is None else files}}}
 
 
 def test_tracked_dead_host_is_suppressed_but_visible(tmp_path: Path):
@@ -318,6 +329,54 @@ def test_expired_suppression_is_fatal(tmp_path: Path):
     assert res.total_fail > 0
 
 
+@pytest.mark.parametrize(
+    "files",
+    [None, [], [""], ["README.md", 7], "README.md"],
+    ids=["missing", "empty", "blank", "non-string", "not-a-list"],
+)
+def test_suppression_without_a_file_scope_is_fatal(tmp_path: Path, files):
+    """[suppression-scope]: an entry that does not name the files it covers is a
+    host-wide mute. Every malformed spelling of `files` is a hard failure that
+    names the host — never a silently unscoped suppression."""
+    _write(tmp_path, "README.md", f"https://{DEAD}/\n")
+    cfg = _tracked(DEAD)
+    meta = dict(cfg["tracked_dead"][DEAD])
+    if files is None:
+        del meta["files"]
+    else:
+        meta["files"] = files
+    cfg = {**cfg, "tracked_dead": {DEAD: meta}}
+    res = _run(tmp_path, cfg=cfg)
+    assert any(DEAD in m and "`files`" in m for m in res.scope_errors), res.scope_errors
+    assert res.total_fail > 0
+
+
+def test_tracked_host_in_an_undeclared_file_fails(tmp_path: Path):
+    """The defect the scope exists for: a dead host renewed because ONE file
+    legitimately keeps it must still FAIL the moment it reappears anywhere else
+    — here a customer quickstart — and the failure names that file and line."""
+    _write(tmp_path, "README.md", f"history: https://{DEAD}/ was retired\n")
+    _write(tmp_path, "apps/docs/docs/quickstart.md", f"\nVisit https://{DEAD}/\n")
+    res = _run(tmp_path, cfg=_tracked(DEAD, files=["README.md"]))
+    assert [(h, r.file, r.line) for h, r in res.scope_failures] == \
+        [(DEAD, "apps/docs/docs/quickstart.md", 2)]
+    assert [(h, r.file) for h, r in res.tracked] == [(DEAD, "README.md")]
+    assert res.failures == []
+    assert res.total_fail == 1
+
+
+def test_declared_file_that_no_longer_mentions_the_host_is_reported(tmp_path: Path):
+    """[suppression-hygiene] one level down: a stale file in `files` stands armed
+    to re-silence that file later, so it is reported by name (non-fatal, like the
+    whole-entry hygiene warning)."""
+    _write(tmp_path, "README.md", f"https://{DEAD}/\n")
+    _write(tmp_path, "marketing/swept.md", f"https://{LIVE}/\n")
+    res = _run(tmp_path, cfg=_tracked(DEAD, files=["README.md", "marketing/swept.md"]))
+    stale = [w for w in res.warnings if "[suppression-hygiene]" in w]
+    assert len(stale) == 1 and DEAD in stale[0] and "marketing/swept.md" in stale[0]
+    assert res.total_fail == 0
+
+
 def test_suppression_expiry_is_evaluated_against_today(tmp_path: Path):
     """Frozen `today` so the test does not drift into failing on a calendar."""
     _write(tmp_path, "README.md", f"https://{DEAD}/\n")
@@ -337,10 +396,13 @@ def test_shipped_allowlist_hostname_section_is_wellformed():
     assert cfg["live_allow"], "live_allow must not be empty"
     for host, meta in cfg["tracked_dead"].items():
         assert isinstance(meta, dict), f"{host}: suppression must be an object"
-        for key in ("reason", "added", "owner", "expires"):
+        for key in ("reason", "added", "owner", "expires", "files"):
             assert meta.get(key), f"{host}: suppression is missing `{key}`"
         assert SCRIPT._parse_iso_date(meta["expires"]), \
             f"{host}: `expires` must be an ISO date"
+        # A declared file that does not exist is a typo that scopes nothing.
+        for rel in meta["files"]:
+            assert (REPO_ROOT / rel).is_file(), f"{host}: declared file {rel} is missing"
 
 
 def test_status_host_suppression_records_the_real_root_cause():
@@ -365,6 +427,177 @@ def test_shipped_allowlist_holds_the_gate_green_on_the_real_tree():
     cfg = json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))["hostname"]
     assert SCRIPT.run_hostname_liveness(cfg).total_fail == 0
     assert SCRIPT.run_hostname_liveness(cfg, strict=True).total_fail > 0
+
+
+# --- replacement destinations must render a console page ----------------------
+#
+# Retiring a dead host is honest only if what replaces it is reachable. Two
+# replacements in the 2026-10-01 sweep named console paths that render no page:
+# the PCI-DSS CSP self-check curled `/corelink/pricing`, which is the
+# apps/admin-ui/src/app/pricing/route.ts 307 redirect (its headers say nothing
+# about any page), and status-page component C8 named `/corelink/admin`, which
+# has no page at all (only `/[locale]/admin/{tenants,audit}` exist). An HTTP
+# probe cannot settle this for an auth-gated path, because the middleware
+# redirects a signed-out client before routing, so the authority is the App
+# Router table itself.
+
+ADMIN_APP_DIR = REPO_ROOT / "apps" / "admin-ui" / "src" / "app"
+ADMIN_LOCALES_SRC = REPO_ROOT / "apps" / "admin-ui" / "src" / "i18n" / "request.ts"
+# `humangr.com/corelink[/path]`, with or without a scheme. The lookbehind refuses
+# a match inside another host (`x.humangr.com/corelink`); the lookahead refuses
+# `/corelinkfoo`. Group 1 is the path below the `/corelink` basePath.
+CONSOLE_URL_RE = re.compile(
+    r"(?<![A-Za-z0-9.-])humangr\.com/corelink(?![A-Za-z0-9-])(/[^\s`'\"|)]*)?")
+_PAGE_FILES = ("page.tsx", "page.ts", "page.jsx", "page.js")
+_ROUTE_FILES = ("route.ts", "route.tsx", "route.js")
+
+
+def _admin_locales() -> frozenset[str]:
+    text = ADMIN_LOCALES_SRC.read_text(encoding="utf-8")
+    m = re.search(r"export const LOCALES = \[([^\]]*)\] as const", text)
+    assert m, f"`LOCALES` not found in {ADMIN_LOCALES_SRC}"
+    locales = frozenset(re.findall(r'"([A-Za-z-]+)"', m.group(1)))
+    assert locales, f"`LOCALES` in {ADMIN_LOCALES_SRC} parsed empty"
+    return locales
+
+
+def _is_route_group(d: Path) -> bool:
+    return d.name.startswith("(") and d.name.endswith(")")
+
+
+def _segment_dirs(d: Path) -> list[Path]:
+    """Child directories that consume a URL segment; `(group)` dirs are
+    transparent, so their children are lifted to this level."""
+    out: list[Path] = []
+    for child in sorted(p for p in d.iterdir() if p.is_dir()):
+        out.extend(_segment_dirs(child) if _is_route_group(child) else [child])
+    return out
+
+
+def _leaf_kind(d: Path) -> str | None:
+    if any((d / name).is_file() for name in _PAGE_FILES):
+        return "page"
+    if any((d / name).is_file() for name in _ROUTE_FILES):
+        return "route"
+    for group in sorted(p for p in d.iterdir() if p.is_dir() and _is_route_group(p)):
+        kind = _leaf_kind(group)
+        if kind:
+            return kind
+    return None
+
+
+def _resolve(d: Path, segs: list[str], locales: frozenset[str]) -> str | None:
+    kids = _segment_dirs(d)
+    if not segs:
+        kind = _leaf_kind(d)
+        if kind:
+            return kind
+        # An optional catch-all (`[[...x]]`) also matches zero segments.
+        for kid in kids:
+            if kid.name.startswith("[[..."):
+                return _leaf_kind(kid)
+        return None
+    head, rest = segs[0], segs[1:]
+    # App Router precedence: a static segment, then a dynamic one, then a
+    # catch-all.
+    for kid in kids:
+        if kid.name == head:
+            kind = _resolve(kid, rest, locales)
+            if kind:
+                return kind
+    for kid in kids:
+        name = kid.name
+        if name.startswith("[") and not name.startswith(("[...", "[[")):
+            # `[locale]` is only a page for a shipped locale.
+            if name == "[locale]" and head not in locales:
+                continue
+            kind = _resolve(kid, rest, locales)
+            if kind:
+                return kind
+    for kid in kids:
+        if kid.name.startswith(("[...", "[[...")):
+            kind = _leaf_kind(kid)
+            if kind:
+                return kind
+    return None
+
+
+def _console_leaf(path: str) -> str | None:
+    """`page`, `route` (a handler such as a redirect) or None for a path below
+    the `/corelink` basePath of the admin console."""
+    path = path.split("?", 1)[0].split("#", 1)[0].rstrip(".,;:")
+    segs = [s for s in path.split("/") if s]
+    return _resolve(ADMIN_APP_DIR, segs, _admin_locales())
+
+
+def _console_paths(text: str) -> list[str]:
+    return [m.group(1) or "/" for m in CONSOLE_URL_RE.finditer(text)]
+
+
+def test_console_route_resolver_sees_pages_redirects_and_gaps():
+    """The resolver must be able to say NO before a YES from it means anything:
+    positive and negative controls on the real router table."""
+    assert _console_leaf("/") == "page"
+    assert _console_leaf("/en/pricing") == "page"
+    assert _console_leaf("/en/admin/tenants") == "page"
+    assert _console_leaf("/en/admin/audit") == "page"
+    assert _console_leaf("/sign-up") == "page"           # optional catch-all
+    assert _console_leaf("/pricing") == "route"          # the 307 redirect
+    assert _console_leaf("/admin") is None
+    assert _console_leaf("/en/admin") is None
+    assert _console_leaf("/xx/pricing") is None          # not a shipped locale
+    assert _console_paths("see https://humangr.com/corelink/en/pricing |") == [
+        "/en/pricing"]
+    assert _console_paths("`humangr.com/corelink` and x.humangr.com/corelink/a") == [
+        "/"]
+
+
+PCI_DSS_PAGES = [
+    "apps/docs/docs/trust/pci-dss.mdx",
+    *(f"apps/docs/i18n/{loc}/docusaurus-plugin-content-docs/current/trust/pci-dss.mdx"
+      for loc in ("de", "es-419", "pt-BR")),
+]
+
+
+@pytest.mark.parametrize("rel", PCI_DSS_PAGES)
+def test_pci_csp_check_inspects_the_rendered_pricing_page(rel: str):
+    """The PCI-DSS self-check must read the CSP the rendered pricing page is
+    served with: it fetches a console PAGE (not the redirect handler), refuses
+    anything but a 200 HTML response, does not follow redirects, and greps the
+    header dump of that same response."""
+    text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+    m = re.search(r"^# 2\. Inspect the Content-Security-Policy.*?(?=^# Expected)",
+                  text, re.S | re.M)
+    assert m, f"{rel}: the CSP self-verification step is missing"
+    command = "\n".join(line for line in m.group(0).splitlines()
+                        if not line.lstrip().startswith("#"))
+    paths = _console_paths(command)
+    assert len(paths) == 1, f"{rel}: want exactly one console URL, got {paths}"
+    assert _console_leaf(paths[0]) == "page", \
+        f"{rel}: `/corelink{paths[0]}` does not render a console page"
+    assert "-w '%{http_code} %{content_type}\\n'" in command, \
+        f"{rel}: the check does not report the status and content type"
+    assert "grep -E '^200 text/html' &&" in command, \
+        f"{rel}: the check does not refuse a non-200 or non-HTML response"
+    assert not re.search(r"(?:^|\s)(?:-[A-Za-z]*L[A-Za-z]*|--location)\b", command), \
+        f"{rel}: following a redirect would inspect another response"
+    dump = re.search(r"\s-D\s+(\S+)", command)
+    assert dump, f"{rel}: the check does not dump the response headers"
+    assert f"grep -i '^content-security-policy:' {dump.group(1)}" in command, \
+        f"{rel}: the CSP is not read from the fetched page's own headers"
+
+
+@pytest.mark.parametrize("rel", ["marketing/launch/STATUS-PAGE-SPEC.md",
+                                 "marketing/launch/STATUSPAGE-INIT.md"])
+def test_status_page_admin_console_component_names_an_implemented_page(rel: str):
+    """Status-page component C8 must name an admin-console page that exists."""
+    rows = [line for line in (REPO_ROOT / rel).read_text(encoding="utf-8").splitlines()
+            if re.match(r"^\|\s*(?:\*\*)?C8(?:\*\*)?\s*\|", line)]
+    assert len(rows) == 1, f"{rel}: want exactly one C8 row, got {len(rows)}"
+    paths = _console_paths(rows[0])
+    assert len(paths) == 1, f"{rel}: want exactly one console URL in C8, got {paths}"
+    assert _console_leaf(paths[0]) == "page", \
+        f"{rel}: `/corelink{paths[0]}` does not render a console page"
 
 
 # --- no network at CI time ----------------------------------------------------
