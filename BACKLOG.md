@@ -10649,6 +10649,16 @@ do owner continuam requisitos operacionais separados; por isso o item permanece 
 até o owner fornecer recibos do ciclo de vida, incluindo a medição de revogação do
 `run_loop` no binário de produção.
 
+**Atualização 2026-10-02 (#1648) — a imagem de produção NÃO linka provedor KMS.** Com
+`byok-aws-real` embarcado e sem credenciais KMS em produção, o boot (#1800) saía com
+código 1 em todo contêiner. Isso aconteceu a partir do rollout de 2026-09-30. O owner
+adiou BYOK/AWS (#1653, #2165) e aceitou BYOK falhando fechado (#1676). O `Dockerfile` agora
+tem um único interruptor, `ARG CORELINK_BYOK_PROVIDER_FEATURE=`, com default VAZIO. A
+ativação responde 501 e o plano de dados recusa (fail-closed, por tenant) quem tiver estado
+BYOK diferente de `inactive`. Armar BYOK é uma mudança de IMAGEM: o default vira
+`byok-aws-real`, e o mesmo rollout provisiona `CORELINK_BYOK_KMS_*`. A lane #2165 constrói
+a variante armada passando o argumento explicitamente.
+
 Registro histórico do estado pré-D03 (verificado no código de 2026-08-30; não descreve
 os bytes atuais):
 
@@ -10810,27 +10820,26 @@ verify: |
   }'\'' "$d")
   [ -n "$buildline" ] || { echo "FALHA: canonical corelink-server build command is missing"; exit 1; }
   grep -qE -- "^[[:space:]]*[^#/*].*cargo build.*-p corelink-server" "$d" || { echo "FALHA: canonical corelink-server build command is missing"; exit 1; }
-  has_real_feature() {
+  switch="\${CORELINK_BYOK_PROVIDER_FEATURE:+--features \$CORELINK_BYOK_PROVIDER_FEATURE}"
+  empty_default="[[:space:]]*ARG[[:space:]]+CORELINK_BYOK_PROVIDER_FEATURE=[[:space:]]*"
+  ships_no_provider() {
     line=${1#"${1%%[![:space:]]*}"}
     case "$line" in
       ""|\#*|//*|/\**|\**|-*) return 1 ;;
-      cargo\ build*" -p corelink-server "*) ;;
+      cargo\ build*" -p corelink-server --bin corelink-server "*) ;;
       *) return 1 ;;
     esac
-    case "$line" in *byok-gcp-real*|*byok-azure-real*|*byok-vault-real*) return 1 ;; esac
-    rest=$line
-    count=0
-    while :; do
-      case "$rest" in
-        *"--features byok-aws-real"*) count=$((count+1)); rest=${rest#*"--features byok-aws-real"} ;;
-        *) break ;;
-      esac
-    done
-    [ "$count" -eq 1 ]
+    case "$line" in *"--features byok-"*|*"--features="*) return 1 ;; esac
+    case "$line" in *"$switch"*) return 0 ;; esac
+    return 1
   }
-  has_real_feature "$buildline" || { echo "FALHA: shipped image does not select a real KMS provider"; exit 1; }
-  mutated=${buildline//--features byok-aws-real/}
-  if has_real_feature "$mutated"; then echo "FALHA: feature-removal mutation survived"; exit 1; fi
+  [ "$(grep -cE "^[[:space:]]*ARG[[:space:]]+CORELINK_BYOK_PROVIDER_FEATURE([=[:space:]]|$)" "$d")" -eq 1 ] || { echo "FALHA: the BYOK provider switch must be declared exactly once"; exit 1; }
+  grep -qxE "$empty_default" "$d" || { echo "FALHA: shipped image links a KMS provider by default (CORELINK_BYOK_PROVIDER_FEATURE is not empty)"; exit 1; }
+  ! grep -qE "^[[:space:]]*ENV[[:space:]].*CORELINK_BYOK_PROVIDER_FEATURE" "$d" || { echo "FALHA: an ENV override defeats the empty provider default"; exit 1; }
+  grep -qF "\"\"|byok-aws-real) ;;" "$d" || { echo "FALHA: the provider switch no longer refuses unreviewed values"; exit 1; }
+  ships_no_provider "$buildline" || { echo "FALHA: shipped corelink-server build does not take its provider only from the switch"; exit 1; }
+  if printf "%s\n" "ARG CORELINK_BYOK_PROVIDER_FEATURE=byok-aws-real" | grep -qxE "$empty_default"; then echo "FALHA: armed-default mutation survived"; exit 1; fi
+  if ships_no_provider "${buildline/"$switch"/--features byok-aws-real}"; then echo "FALHA: literal-feature mutation survived"; exit 1; fi
   grep -q "^[^#/*-]*ActiveProvider::Unavailable" "$o" || { echo "FALHA: no-provider sentinel missing"; exit 1; }
   grep -q "^[^#/*-]*no real KMS provider compiled" "$o" || { echo "FALHA: no-provider path does not fail closed"; exit 1; }
   ! grep -qE "^[^#/*-]*(IN_MEMORY_FAKE_MASK|struct InMemoryFake|Ok\\(Arc::new\\(InMemoryFake)" "$o" || { echo "FALHA: XOR provider remains in production orchestrator"; exit 1; }
@@ -10847,22 +10856,27 @@ verify: |
   rm -f "$bait"
   [ "$bait_hits" -eq 0 ] || { echo "FALHA: comment-only provider bait was accepted"; exit 1; }
   for bait in \
-    "# cargo build -p corelink-server --features byok-aws-real" \
-    "echo cargo build -p corelink-server --features byok-aws-real" \
-    "cargo build -p another --features byok-aws-real" \
-    "cargo build -p corelink-server" \
-    "cargo build -p corelink-server --features byok-aws-real --features byok-aws-real" \
-    "if false; then cargo build -p corelink-server --features byok-aws-real"; do
-    if has_real_feature "$bait"; then echo "FALHA: string/dead/ambiguous provider bait was accepted"; exit 1; fi
+    "# cargo build -p corelink-server --bin corelink-server $switch" \
+    "echo cargo build -p corelink-server --bin corelink-server $switch" \
+    "cargo build -p another --bin corelink-server $switch" \
+    "cargo build -p corelink-server --bin corelink-server" \
+    "cargo build -p corelink-server --bin corelink-server --features byok-aws-real $switch" \
+    "if false; then cargo build -p corelink-server --bin corelink-server $switch"; do
+    if ships_no_provider "$bait"; then echo "FALHA: string/dead/ambiguous provider bait was accepted"; exit 1; fi
   done
-  echo "open: real provider selected and activation fails closed without runtime KMS evidence"'
+  echo "open: shipped image links no KMS provider by default; activation fails closed with 501; no runtime KMS evidence"'
 verify-means: |
-  parked — the shipped image selects a real provider, the no-provider build fails closed,
-  and activation proves both provider construction and CMK access before the first D1
-  mutation. The focused regression proves no local XOR/identity fallback is available.
-  `tests/test_verify_b083_byok.py` executes this exact verifier in a temporary tree
-  and requires the feature-removal Dockerfile mutant to fail with the named
-  provider-selection error.
+  parked — since #1648 (2026-10-02) the shipped image links NO KMS provider: the Dockerfile
+  build argument `CORELINK_BYOK_PROVIDER_FEATURE` is declared once with an empty default,
+  refuses any value but `byok-aws-real`, and is the only way the production
+  `corelink-server` build can select a provider. The no-provider build fails closed:
+  activation answers 501 and the data plane refuses any tenant whose BYOK state is not
+  `inactive`. A real-provider build still proves provider construction and CMK access
+  before the first D1 mutation. The focused regression proves no local XOR/identity
+  fallback is available. `tests/test_verify_b083_byok.py` executes this exact verifier in
+  a temporary tree and requires the armed-default Dockerfile mutant to fail with the named
+  error. Arming BYOK (the default set to `byok-aws-real`, plus KMS provisioning in the same
+  rollout) is an owner decision and must update this `verify` in the same change.
   This gate intentionally does not claim owner credentials, live KMS execution, or a
   measured production revocation p99; those remain separate closure evidence. Production
   `run_loop` wiring is verified independently by `scripts/verify_b083_revocation_wiring.py`.

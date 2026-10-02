@@ -569,3 +569,111 @@ pub fn engagement_for(cfg: &TenantByokConfig) -> ByokEngagement {
         ByokState::Inactive | ByokState::Pending => ByokEngagement::Plaintext,
     }
 }
+
+// ─── Unarmed (no-provider) data plane, #1648 ─────────────────────────────────
+
+/// Why an unarmed process refuses a tenant. A fixed text: it reaches logs and
+/// the 5xx body, so it must never carry tenant or key material.
+pub const UNARMED_REFUSAL: &str = "this image links no KMS provider, and the tenant's BYOK \
+     state is not inactive; refusing to serve it without its keys";
+
+/// Engagement for a process with NO KMS provider compiled in.
+///
+/// Such a process can never encrypt or decrypt, so only `inactive` is served
+/// (in plaintext, exactly like a tenant with no row). Every other state is
+/// refused fail-closed, including `pending`: a pending rotation can keep an
+/// encrypted source generation, and the cancel path can restore `active`
+/// without KMS. An unparseable or NULL state never reaches this function: the
+/// config read fails, and the caller refuses the tenant on that error.
+#[must_use]
+pub fn unarmed_engagement(cfg: &TenantByokConfig) -> ByokEngagement {
+    match cfg.state {
+        ByokState::Inactive => ByokEngagement::Plaintext,
+        ByokState::Pending | ByokState::Active | ByokState::Partial | ByokState::Shredded => {
+            ByokEngagement::FailClosed(UNARMED_REFUSAL)
+        }
+    }
+}
+
+/// Every `tenant_byok_config` row an unarmed process must refuse. `<>` alone
+/// would drop a NULL state, so NULL is named explicitly.
+const UNARMED_ENGAGED_ROWS_SQL: &str = "SELECT tenant_id, mode, crypto_mode, cmk_provider, \
+     cmk_key_id, cmk_region, state FROM tenant_byok_config \
+     WHERE state IS NULL OR state <> 'inactive'";
+
+/// Engaged-tenant set: tenant id to its parsed row, or to the parse error for
+/// a row that cannot be read (that tenant is refused).
+type UnarmedEngagedSet = HashMap<String, Result<TenantByokConfig, String>>;
+
+/// The config view of an UNARMED data plane.
+///
+/// It reads the engaged rows ONCE, on first use, and then answers from
+/// memory. So a no-provider process pays no D1 read per request, and booting
+/// never touches D1. A failed load is not cached: the request that hit it is
+/// refused, and the next use retries. The set is not refreshed afterwards,
+/// and that is safe here. With no provider, activation answers 501 before any
+/// D1 write. The only KMS-free transitions (cancel, deactivate, an idempotent
+/// activation retry) start from a row that is already in the set, so the set
+/// can only be stale toward refusing. Arming is an image change, and its
+/// rollout replaces this process.
+#[derive(Debug)]
+pub struct UnarmedByokSnapshot<R = D1HttpClient> {
+    rows: Arc<R>,
+    engaged: tokio::sync::OnceCell<UnarmedEngagedSet>,
+}
+
+impl<R: ByokConfigRows> UnarmedByokSnapshot<R> {
+    /// Wire the snapshot over an async row source (production: D1).
+    #[must_use]
+    pub fn new(rows: Arc<R>) -> Self {
+        Self {
+            rows,
+            engaged: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    async fn engaged(&self) -> Result<&UnarmedEngagedSet, ByokConfigError> {
+        self.engaged
+            .get_or_try_init(|| load_unarmed_engaged(&*self.rows))
+            .await
+    }
+}
+
+async fn load_unarmed_engaged<R: ByokConfigRows>(
+    rows: &R,
+) -> Result<UnarmedEngagedSet, ByokConfigError> {
+    let rows = rows
+        .query_rows(UNARMED_ENGAGED_ROWS_SQL, Vec::new())
+        .await
+        .map_err(ByokConfigError::Transport)?;
+    let mut engaged = HashMap::with_capacity(rows.len());
+    for row in &rows {
+        // A row that cannot name its tenant cannot be refused per tenant, so
+        // the whole load fails and every private tenant is refused instead.
+        let tenant = row
+            .get("tenant_id")
+            .and_then(Value::as_str)
+            .filter(|tenant| !tenant.is_empty())
+            .ok_or_else(|| {
+                ByokConfigError::Parse("engaged tenant_byok_config row has no tenant_id".to_owned())
+            })?;
+        let parsed =
+            crate::customer_d1::parse_byok_config_row(row).map_err(|error| error.to_string());
+        engaged.insert(tenant.to_owned(), parsed);
+    }
+    Ok(engaged)
+}
+
+#[async_trait]
+impl<R: ByokConfigRows + core::fmt::Debug + 'static> ByokConfigSource for UnarmedByokSnapshot<R> {
+    async fn get_byok_config(
+        &self,
+        tenant: &str,
+    ) -> Result<Option<TenantByokConfig>, ByokConfigError> {
+        match self.engaged().await?.get(tenant) {
+            None => Ok(None),
+            Some(Ok(cfg)) => Ok(Some(cfg.clone())),
+            Some(Err(error)) => Err(ByokConfigError::Parse(error.clone())),
+        }
+    }
+}

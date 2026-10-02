@@ -230,18 +230,30 @@ def verify_capability_state(byok: dict, object_lock: dict, dockerfile: str) -> N
     if not byok_unverified or not probe_not_proven:
         raise VerificationError("B-154 capability evidence now proves a feature; re-review claims before publishing")
 
+    # Since #1648 the production image links NO KMS provider: one build
+    # argument, declared once with an empty default, is the only switch, and
+    # the shipped `corelink-server` build selects no literal feature. Arming
+    # BYOK changes what the public copies may say, so it must stop here.
     active = "\n".join(
         line.split("#", 1)[0]
         for line in dockerfile.splitlines()
         if not line.lstrip().startswith("#")
     )
+    declared = re.findall(r"(?m)^\s*ARG\s+CORELINK_BYOK_PROVIDER_FEATURE\b(.*)$", active)
     commands = re.findall(r"(?m)^\s*cargo build\b[^;]*;", active)
     shipped = [
         command for command in commands
         if re.search(r"(?:^|\s)-p\s+corelink-server\b", command)
         and re.search(r"(?:^|\s)--bin\s+corelink-server\b", command)
     ]
-    if len(shipped) != 1 or re.findall(r"--features\s+([\w-]+)", shipped[0]) != ["byok-aws-real"]:
+    if (
+        [value.strip() for value in declared] != ["="]
+        or re.search(r"(?m)^\s*ENV\b.*\bCORELINK_BYOK_PROVIDER_FEATURE\b", active)
+        or len(shipped) != 1
+        or re.findall(r"--features\s+([\w-]+)", shipped[0])
+        or "${CORELINK_BYOK_PROVIDER_FEATURE:+--features $CORELINK_BYOK_PROVIDER_FEATURE}"
+        not in shipped[0]
+    ):
         raise VerificationError("B-154 production Dockerfile BYOK feature changed; re-review")
 
 

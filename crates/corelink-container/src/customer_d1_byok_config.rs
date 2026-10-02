@@ -193,7 +193,7 @@ pub fn is_encryption_active(cfg: &TenantByokConfig) -> bool {
 /// Parse one `tenant_byok_config` D1 row into the read model. Fail-CLOSED: a
 /// missing `NOT NULL` column or an unparseable enum is a
 /// [`ByokConfigError::Parse`], never a permissive default.
-fn parse_byok_config_row(row: &D1Row) -> Result<TenantByokConfig, ByokConfigError> {
+pub(crate) fn parse_byok_config_row(row: &D1Row) -> Result<TenantByokConfig, ByokConfigError> {
     let tenant_id = col_opt_str(row, "tenant_id")
         .ok_or_else(|| ByokConfigError::Parse("tenant_byok_config.tenant_id missing".to_owned()))?;
     let mode = col_opt_str(row, "mode")

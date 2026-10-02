@@ -166,15 +166,48 @@ def test_orchestrator_unavailable_branch_is_code_and_not_string_safe(tmp_path: P
     assert any("ActiveProvider::Unavailable" in failure for failure in result["failures"])
 
 
-def test_shipped_aws_feature_is_required_not_comment_bait(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("needle", "replacement", "bait"),
+    [
+        # #1648: re-arming the shipped image by flipping the one default.
+        ("ARG CORELINK_BYOK_PROVIDER_FEATURE=\n", "ARG CORELINK_BYOK_PROVIDER_FEATURE=byok-aws-real\n", ""),
+        # A literal feature beside the switch still arms the shipped binary.
+        (
+            "--bin corelink-server \\\n",
+            "--bin corelink-server --features byok-aws-real \\\n",
+            "",
+        ),
+        # Removing the switch from the build, with a comment-only decoy.
+        (
+            "${CORELINK_BYOK_PROVIDER_FEATURE:+--features $CORELINK_BYOK_PROVIDER_FEATURE}; \\\n    # Keep",
+            "; \\\n    # Keep",
+            "\n# cargo build -p corelink-server --bin corelink-server "
+            "${CORELINK_BYOK_PROVIDER_FEATURE:+--features $CORELINK_BYOK_PROVIDER_FEATURE};\n",
+        ),
+        # An ENV override defeats the empty ARG default.
+        (
+            "ARG CORELINK_BYOK_PROVIDER_FEATURE=\n",
+            "ARG CORELINK_BYOK_PROVIDER_FEATURE=\nENV CORELINK_BYOK_PROVIDER_FEATURE=byok-aws-real\n",
+            "",
+        ),
+    ],
+)
+def test_shipped_image_links_no_kms_provider(
+    tmp_path: Path, needle: str, replacement: str, bait: str
+) -> None:
     root = fixture_tree(tmp_path)
     path = root / "Dockerfile"
-    mutate_line(path, "--features byok-aws-real;", ";")
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write("\n# cargo build -p corelink-server --bin corelink-server --features byok-aws-real;\n")
+    mutate_line(path, needle, replacement)
+    if bait:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(bait)
     result = MODULE.verify(root)
     assert result["ok"] is False
     assert any("Dockerfile: production corelink-server" in failure for failure in result["failures"])
+
+
+def test_shipped_provider_contract_accepts_the_live_dockerfile() -> None:
+    assert MODULE.shipped_kms_provider_failure((ROOT / "Dockerfile").read_text(encoding="utf-8")) is None
 
 
 def test_byok_receipt_transition_forces_questionnaire_review(tmp_path: Path) -> None:
@@ -195,13 +228,34 @@ def test_object_lock_probe_transition_forces_questionnaire_review(tmp_path: Path
     assert any("Object Lock probe result changed" in failure for failure in result["failures"])
 
 
-def test_unconditional_501_claim_is_not_accepted(tmp_path: Path) -> None:
+def test_501_claim_without_its_no_kms_provider_cause_is_not_accepted(tmp_path: Path) -> None:
     root = fixture_tree(tmp_path)
     path = root / MODULE.CAIQ
-    mutate_line(path, " if provider construction or CMK access fails;", ";")
+    mutate_line(
+        path,
+        ", because the Dockerfile production build links no KMS provider (`CORELINK_BYOK_PROVIDER_FEATURE` is empty)",
+        "",
+    )
     result = MODULE.verify(root)
     assert result["ok"] is False
-    assert any("unconditional 501 claim" in failure for failure in result["failures"])
+    assert any(
+        "501 claim without its no-KMS-provider cause" in failure for failure in result["failures"]
+    )
+
+
+def test_stale_conditional_501_claim_is_not_accepted(tmp_path: Path) -> None:
+    # Before #1648 the shipped image linked AWS KMS and activation 501'd only on
+    # provider/CMK failure. That condition no longer describes the build.
+    root = fixture_tree(tmp_path)
+    path = root / MODULE.CAIQ
+    mutate_line(
+        path,
+        "(`CORELINK_BYOK_PROVIDER_FEATURE` is empty) (`crates",
+        "(`CORELINK_BYOK_PROVIDER_FEATURE` is empty) if provider construction or CMK access fails (`crates",
+    )
+    result = MODULE.verify(root)
+    assert result["ok"] is False
+    assert any("stale conditional 501 claim" in failure for failure in result["failures"])
 
 
 @pytest.mark.parametrize(
@@ -211,7 +265,8 @@ def test_unconditional_501_claim_is_not_accepted(tmp_path: Path) -> None:
         (MODULE.CAIQ, "staff cannot access customer CMK material is **unverified**", "staff cannot access customer CMK material is vacuously true"),
         (MODULE.CAIQ, "The `/deactivate` Shred route is implemented", "Customer-controlled crypto-shredding is not available"),
         (MODULE.CAIQ, "served product's compute and storage are hosted by Cloudflare", "All compute / storage hosted by Cloudflare / AWS / GCP / Azure"),
-        (MODULE.CAIQ, "shipped native container compiles the AWS BYOK path", "Plaintext DEKs never leave request scope (V8 isolate memory)"),
+        (MODULE.CAIQ, "shipped native container links no KMS provider", "Plaintext DEKs never leave request scope (V8 isolate memory)"),
+        (MODULE.CAIQ, "shipped native container links no KMS provider", "shipped native container compiles the AWS BYOK path"),
         (MODULE.CAIQ, "Its Dockerfile pins the runtime base image digest", "Workers run as V8 isolates, not containers"),
         (MODULE.SIG, "no verified customer rollout", "not shipped"),
         (MODULE.SIG, "served product's compute and storage are hosted by Cloudflare", "compute / storage hosted by Cloudflare / AWS / GCP / Azure"),

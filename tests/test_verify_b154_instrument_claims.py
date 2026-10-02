@@ -99,13 +99,16 @@ def _capability_sources() -> tuple[dict, dict, str]:
     )
 
 
-def test_current_capability_boundary_is_not_an_unconditional_501_claim() -> None:
+def test_current_capability_boundary_ships_no_kms_provider() -> None:
     byok, probe, dockerfile = _capability_sources()
     MODULE.verify_capability_state(byok, probe, dockerfile)
-    assert "--features byok-aws-real" in dockerfile
+    assert "ARG CORELINK_BYOK_PROVIDER_FEATURE=\n" in dockerfile
+    assert "--features byok-aws-real" not in dockerfile
 
 
-@pytest.mark.parametrize("mutant", ["byok", "object_lock", "dockerfile"])
+@pytest.mark.parametrize(
+    "mutant", ["byok", "object_lock", "armed_default", "literal_feature", "switch_removed"]
+)
 def test_capability_evidence_drift_fails_closed(mutant: str) -> None:
     byok, probe, dockerfile = _capability_sources()
     if mutant == "byok":
@@ -114,9 +117,24 @@ def test_capability_evidence_drift_fails_closed(mutant: str) -> None:
     elif mutant == "object_lock":
         probe = copy.deepcopy(probe)
         probe["classification"] = "SUPPORTED"
+    elif mutant == "armed_default":
+        dockerfile = dockerfile.replace(
+            "ARG CORELINK_BYOK_PROVIDER_FEATURE=\n",
+            "ARG CORELINK_BYOK_PROVIDER_FEATURE=byok-aws-real\n",
+            1,
+        )
+    elif mutant == "literal_feature":
+        dockerfile = dockerfile.replace(
+            "--bin corelink-server \\\n", "--bin corelink-server --features byok-aws-real \\\n", 1
+        )
     else:
-        dockerfile = dockerfile.replace("--features byok-aws-real;", "--features byok-no-real-provider;", 1)
-        dockerfile += "\n# cargo build -p corelink-server --bin corelink-server --features byok-aws-real;\n"
+        dockerfile = dockerfile.replace(
+            "${CORELINK_BYOK_PROVIDER_FEATURE:+--features $CORELINK_BYOK_PROVIDER_FEATURE};", ";", 1
+        )
+        dockerfile += (
+            "\n# cargo build -p corelink-server --bin corelink-server "
+            "${CORELINK_BYOK_PROVIDER_FEATURE:+--features $CORELINK_BYOK_PROVIDER_FEATURE};\n"
+        )
     with pytest.raises(MODULE.VerificationError):
         MODULE.verify_capability_state(byok, probe, dockerfile)
 

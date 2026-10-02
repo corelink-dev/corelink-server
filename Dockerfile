@@ -167,6 +167,18 @@ COPY migrations ./migrations
 # a usable cargo; it does not compile anything). `--locked` keeps Cargo.lock
 # authoritative for both the metadata read and the build.
 ENV CARGO_INCREMENTAL=0
+# BYOK KMS provider for both production binaries. EMPTY by default: the shipped
+# image links no KMS provider (owner decision 2026-10-02, #1648 / #1676).
+# Customer-key activation then answers 501, and a tenant whose BYOK state is
+# not `inactive` is refused fail-closed. #1800 had made the real provider
+# mandatory at boot, so the image with `byok-aws-real` but no KMS credentials
+# exited with code 1 on every start.
+# Arming BYOK is an image change: set this default to `byok-aws-real` in the
+# same rollout that provisions CORELINK_BYOK_KMS_ACCESS_KEY_ID and
+# CORELINK_BYOK_KMS_SECRET_ACCESS_KEY on every production Worker. A rollout
+# replaces every container, so armed and unarmed processes never keep serving
+# side by side. Any other value fails the build.
+ARG CORELINK_BYOK_PROVIDER_FEATURE=
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=corelink-cargo-registry \
     --mount=type=cache,target=/usr/local/cargo/git,id=corelink-cargo-git \
     --mount=type=cache,target=/build/target,id=corelink-target,sharing=locked \
@@ -179,15 +191,19 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=corelink-cargo-regist
     for pkg in $FIRST_PARTY; do CLEAN_ARGS="$CLEAN_ARGS -p $pkg"; done; \
     # shellcheck disable=SC2086 -- $CLEAN_ARGS is an intentional list of -p flags
     cargo clean --release --locked $CLEAN_ARGS; \
-    # The shipped native image links the real AWS KMS boundary. Runtime KMS
-    # credentials remain owner-provided; missing credentials fail BYOK closed.
+    case "$CORELINK_BYOK_PROVIDER_FEATURE" in \
+        ""|byok-aws-real) ;; \
+        *) echo "unsupported CORELINK_BYOK_PROVIDER_FEATURE" >&2; exit 1 ;; \
+    esac; \
+    # shellcheck disable=SC2086 -- an empty value must expand to no arguments
     cargo build --release --locked -p corelink-server --bin corelink-server \
-        --features byok-aws-real; \
+        ${CORELINK_BYOK_PROVIDER_FEATURE:+--features $CORELINK_BYOK_PROVIDER_FEATURE}; \
     # Keep the fixture-only Gate 4 binary below, but ship the native
     # production-capable sweep under a distinct name.  The two targets have
     # intentionally different contracts and must not overwrite each other.
+    # shellcheck disable=SC2086 -- an empty value must expand to no arguments
     cargo build --release --locked -p corelink-server --bin corelink-gc-sweep-production \
-        --features byok-aws-real; \
+        ${CORELINK_BYOK_PROVIDER_FEATURE:+--features $CORELINK_BYOK_PROVIDER_FEATURE}; \
     cargo build --release --locked -p corelink-gc --bin gc_sweep; \
     mkdir -p /out; \
     cp /build/target/release/corelink-server /out/corelink-server; \

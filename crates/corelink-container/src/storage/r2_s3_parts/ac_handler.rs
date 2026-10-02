@@ -72,6 +72,16 @@ impl R2AcHandler {
         self
     }
 
+    /// Attach only the config view of an UNARMED (no-provider) data plane.
+    /// Mirrors [`R2CasHandler::with_byok_unarmed`] (#1648).
+    #[must_use]
+    pub fn with_byok_unarmed(mut self, byok_config_cache: Arc<ByokConfigCache>) -> Self {
+        self.byok_config_cache = Some(byok_config_cache);
+        self.tcs_resolver = None;
+        self.byok_mode_b = None;
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn byok_config_cache_for_test(&self) -> Option<&Arc<ByokConfigCache>> {
         self.byok_config_cache.as_ref()
@@ -160,9 +170,7 @@ impl R2AcHandler {
             physical_digest: action_digest.to_owned(),
             plan: ByokBodyPlan::Plaintext,
         };
-        let (Some(cache), Some(resolver)) =
-            (self.byok_config_cache.as_ref(), self.tcs_resolver.as_ref())
-        else {
+        let Some(cache) = self.byok_config_cache.as_ref() else {
             return Ok(plaintext());
         };
         // `_public` is deterministic public content — never encrypted (dedup).
@@ -182,6 +190,19 @@ impl R2AcHandler {
         };
         let Some(cfg) = cfg else {
             return Ok(plaintext());
+        };
+        // An UNARMED (no-provider) process has the config view only: it serves
+        // an `inactive` tenant in plaintext and refuses every other one.
+        let Some(resolver) = self.tcs_resolver.as_ref() else {
+            return match unarmed_engagement(&cfg) {
+                ByokEngagement::Plaintext => Ok(plaintext()),
+                ByokEngagement::FailClosed(why) => Err(AcHandlerError::Internal(format!(
+                    "byok {why} (fail-closed)"
+                ))),
+                ByokEngagement::Encrypt(_) => Err(AcHandlerError::Internal(format!(
+                    "byok {UNARMED_REFUSAL} (fail-closed)"
+                ))),
+            };
         };
         match engagement_for(&cfg) {
             ByokEngagement::Plaintext => Ok(plaintext()),

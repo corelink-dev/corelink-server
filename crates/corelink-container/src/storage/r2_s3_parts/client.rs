@@ -72,8 +72,8 @@ use zeroize::Zeroizing;
 
 use super::byok_cas::{
     ac_crypto_context, ac_crypto_context_for, cas_crypto_context, cas_crypto_context_for,
-    decrypt_cas_blob, encrypt_cas_blob, engagement_for, harden_digest, ByokConfigCache,
-    ByokEngagement, ModeBEncryptor, TcsResolver,
+    decrypt_cas_blob, encrypt_cas_blob, engagement_for, harden_digest, unarmed_engagement,
+    ByokConfigCache, ByokEngagement, ModeBEncryptor, TcsResolver, UNARMED_REFUSAL,
 };
 use super::StorageEnv;
 use crate::customer_d1::ByokCryptoMode;

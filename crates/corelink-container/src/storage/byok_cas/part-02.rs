@@ -631,5 +631,199 @@ mod tests {
         );
     }
 
+    // ── Unarmed (no-provider) data plane, #1648 ──────────────────────────────
+
+    /// D1 row source for the unarmed snapshot: answers each load from a script
+    /// and counts the loads.
+    #[derive(Debug)]
+    struct ScriptedRows {
+        loads: Mutex<Vec<Result<Vec<crate::storage::d1_http::D1Row>, String>>>,
+        calls: std::sync::atomic::AtomicUsize,
+        last_sql: Mutex<String>,
+    }
+
+    impl ScriptedRows {
+        fn new(loads: Vec<Result<Vec<crate::storage::d1_http::D1Row>, String>>) -> Self {
+            Self {
+                loads: Mutex::new(loads),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                last_sql: Mutex::new(String::new()),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl ByokConfigRows for ScriptedRows {
+        async fn query_rows(
+            &self,
+            sql: &str,
+            _binds: Vec<Value>,
+        ) -> Result<Vec<crate::storage::d1_http::D1Row>, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *lock(&self.last_sql) = sql.to_owned();
+            let mut loads = lock(&self.loads);
+            if loads.is_empty() {
+                return Err("script exhausted".to_owned());
+            }
+            loads.remove(0)
+        }
+    }
+
+    fn config_row(tenant: Option<&str>, state: Option<&str>) -> crate::storage::d1_http::D1Row {
+        let mut row = crate::storage::d1_http::D1Row::new();
+        if let Some(tenant) = tenant {
+            row.insert("tenant_id".to_owned(), json!(tenant));
+        }
+        row.insert("mode".to_owned(), json!("byok"));
+        row.insert("crypto_mode".to_owned(), json!("convergent"));
+        row.insert("cmk_provider".to_owned(), json!("aws"));
+        row.insert("cmk_key_id".to_owned(), json!("arn:cmk"));
+        row.insert("cmk_region".to_owned(), json!("iad"));
+        row.insert("state".to_owned(), state.map_or(Value::Null, |state| json!(state)));
+        row
+    }
+
+    /// The rows D1 returns for [`UNARMED_ENGAGED_ROWS_SQL`]: one per state the
+    /// unarmed process must refuse, including a NULL and an unknown state.
+    fn engaged_rows() -> Vec<crate::storage::d1_http::D1Row> {
+        vec![
+            config_row(Some("t-active"), Some("active")),
+            config_row(Some("t-partial"), Some("partial")),
+            config_row(Some("t-shredded"), Some("shredded")),
+            config_row(Some("t-pending"), Some("pending")),
+            config_row(Some("t-null"), None),
+            config_row(Some("t-unknown"), Some("ACTIVE ")),
+        ]
+    }
+
+    #[test]
+    fn unarmed_engagement_serves_only_inactive() {
+        assert_eq!(
+            unarmed_engagement(&active_cfg(ByokCryptoMode::Convergent, ByokState::Inactive)),
+            ByokEngagement::Plaintext
+        );
+        for state in [
+            ByokState::Pending,
+            ByokState::Active,
+            ByokState::Partial,
+            ByokState::Shredded,
+        ] {
+            for mode in [ByokCryptoMode::Convergent, ByokCryptoMode::Random] {
+                assert_eq!(
+                    unarmed_engagement(&active_cfg(mode, state)),
+                    ByokEngagement::FailClosed(UNARMED_REFUSAL),
+                    "{state:?}/{mode:?} must be refused without a KMS provider"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unarmed_snapshot_query_selects_null_and_every_non_inactive_state() {
+        let sql = UNARMED_ENGAGED_ROWS_SQL;
+        assert!(sql.contains("FROM tenant_byok_config"), "{sql}");
+        assert!(sql.contains("state IS NULL"), "a NULL state must be selected: {sql}");
+        assert!(sql.contains("state <> 'inactive'"), "{sql}");
+        assert!(!sql.contains("LIMIT"), "the whole engaged population is read: {sql}");
+    }
+
+    #[tokio::test]
+    async fn unarmed_snapshot_refuses_every_engaged_tenant_and_loads_once() {
+        let rows = Arc::new(ScriptedRows::new(vec![Ok(engaged_rows())]));
+        let snapshot = UnarmedByokSnapshot::new(Arc::clone(&rows));
+        let cache = ByokConfigCache::new(Arc::new(snapshot), 60);
+        for _ in 0..3 {
+            for tenant in ["t-active", "t-partial", "t-shredded", "t-pending"] {
+                let cfg = cache.get(tenant).await.unwrap().expect("engaged row");
+                assert_eq!(
+                    unarmed_engagement(&cfg),
+                    ByokEngagement::FailClosed(UNARMED_REFUSAL),
+                    "{tenant}"
+                );
+            }
+            for tenant in ["t-null", "t-unknown"] {
+                assert!(
+                    cache.get(tenant).await.is_err(),
+                    "{tenant}: an unreadable state must refuse, never read as no row"
+                );
+            }
+            assert_eq!(cache.get("t-plain").await.unwrap(), None, "no row is plaintext");
+        }
+        assert_eq!(rows.calls(), 1, "the engaged set is read once, then served from memory");
+        assert_eq!(*lock(&rows.last_sql), UNARMED_ENGAGED_ROWS_SQL);
+    }
+
+    #[tokio::test]
+    async fn unarmed_snapshot_retries_a_failed_load_instead_of_caching_it() {
+        let rows = Arc::new(ScriptedRows::new(vec![
+            Err("injected D1 outage".to_owned()),
+            Ok(engaged_rows()),
+        ]));
+        let snapshot = UnarmedByokSnapshot::new(Arc::clone(&rows));
+        assert!(
+            snapshot.get_byok_config("t-plain").await.is_err(),
+            "an unknown engaged set must refuse even a tenant with no row"
+        );
+        assert_eq!(snapshot.get_byok_config("t-plain").await.unwrap(), None);
+        assert!(snapshot.get_byok_config("t-active").await.unwrap().is_some());
+        assert_eq!(rows.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn unarmed_snapshot_with_an_unscoped_row_refuses_every_tenant() {
+        let mut rows = engaged_rows();
+        rows.push(config_row(None, Some("active")));
+        let snapshot = UnarmedByokSnapshot::new(Arc::new(ScriptedRows::new(vec![Ok(rows)])));
+        assert!(snapshot.get_byok_config("t-plain").await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unarmed_pin_write_refuses_engaged_tenants_before_reservation() {
+        let rows = Arc::new(ScriptedRows::new(vec![Ok(engaged_rows())]));
+        let data_plane = DataPlaneByok::unarmed(Arc::new(UnarmedByokSnapshot::new(rows)));
+        assert!(!data_plane.is_armed());
+        assert!(data_plane.tcs_resolver().is_none() && data_plane.mode_b().is_none());
+        for tenant in ["t-active", "t-pending", "t-null", "t-unknown"] {
+            assert!(
+                data_plane.pin_write(tenant, 10).is_err(),
+                "{tenant}: an engaged tenant must not get a plaintext reservation"
+            );
+        }
+        assert!(data_plane.pin_write("t-plain", 10).unwrap().is_none());
+        assert!(data_plane
+            .pin_write(crate::adapter_cache::PUBLIC_NAMESPACE, 10)
+            .unwrap()
+            .is_none());
+    }
+
+    /// The shipped image is built WITHOUT a real KMS provider (#1648), and its
+    /// boot assembly must succeed with durable storage and no KMS credentials
+    /// at all, doing no I/O. Mutation proof: run this test with
+    /// `--features byok-aws-real` and no `CORELINK_BYOK_KMS_*` / `AWS_*`
+    /// credentials, and it fails with "BYOK provider init failed", the exact
+    /// error that made every production container exit with code 1.
+    #[tokio::test]
+    async fn shipped_build_boots_its_byok_data_plane_without_kms_credentials() {
+        let env = crate::storage::StorageEnv {
+            r2_endpoint: "https://r2.invalid".to_owned(),
+            r2_access_key_id: "r2-access".to_owned(),
+            r2_secret_access_key: "r2-secret".to_owned(),
+            r2_session_token: None,
+            cloudflare_account_id: "account".to_owned(),
+            cf_api_token: "d1-token".to_owned(),
+            d1_database_id: "database".to_owned(),
+        };
+        let data_plane = DataPlaneByok::from_storage_env(&env)
+            .await
+            .unwrap_or_else(|error| panic!("shipped build must boot: {error}"));
+        assert!(
+            !data_plane.is_armed(),
+            "the shipped build links no KMS provider, so its data plane is unarmed"
+        );
+    }
+
     include!("part-02-tail.rs");
 }
