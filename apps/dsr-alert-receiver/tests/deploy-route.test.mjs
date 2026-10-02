@@ -39,6 +39,7 @@ import {
   validateInitialPrivateVersion,
   prepareInitialPrivateReceiverConfig,
   prepareFinalReceiverConfig,
+  recordCleanupFailure,
   summarizeCustomRoutes,
   queryReadOnlyDatabase,
 } from "../scripts/deploy-route.mjs";
@@ -1648,6 +1649,95 @@ describe("B-216 receiver on the shared main account", () => {
     expect(receipt).toMatchObject({ status: "failed", failed_stage: "worker_readback", rollback_status: "created_worker_deleted" });
     expect(receipt.worker_revision).toBeUndefined();
     expect(harness.state.deleted).toBe(true);
+  });
+
+  it("names the refused read or write in the failure receipt, without bodies or IDs", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const zones = routeHarness({ migration, sha: goodContext.sha, ingress: { zonesStatus: 403 } });
+    const zonesReceipt = await runForReceipt(zones, config, migration, "ingress_zones_permission_denied");
+    expect(zonesReceipt.read_failure).toEqual({ endpoint: "zones_list", http_status: 403, cf_error_codes: [], message_class: "permission" });
+    expect(zonesReceipt.write_failure).toBeUndefined();
+
+    const harness = routeHarness({ migration, sha: goodContext.sha });
+    const wrapped = { ...harness, fetchImpl: async (url, options = {}) => {
+      if ((options.method ?? "GET") === "POST" && new URL(url).pathname.endsWith("/subdomain")) {
+        return Response.json({ success: false, errors: [{ code: 10013, message: `private failure for ${TARGET.accountId}` }] }, { status: 500 });
+      }
+      return harness.fetchImpl(url, options);
+    } };
+    const writeReceipt = await runForReceipt(wrapped, config, migration, "provider_response_rejected");
+    expect(writeReceipt.write_failure).toEqual({ endpoint: "worker_subdomain", http_status: 500, cf_error_codes: [10013], message_class: "server_error" });
+    expect(writeReceipt.read_failure).toBeUndefined();
+    expect(JSON.stringify(writeReceipt)).not.toContain("private failure");
+  });
+
+  it("records every failed cleanup request beside the primary failure, in the same redacted shape", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const primary = { endpoint: "worker_subdomain", http_status: 500, cf_error_codes: [], message_class: "server_error" };
+
+    // The cleanup DELETE is refused: recorded as a write, primary read kept.
+    const deleteRefused = routeHarness({ migration, sha: goodContext.sha, failFinalSubdomainReadback: true, ingress: { failDelete: true } });
+    const deleteReceipt = await runForReceipt(deleteRefused, config, migration, "provider_response_rejected");
+    expect(deleteReceipt.read_failure).toEqual(primary);
+    expect(deleteReceipt.rollback_status).toBe("ambiguous_do_not_retry");
+    expect(deleteReceipt.cleanup_failures).toEqual([{
+      failure_code: "provider_response_rejected",
+      write_failure: { endpoint: "worker_script", http_status: 500, cf_error_codes: [], message_class: "server_error" },
+    }]);
+
+    // The zero-ingress proof before the delete cannot read zone routes.
+    const unreadable = routeHarness({ migration, sha: goodContext.sha, failFinalSubdomainReadback: true, ingress: { zoneRoutesFailAfterDeploy: true } });
+    const unreadableReceipt = await runForReceipt(unreadable, config, migration, "provider_response_rejected");
+    expect(unreadableReceipt.read_failure).toEqual(primary);
+    expect(unreadableReceipt.cleanup_failures).toHaveLength(1);
+    expect(unreadableReceipt.cleanup_failures[0].read_failure).toEqual({ endpoint: "zone_routes", http_status: 500, cf_error_codes: [], message_class: "server_error" });
+    expect(unreadableReceipt.cleanup_failures[0].failure_code).toMatch(/^ingress_/);
+
+    // The rollback CLI call fails: its wrangler classification is kept.
+    const existing = routeHarness({ migration, sha: goodContext.sha, existing: true, failFinalDeploymentReadback: true });
+    const rollbackRefused = { ...existing, command: (args, options) => {
+      if (args[0] === "rollback") throw new RouteError("provider_command_failed", { provider_failure_class: "provider_error_code", provider_error_code: 10000, process_exit_code: 1, provider_error_category: "permission_denied" });
+      return existing.command(args, options);
+    } };
+    const rollbackReceipt = await runForReceipt(rollbackRefused, config, migration, "provider_response_rejected");
+    expect(rollbackReceipt.rollback_status).toBe("ambiguous_do_not_retry");
+    expect(rollbackReceipt.cleanup_failures).toHaveLength(1);
+    expect(rollbackReceipt.cleanup_failures[0]).toMatchObject({
+      failure_code: "provider_command_failed",
+      wrangler_failure: { provider_failure_class: "provider_error_code", provider_error_code: 10000, process_exit_code: 1, provider_error_category: "permission_denied" },
+    });
+
+    // The inventory read that opens cleanup is refused once: recorded, and the
+    // delete still runs only after its own scripts-list and zero-ingress proof.
+    const inventoryRefused = routeHarness({ migration, sha: goodContext.sha, failFinalSubdomainReadback: true });
+    let refusedOnce = false;
+    const inventoryWrapped = { ...inventoryRefused, fetchImpl: async (url, options = {}) => {
+      if (!refusedOnce && !inventoryRefused.state.failFinalSubdomainReadback && new URL(url).pathname.endsWith("/deployments")) {
+        refusedOnce = true;
+        return Response.json({ success: false, errors: [{ code: 10013, message: "private" }] }, { status: 500 });
+      }
+      return inventoryRefused.fetchImpl(url, options);
+    } };
+    const inventoryReceipt = await runForReceipt(inventoryWrapped, config, migration, "provider_response_rejected");
+    expect(refusedOnce).toBe(true);
+    expect(inventoryReceipt.rollback_status).toBe("created_worker_deleted");
+    expect(inventoryReceipt.cleanup_failures).toEqual([{
+      failure_code: "provider_response_rejected",
+      read_failure: { endpoint: "worker_deployments", http_status: 500, cf_error_codes: [10013], message_class: "server_error" },
+    }]);
+
+    // A clean cleanup states that nothing failed.
+    const clean = routeHarness({ migration, sha: goodContext.sha, failFinalSubdomainReadback: true });
+    expect((await runForReceipt(clean, config, migration, "provider_response_rejected")).cleanup_failures).toEqual([]);
+
+    // Bounded at four entries, with an unknown error code replaced.
+    const receipt = {};
+    const unsafeCode = Object.assign(new Error("x"), { code: `private ${TARGET.accountId}` });
+    for (let index = 0; index < 6; index += 1) recordCleanupFailure(receipt, index % 2 ? unsafeCode : new Error(`private ${TARGET.accountId}`));
+    expect(receipt.cleanup_failures).toEqual(Array(4).fill({ failure_code: "cleanup_failed_closed" }));
+    for (const saved of [deleteReceipt, unreadableReceipt, rollbackReceipt]) expect(JSON.stringify(saved.cleanup_failures)).not.toContain(TARGET.accountId);
   });
 
   it("proves zero ingress immediately before a cleanup delete or rollback, and halts if it is not zero", async () => {

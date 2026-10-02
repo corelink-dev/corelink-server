@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { readWorkerInventory } from "./readback-route.mjs";
 import { RECEIVER_TARGET, ReceiverTargetError, assertReceiverResourceName } from "./receiver-target.mjs";
+import { classifyReadFailure, sanitizeReadFailure } from "./read-failure.mjs";
 
 // The D1 database is adopted by its exact pinned name (D1 names are unique per
 // account) rather than by a UUID frozen in source: the lead creates it once on the
@@ -21,6 +22,45 @@ export const TARGET = Object.freeze({
   configSha256: "8b9aae44f049b14966c4a35b938c561785a40d0c924c0f5d7c6ffeb2ef2ea496",
   migrationSha256: "7b9819d1f155645d84b1037e8376063e46ff117dd4d57553b66e22c2d2822bb2",
 });
+
+// Cloudflare API permissions each workflow mode needs on account 6a1fc1c6…
+// (one token: account resources = this account; zone resources = all zones of
+// this account). A refused call is named in the receipt's `read_failure` /
+// `write_failure` endpoint label, so a missing grant shows up by name.
+//
+// | mode / calls                                         | permission (resource)               |
+// |------------------------------------------------------|-------------------------------------|
+// | readback_only                                        |                                     |
+// |   GET workers/scripts, …/versions, …/deployments,    | Workers Scripts: Read (account)     |
+// |       …/subdomain                                    |                                     |
+// |   GET user|accounts tokens/verify                    | none (a token verifies itself)      |
+// |   GET token details (diagnostic only, optional)      | API Tokens: Read (user token) or    |
+// |                                                      | Account API Tokens: Read (account)  |
+// | deploy_once                                          |                                     |
+// |   GET accounts/{id}                                  | Account Settings: Read (account)    |
+// |   GET d1/database?name=…, POST d1/…/query,           | D1: Edit (account; covers read)     |
+// |       wrangler d1 migrations apply                   |                                     |
+// |   GET scripts list, deployments, versions, secrets,  | Workers Scripts: Read (account)     |
+// |       subdomain, workers/domains, services/…/routes  |                                     |
+// |   wrangler deploy / versions upload / secret put /   | Workers Scripts: Edit (account)     |
+// |       versions deploy / rollback; POST subdomain;    |                                     |
+// |       DELETE the receiver script (cleanup only)      |                                     |
+// |   GET zones?account.id=…                             | Zone: Read (all zones of account)   |
+// |   GET zones/{id}/workers/routes, services/…/routes   | Workers Routes: Read (all zones)    |
+// | exercise_once                                        |                                     |
+// |   GET accounts/{id}                                  | Account Settings: Read (account)    |
+// |   GET d1 list, POST d1/…/query (SELECT only)         | D1: Edit (account; query endpoint)  |
+// |   GET scripts, deployments, versions, secrets,       | Workers Scripts: Read (account)     |
+// |       subdomain, workers/subdomain, workers/domains  |                                     |
+// |   GET zones, zones/{id}/workers/routes,              | Zone: Read + Workers Routes: Read   |
+// |       services/…/routes                              | (all zones of account)              |
+// |   POST …/subdomain (workers.dev disable)             | Workers Scripts: Edit (account)     |
+// | disable_workers_dev                                  |                                     |
+// |   GET/POST …/subdomain                               | Workers Scripts: Edit (account)     |
+//
+// One key for every mode: Account Settings: Read, Workers Scripts: Edit, D1: Edit
+// (account 6a only); Zone: Read, Workers Routes: Read (all zones of account 6a);
+// optionally Account API Tokens: Read so readback can prove the key's own scope.
 
 export class RouteError extends Error {
   constructor(code, providerFailure = null) {
@@ -597,6 +637,41 @@ export function validateInitialPrivateVersion(version, expectedDatabaseId) {
 }
 
 const apiBase = "https://api.cloudflare.com/client/v4";
+
+// A failed provider request carries its allowlisted classification: a GET as
+// `readFailure`, anything else as `writeFailure` (see read-failure.mjs).
+function providerRequestFailure(code, method, failure) {
+  const error = new RouteError(code);
+  if (method === "GET") error.readFailure = failure;
+  else error.writeFailure = failure;
+  return error;
+}
+
+// Recorded in a failure receipt when the error carries one; never the body.
+export function providerFailureFields(error) {
+  return {
+    ...(error?.readFailure ? { read_failure: sanitizeReadFailure(error.readFailure) } : {}),
+    ...(error?.writeFailure ? { write_failure: sanitizeReadFailure(error.writeFailure) } : {}),
+  };
+}
+
+const MAX_CLEANUP_FAILURES = 4;
+const CLEANUP_FAILURE_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+// A step that fails during cleanup is recorded beside the primary failure, never
+// in place of it: its failure code plus the same allowlisted request
+// classification (read_failure / write_failure, or wrangler_failure for a CLI
+// call), at most four entries. Never a body, message, ID, or token.
+export function recordCleanupFailure(receipt, error) {
+  if (!Array.isArray(receipt.cleanup_failures)) receipt.cleanup_failures = [];
+  if (receipt.cleanup_failures.length >= MAX_CLEANUP_FAILURES) return;
+  const code = typeof error?.code === "string" && CLEANUP_FAILURE_CODE.test(error.code) ? error.code : "cleanup_failed_closed";
+  receipt.cleanup_failures.push(Object.freeze({
+    failure_code: code,
+    ...providerFailureFields(error),
+    ...(error instanceof RouteError && error.providerFailure ? { wrangler_failure: sanitizeProviderFailure(error.providerFailure) } : {}),
+  }));
+}
 const PROVIDER_ACCOUNT_PATH = `/accounts/${TARGET.accountId}`;
 const PROVIDER_WORKER_PATH = `${PROVIDER_ACCOUNT_PATH}/workers/scripts/${TARGET.workerName}`;
 const UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -655,12 +730,14 @@ export function makeCloudflareApi(token, fetchImpl = fetch) {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch {
-      fail("provider_transport_ambiguous");
+      throw providerRequestFailure("provider_transport_ambiguous", method, classifyReadFailure({ path, transport: true }));
     }
     let payload;
-    try { payload = await response.json(); } catch { fail("provider_response_ambiguous"); }
+    try { payload = await response.json(); } catch {
+      throw providerRequestFailure("provider_response_ambiguous", method, classifyReadFailure({ path, status: response.status, malformed: true }));
+    }
     if (!response.ok || payload?.success !== true) {
-      const rejected = new RouteError("provider_response_rejected");
+      const rejected = providerRequestFailure("provider_response_rejected", method, classifyReadFailure({ path, status: response.status, payload }));
       rejected.httpStatus = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599 ? response.status : null;
       throw rejected;
     }
@@ -703,8 +780,11 @@ async function readIngress(api, path, kind) {
   try {
     return await api(path);
   } catch (error) {
-    if (error instanceof RouteError && error.code === "provider_response_rejected" && [401, 403].includes(error.httpStatus)) fail(`ingress_${kind}_permission_denied`);
-    fail(`ingress_${kind}_unreadable`);
+    const permission = error instanceof RouteError && error.code === "provider_response_rejected" && [401, 403].includes(error.httpStatus);
+    const refused = new RouteError(permission ? `ingress_${kind}_permission_denied` : `ingress_${kind}_unreadable`);
+    // Keep which read failed, and how, for the receipt.
+    if (error?.readFailure) refused.readFailure = error.readFailure;
+    throw refused;
   }
 }
 
@@ -1073,6 +1153,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     receipt.failed_stage = stage;
     receipt.failure_code = error instanceof RouteError ? error.code : "route_failed_closed";
     if (error instanceof RouteError && error.providerFailure) Object.assign(receipt, error.providerFailure);
+    Object.assign(receipt, providerFailureFields(error));
     if (isExternalIngressError(error)) {
       // External ingress reaches the receiver: whatever serves it now may be
       // production traffic, so no rollback and no delete. The lead decides.
@@ -1080,6 +1161,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       receipt.escalation = "lead_review_required";
     } else if (workerMutationStarted && tempConfig) {
       receipt.rollback_target = priorWorkerVersion ?? "delete_worker_created_this_run";
+      receipt.cleanup_failures = [];
       try {
         if (priorWorkerVersion) {
           // The prior revision was proven route-owned with exact bindings above. A
@@ -1094,7 +1176,10 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
           // The preimage was absent, so cleanup removes the Worker this run created,
           // but only once zero ingress is proven immediately before the delete.
           let inventory;
-          try { inventory = await readInventory(); } catch { inventory = null; }
+          try { inventory = await readInventory(); } catch (inventoryError) {
+            recordCleanupFailure(receipt, inventoryError);
+            inventory = null;
+          }
           if (inventory?.worker?.exists === false && inventory.inventory_consistency === "worker_absent") {
             receipt.rollback_status = "absent_preimage_verified";
           } else {
@@ -1111,6 +1196,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
           receipt.rollback_ingress = await proveNoExternalIngress(api, { workerExists: false });
         }
       } catch (cleanupError) {
+        recordCleanupFailure(receipt, cleanupError);
         if (isExternalIngressError(cleanupError)) {
           receipt.rollback_status = "halted_external_ingress_detected";
           receipt.escalation = "lead_review_required";
