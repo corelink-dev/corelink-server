@@ -1832,7 +1832,7 @@ source-locator: "WP-LEDGER-ID-ALLOC — Dense BACKLOG IDs / concurrent allocatio
 finding-title: "dense BACKLOG id allocation has no merge-time serialization or revalidation"
 problem: "Two merge authorities can read the same main snapshot, choose the same next contiguous id, and both issue a merge; the existing courtesy precheck only reports a collision after the stale merge and accepts a degenerate census."
 evidence: "The merge gate's former BACKLOG block fetched PR/main independently, printed renumber commands, and had no lock or second main-ref/snapshot check; repository merge commits are allowed, while branch-protection/ruleset API checks return GitHub 403 on this plan."
-acceptance: "The single --merge authority holds a crash-safe exclusive lock through allocation and merge, captures exact base/main/head object ids and same-repository head ownership, requires the PR base snapshot to equal current main and the head to contain main, validates the complete canonical dense candidate population on the exact BACKLOG.md blob bytes of those commits, read with git replacement objects disabled and refused while a graft file is in effect, revalidates main and head after allocation and again at the merge boundary, and lands through one PR merge API call pinned to the captured head sha with merge_method=squash, because branch protection on main declines every direct push. The merge call pins only the head, so the last read before it re-reads the PR and refuses unless its base is still main at the captured main sha. The lock's health is re-checked as the last statement before the merge call and again right after it: lost before is a refusal, lost during is reported and never a clean merge. Strict up-to-date protection plus the sha pin refuses the merge if either ref moved. The post-merge proof requires state MERGED and a merged PR head equal to the captured head, otherwise it exits 5 (merged_by_other_actor) with recovery steps; a PR base that still reads main and a merge commit reachable from refs/heads/main, otherwise it exits 4 (merged_into_unexpected_base) with recovery steps; and that commit's only parent to be the captured main and its tree to be the head's tree, otherwise the merge is reported as landed-but-unproven (exit 3). A merge call that did not report success is never reported as a clean merge (exit 3), even when the PR shows MERGED and every proof holds."
+acceptance: "The single --merge authority holds a crash-safe exclusive lock through allocation and merge, captures exact base/main/head object ids and same-repository head ownership, requires the PR base snapshot to equal current main and the head to contain main, validates the complete canonical dense candidate population on the exact BACKLOG.md blob bytes of those commits (refusing any backlog fence the lenient parser would skip, an unclosed block, and any item heading without exactly one block), read with git replacement objects disabled and refused while a graft file is in effect, revalidates main and head after allocation and again at the merge boundary, and lands through one PR merge API call pinned to the captured head sha with merge_method=squash, because branch protection on main declines every direct push. The merge call pins only the head, so the last read before it re-reads the PR and refuses unless its base is still main at the captured main sha. The lock's health is re-checked as the last statement before the merge call and again right after it: lost before is a refusal, lost during is reported and never a clean merge. Strict up-to-date protection plus the sha pin refuses the merge if either ref moved. The post-merge proof requires state MERGED and a merged PR head equal to the captured head, otherwise it exits 5 (merged_by_other_actor) with recovery steps; a PR base that still reads main and a merge commit reachable from refs/heads/main, otherwise it exits 4 (merged_into_unexpected_base) with recovery steps; and that commit's only parent to be the captured main and its tree to be the head's tree, otherwise the merge is reported as landed-but-unproven (exit 3). A merge call that did not report success is never reported as a clean merge (exit 3), even when the PR shows MERGED and every proof holds."
 verify: python3 -I -S -B scripts/verify_b315_dense_id_allocation.py --self-test
 verify-means: |
   done — the allocator fixture self-test, the real BACKLOG.md population, the wiring
@@ -1849,7 +1849,10 @@ verify-means: |
   the API call (409/405) is refused with no merged claim; a BEHIND head, a stale base
   snapshot, an allocation gap, a stale remote lease, a busy local lock, a refs/replace
   substitution of the candidate BACKLOG.md blob and a graft that makes a BEHIND head
-  look current are refused before the API; a PR retargeted away from main at the
+  look current are refused before the API, as is a candidate ledger with an unclosed
+  block, a malformed backlog opener or an item heading with no block (each of which
+  the lenient parser skipped, so the allocator used to see "adds nothing"); a PR
+  retargeted away from main at the
   last read before the merge call is refused before the API; a merge that lands on an
   unvalidated main or with a wrong tree exits 3; a merge GitHub lands on another base,
   or that main does not contain, exits 4 (merged_into_unexpected_base); a merge
@@ -1858,7 +1861,9 @@ verify-means: |
   tree exits 5 (merged_by_other_actor); a lock holder that dies during the boundary
   reads is refused before the API, and one that dies during the merge call is
   reported and exits 3. Every scenario allows no mutating gh call but its pinned
-  merge PUT, so a dry run makes none. The test suite also executes the gate wrapper
+  merge PUT, so a dry run makes none; attached flag values (--method=PATCH, -XDELETE,
+  -fbody=x, --input=FILE) are parsed, and any gh api argument form the classifier
+  does not model counts as a write. The test suite also executes the gate wrapper
   against the same fake: its dry run makes no mutating call, and a MERGED PR whose
   helper proof failed exits 3 as unproven. The merge endpoint takes no base, so a
   retarget after that last read and before GitHub acts on the PUT (one gh start-up

@@ -72,6 +72,46 @@ def test_duplicate_ids_fail_closed():
         allocation(_backlog(1, 2), duplicate)
 
 
+def _item(number: int, *, opener: str = "```backlog", closer: str | None = "```") -> str:
+    return (
+        f"### B-{number:03d} — fixture\n\n{opener}\nid: B-{number:03d}\nrepo: corelink-server\nowner: tl\n"
+        "status: done\nverify: 'true'\nverify-means: fixture\nlast-verified: 2026-09-06\n"
+        + (f"{closer}\n" if closer is not None else "")
+    )
+
+
+SKIPPED_STRUCTURE = {
+    # The review's two reproductions, verbatim in shape: each read as "adds nothing".
+    "unclosed B-005 after B-001..B-003": (_backlog(1, 2, 3) + _item(5, closer=None), "is never closed"),
+    "opener with trailing whitespace": (_backlog(1, 2, 3) + _item(4, opener="```backlog "), "malformed backlog fence"),
+    "orphan heading": (_backlog(1, 2, 3) + "### B-004 — fixture\n\nno block\n", "B-004 has no backlog block"),
+    "tilde fence": (_backlog(1, 2, 3) + _item(4, opener="~~~backlog", closer="~~~"), "malformed backlog fence"),
+    "block closed by a tagged fence": (_backlog(1, 2, 3) + _item(4, closer="```yaml"), "only a bare ``` may close it"),
+    "block with no heading": (_backlog(1, 2, 3) + _item(4).split("\n", 2)[2], "has no `### B-NNN` heading"),
+    "two headings, one block": (
+        _backlog(1, 2, 3) + "### B-004 — fixture\n\n" + _item(4), "B-004 has no backlog block"
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(SKIPPED_STRUCTURE))
+def test_backlog_structure_the_parser_skips_is_refused(label: str):
+    """Review round 6: backlog_verify.parse skips these, so the allocator used
+    to validate only part of the ledger. Each is refused on its own terms."""
+    candidate, named = SKIPPED_STRUCTURE[label]
+    base = _backlog(1, 2, 3)
+    with pytest.raises(AllocationError, match=re.escape(named)):
+        allocation(base, candidate, base_text=base)
+
+
+def test_a_heading_inside_a_block_is_counted_against_the_blocks():
+    candidate = _backlog(1, 2, 3).replace("verify-means: fixture\n", "verify-means: fixture\n### B-009 aside\n", 1)
+    from backlog_verify import parse
+    assert len(parse(candidate)) == 3  # the parser still sees three blocks
+    with pytest.raises(AllocationError, match="4 item headings for 3 backlog blocks"):
+        allocation(_backlog(1, 2, 3), candidate)
+
+
 def test_rejecting_a_mutation_does_not_poison_the_next_valid_allocation():
     main = _backlog(1, 2)
     with pytest.raises(AllocationError):
@@ -263,10 +303,11 @@ def world_template(tmp_path_factory):
     cache: dict = {}
 
     def template(scenario):
-        key = (scenario.variant, scenario.candidate_ids)
+        key = harness.template_key(scenario)
         if key not in cache:
             cache[key] = harness.build_world(
-                root / f"t{len(cache)}", candidate_ids=scenario.candidate_ids, variant=scenario.variant
+                root / f"t{len(cache)}", candidate_ids=scenario.candidate_ids, variant=scenario.variant,
+                candidate_text=scenario.candidate_text,
             )
         return cache[key]
 
@@ -425,7 +466,13 @@ def test_lock_health_reads_an_unreaped_zombie_holder_as_lost(tmp_path: Path):
     "planted",
     ['gh api -X PATCH "repos/{owner}/{repo}/pulls/$PR" -f state=closed >/dev/null 2>&1 || true; ',
      'gh api "repos/{owner}/{repo}/issues/$PR/comments" -f body=x >/dev/null 2>&1 || true; ',
-     'gh pr comment "$PR" --body x >/dev/null 2>&1 || true; '],
+     'gh pr comment "$PR" --body x >/dev/null 2>&1 || true; ',
+     # Attached flag values (review round 6): each escaped the first classifier.
+     'gh api --method=PATCH "repos/{owner}/{repo}/pulls/$PR" >/dev/null 2>&1 || true; ',
+     'gh api -XDELETE "repos/{owner}/{repo}/git/refs/heads/x" >/dev/null 2>&1 || true; ',
+     'gh api -fbody=x "repos/{owner}/{repo}/issues/$PR/comments" >/dev/null 2>&1 || true; ',
+     'gh api --input=request.json "repos/{owner}/{repo}/issues/$PR/comments" >/dev/null 2>&1 || true; ',
+     'gh api "repos/{owner}/{repo}/issues/$PR/comments" --raw-field=body=x >/dev/null 2>&1 || true; '],
 )
 def test_a_dry_run_that_mutates_anything_is_caught(tmp_path: Path, planted: str):
     """Teeth for the zero-mutation rule: a dry run that sends any mutating gh
@@ -446,7 +493,15 @@ def test_a_dry_run_that_mutates_anything_is_caught(tmp_path: Path, planted: str)
      (["api", "-X", "GET", "repos/o/r/pulls", "-f", "state=open"], False),
      (["api", "-X", "PUT", "repos/o/r/pulls/7/merge"], True), (["api", "repos/o/r/issues/7/comments", "-f", "body=x"], True),
      (["api", "--method", "delete", "repos/o/r/git/refs/heads/x"], True), (["pr", "merge", "7"], True),
-     (["pr", "comment", "7"], True), (["pr", "edit", "7"], True), (["repo", "view"], True)],
+     (["pr", "comment", "7"], True), (["pr", "edit", "7"], True), (["repo", "view"], True),
+     # attached values and implicit POST bodies
+     (["api", "--method=PATCH", "repos/o/r/pulls/7"], True), (["api", "-XDELETE", "repos/o/r/git/refs/heads/x"], True),
+     (["api", "-fbody=x", "repos/o/r/issues/7/comments"], True), (["api", "--input=req.json", "repos/o/r/x"], True),
+     (["api", "--input", "req.json", "repos/o/r/x"], True), (["api", "repos/o/r/x", "--raw-field=body=x"], True),
+     (["api", "--field=body=x", "repos/o/r/x"], True), (["api", "-X=GET", "repos/o/r/x"], False),
+     (["api", "-HAccept: x", "repos/o/r/x"], False), (["api", "--paginate", "repos/o/r/x"], False),
+     # forms the parser does not model are writes
+     (["api", "--some-new-flag", "repos/o/r/x"], True), (["api", "repos/o/r/x", "extra"], True), (["api", "-X"], True)],
 )
 def test_mutating_call_classifier_is_fail_closed(call: list, mutating: bool):
     assert harness.is_mutating(call) is mutating

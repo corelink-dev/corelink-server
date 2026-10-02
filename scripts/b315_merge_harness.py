@@ -150,12 +150,28 @@ class World:
     head: str
 
 
+def malformed_backlog(kind: str) -> str:
+    """A candidate BACKLOG.md that backlog_verify.parse reads as just
+    B-001..B-003 (so the allocator used to report "adds nothing" for it):
+    B-004 with an unclosed block, with an opener carrying a trailing space, or
+    as a heading with no block at all."""
+    head, tail = backlog(1, 2, 3) + "\n", backlog(4)
+    if kind == "unclosed_block":
+        return head + tail.rsplit("```\n", 1)[0]
+    if kind == "opener_trailing_space":
+        return head + tail.replace("```backlog\n", "```backlog \n", 1)
+    if kind == "orphan_heading":
+        return head + "### B-004 — fixture\n\nprose only, no backlog block\n"
+    raise HarnessError(f"unknown malformed backlog {kind!r}")
+
+
 def build_world(
     root: Path,
     *,
     main_ids: tuple[int, ...] = (1, 2, 3),
     candidate_ids: tuple[int, ...] = (1, 2, 3, 4),
     variant: str = "fresh",
+    candidate_text: str | None = None,
 ) -> World:
     """Create origin/work/fake-gh. ``variant`` shapes the PR relative to main:
 
@@ -186,7 +202,9 @@ def build_world(
     _git(env, "add", "NOTE.md", cwd=seed)
     _git(env, "commit", "--quiet", "-m", "note", cwd=seed)
     head_parent = _git(env, "rev-parse", "HEAD", cwd=seed)
-    (seed / "BACKLOG.md").write_text(backlog(*candidate_ids), encoding="utf-8")
+    (seed / "BACKLOG.md").write_text(
+        backlog(*candidate_ids) if candidate_text is None else candidate_text, encoding="utf-8"
+    )
     _git(env, "add", "BACKLOG.md", cwd=seed)
     _git(env, "commit", "--quiet", "-m", "candidate", cwd=seed)
     head = _git(env, "rev-parse", "HEAD", cwd=seed)
@@ -415,18 +433,16 @@ MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 def is_mutating(argv: list[str]) -> bool:
     """True unless ``argv`` is a gh call that only reads. Fail-closed: any
-    subcommand not known to read, and any ``api`` call that is not a GET,
-    counts as a mutation. ``gh api`` sends POST when it is given fields and no
-    explicit method, so that case is a mutation too."""
+    subcommand not known to read, any ``api`` call that is not a GET, and any
+    ``api`` argument form the parser below does not model count as a mutation.
+    ``gh api`` sends POST when it is given a body (fields or ``--input``) and
+    no explicit method, so that is a mutation too."""
     if tuple(argv[:2]) in READ_SUBCOMMANDS:
         return False
     if argv[:1] != ["api"]:
         return True
-    method, _path, params = _parse_api(argv)
-    explicit = any(arg in {"-X", "--method"} for arg in argv)
-    if not explicit and (params or "--input" in argv):
-        method = "POST"
-    return method.upper() != "GET"
+    call = _parse_api(argv)
+    return bool(call.unknown) or call.effective_method != "GET"
 
 
 PR_CHECKS = [
@@ -466,26 +482,74 @@ def _jq(expression: str, data: dict) -> str | None:
     return None
 
 
-def _parse_api(argv: list[str]) -> tuple[str, str | None, dict[str, str]]:
-    method, path, params = "GET", None, {}
+# gh api's flags, as the cobra/pflag parser accepts them: a value may be the
+# next argument or attached (``--method=PATCH``, ``-XDELETE``, ``-fbody=x``).
+API_VALUE_FLAGS = {
+    "-X": "method", "--method": "method",
+    "-f": "field", "-F": "field", "--field": "field", "--raw-field": "field",
+    "--input": "input",
+    "-H": "ignore", "--header": "ignore", "-q": "ignore", "--jq": "ignore", "-t": "ignore",
+    "--template": "ignore", "-p": "ignore", "--preview": "ignore", "--hostname": "ignore", "--cache": "ignore",
+}
+API_BOOL_FLAGS = {"-i", "--include", "--paginate", "--silent", "--verbose", "--slurp"}
+
+
+@dataclass
+class ApiCall:
+    method: str | None = None
+    path: str | None = None
+    params: dict[str, str] = field(default_factory=dict)
+    body: bool = False
+    unknown: list[str] = field(default_factory=list)
+
+    @property
+    def effective_method(self) -> str:
+        return self.method or ("POST" if self.body else "GET")
+
+
+def _parse_api(argv: list[str]) -> ApiCall:
+    """Parse ``gh api`` arguments; anything not modelled lands in ``unknown``."""
+    call = ApiCall()
     i = 1
     while i < len(argv):
         arg = argv[i]
-        if arg in {"-X", "--method"}:
-            method = argv[i + 1]
-            i += 2
-        elif arg in {"-f", "-F", "--raw-field", "--field"}:
-            key, _, value = argv[i + 1].partition("=")
-            params[key] = value
-            i += 2
-        elif arg in {"-H", "--header", "-q", "--jq"}:
-            i += 2
-        elif arg.startswith("-"):
+        i += 1
+        if arg.startswith("--"):
+            name, eq, attached = arg.partition("=")
+            has_value = bool(eq)
+        elif arg.startswith("-") and len(arg) > 1:
+            name, attached = arg[:2], arg[2:]
+            has_value = attached != ""
+            attached = attached[1:] if attached.startswith("=") else attached
+        else:
+            if call.path is None:
+                call.path = arg
+            else:
+                call.unknown.append(arg)
+            continue
+        if name in API_BOOL_FLAGS and not has_value:
+            continue
+        kind = API_VALUE_FLAGS.get(name)
+        if kind is None:
+            call.unknown.append(arg)
+            continue
+        if has_value:
+            value = attached
+        elif i < len(argv):
+            value = argv[i]
             i += 1
         else:
-            path = path or arg
-            i += 1
-    return method, path, params
+            call.unknown.append(arg)
+            continue
+        if kind == "method":
+            call.method = value.upper()
+        elif kind == "field":
+            key, _, field_value = value.partition("=")
+            call.params[key] = field_value
+            call.body = True
+        elif kind == "input":
+            call.body = True
+    return call
 
 
 def _fake_dispatch(state: dict, origin: str, argv: list[str]) -> int:
@@ -532,8 +596,12 @@ def _fake_dispatch(state: dict, origin: str, argv: list[str]) -> int:
         print(json.dumps(PR_CHECKS))
         return 0
     if argv[:1] == ["api"]:
-        method, path, params = _parse_api(argv)
-        if method == "PUT" and path == f"repos/{{owner}}/{{repo}}/pulls/{state['pr']}/merge":
+        call = _parse_api(argv)
+        params = call.params
+        if (
+            not call.unknown and call.effective_method == "PUT"
+            and call.path == f"repos/{{owner}}/{{repo}}/pulls/{state['pr']}/merge"
+        ):
             _record_guards_at_merge_call(state, origin)
             _inject(state, origin, "put")
             code = _fake_merge(state, origin, params)
@@ -624,6 +692,7 @@ class Scenario:
     variant: str = "fresh"
     candidate_ids: tuple[int, ...] = (1, 2, 3, 4)
     precondition: str = ""
+    candidate_text: str | None = None
 
 
 SCENARIOS: tuple[Scenario, ...] = (
@@ -672,6 +741,13 @@ SCENARIOS: tuple[Scenario, ...] = (
              inject={"view4": ["kill_lock_holder"]}),
     Scenario("lock_holder_dies_during_merge_call_reported", 3, 1, True, "LOCK LOST DURING THE MERGE CALL",
              inject={"put": ["kill_lock_holder"]}),
+    # Candidate ledgers the lenient parser reads as B-001..B-003 ("adds nothing").
+    Scenario("unclosed_backlog_block_refused_before_api", 1, 0, False, "backlog block is never closed",
+             candidate_text=malformed_backlog("unclosed_block")),
+    Scenario("malformed_backlog_opener_refused_before_api", 1, 0, False, "malformed backlog fence",
+             candidate_text=malformed_backlog("opener_trailing_space")),
+    Scenario("orphan_item_heading_refused_before_api", 1, 0, False, "has no backlog block",
+             candidate_text=malformed_backlog("orphan_heading")),
 )
 
 
@@ -733,7 +809,8 @@ def run_scenario(
 ) -> tuple[Run, list[str]]:
     """Run one scenario in a fresh world under ``root``; return the failures."""
     if template is None:
-        world = build_world(root, candidate_ids=scenario.candidate_ids, variant=scenario.variant)
+        world = build_world(root, candidate_ids=scenario.candidate_ids, variant=scenario.variant,
+                            candidate_text=scenario.candidate_text)
     else:
         world = copy_world(template, root)
     state = json.loads(world.state.read_text(encoding="utf-8"))
@@ -807,17 +884,22 @@ def run_scenario(
     return run, failures
 
 
+def template_key(scenario: Scenario) -> tuple:
+    """Scenarios whose worlds start identical share one built template."""
+    return (scenario.variant, scenario.candidate_ids, scenario.candidate_text)
+
+
 def self_test(root: Path, workers: int = 6) -> list[str]:
     """Run every scenario; return one line per failure (empty = all held)."""
     if not SCENARIOS:
         return ["harness has ZERO scenarios: nothing would be proven"]
-    templates: dict[tuple[str, tuple[int, ...]], World] = {}
+    templates: dict[tuple, World] = {}
     for scenario in SCENARIOS:
-        key = (scenario.variant, scenario.candidate_ids)
+        key = template_key(scenario)
         if key not in templates:
             templates[key] = build_world(
                 root / f"template-{len(templates)}", candidate_ids=scenario.candidate_ids,
-                variant=scenario.variant,
+                variant=scenario.variant, candidate_text=scenario.candidate_text,
             )
     from concurrent.futures import ThreadPoolExecutor
 
@@ -825,7 +907,7 @@ def self_test(root: Path, workers: int = 6) -> list[str]:
         index, scenario = indexed
         _, failures = run_scenario(
             scenario, root / f"{index:02d}-{scenario.name}",
-            templates[(scenario.variant, scenario.candidate_ids)],
+            templates[template_key(scenario)],
         )
         return [f"{scenario.name}: {failure}" for failure in failures]
 

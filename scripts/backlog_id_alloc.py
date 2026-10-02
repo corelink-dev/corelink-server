@@ -62,11 +62,72 @@ class Census:
         return self.ids[-1]
 
 
+# backlog_verify.parse is lenient by design: its BLOCK_RE only sees a fence
+# line that is exactly ```backlog, and a block that never closes simply does
+# not match. Whatever it does not match is an item the allocator would never
+# count, so B-001..B-003 followed by an unclosed B-004, or by a B-004 whose
+# opener carries a trailing space, read as "adds nothing" and passed
+# (review round 6). So the structure is checked line by line first, on its
+# own terms, and the parser's blocks must be exactly the ones it delimits.
+LOOSE_OPENER_RE = re.compile(r"^\s*(?:`{3,}|~{3,})\s*backlog", re.IGNORECASE)
+
+
+def _structure(text: str, source: str) -> list[int]:
+    """Return the opener line of every backlog block, refusing every shape
+    the lenient parser would skip or misread: a fence that only looks like
+    ```backlog, a block closed by anything but a bare ```, a block that never
+    closes, a block with no ``### B-NNN`` heading before it, and a heading
+    with no block (or a second heading) before the next one."""
+    openers: list[int] = []
+    heading: tuple[int, str] | None = None
+    open_line: int | None = None
+    for number, line in enumerate(text.split("\n"), start=1):
+        if open_line is not None:
+            # BLOCK_RE ends a block at the first line that starts with ```.
+            if line.startswith("```"):
+                if line != "```":
+                    raise AllocationError(
+                        f"{source}:{number}: backlog block opened at line {open_line} ends at {line!r}; "
+                        "only a bare ``` may close it"
+                    )
+                open_line = None
+            continue
+        match = backlog_verify.HEADING_RE.match(line)
+        if match:
+            if heading is not None:
+                raise AllocationError(f"{source}:{heading[0]}: item heading {heading[1]} has no backlog block")
+            heading = (number, match.group(1))
+        elif line == "```backlog":
+            if heading is None:
+                raise AllocationError(f"{source}:{number}: backlog block has no `### B-NNN` heading before it")
+            heading = None
+            open_line = number
+            openers.append(number)
+        elif LOOSE_OPENER_RE.match(line):
+            raise AllocationError(
+                f"{source}:{number}: malformed backlog fence {line!r}; the parser skips it, so its item "
+                "would never be counted"
+            )
+    if open_line is not None:
+        raise AllocationError(f"{source}:{open_line}: backlog block is never closed")
+    if heading is not None:
+        raise AllocationError(f"{source}:{heading[0]}: item heading {heading[1]} has no backlog block")
+    headings = len(backlog_verify.HEADING_RE.findall(text))
+    if headings != len(openers):
+        raise AllocationError(f"{source}: {headings} item headings for {len(openers)} backlog blocks")
+    return openers
+
+
 def _strict_ids(text: str, source: str) -> Census:
     """Parse exactly the fenced backlog population, failing closed."""
+    openers = _structure(text, source)
     items = backlog_verify.parse(text)
     if not items:
         raise AllocationError(f"{source}: no parseable backlog blocks")
+    if [item.line for item in items] != openers:
+        raise AllocationError(
+            f"{source}: the parser read {len(items)} backlog blocks where the fences delimit {len(openers)}"
+        )
 
     numbers: list[int] = []
     for item in items:
@@ -262,6 +323,19 @@ def _self_test() -> None:
         assert "removed" in str(exc)
     else:
         raise AssertionError("silent disappearance was accepted")
+    # Structure the lenient parser skips: each tail reads as "adds nothing" to it.
+    unclosed = baseline + item(4).rsplit("```\n", 1)[0]
+    for label, mutated in (
+        ("unclosed block", unclosed),
+        ("opener with a trailing space", baseline + item(4).replace("```backlog\n", "```backlog \n")),
+        ("orphan heading", baseline + "### B-004 — fixture\n\nno block\n"),
+    ):
+        try:
+            allocation(baseline, mutated, base_text=baseline)
+        except AllocationError:
+            pass
+        else:
+            raise AssertionError(f"skipped backlog structure was accepted: {label}")
     for bad in ("B-000", "B-04", "B-0042", "B-TBD"):
         mutated = baseline.replace("id: B-003", f"id: {bad}", 1)
         try:
