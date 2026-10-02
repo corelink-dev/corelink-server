@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import {
   TARGET,
   RouteError,
+  failureCodeOf,
   isExternalIngressError,
   listNamedD1Databases,
   makeCloudflareApi,
@@ -176,7 +177,7 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
     receipt.durable_receipt = "exact_row_read_back";
     receipt.received_at_ms = rows[0].received_at_ms;
   } catch (error) {
-    exerciseError = error instanceof RouteError ? error.code : "synthetic_exercise_failed_closed";
+    exerciseError = failureCodeOf(error, "synthetic_exercise_failed_closed");
     receipt.failure_code = exerciseError;
     Object.assign(receipt, providerFailureFields(error));
     externalIngress = isExternalIngressError(error);

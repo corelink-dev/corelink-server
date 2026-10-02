@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
-import { readWorkerInventory } from "./readback-route.mjs";
+import { ReadbackError, readWorkerInventory, versionTag } from "./readback-route.mjs";
 import { RECEIVER_TARGET, ReceiverTargetError, assertReceiverResourceName } from "./receiver-target.mjs";
 import { classifyReadFailure, sanitizeReadFailure } from "./read-failure.mjs";
 
@@ -540,7 +540,7 @@ export function validateIntakeDisabled(subdomain) {
 }
 
 export function validateCandidateVersion(version, expectedDatabaseId, expectedTag) {
-  if (!isUuid(version?.id) || version?.metadata?.annotations?.["workers/tag"] !== expectedTag) fail("worker_revision_tag_mismatch");
+  if (!isUuid(version?.id) || versionTag(version) !== expectedTag) fail("worker_revision_tag_mismatch");
   const bindings = version?.resources?.bindings;
   if (bindings?.some((binding) => binding?.type === "d1" && binding.name === TARGET.databaseBinding && (binding.database_id ?? binding.id) === expectedDatabaseId) !== true) fail("worker_database_binding_mismatch");
   if (bindings?.some((binding) => binding?.type === "secret_text" && binding.name === TARGET.workerSecret) !== true) fail("worker_secret_readback_missing");
@@ -562,11 +562,14 @@ export function validateInventoryPage(rows, kind, { requireTotalCount = false } 
   return rows;
 }
 
+// `routes: null` is how the Workers script list reports a script with no routes
+// (see summarizeScriptRoutes in readback-route.mjs); a missing field stays unknown.
 export function summarizeCustomRoutes(script) {
   if (!script || !Object.hasOwn(script, "routes")) return "unknown";
-  if (!Array.isArray(script.routes)
-    || script.routes.some((route) => !route || typeof route.id !== "string" || typeof route.pattern !== "string" || route.script !== TARGET.workerName)) fail("worker_routes_ambiguous");
-  if (script.routes.length > 0) fail("worker_custom_route_present");
+  const routes = script.routes === null ? [] : script.routes;
+  if (!Array.isArray(routes)
+    || routes.some((route) => !route || typeof route.id !== "string" || typeof route.pattern !== "string" || route.script !== TARGET.workerName)) fail("worker_routes_ambiguous");
+  if (routes.length > 0) fail("worker_custom_route_present");
   return "absent";
 }
 
@@ -661,7 +664,17 @@ export function providerFailureFields(error) {
 }
 
 const MAX_CLEANUP_FAILURES = 4;
-const CLEANUP_FAILURE_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+const FAILURE_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+// The code a route or readback refusal carries, for a receipt or log line.
+// Readback refusals (worker_routes_ambiguous, …) are named too: run 37045137543
+// recorded only route_failed_closed because they were not RouteErrors.
+export function failureCodeOf(error, fallback) {
+  return (error instanceof RouteError || error instanceof ReadbackError)
+    && typeof error.code === "string" && FAILURE_CODE.test(error.code)
+    ? error.code
+    : fallback;
+}
 
 // A step that fails during cleanup is recorded beside the primary failure, never
 // in place of it: its failure code plus the same allowlisted request
@@ -670,7 +683,7 @@ const CLEANUP_FAILURE_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 export function recordCleanupFailure(receipt, error) {
   if (!Array.isArray(receipt.cleanup_failures)) receipt.cleanup_failures = [];
   if (receipt.cleanup_failures.length >= MAX_CLEANUP_FAILURES) return;
-  const code = typeof error?.code === "string" && CLEANUP_FAILURE_CODE.test(error.code) ? error.code : "cleanup_failed_closed";
+  const code = failureCodeOf(error, "cleanup_failed_closed");
   receipt.cleanup_failures.push(Object.freeze({
     failure_code: code,
     ...providerFailureFields(error),
@@ -860,7 +873,7 @@ export async function proveNoExternalIngress(api, { workerExists }) {
 // active revision is anything else refuses the run before any write; and the
 // synthetic exercise sends nothing to an active revision that fails it.
 export function validateRouteOwnedRevision(version, databaseId) {
-  const tag = version?.metadata?.annotations?.["workers/tag"];
+  const tag = versionTag(version);
   if (!isUuid(version?.id) || typeof tag !== "string" || !/^b216-[0-9a-f]{40}$/.test(tag)) fail("worker_revision_not_route_owned");
   const bindings = version?.resources?.bindings;
   if (!Array.isArray(bindings) || bindings.length !== 2) fail("worker_revision_bindings_not_exact");
@@ -1091,7 +1104,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       receipt.ingress_after_create = await proveNoExternalIngress(api, { workerExists: true });
     }
 
-    const versionTag = `b216-${sha}`;
+    const expectedVersionTag = `b216-${sha}`;
     workerMutationStarted = true;
     stage = "worker_version_upload";
     command(["versions", "upload", entrypoint, "--config", tempConfig, "--tag", `b216-source-${sha}`, "--message", `B-216 reviewed main ${sha}`], {
@@ -1100,17 +1113,17 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       apiToken: context.apiToken,
     });
     stage = "worker_secret_provision";
-    command(["versions", "secret", "put", TARGET.workerSecret, "--config", tempConfig, "--tag", versionTag, "--message", `B-216 reviewed main ${sha}`], {
+    command(["versions", "secret", "put", TARGET.workerSecret, "--config", tempConfig, "--tag", expectedVersionTag, "--message", `B-216 reviewed main ${sha}`], {
       cwd: appDir,
       home: wranglerHome,
       apiToken: context.apiToken,
       input: context.receiverToken,
     });
     const versionList = normalizeVersionList(await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions?per_page=100&deployable=true`));
-    const tagged = versionList.filter((version) => version?.metadata?.annotations?.["workers/tag"] === versionTag);
+    const tagged = versionList.filter((version) => versionTag(version) === expectedVersionTag);
     if (tagged.length !== 1 || !isUuid(tagged[0]?.id)) fail("worker_uploaded_revision_ambiguous");
     const candidateVersion = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${tagged[0].id}`);
-    validateCandidateVersion(candidateVersion, receipt.database_id, versionTag);
+    validateCandidateVersion(candidateVersion, receipt.database_id, expectedVersionTag);
     // Before activation: the same exact check as rollback and the exercise. Route
     // tag, and the receiver D1 and secret are the only bindings.
     validateRouteOwnedRevision(candidateVersion, receipt.database_id);
@@ -1127,7 +1140,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     const activeVersion = selectPriorRevision(deployments);
     if (activeVersion !== tagged[0].id) fail("worker_revision_readback_mismatch");
     const bindings = version?.resources?.bindings ?? [];
-    validatePostflight({ versionId: activeVersion, deployment: deployments[0], bindings, secrets, expectedTag: versionTag }, receipt.database_id, versionTag);
+    validatePostflight({ versionId: activeVersion, deployment: deployments[0], bindings, secrets, expectedTag: expectedVersionTag }, receipt.database_id, expectedVersionTag);
     // And again on what is actually active.
     validateRouteOwnedRevision(version, receipt.database_id);
     if (!priorWorker) {
@@ -1156,7 +1169,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
   } catch (error) {
     receipt.status = "failed";
     receipt.failed_stage = stage;
-    receipt.failure_code = error instanceof RouteError ? error.code : "route_failed_closed";
+    receipt.failure_code = failureCodeOf(error, "route_failed_closed");
     if (error instanceof RouteError && error.providerFailure) Object.assign(receipt, error.providerFailure);
     Object.assign(receipt, providerFailureFields(error));
     if (isExternalIngressError(error)) {
@@ -1211,7 +1224,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       }
     }
     if (receiptPath) await writeReceipt(receiptPath, receipt);
-    throw error instanceof RouteError ? error : new RouteError("route_failed_closed");
+    throw error instanceof RouteError ? error : new RouteError(failureCodeOf(error, "route_failed_closed"));
   } finally {
     if (tempConfigDir) await rm(tempConfigDir, { recursive: true, force: true }).catch(() => {});
   }

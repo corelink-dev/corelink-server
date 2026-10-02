@@ -59,6 +59,9 @@ describe("B-216 allowlisted read-failure classification", () => {
   it("classifies transport and malformed responses without a body", () => {
     expect(classifyReadFailure({ path: "/zones", transport: true })).toEqual({ endpoint: "zones_list", http_status: null, cf_error_codes: [], message_class: "transport" });
     expect(classifyReadFailure({ path: "/zones", status: 403, malformed: true })).toEqual({ endpoint: "zones_list", http_status: 403, cf_error_codes: [], message_class: "malformed_response" });
+    expect(classifyReadFailure({ path: `/accounts/${"a".repeat(32)}/workers/scripts`, status: 200, payload: { errors: [{ code: 10000 }] }, unexpectedShape: true }))
+      .toEqual({ endpoint: "scripts_list", http_status: 200, cf_error_codes: [], message_class: "unexpected_shape" });
+    expect(sanitizeReadFailure({ endpoint: "scripts_list", http_status: 200, cf_error_codes: [], message_class: "unexpected_shape" }).message_class).toBe("unexpected_shape");
   });
 
   it("caps and de-duplicates Cloudflare codes and never copies text, paths or IDs", () => {
