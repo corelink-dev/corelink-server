@@ -34,7 +34,7 @@ tags: ["soc2", "cc9.2", "vendor-dd", "critical", "cloudflare", "gap-14"]
 | Public ticker | NYSE: NET |
 | Primary jurisdiction | United States (Delaware C-corp) + EU subsidiary (Cloudflare Germany GmbH for EU customer DPA) |
 | CoreLink account ID | (see `docs/internal/secrets-checklist.md` row 49 placeholder; real value lives in `gha-secret`) |
-| Contract effective | 2026-04-23 (Enterprise plan) |
+| Contract effective | Not recorded — standard online terms and DPA accepted at account signup (owner statement, #2593 re-charter); no acceptance record is held |
 | Annual contract value | (commercial-sensitive; redacted in this register) |
 | Account executive (primary) | (recorded in `legal/vendor-contacts.md`) |
 | Technical account manager | (recorded in `legal/vendor-contacts.md`) |
@@ -84,9 +84,9 @@ The architectural invariant **INV-DATA-CRYPTO-001 (BYOK envelope encryption end-
 
 | Document | Signed | Version | Notes |
 |---|---|---|---|
-| MSA | 2026-04-23 | Enterprise template | Multi-year term; auto-renew with 90-day opt-out |
-| DPA | 2026-04-23 (unilateral acceptance per published terms) | https://www.cloudflare.com/cloudflare-customer-dpa/ | SCCs Module 2; sub-processor list at cloudflare.com/gdpr/subprocessors |
-| SLA | 2026-04-23 | Enterprise SLA — 100% uptime credit terms for primary plane | Service credits scale 10% / 25% / 100% |
+| Terms | Not recorded (accepted online) | https://www.cloudflare.com/terms/ | Cloudflare's standard self-serve terms; no negotiated MSA is recorded |
+| DPA | Not recorded (accepted online with the terms) | https://www.cloudflare.com/cloudflare-customer-dpa/ | SCCs Module 2; sub-processor list at cloudflare.com/gdpr/subprocessors |
+| SLA | Not recorded | Standard terms only | No negotiated SLA or service-credit schedule is recorded |
 | BAA | Not signed | N/A | Available on request; no PHI in scope today |
 
 Sub-processor change notification: **30-day prior notice** to enterprise customers (CoreLink subscribed to security@hugr.dev channel).

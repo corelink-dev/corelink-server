@@ -355,15 +355,18 @@ export default function PrivacyPage(): ReactElement {
         <section className={styles.section}>
           <h2>9. International transfers</h2>
           <p>
-            CoreLink processes data on Cloudflare&rsquo;s anycast edge plus a
-            Neon-hosted Postgres control plane (EU or US region, selectable).
-            Transfers from the EU/EEA to the US rely on the EU-US Data Privacy
-            Framework (DPF) adequacy decision (10 July 2023) and on Standard
-            Contractual Clauses (Commission Implementing Decision 2021/914,
-            Module 2) where the recipient is not DPF-certified. A Schrems II
-            Transfer Impact Assessment is on file for every US-onward leg; the
-            register is available on request from{" "}
-            <a href="mailto:privacy@humangr.com">privacy@humangr.com</a>.
+            CoreLink processes data on Cloudflare&rsquo;s network: R2 objects
+            and Durable Object state follow the tenant&rsquo;s region, and the
+            D1 control-plane database is shared and global. The other
+            recipients are the sub-processors on the{" "}
+            <a href="/legal/sub-processors">Sub-processors page</a>. Transfers
+            from the EU/EEA to the US rely on the transfer terms in each
+            recipient&rsquo;s own data processing agreement, such as the EU-US
+            Data Privacy Framework (DPF) or Standard Contractual Clauses
+            (Commission Implementing Decision 2021/914). CoreLink has not
+            recorded a separate Schrems II Transfer Impact Assessment; ask{" "}
+            <a href="mailto:privacy@humangr.com">privacy@humangr.com</a> for
+            the current transfer details.
           </p>
         </section>
 
@@ -372,8 +375,8 @@ export default function PrivacyPage(): ReactElement {
           <p>
             The current list of sub-processors and their regions is published
             on the <a href="/legal/sub-processors">Sub-processors page</a>.
-            Material changes are announced at least 30 days in advance via
-            in-app banner and DKIM-signed email to administrators.
+            Material changes are announced at least 30 days in advance by
+            email to the account owner of record.
           </p>
         </section>
 

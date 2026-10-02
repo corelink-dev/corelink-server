@@ -211,17 +211,22 @@ a default Brazilian tenant configuration (no BYOK, no opt-in analytics):
   residency is not offered. Brazilian tenants are served from an available
   region (US or EU), which is an international transfer under Art. 33. See the
   [residency page](/residency/lgpd-brazil) for the measured detail.
-- **Neon EU** — runs our control-plane Postgres. **This is an
-  international transfer**: Neon does not currently offer a Brazilian
-  region, so billing detail for Brazilian tenants is in Frankfurt. We rely
-  on LGPD Art. 33 §V (contractual necessity for billing) with SCC Modules
-  2/3 in the Neon DPA.
 - **Stripe** — processes payments. Another international transfer (US)
   under Art. 33 §V + Stripe's DPA with Brazil addendum + PCI-DSS Level 1.
   We send Stripe a pseudonymized customer ID, your email, and the amount.
   No card data ever touches CoreLink.
 - **Clerk** — handles authentication tokens. US-hosted; Art. 33 §V; only
   auth tokens + email cross the border.
+- **Resend** — sends transactional email and newsletter messages. US-hosted;
+  the transfer terms are those in Resend's DPA. Your email address and the
+  message content cross the border.
+- **Sentry** — receives scrubbed application error events. US-hosted; the
+  transfer terms are those in Sentry's DPA.
+- **Plausible** — counts docs-site visits without cookies. EU-hosted.
+- **Better Stack** — runs synthetic uptime probes against CoreLink's own
+  endpoints and hosts the status page; no customer data is sent to it.
+- **GitHub** — hosts CoreLink's source code and CI. US-hosted; it holds
+  CoreLink's code, not your build artefacts.
 - **BYOK external key managers (AWS KMS / GCP KMS / Azure Key Vault)** —
   **not a sub-processor today, because BYOK is not shipped.** The activation
   endpoint `POST /v1/admin/byok/activate` fails closed with
@@ -232,10 +237,9 @@ a default Brazilian tenant configuration (no BYOK, no opt-in analytics):
   claim — that these three clouds hold your BYOK envelope key in Brazilian
   regions — is visibly withdrawn rather than silently deleted.
 
-Four other sub-processors (Sentry, PostHog, LogRocket, Stripe Atlas
-counsel) are **disabled by default for Brazilian tenants** until we
-complete our enhanced review (tracked as GAP-14, ETA D+60). If you want
-them enabled, you would opt in with explicit consent under Art. 33 §I.
+Each of these is engaged on its own standard terms and DPA, linked from the
+[sub-processor list](/legal/sub-processors). CoreLink has not recorded a
+separate transfer impact assessment for any of them.
 
 If a new sub-processor would touch your data, we notify you 30 days in
 advance per CTRL-PRIV-021 (privacy_model.md §5.3).

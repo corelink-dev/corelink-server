@@ -320,9 +320,15 @@ SCANNED_FILE_COUNT = 0
 # Floors measured on the live source tree at B-168's repair (2026-09-01).
 # These are lower bounds, not a frozen inventory: adding pages/links is fine;
 # deleting the population that gives this gate something to prove is not.
+# Re-measured for B-316 (2026-10-02): the /legal/sub-processors and
+# /trust/sub-processor-register pages now render their vendor links from the
+# shared sub-processors JSON instead of hard-coding them, which moved those
+# attributes from literal (62 -> 55) to dynamic-classified (12 -> 17). The
+# literal floor follows the measured population down by exactly that move and
+# the dynamic floor rises by the same amount; internal hrefs are unchanged.
 MIN_SCANNED_FILE_COUNT = 20
-MIN_LITERAL_ATTRIBUTE_COUNT = 61
-MIN_DYNAMIC_ATTRIBUTE_COUNT = 12
+MIN_LITERAL_ATTRIBUTE_COUNT = 55
+MIN_DYNAMIC_ATTRIBUTE_COUNT = 17
 MIN_INTERNAL_HREF_COUNT = 30
 
 

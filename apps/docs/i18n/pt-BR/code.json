@@ -99,6 +99,14 @@
     "message": "Conforme nosso DPA §6 e LGPD Art. 27 §4º + GDPR Art. 28 §2, daremos aviso por escrito com no mínimo 30 dias corridos antes de adicionar ou substituir um sub-processador que processe dados pessoais de clientes.",
     "description": "Notice section body"
   },
+  "trust.subprocessor.contract_basis": {
+    "message": "Cada subprocessador abaixo é contratado pelos termos padrão e pelo acordo de processamento de dados (DPA) do próprio fornecedor, com links na tabela. A CoreLink os aceitou online ao criar cada conta; as datas de aceite não foram registradas, por isso nenhuma é exibida.",
+    "description": "How each sub-processor is engaged; no acceptance dates are recorded"
+  },
+  "trust.subprocessor.notice.email": {
+    "message": "os avisos são enviados por e-mail ao titular da conta; para incluir outro destinatário, escreva para privacy@humangr.com. Não há configuração de avisos no produto nem resumo automático.",
+    "description": "How change notices are delivered today"
+  },
   "trust.subprocessor.active.title": {
     "message": "Sub-processadores ativos ({count})",
     "description": "Active sub-processors section title"

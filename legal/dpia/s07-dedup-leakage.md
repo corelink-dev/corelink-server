@@ -18,6 +18,13 @@ evidence_path: "evidence-legal/dpia-s07-dedup-leakage.md"
 
 # DPIA: S-07 Content-Addressable Storage (CAS) Deduplication — Cross-Tenant Inference Attack Risk
 
+> **Superseded data-store assumption (B-316, 2026-10-02).** This draft was
+> written when a Neon Postgres control plane was planned. Neon was never used
+> by the product: account, billing and metadata state live in Stripe and the
+> Cloudflare D1 control-plane database. Every Neon-specific statement below
+> describes that abandoned design; none of its Neon measures are in place.
+> The current sub-processors are listed in `legal/sub-processors.md`.
+
 > **GDPR Art. 35 / LGPD Art. 38 (RIPD) Data Protection Impact Assessment**
 > Template: `specs/_templates/dpia.md` v1.0.0 — WI-S11-008
 
@@ -142,7 +149,6 @@ The per-tenant dedup design (ADR-0019) is the minimum-scope version: dedup benef
 | Sub-processor | Role | Location | DPA/SCC status |
 |---|---|---|---|
 | Cloudflare Inc. (R2, CF Workers) | Blob storage + compute | US (global CDN) | Cloudflare DPA + SCCs in place (Cloudflare Enterprise DPA 2024) |
-| Neon Inc. | Metadata storage | US-east-1 (primary) | Neon DPA + SCCs in place |
 
 Cross-border transfer analysis: Cloudflare R2 stores data in the tenant's pinned region. The control plane (CF Workers runtime) may route through US infrastructure. SCCs per CJEU C-311/18 (Schrems II) apply. TIA: Cloudflare has adopted Binding Corporate Rules (BCRs) for processor transfers; standard SCCs (Module 2 Controller-to-Processor) supplemented by Cloudflare's Privacy Shield successor commitments.
 

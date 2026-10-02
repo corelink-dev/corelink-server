@@ -9,8 +9,9 @@
 | Review date | `TBD (formal Legal review not completed)` |
 | Public-source assessment date | 2026-09-22 (does not replace the formal review) |
 | Reviewer | `TBD (named Legal Counsel / Privacy Officer)`; no formal reviewer or decision is recorded. |
+| Terms reference | <https://clerk.com/legal/standard-terms> |
 | DPA reference | <https://clerk.com/legal/dpa> |
-| DPA status | Evidence insufficient — repository disclosure records a 2026-04-23 contract date, but the executed CoreLink copy/version is not in this packet. |
+| DPA status | Re-chartered by the owner (#2593): the vendor's standard online terms and DPA, accepted at account signup; no countersigned copy and no recorded acceptance date. The repository disclosure's earlier contract-date value had no supporting record and has been removed. |
 | SCC / transfer mechanism | Repository disclosure states EU SCC Module 3 and UK IDTA; the applicable executed terms were not rechecked. |
 | Schrems II TIA | Evidence insufficient — repository disclosure states a TIA is completed, but the dated assessment is not in this packet. |
 | Data categories processed | account_pii |

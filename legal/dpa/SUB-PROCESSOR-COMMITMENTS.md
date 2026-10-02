@@ -196,15 +196,18 @@ onboarding and records the contract basis in
 ## 3. Schrems II supplementary measures (applied across sub-processors)
 
 1. **Technical.** Encryption in transit uses TLS 1.2 as the minimum; TLS 1.3 is
-   negotiated where supported. At-rest encryption uses AES-256 /
-   XChaCha20-Poly1305 for BYOK; per-tenant key separation; data-residency
-   pinning; cryptographic erasure NIST SP 800-88 Rev. 1 equivalence.
-2. **Organisational.** Vendor security questionnaires renewed annually;
-   continuous monitoring (Drata/Vanta); transparency reporting; warrant
-   canary; legal challenge of overbroad government requests.
-3. **Contractual.** SCCs Module 3 incorporated; flow-down audit, breach
-   notification, and DSR-cooperation clauses; commitments documented in
-   this file and tracked in `legal/sub-processors.md`.
+   negotiated where supported. Data at rest is encrypted by the storage
+   provider; R2 objects and Durable Object state are tenant-pinned. BYOK,
+   per-tenant key separation and cryptographic erasure are designs that are
+   not enabled today and are not relied on here.
+2. **Organisational.** The owner reviews each vendor's published terms, DPA and
+   security documentation at onboarding and when the vendor announces a
+   change. No continuous vendor-monitoring tool, transparency report or
+   warrant canary is in place.
+3. **Contractual.** The transfer terms (including SCCs where they apply) and
+   the flow-down audit, breach-notification and DSR-cooperation clauses are
+   those incorporated in each vendor's own DPA, linked in §1; this file and
+   `legal/sub-processors.md` record which vendors they cover.
 
 ---
 
@@ -217,8 +220,10 @@ onboarding and records the contract basis in
 | Scope expansion (new data categories) | 30 days written notice | same |
 | Termination of sub-processor relationship | post-event notification within 30 days | same |
 
-The change-control workflow `.github/workflows/legal-changes-review.yml`
-gates all PRs that modify this document.
+Changes to this document are reviewed by the owner in a pull request. The
+`.github/workflows/legal-changes-review.yml` workflow that used to gate them is
+currently disabled; `scripts/verify_b316_pending_vendor_reviews.py` checks that
+this document agrees with every published sub-processor list.
 
 ---
 

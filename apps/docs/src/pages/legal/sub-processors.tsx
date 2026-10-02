@@ -29,8 +29,6 @@ import subProcessorsData from "../../../../admin-ui/src/content/sub-processors.j
 
 import styles from "./legal.module.css";
 
-const NEWSLETTER_SUBSCRIBE_URL =
-  "https://humangr.com/corelink/newsletter";
 const PRIVACY_EMAIL = "privacy@humangr.com";
 
 interface SubProcessor {
@@ -93,24 +91,18 @@ export default function SubProcessorsPage(): ReactElement {
             <strong>30 days before any new sub-processor</strong> begins
             processing customer personal data, and before any existing
             sub-processor materially changes its processing role, region, or
-            own sub-processor list. To subscribe an additional address
-            (security team, DPO, procurement) to these notices, email{" "}
+            own sub-processor list. Notices are sent by email to the account
+            owner of record. To have them sent to an additional address
+            (security team, DPO, procurement), email{" "}
             <a href={`mailto:${PRIVACY_EMAIL}`}>{PRIVACY_EMAIL}</a> with
             subject &ldquo;Sub-processor notice subscription&rdquo; and include
-            your tenant identifier, or sign up at{" "}
-            <a
-              href={NEWSLETTER_SUBSCRIBE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {NEWSLETTER_SUBSCRIBE_URL}
-            </a>
-            .
+            your tenant identifier. There is no notice setting in the product
+            and no automated notice delivery yet; each notice is sent
+            individually.
           </p>
           <p>
-            Any enterprise customer may request a counter-signed DPA. The
-            default Common Paper DPA template applies otherwise. Executed DPAs
-            are not published on this site; request a copy at{" "}
+            CoreLink&rsquo;s own data processing agreement with its customers
+            is a separate document; request a copy at{" "}
             <a href="mailto:legal@humangr.com">legal@humangr.com</a>.
           </p>
         </section>
@@ -201,9 +193,9 @@ export default function SubProcessorsPage(): ReactElement {
             any new sub-processor begins processing customer personal data, and
             before a sub-processor materially changes its processing role,
             region, or sub-sub-processor list (GDPR Art. 28(2) compliant, per
-            DPA §16). Notices are DKIM-signed and delivered to (a) the account
-            owner of record, (b) every address subscribed to sub-processor
-            notices, and (c) the DPO contact of each Enterprise tenant.
+            DPA §16). Notices are sent by email to the account owner of record
+            and to any additional address registered by writing to{" "}
+            <a href={`mailto:${PRIVACY_EMAIL}`}>{PRIVACY_EMAIL}</a>.
           </p>
           <p>
             You have the right to object to a new sub-processor on reasonable

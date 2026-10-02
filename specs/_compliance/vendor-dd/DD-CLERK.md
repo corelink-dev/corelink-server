@@ -32,7 +32,7 @@ tags: ["soc2", "cc9.2", "vendor-dd", "critical", "clerk", "auth", "gap-14"]
 | Legal entity | Clerk, Inc. |
 | HQ | San Francisco, CA, USA |
 | Plan | Pro (production app + JWT templates + organization-level roles) |
-| Contract effective | 2026-04-23 |
+| Contract effective | Not recorded — standard online terms and DPA accepted at account signup (owner statement, #2593 re-charter); no acceptance record is held |
 | Monthly run-rate | $25/mo Pro tier (current) — Enterprise tier negotiation deferred to post-GA |
 | Account contacts | (recorded in `legal/vendor-contacts.md`) |
 
@@ -68,8 +68,8 @@ tags: ["soc2", "cc9.2", "vendor-dd", "critical", "clerk", "auth", "gap-14"]
 
 | Document | Signed | Notes |
 |---|---|---|
-| Clerk Terms of Service | 2026-04-23 (click-through) | Pro plan |
-| DPA | 2026-04-23 (unilateral acceptance) | SCCs Module 2 |
+| Clerk Standard Terms | Not recorded (accepted online) | https://clerk.com/legal/standard-terms |
+| DPA | Not recorded (accepted online with the terms) | https://clerk.com/legal/dpa |
 | SLA | Pro plan baseline (99.9% monthly uptime) | Enterprise SLA TBD post-GA |
 | BAA | Not signed | No PHI |
 

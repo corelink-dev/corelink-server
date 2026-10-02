@@ -139,47 +139,6 @@ DEFERRED_VENDORS = {
     "PagerDuty, Inc.": "Deferred by the owner on 2026-10-01 (#1648, #2593).",
 }
 
-# Each active sub-processor is engaged on its own standard online terms and
-# DPA (B-316 owner re-charter, #2593). These are the vendor's public pages,
-# each confirmed to resolve when it was added here; they must match
-# `legal/sub-processors.md` (`terms_url` / `dpa_url`), which
-# `scripts/verify_b316_pending_vendor_reviews.py` enforces. An active vendor
-# without an entry here is a generation error, never an "on request" fallback.
-PUBLIC_LEGAL_LINKS = {
-    "Cloudflare, Inc.": (
-        "https://www.cloudflare.com/terms/",
-        "https://www.cloudflare.com/cloudflare-customer-dpa/",
-    ),
-    "Stripe, Inc.": (
-        "https://stripe.com/legal/ssa",
-        "https://stripe.com/legal/dpa",
-    ),
-    "Clerk, Inc.": (
-        "https://clerk.com/legal/standard-terms",
-        "https://clerk.com/legal/dpa",
-    ),
-    "GitHub, Inc. (Microsoft Enterprise)": (
-        "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service",
-        "https://github.com/customer-terms/github-data-protection-agreement",
-    ),
-    "Resend, Inc.": (
-        "https://resend.com/legal/terms-of-service",
-        "https://resend.com/legal/dpa",
-    ),
-    "Functional Software, Inc. (Sentry)": (
-        "https://sentry.io/terms/",
-        "https://sentry.io/legal/dpa/",
-    ),
-    "Plausible Insights OÜ (Plausible Analytics)": (
-        "https://plausible.io/terms",
-        "https://plausible.io/dpa",
-    ),
-    "Better Stack, Inc. (BetterStack / Statuspage)": (
-        "https://betterstack.com/terms",
-        "https://betterstack.com/dpa",
-    ),
-}
-
 
 @dataclass(frozen=True)
 class VendorRow:
@@ -200,6 +159,11 @@ class VendorRow:
     last_review: str
     next_review: str
     owner: str
+    # The vendor's own standard terms and DPA (B-316 owner re-charter,
+    # #2593). Published verbatim on the public page; `—` for vendors that are
+    # not on it.
+    terms: str = ""
+    dpa: str = ""
 
     @property
     def is_byok_custodian(self) -> bool:
@@ -279,7 +243,7 @@ def parse_register(register_text: str) -> tuple[list[VendorRow], str]:
         if not _TABLE_ROW.match(ln):
             continue
         cells = [c.strip() for c in ln.strip().strip("|").split("|")]
-        # Expected 15 columns per §2 header.
+        # Expected 17 columns per §2 header (15 risk columns + Terms + DPA).
         if len(cells) < 15:
             continue
         try:
@@ -303,6 +267,8 @@ def parse_register(register_text: str) -> tuple[list[VendorRow], str]:
                 last_review=cells[12],
                 next_review=cells[13],
                 owner=cells[14],
+                terms=cells[15] if len(cells) > 15 else "",
+                dpa=cells[16] if len(cells) > 16 else "",
             )
         )
     return rows, updated
@@ -318,29 +284,29 @@ LINK_PENDING = "link pending"
 
 
 class MissingLegalLinks(ValueError):
-    """An active sub-processor has no public terms/DPA entry."""
+    """An active sub-processor has no public terms/DPA cell."""
 
 
-def legal_links(vendor: str) -> tuple[str, str]:
-    """Return the vendor's (terms, DPA) table cells. Fails closed: an active
-    vendor without an entry for both documents cannot be published."""
-    links = PUBLIC_LEGAL_LINKS.get(vendor)
-    if links is None or len(links) != 2:
-        raise MissingLegalLinks(
-            f"active sub-processor {vendor!r} has no public terms and DPA links "
-            "in PUBLIC_LEGAL_LINKS"
-        )
+_LINK_CELL = {
+    "Terms": re.compile(r"\[Terms\]\(https://[^)\s]+\)"),
+    "DPA": re.compile(r"\[DPA\]\(https://[^)\s]+\)"),
+}
+
+
+def legal_links(row: "VendorRow") -> tuple[str, str]:
+    """Return the vendor's (terms, DPA) cells exactly as the register states
+    them. Fails closed: an active vendor whose register row lacks either a
+    `[Terms](https://…)` / `[DPA](https://…)` link or the literal
+    `link pending` cannot be published — never an "on request" fallback."""
     cells = []
-    for label, url in zip(("Terms", "DPA"), links):
-        if url == LINK_PENDING:
-            cells.append(LINK_PENDING)
-        elif url.startswith("https://"):
-            cells.append(f"[{label}]({url})")
-        else:
-            raise MissingLegalLinks(
-                f"active sub-processor {vendor!r} has a {label} link that is "
-                f"neither https:// nor {LINK_PENDING!r}: {url!r}"
-            )
+    for label, value in (("Terms", row.terms), ("DPA", row.dpa)):
+        if value == LINK_PENDING or _LINK_CELL[label].fullmatch(value):
+            cells.append(value)
+            continue
+        raise MissingLegalLinks(
+            f"active sub-processor {row.vendor!r} has no {label} link in its register "
+            f"row (expected [{label}](https://…) or {LINK_PENDING!r}, found {value!r})"
+        )
     return cells[0], cells[1]
 
 
@@ -383,7 +349,7 @@ def render_active_table(rows: Iterable[VendorRow]) -> str:
     n = 0
     for r in rows:
         n += 1
-        terms, dpa = legal_links(r.vendor)
+        terms, dpa = legal_links(r)
         out.append(
             f"| {n} | **{r.vendor}** | {shorten_service(r.service)} | "
             f"{shorten_data_sharing(r.data_sharing)} | "
@@ -464,9 +430,9 @@ vendors have a built integration but no live credential or code path yet —
 see "Contracted-but-not-active" below; they are not sub-processors until
 that changes.
 
-> **Last refreshed:** {last_updated}. This page is **auto-generated** from
-> the internal vendor register on every change; see
-> `.github/workflows/subprocessors-sync.yml` for the drift gate.
+> **Last refreshed:** {last_updated}. This page is **generated** from the
+> internal vendor register by `scripts/gen-public-subprocessors.py`; it is
+> regenerated in the same change that edits the register.
 
 ## Notice of changes (30-day grace)
 
@@ -474,11 +440,14 @@ Per our DPA (`legal/dpa/v1.0.0` §6) and LGPD Art. 27 §4º + GDPR Art. 28 §2,
 we will give **at least 30 calendar days' written notice** before adding or
 replacing a sub-processor that processes customer personal data.
 
-Subscribe to change notices:
+How notices reach you today:
 
-- **Email digest** — register a `subprocessor-changes@` distribution
-  address inside your tenant settings. We send a digest the moment a
-  change is queued, and a reminder 7 days before the change takes effect.
+- **Email** — notices are sent by email to the account owner of record.
+  To have them sent to another address as well (for example your DPO or
+  security team), write to `privacy@humangr.com`. CoreLink has no automated
+  notice delivery yet: there is no notice setting in the product, no
+  automatic digest and no reminder schedule; each notice is sent
+  individually.
 - **Status page** — [hugrl.betteruptime.com](https://hugrl.betteruptime.com)
   carries service state. It is **not** a sub-processor notification channel:
   subscriptions are switched off on that page, so email, SMS, RSS and webhook
@@ -568,10 +537,9 @@ held internally and available on request from support@humangr.com.
 ## Change management
 
 The operational runbook is held internally.
-The 30-day customer-broadcast pipeline is implemented by
-`scripts/subprocessor-change-notify.py` and the
-`corelink-privacy-sub-processor-emit` crate (CloudEvents
-`corelink.privacy.subprocessor.notify_required`).
+`scripts/subprocessor-change-notify.py` detects additions to the register
+and prepares the matching change event, but no production delivery is wired
+to it: the 30-day notice itself is sent by email as described above.
 
 ## Related
 

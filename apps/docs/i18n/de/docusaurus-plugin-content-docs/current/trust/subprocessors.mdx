@@ -43,9 +43,9 @@ vendors have a built integration but no live credential or code path yet —
 see "Contracted-but-not-active" below; they are not sub-processors until
 that changes.
 
-> **Last refreshed:** 2026-09-22. This page is **auto-generated** from
-> the internal vendor register on every change; see
-> `.github/workflows/subprocessors-sync.yml` for the drift gate.
+> **Last refreshed:** 2026-10-02. This page is **generated** from the
+> internal vendor register by `scripts/gen-public-subprocessors.py`; it is
+> regenerated in the same change that edits the register.
 
 ## Notice of changes (30-day grace)
 
@@ -53,11 +53,14 @@ Per our DPA (`legal/dpa/v1.0.0` §6) and LGPD Art. 27 §4º + GDPR Art. 28 §2,
 we will give **at least 30 calendar days' written notice** before adding or
 replacing a sub-processor that processes customer personal data.
 
-Subscribe to change notices:
+How notices reach you today:
 
-- **Email digest** — register a `subprocessor-changes@` distribution
-  address inside your tenant settings. We send a digest the moment a
-  change is queued, and a reminder 7 days before the change takes effect.
+- **Email** — notices are sent by email to the account owner of record.
+  To have them sent to another address as well (for example your DPO or
+  security team), write to `privacy@humangr.com`. CoreLink has no automated
+  notice delivery yet: there is no notice setting in the product, no
+  automatic digest and no reminder schedule; each notice is sent
+  individually.
 - **Status page** — [hugrl.betteruptime.com](https://hugrl.betteruptime.com)
   carries service state. It is **not** a sub-processor notification channel:
   subscriptions are switched off on that page, so email, SMS, RSS and webhook
@@ -171,10 +174,9 @@ held internally and available on request from support@humangr.com.
 ## Change management
 
 The operational runbook is held internally.
-The 30-day customer-broadcast pipeline is implemented by
-`scripts/subprocessor-change-notify.py` and the
-`corelink-privacy-sub-processor-emit` crate (CloudEvents
-`corelink.privacy.subprocessor.notify_required`).
+`scripts/subprocessor-change-notify.py` detects additions to the register
+and prepares the matching change event, but no production delivery is wired
+to it: the 30-day notice itself is sent by email as described above.
 
 ## Related
 

@@ -191,7 +191,7 @@ const QUADRANTS: readonly TrustQuadrant[] = [
         href: "/trust/compliance#gdpr",
         status: "LIVE",
         summary:
-          "SCC 2021/914 modules 2 + 3 executed; DPA v1.0.0 signed at sign-up; transfer impact assessment library available on request.",
+          "Customer DPA v1.0.0 offered at sign-up; each sub-processor is engaged on its own DPA, linked from the sub-processor list. No separate transfer impact assessment is recorded.",
       },
       {
         title: "DPO appointment + contact",

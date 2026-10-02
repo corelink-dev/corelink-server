@@ -157,10 +157,10 @@ Lista completa abaixo. Versão e data de última atualização no frontmatter YA
 Per **GDPR Art. 28.2.b** + **LGPD Art. 39**, customers podem objetar a mudanças via:
 
 - **Email**: privacy@hugr.dev
-- **API**: `POST /v1/privacy/sub-processor-objection`
-- **DPA escalation**: Privacy Officer + Legal review ≤ 14 dias úteis → accept-or-terminate decision.
+- **DPA escalation**: the owner reviews the objection ≤ 14 dias úteis → accept-or-terminate decision.
 
-Rate limit: 5 objections/day/subject (anti-DoS; S-08 inheritance).
+There is no objection API: `POST /v1/privacy/sub-processor-objection` is not
+routed in the shipped service, so objections are received by email only.
 
 ## Sub-Processors
 
@@ -234,20 +234,22 @@ right, NOT a premium feature.
 
 ## Change Process
 
-1. Privacy Officer drafts the change in a single PR that updates **both** the
+1. The owner drafts the change in a single PR that updates **both** the
    internal source of truth `specs/_compliance/VENDOR-RISK-REGISTER.md` **and**
    this contractual disclosure file, keeping the two consistent.
-2. Legal review per DPA + GDPR Art. 28.2 implications.
-3. The sub-processors sync pipeline (`.github/workflows/subprocessors-sync.yml`)
-   regenerates the public page from the register
+2. The owner reviews the vendor's terms, DPA and GDPR Art. 28.2 implications
+   (CoreLink has no separate legal department).
+3. The same PR regenerates the public page from the register
    (`scripts/gen-public-subprocessors.py` → `apps/docs/docs/trust/subprocessors.mdx`)
-   and the change-notify hook (`scripts/subprocessor-change-notify.py`):
-   - Auto-generates the public `/trust/subprocessors` page (drift-gated; the PR
-     fails if the page is stale relative to the register).
-   - Emits `dev.hugr.corelink.sub_processor.{published|changed}.v1` CloudEvent.
-   - Seeds `sub_processor_broadcast_log` D1 table.
-4. 30-day advance notice email broadcast to all subscribed customers (DKIM signed).
-5. Customer may object via `POST /v1/privacy/sub-processor-objection`.
-6. Privacy Officer + Legal review ≤ 14 days → accept-or-terminate decision.
+   and updates every other published list;
+   `scripts/verify_b316_pending_vendor_reviews.py` fails if any of them
+   disagree. `scripts/subprocessor-change-notify.py` prepares the change event,
+   but no production delivery is wired to it, and the
+   `subprocessors-sync.yml` workflow is currently disabled.
+4. The 30-day advance notice is sent by email to every account owner of record
+   and to any additional address registered with privacy@humangr.com; there is
+   no automated broadcast.
+5. Customers object by email.
+6. The owner reviews each objection ≤ 14 days → accept-or-terminate decision.
 
 **Note**: 30d countdown = calendar days (not business days), per EDPB 7/2020 §125 industry standard.

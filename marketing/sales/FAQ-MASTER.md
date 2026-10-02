@@ -405,7 +405,7 @@ A prior version of this answer described a *"**Weekly synthetic chaos drill** sc
 
 **Q:** Do you do maintenance windows? When and how do we hear about them?
 
-**A:** **30 calendar days advance notice** for sub-processor changes (per DPA §6 / GDPR Art. 28 / LGPD Art. 27 §4º) — published as a *Maintenance / Informational* item on the status page; email digest via the `subprocessor-changes@` distribution address inside tenant settings; RSS feed. **For routine deploys** that touch a customer's hot path: 24h notice in the Slack Connect channel with rollback plan. Customers can request a freeze on their tenant during a critical period (e.g., your own product launch window) — tell us. Material spec or DPA changes follow `specs/_runbooks/RB-DPA-CHANGE.md`.
+**A:** **30 calendar days advance notice** for sub-processor changes (per DPA §6 / GDPR Art. 28 / LGPD Art. 27 §4º) — sent by email to the account owner of record, plus any address registered by writing to privacy@humangr.com. There is no status-page, digest or RSS channel for these notices yet. **For routine deploys** that touch a customer's hot path: 24h notice in the Slack Connect channel with rollback plan. Customers can request a freeze on their tenant during a critical period (e.g., your own product launch window) — tell us. Material spec or DPA changes follow `specs/_runbooks/RB-DPA-CHANGE.md`.
 
 **Sources:** `apps/docs/docs/trust/subprocessors.mdx#notice-of-changes-30-day-grace`; `marketing/lighthouse-kit/CUSTOMER-PLAYBOOK.md#faq` Q12.
 

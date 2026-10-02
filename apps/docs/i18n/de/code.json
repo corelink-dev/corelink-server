@@ -99,6 +99,14 @@
     "message": "Gemäß unserem DPA §6 und LGPD Art. 27 §4º + DSGVO Art. 28 §2 kündigen wir mit mindestens 30 Kalendertagen schriftlicher Vorlauf an, bevor wir einen Auftragsverarbeiter hinzufügen oder ersetzen, der personenbezogene Daten von Kunden verarbeitet.",
     "description": "Notice section body"
   },
+  "trust.subprocessor.contract_basis": {
+    "message": "Jeder unten aufgeführte Unterauftragsverarbeiter wird zu den eigenen Standardbedingungen und dem Auftragsverarbeitungsvertrag (DPA) des jeweiligen Anbieters eingesetzt, die in der Tabelle verlinkt sind. CoreLink hat sie bei der Einrichtung des jeweiligen Kontos online akzeptiert; die Annahmedaten wurden nicht erfasst, daher werden keine angezeigt.",
+    "description": "How each sub-processor is engaged; no acceptance dates are recorded"
+  },
+  "trust.subprocessor.notice.email": {
+    "message": "Mitteilungen werden per E-Mail an den eingetragenen Kontoinhaber gesendet; für einen weiteren Empfänger schreiben Sie an privacy@humangr.com. Es gibt keine Benachrichtigungseinstellung im Produkt und keinen automatischen Digest.",
+    "description": "How change notices are delivered today"
+  },
   "trust.subprocessor.active.title": {
     "message": "Aktive Auftragsverarbeiter ({count})",
     "description": "Active sub-processors section title"

@@ -14,7 +14,7 @@
 | DPA reference | <https://betterstack.com/dpa> |
 | Online acceptance date | Not recorded. |
 | Reviewer | The owner. CoreLink is a single-owner company with no separate Legal/Privacy reviewer (#2593 re-charter). |
-| Owner disposition | In the approved launch sub-processor set; re-charter recorded 2026-10-01 in #2593. |
+| Owner disposition | In the launch sub-processor set the owner chose; see the re-charter comment on #2593. |
 | SCC / transfer mechanism | As set out in Better Stack's DPA (linked above). |
 | Schrems II TIA | None recorded. |
 | Data categories processed | telemetry |
@@ -43,11 +43,11 @@
 ## Notes
 
 This record replaces the earlier `TEMPLATE` packet. VR-9 originally asked for a
-dated Legal review and a signed-copy DPA; the owner's 2026-10-01 re-charter
+dated Legal review and a signed-copy DPA; the owner's re-charter (#2593)
 closes it on the public sub-processor list, which names Better Stack and links its
-standard online terms and DPA. Nothing here claims a signature, a countersigned
-contract, a named Legal reviewer, a transfer impact assessment, a certification,
-or an acceptance date. VR-9 is Closed in
+standard online terms and DPA. This record claims no signature or other
+execution evidence, no named Legal reviewer, no transfer impact assessment, no
+certification and no acceptance date. VR-9 is Closed in
 `specs/_compliance/VENDOR-RISK-REGISTER.md` §5.
 
 ---

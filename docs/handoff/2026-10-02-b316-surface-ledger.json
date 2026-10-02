@@ -1,0 +1,1290 @@
+{
+ "schema_version": 1,
+ "backlog_id": "B-316",
+ "purpose": "Declared exceptions for scripts/verify_b316_pending_vendor_reviews.py. Every published line that names PagerDuty or Neon, every unparsed file that lists sub-processors, every allowed dated/approval line, and every locale-copy difference is declared here with a reason; anything else on the published tree fails the gate.",
+ "categories": {
+  "pending-b314-repin": "The GDPR transfer-table row '| PagerDuty / GitHub | US | ... |' is held byte-exact by the signed B-314 decision (evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json) and its verifier. It still names the deferred vendor, so B-316 stays open until the B-314 owner re-pins it.",
+  "negative-status": "States that the vendor is not shipped or not applicable; it is not a disclosure that the vendor processes data.",
+  "historical": "Inside a document explicitly marked as preserved historical, non-operative text; it states no current processing.",
+  "superseded-design": "Inside a draft that carries the B-316 superseded-design banner stating Neon was never used and none of its measures are in place.",
+  "paging-capability": "PagerDuty named as incident-paging tooling, not as a customer-data sub-processor. These capability claims are stale after the owner's 2026-10-01 deferral and belong to a separate follow-up item; they do not list a sub-processor.",
+  "not-a-vendor": "The word is not the vendor (for example ARM NEON SIMD)."
+ },
+ "excluded_vendor_mentions": {
+  "apps/docs/blog/2026-05-28-why-blake3.mdx": [
+   {
+    "category": "not-a-vendor",
+    "line": "On x86-64 with AVX-512, a single core can process four 1 KiB chunks simultaneously using 512-bit SIMD registers. On Apple Silicon (NEON 128-bit), two chunks per SIMD cycle. On WASM SIMD (128-bit), two chunks. On WASM without SIMD (scalar), one chunk per cycle — but the scalar ChaCha-derived loop is still simpler than SHA-256's schedule, so scalar BLAKE3 beats scalar SHA-256."
+   }
+  ],
+  "apps/docs/docs/explanation/privacy/gdpr.mdx": [
+   {
+    "category": "negative-status",
+    "line": "| Neon control plane | Neon control-plane not shipped; subject identity lives in D1 (handled by the D1 adapter) |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Neon billing detail | Neon billing not shipped; billing state lives in D1 + Stripe |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Neon PITR backup | Neon PITR not shipped; no Neon backups to tombstone |"
+   },
+   {
+    "category": "pending-b314-repin",
+    "line": "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
+   }
+  ],
+  "apps/docs/docs/explanation/privacy/lgpd-full.mdx": [
+   {
+    "category": "negative-status",
+    "line": "| Neon control plane | Neon control-plane not shipped; subject identity lives in D1 (handled by the D1 adapter) |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Neon billing detail | Neon billing not shipped; billing state lives in D1 + Stripe |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Neon PITR backup | Neon PITR not shipped; no Neon backups to tombstone |"
+   }
+  ],
+  "apps/docs/docs/trust/compliance.mdx": [
+   {
+    "category": "paging-capability",
+    "line": "PagerDuty 24/7 rotation across 3 regions."
+   }
+  ],
+  "apps/docs/docs/trust/incident-response.mdx": [
+   {
+    "category": "paging-capability",
+    "line": "24/7 paging is in place across three regions per PagerDuty rotation. A"
+   }
+  ],
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx": [
+   {
+    "category": "negative-status",
+    "line": "| Neon-Kontrollebene | Neon-Kontrollebene nicht ausgeliefert; die Identität lebt in D1 (vom D1-Adapter behandelt) |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Neon-Abrechnungsdetail | Neon-Abrechnung nicht ausgeliefert; der Abrechnungsstatus lebt in D1 + Stripe |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Neon-PITR-Backup | Neon-PITR nicht ausgeliefert; keine Neon-Backups zum Tombstonen |"
+   },
+   {
+    "category": "pending-b314-repin",
+    "line": "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
+   }
+  ],
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/privacy/lgpd-full.mdx": [
+   {
+    "category": "negative-status",
+    "line": "| Neon-Kontrollebene | Neon-Kontrollebene nicht ausgeliefert; die Identität lebt in D1 (vom D1-Adapter behandelt) |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Neon-Abrechnungsdetail | Neon-Abrechnung nicht ausgeliefert; der Abrechnungsstatus lebt in D1 + Stripe |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Neon-PITR-Backup | Neon-PITR nicht ausgeliefert; keine Neon-Backups zum Tombstonen |"
+   }
+  ],
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/trust/compliance.mdx": [
+   {
+    "category": "paging-capability",
+    "line": "PagerDuty 24/7 rotation across 3 regions."
+   }
+  ],
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/trust/incident-response.mdx": [
+   {
+    "category": "paging-capability",
+    "line": "24/7 paging is in place across three regions per PagerDuty rotation. A"
+   }
+  ],
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx": [
+   {
+    "category": "negative-status",
+    "line": "| Plano de control de Neon | El plano de control de Neon no está implementado; la identidad del sujeto vive en D1 (gestionado por el adaptador D1) |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Detalle de facturación en Neon | La facturación en Neon no está implementada; el estado de facturación vive en D1 + Stripe |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Backup PITR de Neon | El PITR de Neon no está implementado; no hay backups de Neon para aplicar tombstone |"
+   },
+   {
+    "category": "pending-b314-repin",
+    "line": "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
+   }
+  ],
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/explanation/privacy/lgpd-full.mdx": [
+   {
+    "category": "negative-status",
+    "line": "| Plano de control de Neon | El plano de control de Neon no está implementado; la identidad del sujeto vive en D1 (gestionado por el adaptador D1) |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Detalle de facturación en Neon | La facturación en Neon no está implementada; el estado de facturación vive en D1 + Stripe |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Backup PITR de Neon | El PITR de Neon no está implementado; no hay backups de Neon para aplicar tombstone |"
+   }
+  ],
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/trust/compliance.mdx": [
+   {
+    "category": "paging-capability",
+    "line": "PagerDuty 24/7 rotation across 3 regions."
+   }
+  ],
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/trust/incident-response.mdx": [
+   {
+    "category": "paging-capability",
+    "line": "24/7 paging is in place across three regions per PagerDuty rotation. A"
+   }
+  ],
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx": [
+   {
+    "category": "negative-status",
+    "line": "| Neon control plane | O control plane do Neon não foi lançado; a identidade do titular vive no D1 (tratado pelo adaptador D1) |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Neon billing detail | O faturamento no Neon não foi lançado; o estado de faturamento vive no D1 + Stripe |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Backup PITR do Neon | O PITR do Neon não foi lançado; não há backups do Neon para aplicar tombstone |"
+   },
+   {
+    "category": "pending-b314-repin",
+    "line": "| PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |"
+   }
+  ],
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/privacy/lgpd-full.mdx": [
+   {
+    "category": "negative-status",
+    "line": "| Neon control plane | O control plane do Neon não foi lançado; a identidade do titular vive no D1 (tratado pelo adaptador D1) |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Neon billing detail | O faturamento no Neon não foi lançado; o estado de faturamento vive no D1 + Stripe |"
+   },
+   {
+    "category": "negative-status",
+    "line": "| Backup PITR do Neon | O PITR do Neon não foi lançado; não há backups do Neon para aplicar tombstone |"
+   }
+  ],
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/trust/compliance.mdx": [
+   {
+    "category": "paging-capability",
+    "line": "PagerDuty 24/7 rotation across 3 regions."
+   }
+  ],
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/trust/incident-response.mdx": [
+   {
+    "category": "paging-capability",
+    "line": "24/7 paging is in place across three regions per PagerDuty rotation. A"
+   }
+  ],
+  "legal/breach-notification/dry-run-scenarios/scenario-1-pii-leak-via-log.md": [
+   {
+    "category": "paging-capability",
+    "line": "| T+15m | Security Lead escalates to Privacy Officer via PagerDuty `corelink-breach-sev3` | Security Lead |"
+   }
+  ],
+  "legal/breach-notification/dry-run-scenarios/scenario-2-r2-cross-tenant-exposure.md": [
+   {
+    "category": "paging-capability",
+    "line": "| T+10m | SRE on-call receives PagerDuty SEV-1 | SRE |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| T+30m | Privacy Officer paged via `corelink-breach-sev1`; CEO interim paged | PagerDuty |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "**Step 6 — PagerDuty escalation validation**:"
+   }
+  ],
+  "legal/breach-notification/rb-breach-notif-decision-tree.yaml": [
+   {
+    "category": "paging-capability",
+    "line": "pagerduty_service: \"corelink-breach-sev1\""
+   },
+   {
+    "category": "paging-capability",
+    "line": "pagerduty_service: \"corelink-breach-sev2\""
+   },
+   {
+    "category": "paging-capability",
+    "line": "pagerduty_service: \"corelink-breach-sev3\""
+   }
+  ],
+  "legal/dpia/REVIEW_PROCESS.md": [
+   {
+    "category": "paging-capability",
+    "line": "- SEV-3 alert fires (PagerDuty → Privacy Officer + Engineering Lead)."
+   }
+  ],
+  "legal/dpia/s07-dedup-leakage.md": [
+   {
+    "category": "superseded-design",
+    "line": "> written when a Neon Postgres control plane was planned. Neon was never used"
+   },
+   {
+    "category": "superseded-design",
+    "line": "> Cloudflare D1 control-plane database. Every Neon-specific statement below"
+   },
+   {
+    "category": "superseded-design",
+    "line": "> describes that abandoned design; none of its Neon measures are in place."
+   },
+   {
+    "category": "superseded-design",
+    "line": "| Access metadata (tenant_id, subject_id, blob_id) | Ordinary | D1 ac_meta, Neon | Links hash to subject |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "| Upload timestamps | Ordinary | D1, Neon | Temporal correlation possible |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "| INV-TENANT-ISOLATION enforcement | RLS + tenant_id predicates in all D1 + Neon queries | invariant_registry.md §3.X |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "| R-005 | Linkability (L) | Upload timestamp correlation: adversary correlates upload timestamps across tenants to infer common build pipeline or shared code. | LOW | LOW | LOW | Timestamps stored only in tenant-scoped Neon tables; not cross-tenant accessible. |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "- INV-TENANT-ISOLATION: all D1 and Neon queries include `tenant_id` predicate enforced at the ORM layer and verified by RLS policies."
+   },
+   {
+    "category": "superseded-design",
+    "line": "- Neon DPA: Module 2 SCCs; data stored in tenant.primary_region (EU tenants → weur bucket)."
+   }
+  ],
+  "legal/dpia/s10-billing-cross-border.md": [
+   {
+    "category": "superseded-design",
+    "line": "> written when a Neon Postgres control plane was planned. Neon was never used"
+   },
+   {
+    "category": "superseded-design",
+    "line": "> Cloudflare D1 control-plane database. Every Neon-specific statement below"
+   },
+   {
+    "category": "superseded-design",
+    "line": "> describes that abandoned design; none of its Neon measures are in place."
+   },
+   {
+    "category": "superseded-design",
+    "line": "| Name + email (billing contact) | Ordinary — directly identifying | Stripe Customer object, Neon billing | 7 years (fiscal) | Required for invoicing |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "| Stripe Customer ID (tokenized reference) | Ordinary pseudonym | Neon billing, D1 | 7 years | Token only; real card data at Stripe |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "| Billing address | Ordinary | Stripe, Neon billing | 7 years | Required for VAT/NF-e |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "| Tax ID (CPF/CNPJ for BR; VAT number for EU) | Legally required — sensitive in BR context | Neon billing | 7 years (fiscal) | LGPD Art. 7 II / GDPR Art. 6(1)(c) |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "| Usage metering (per-tenant aggregated) | Ordinary | D1 billing tables, Neon billing | 7 years (fiscal) | Aggregate per tenant; not per-user |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "| Bank transfer details (for EU enterprise invoicing) | Financial | Neon billing (encrypted) | 7 years | GDPR Art. 6(1)(c) / LGPD Art. 7 II |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "3. CoreLink stores Stripe Customer ID (token, not card data) in Neon billing (tenant's primary region — weur for EU)."
+   },
+   {
+    "category": "superseded-design",
+    "line": "8. CoreLink retains Stripe invoice ID + amount in Neon billing (tenant primary region); full invoice data at Stripe."
+   },
+   {
+    "category": "superseded-design",
+    "line": "- **Storage limitation:** Neon billing tables retain Stripe Customer ID (token) + aggregate amounts; raw invoice data at Stripe per their retention policy."
+   },
+   {
+    "category": "superseded-design",
+    "line": "| Encryption at rest (Neon billing) | Neon AES-256 encryption at rest; HKDF-derived key for fiscal data |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "| DSR erasure integration | Billing tables included in erasure worker 12-backend model (WI-S11-002); Neon billing + D1 backends erased; Stripe Customer deletion via `Customer.update` (GDPR Art. 17 / LGPD Art. 18 IV) |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "| Residency pinning | Neon billing data stored in tenant's primary region; Stripe US-hosted (SCC covered) |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "| R-005 | Identifiability (I) | Tax ID (CPF/CNPJ) is highly identifying in BR context; breach exposes financial identity | LOW | HIGH | LOW | Neon billing field encrypted with HKDF-derived key; access restricted to billing worker service account |"
+   },
+   {
+    "category": "superseded-design",
+    "line": "- CPF/CNPJ field encrypted at rest in Neon billing using HKDF-derived key (info=`corelink/v1/billing-taxid`)."
+   },
+   {
+    "category": "superseded-design",
+    "line": "- **WI-S11-007 residency pinning:** Neon billing data stored in tenant.primary_region (weur for EU tenants); only invoice line items transmitted cross-border to Stripe."
+   }
+  ],
+  "legal/privacy-notice/v1.0.0/en-US.md": [
+   {
+    "category": "historical",
+    "line": "| Neon Inc. | PostgreSQL database | US |"
+   },
+   {
+    "category": "historical",
+    "line": "- Encryption at rest (R2 + Neon)."
+   }
+  ],
+  "legal/privacy-notice/v1.0.0/es-MX.md": [
+   {
+    "category": "historical",
+    "line": "| Neon Inc. | Base de datos PostgreSQL | US |"
+   },
+   {
+    "category": "historical",
+    "line": "- Cifrado en reposo (R2 + Neon)."
+   }
+  ],
+  "legal/privacy-notice/v1.0.0/pt-BR.md": [
+   {
+    "category": "historical",
+    "line": "| Neon Inc. | Banco de dados PostgreSQL | US |"
+   },
+   {
+    "category": "historical",
+    "line": "- Criptografia em repouso (R2 + Neon encryption at rest)."
+   }
+  ],
+  "marketing/corelink-feature-catalog.html": [
+   {
+    "category": "negative-status",
+    "line": "<div class=\"card\" data-status=\"shipped\" data-text=\"honest &#x27;notapplicable&#x27; reconciliation for unshipped backends on a configured prod env the 3 live backends (d1, r2 cas/ac, stripe) erase; the other 8 (neon/kv/loki/r2 audit·legal-hold·evidence) are reconciled to notapplicable with a documented reason each because they hold no durable subject pii in prod — producing a truthful gdpr audit record rather than a silent skip. compliance theatre (claiming you deleted from systems you don&#x27;t run) is itself a liability under audit. this records the truth — what was deleted, and why each other backend is n/a — so the erasure record survives an auditor&#x27;s scrutiny. dsr / audit truthfulness\">"
+   },
+   {
+    "category": "negative-status",
+    "line": "<p class=\"what\">On a configured prod env the 3 live backends (D1, R2 CAS/AC, Stripe) erase; the other 8 (Neon/KV/Loki/R2 audit·legal-hold·evidence) are reconciled to NotApplicable with a documented reason each because they hold no durable subject PII in prod — producing a truthful GDPR audit record rather than a silent skip.</p>"
+   },
+   {
+    "category": "paging-capability",
+    "line": "<div class=\"card\" data-status=\"near-ready\" data-text=\"sub-processor register + ≥30d change notification a cloudevents emitter for the sub-processor register (published/changed/objectionfiled) with diff detection, a controller objection ticket state machine, a d1 broadcast log mirror, and pagerduty objection routing — implementing the gdpr art.28.2 / lgpd art.39 duty to notify controllers ≥30d before any sub-processor change. customers&#x27; own gdpr art.28 chain-of-controllers analysis needs a published sub-processor list and advance change notice; automating it removes a recurring legal/comms burden and provides the objection channel regulators expect. sub-processor transparency / gdpr art.28\">"
+   },
+   {
+    "category": "paging-capability",
+    "line": "<p class=\"what\">A CloudEvents emitter for the sub-processor register (Published/Changed/ObjectionFiled) with diff detection, a controller objection ticket state machine, a D1 broadcast log mirror, and PagerDuty objection routing — implementing the GDPR Art.28.2 / LGPD Art.39 duty to notify controllers ≥30d before any sub-processor change.</p>"
+   }
+  ],
+  "marketing/launch/COORDINATION/LAUNCH-RUNBOOK.md": [
+   {
+    "category": "paging-capability",
+    "line": "| T-7d | **24/7 on-call PagerDuty schedule live** — synthetic page < 5 min sustained — `EVT-026`. | SRE Lead | Schedule verified. |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| T-1d 14:00 PT | **Incident response readiness check**: PagerDuty on-call confirmed, escalation matrix verified, SEV-1 runbooks sweep. | SRE Lead |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| SEV-1 in CoreLink production during launch window | PagerDuty page + dashboard alarm. | On-call manager runs incident response. CTO + Owner notified. PH / HN activity continues with transparent Maker / Founder acknowledgment. Engineering gate is binary — we do not retract GA over a SEV-1 unless scope warrants it (Owner decision). |"
+   }
+  ],
+  "marketing/launch/CRISIS-COMMS-TEMPLATES.md": [
+   {
+    "category": "paging-capability",
+    "line": "**Trigger:** PagerDuty SEV1 declaration on any of C1..C6 (API, CAS Read, CAS Write, BYOK, Audit, Billing) sustained > 5 min, or any incident that violates a customer-facing invariant."
+   },
+   {
+    "category": "paging-capability",
+    "line": "> **Fired automatically by PagerDuty → Statuspage integration. No human approval. Refined post-publish.**"
+   },
+   {
+    "category": "paging-capability",
+    "line": "1. PagerDuty fires → status page auto-publishes (§A.1)."
+   },
+   {
+    "category": "paging-capability",
+    "line": "| B-1 | SRE-OC | T+0 | PagerDuty SEV1 — \"Suspected privacy incident, internal only.\" Do NOT auto-publish to status page (privacy SEV1 takes a different path). |"
+   }
+  ],
+  "marketing/launch/DAY-1-DASHBOARD-SPEC.md": [
+   {
+    "category": "paging-capability",
+    "line": "**Page-out wiring:** any cell red ↔ PagerDuty SEV2 fires automatically. SEV2 triggers `STATUS-PAGE-SPEC.md` §5 partial-outage flow."
+   },
+   {
+    "category": "paging-capability",
+    "line": "| PagerDuty | SEV2/SEV1 page-outs | PagerDuty webhook |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "- **Critical support ticket flag > 0** → PagerDuty pages CTO. SEV-determined post-triage."
+   },
+   {
+    "category": "paging-capability",
+    "line": "- **Any top-5 SLO burn > 2% in 1h** → PagerDuty SEV2 → `STATUS-PAGE-SPEC.md` partial-outage flow."
+   },
+   {
+    "category": "paging-capability",
+    "line": "- **Status page itself shows red** → PagerDuty SEV1 → war room war room."
+   }
+  ],
+  "marketing/launch/LAUNCH-CHECKLIST-V2.md": [
+   {
+    "category": "paging-capability",
+    "line": "| **SRE-OC** | SRE on-call (primary + secondary) | Per PagerDuty rotation |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| L9 | T-12h 19:00 PT | Ops team holiday cancellations confirmed | SRE Lead | Verify no SRE-OC, CTO, VPSec on PTO during T-24h..T+72h window; PagerDuty rotation locked. | Rotation locked; secondary coverage explicit. | Any gap → cover with paid on-call from advisor pool (`H-15`) or DEFER. |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| L14 | T-6h 01:00 PT | PagerDuty silence period check | SRE-OC | Verify no maintenance windows scheduled in PagerDuty for next 24h; verify all integrations green. | All integrations green. | Disable conflicting maintenance windows; re-test page-out in < 5min. |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| L46 | T+72h 12:00 PT | War room dissolution | WR-COORD | Close `#launch-war-room-<date>` channel; archive Zoom bridge; rotate oncall back to standard PagerDuty schedule. | Channel archived; rotation back to baseline. | If still in SEV-1: do not dissolve. Convert war room to incident war room. |"
+   }
+  ],
+  "marketing/launch/METRICS-DASHBOARD.md": [
+   {
+    "category": "paging-capability",
+    "line": "| Synthetic page response time | PagerDuty + synthetic monitor | < 5 min sustained per CAP-GA-006. |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| **PagerDuty** | Incident response posture during launch. |"
+   }
+  ],
+  "marketing/launch/PRESS-RELEASE.md": [
+   {
+    "category": "paging-capability",
+    "line": "- **24/7 incident response.** PagerDuty rotations across three regions, weekly synthetic page exercise with sub-five-minute response sustained 30 days (CAP-GA-006)."
+   }
+  ],
+  "marketing/launch/STATUS-PAGE-SPEC.md": [
+   {
+    "category": "paging-capability",
+    "line": "> **Purpose:** describe the public status page CoreLink runs from GA. What hosts it, what components it advertises, who subscribes, how severity maps to public messaging, how it auto-publishes from PagerDuty, and who approves what."
+   },
+   {
+    "category": "paging-capability",
+    "line": "| Auto-publish from PagerDuty | First-class integration. | We build it. |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "- **CoreLink internal:** SRE on-call distribution (PagerDuty service email), `security@humangr.com`, `support@humangr.com`, `compliance@humangr.com`, `ceo@humangr.com`."
+   },
+   {
+    "category": "paging-capability",
+    "line": "This table is **canonical**. PagerDuty integrations and the approval workflow both reference it."
+   },
+   {
+    "category": "paging-capability",
+    "line": "| **SEV1** — customer-impacting outage affecting > 10% of traffic OR core invariant violation (e.g., CAS write rejection storm, audit chain breakage, BYOK plane unavailable). | **Major Outage** (red) + incident timeline | **Email blast + SMS opt-in + RSS + Slack feed** | **NO APPROVAL — instant publish.** Auto-published by PagerDuty → Statuspage integration. CEO/CTO informed asynchronously via PagerDuty escalation. | < 5 min from PagerDuty SEV1 declaration. |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| **SEV2** — degraded service affecting < 10% of traffic, or single-component partial outage (e.g., BYOK degraded for one vendor, Billing webhook backlogged). | **Partial Outage** (orange) + incident timeline | **Per-component email + RSS + Slack feed** | **Oncall L1 approves.** SRE-OC pushes after 60-sec sanity check; no exec approval needed. | < 10 min from PagerDuty SEV2 declaration. |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "## 7. Auto-publish hook: PagerDuty → Statuspage"
+   },
+   {
+    "category": "paging-capability",
+    "line": "PagerDuty native integration. Configured per service."
+   },
+   {
+    "category": "paging-capability",
+    "line": "| PagerDuty service | Statuspage component | Auto-status mapping |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "pagerduty:"
+   },
+   {
+    "category": "paging-capability",
+    "line": "- pagerduty_service: corelink-api-prod"
+   },
+   {
+    "category": "paging-capability",
+    "line": "- pagerduty_service: corelink-cas-read-prod"
+   },
+   {
+    "category": "paging-capability",
+    "line": "SEV2: false           # SRE-OC must press confirm in PagerDuty mobile"
+   },
+   {
+    "category": "paging-capability",
+    "line": "If PagerDuty → Statuspage webhook fails (3 attempts exhausted), the integration emits a SEV2 internal page-out to SRE-OC titled \"Statuspage publish failed\" with the original incident payload attached. SRE-OC then either (a) manually pushes to Statuspage from the PagerDuty mobile app, or (b) updates the static fallback page at `humangr.com/corelink/status` and tweets from `@corelinkdev`."
+   }
+  ],
+  "marketing/launch/STATUSPAGE-INIT.md": [
+   {
+    "category": "paging-capability",
+    "line": "> **Purpose:** the **concrete, click-by-click** provisioning playbook that takes us from \"no account\" to \"`status.corelink.humangr.com` live with 8 components, PagerDuty hooks armed, lighthouse subscribers imported\". This implements `STATUS-PAGE-SPEC.md` §1–§7."
+   },
+   {
+    "category": "paging-capability",
+    "line": "| **Atlassian Statuspage** | Business — USD $99–$299/mo (8 components fits the entry tier; sub-component metric overlays are Business-plan-only). | **Chosen.** Native PagerDuty integration, SMS-on-SEV1, RSS/Atom out of the box, SOC 2 export, supports custom domain CNAME. | n/a |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| **Squadcast Status Page** | Bundled in Squadcast incident-management plan (USD $9–$21/user/mo) | We don't use Squadcast for paging; we use PagerDuty. Forces second incident-management stack at the worst moment. Squadcast→Statuspage automation requires a custom Lambda anyway, so we'd pay twice. | If we ever migrate paging from PagerDuty to Squadcast for cost reasons (post-Series-A). |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| **C1** | `API` | \"CoreLink control-plane API — REAPI surface, admin endpoints, signup/billing, BYOK key-management.\" | `Core platform` | Public | p99 latency (linked metric from PagerDuty/Datadog) |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "2. Click **Create API Key**. Name it `corelink-prod-pagerduty-bridge-2026-Q2`. Scope: **Page Admin** (required for incident create/update + component status set + subscriber bulk-add)."
+   },
+   {
+    "category": "paging-capability",
+    "line": "### 5.3 Get the PagerDuty integration key"
+   },
+   {
+    "category": "paging-capability",
+    "line": "For inbound (PagerDuty → Statuspage) — separate from outbound:"
+   },
+   {
+    "category": "paging-capability",
+    "line": "1. In PagerDuty, navigate to the `corelink-api-prod` service."
+   },
+   {
+    "category": "paging-capability",
+    "line": "3. PagerDuty generates an **Integration Key** specific to this PD service + SP page combo. Copy it as `PD_SP_INTEGRATION_KEY_API`."
+   },
+   {
+    "category": "paging-capability",
+    "line": "4. Repeat for `corelink-cas-read-prod`, `corelink-cas-write-prod`, `corelink-byok-prod`, `corelink-audit-prod`, `corelink-billing-prod`, `corelink-docs-prod`, `corelink-admin-prod`. Result: 8 distinct PagerDuty integration keys, one per service."
+   },
+   {
+    "category": "paging-capability",
+    "line": "| PagerDuty SP integration keys (8 vars) | `PD_SP_INTEGRATION_KEY_<service>` | `cf-wrangler` (8 new rows) | DevOps | 180d |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "## 6. PagerDuty → Statuspage automation hooks"
+   },
+   {
+    "category": "paging-capability",
+    "line": "### 6.1 Native PagerDuty integration (preferred — covers SEV2/SEV3 manual + scheduled maintenance)"
+   },
+   {
+    "category": "paging-capability",
+    "line": "For each of the 8 PagerDuty services (`corelink-{api,cas-read,cas-write,byok,audit,billing,docs,admin}-prod`):"
+   },
+   {
+    "category": "paging-capability",
+    "line": "1. PagerDuty UI → **Service** → **Integrations** → **Statuspage** (already added in §5.3)."
+   },
+   {
+    "category": "paging-capability",
+    "line": "The native integration is single-service. For SEV2/SEV3 logic that needs **cross-service correlation** (e.g., \"BYOK degraded for one vendor only — open partial outage, not major\") and **dedup** (same incident retriggers in PagerDuty within 5 min → single Statuspage incident with updated timeline), we run a small webhook receiver — **spec only at this stage, code follows in a subsequent WI**. The spec is committed to `scripts/statuspage-webhook-receiver.example.yaml`."
+   },
+   {
+    "category": "paging-capability",
+    "line": "Per `STATUS-PAGE-SPEC.md` §7.3: if PagerDuty → Statuspage publish fails 3× (5s / 15s / 45s backoff per §7.2 config), the integration emits a SEV2 internal page-out titled **\"Statuspage publish failed\"**. SRE-OC then executes the fallback in this order:"
+   },
+   {
+    "category": "paging-capability",
+    "line": "1. Manual publish from PagerDuty mobile app (often the same integration retry button works on a fresh network path)."
+   },
+   {
+    "category": "paging-capability",
+    "line": "19. API Info → **Create API Key** → name `corelink-prod-pagerduty-bridge-2026-Q2` → capture `SP_API_KEY`."
+   },
+   {
+    "category": "paging-capability",
+    "line": "21. PagerDuty: add Statuspage integration to each of 8 services → capture 8 `PD_SP_INTEGRATION_KEY_*` values."
+   },
+   {
+    "category": "paging-capability",
+    "line": "25. For each PagerDuty integration, configure severity-to-status mapping per §6.1."
+   },
+   {
+    "category": "paging-capability",
+    "line": "26. Paste auto-publish template (`CRISIS-COMMS-TEMPLATES.md` §A.1) into PagerDuty SEV1 integration config."
+   }
+  ],
+  "marketing/launch/STATUSPAGE-PRE-LAUNCH-TEST.md": [
+   {
+    "category": "paging-capability",
+    "line": "- [ ] Webhook receiver spec reviewed; **native PagerDuty → Statuspage integration is the active path under test** (custom receiver is spec-only for GA)."
+   },
+   {
+    "category": "paging-capability",
+    "line": "- [ ] **Test PagerDuty service created:** `corelink-statuspage-test-prerelease` with the Statuspage integration attached and pointing at the test component."
+   },
+   {
+    "category": "paging-capability",
+    "line": "### Test 3 — PagerDuty → Statuspage automation (the auto-publish hook)"
+   },
+   {
+    "category": "paging-capability",
+    "line": "**Goal:** confirm the native integration fires a Statuspage incident when a PagerDuty SEV1 incident is opened."
+   },
+   {
+    "category": "paging-capability",
+    "line": "1. In PagerDuty, trigger a synthetic incident on the test service:"
+   },
+   {
+    "category": "paging-capability",
+    "line": "-X POST https://api.pagerduty.com/incidents \\"
+   },
+   {
+    "category": "paging-capability",
+    "line": "4. After the 3rd failure, confirm the receiver emits a `corelink-sre-internal-staging` SEV2 PagerDuty incident titled \"Statuspage publish failed\"."
+   },
+   {
+    "category": "paging-capability",
+    "line": "| PagerDuty integration severity mapping wrong | (a) Revert integration severity-to-status mapping in PagerDuty UI; (b) re-trigger synthetic PD incident; (c) re-run Test 3. |"
+   }
+  ],
+  "marketing/launch/STATUSPAGE-SUBSCRIBER-IMPORT.md": [
+   {
+    "category": "paging-capability",
+    "line": "| `oncall+statuspage@corelink.pagerduty.com` | PagerDuty service email (mirror of SP back into PD for visibility) | All components |"
+   }
+  ],
+  "marketing/launch/SUPPORT-DASHBOARD-SPEC.md": [
+   {
+    "category": "paging-capability",
+    "line": "| P0 ticket open AND ack-SLA breached | Panel 2 P0 < 100% | PagerDuty `pd-support-p0` | Support Shift Lead |"
+   }
+  ],
+  "marketing/lighthouse-kit/01-outreach-email.md": [
+   {
+    "category": "paging-capability",
+    "line": "• Direct PagerDuty escalation rights during the 30-day observation window"
+   }
+  ],
+  "marketing/lighthouse-kit/02-intro-deck.md": [
+   {
+    "category": "paging-capability",
+    "line": "| Up to 2 reference calls / quarter for 12 months | Direct PagerDuty escalation rights during observation window | First-year roadmap influence |"
+   }
+  ],
+  "marketing/lighthouse-kit/03-integration-timeline.md": [
+   {
+    "category": "paging-capability",
+    "line": "- Direct PagerDuty escalation rights active for the customer during this window (P0 priority)."
+   },
+   {
+    "category": "paging-capability",
+    "line": "- **Incidents:** PagerDuty direct paging (P0 priority during D+10..D+40)."
+   }
+  ],
+  "marketing/lighthouse-kit/CUSTOMER-PLAYBOOK.md": [
+   {
+    "category": "paging-capability",
+    "line": "| 0:45–0:55 | Comms protocol — Slack Connect channel created; PagerDuty escalation rights activated; weekly check-in scheduled | Same |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "- [ ] PagerDuty escalation rights confirmed — your eng lead receives a test page during the call."
+   },
+   {
+    "category": "paging-capability",
+    "line": "Escalation: PagerDuty page using the URL in your Grafana dashboard, OR Slack Connect channel with `@here`. Either works."
+   },
+   {
+    "category": "paging-capability",
+    "line": "Reply with questions or page on PagerDuty for urgent items."
+   },
+   {
+    "category": "paging-capability",
+    "line": "| PagerDuty direct page | P0 incidents | As needed | Phone callback within 1h |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| P0 | SRE on-call | Live incident, SLO breach, BYOK kill-switch event | PagerDuty page |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| PagerDuty page acknowledgement | ≤ 10 min, 24/7 |"
+   }
+  ],
+  "marketing/retention/customer-health/CSM-PLAYBOOK.md": [
+   {
+    "category": "paging-capability",
+    "line": "| Engineering on-call | Eng on-call | CSM-witnessed product bug needing same-day eng attention | PagerDuty page following `RB-CUSTOMER-SUPPORT-T-90.md` §6 ticket→incident conversion criteria |"
+   }
+  ],
+  "marketing/retention/customer-health/HEALTH-DASHBOARD-SPEC.md": [
+   {
+    "category": "paging-capability",
+    "line": "| `health.compute.failed` | Nightly job failed | PagerDuty (Eng) + Slack `#cs-alerts` | P1 |"
+   }
+  ],
+  "marketing/sales/FAQ-MASTER.md": [
+   {
+    "category": "paging-capability",
+    "line": "**A:** **24/7 paging across three regions** per PagerDuty rotation. Weekly synthetic page (sent every Monday 14:00 UTC, sustained for 30 days pre-GA) verifies the rotation actually pages — not just that it's configured. PagerDuty page acknowledgement target ≤ 10 min, 24/7. Phone callback on a P0 within 1 hour. For Enterprise tenants, the dedicated Slack Connect channel SEV-1 acknowledgement is ≤ 1 hour business hours / ≤ 4 hours outside."
+   },
+   {
+    "category": "paging-capability",
+    "line": "**A:** Tier-dependent (see the support row of the P1 feature matrix for the Free/Solo/Starter/Pro/Max ladder). **Self-serve tiers:** community Slack (`#help`) median < 1 hour weekday response; GitHub Issues / Discussions for design + bugs; email `support@humangr.com` for billing / account. **Enterprise:** dedicated Slack Connect channel; SEV-1 response SLA **4 hours**; weekly account review available. **Lighthouse** (design-partner pilot program, not a billing tier — the customer is on one of the tiers above): the full playbook applies (`marketing/lighthouse-kit/CUSTOMER-PLAYBOOK.md#support-slas`) — Slack acknowledge ≤ 1h business / ≤ 4h outside, PagerDuty ≤ 10 min 24/7, P1 engineering response ≤ 24h, attestation draft delivery ≤ 24h after D+40."
+   }
+  ],
+  "marketing/sales/PROOF-POINTS.md": [
+   {
+    "category": "paging-capability",
+    "line": "| 4.1 | 24/7 on-call across 3 regions per PagerDuty rotation | `apps/docs/docs/trust/incident-response.mdx#reporting-an-incident-to-us` |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| 4.3 | PagerDuty page acknowledgement ≤ 10 min 24/7 | `CUSTOMER-PLAYBOOK.md#support-slas` |"
+   }
+  ],
+  "marketing/sales/legal-questionnaires/CAIQ-V4-pre-filled.md": [
+   {
+    "category": "paging-capability",
+    "line": "| IVS-07.1 | Network monitoring active? | Y | CSP | Grafana SLO dashboards + Cloudflare-native + PagerDuty. | CC7.2 |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| LOG-11.1 | Anomaly detection active? | Y | CSP | SLO burn-rate alerts + Grafana dashboards + PagerDuty. | CC4.1 |"
+   },
+   {
+    "category": "paging-capability",
+    "line": "| SEF-03.1 | 24×7 detection? | P | CSP | **The weekly synthetic page does not fire in production.** The Monday 14:00 UTC cron lives in the default `[triggers]` block of `wrangler.toml` (dev) and in `[env.staging.triggers]`; the production environments deliberately omit `[triggers]` — the file says so in its own comment: *\"production env intentionally omits `[triggers]`\"*. The synthetic-pager image is also still unpinned (`ghcr.io/HumanGuardrail/corelink-synthetic-pager@sha256:<PIN_AT_RELEASE>`). The PagerDuty 24/7 rotation itself is **not verifiable from this repository** — it lives in the PagerDuty account, not in code — so this row neither asserts nor denies it; ask for the schedule export. | CC7.3 |"
+   }
+  ],
+  "marketing/sales/legal-questionnaires/SIG-LITE-2026-pre-filled.md": [
+   {
+    "category": "paging-capability",
+    "line": "| J.4 | Is 24×7 incident detection in place? | P | Cloudflare-native monitoring + Grafana SLO dashboards are present. The weekly synthetic page does **not** fire in production: its cron is present only in dev/staging, and the pager image remains unpinned (`<PIN_AT_RELEASE>`). The PagerDuty 24/7 rotation lives outside this repository; request the account schedule export rather than asserting it here. | `apps/docs/docs/trust/incident-response.mdx`; `wrangler.toml` |"
+   }
+  ]
+ },
+ "disclosure_files": {
+  "README.md": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/admin-ui/src/app/[locale]/consent/new/page.tsx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/admin-ui/src/app/layout.tsx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/docs/explanation/privacy/gdpr.mdx": "Draft privacy page whose recipients section names the approved eight; checked for excluded vendors and claims, not parsed as a list.",
+  "apps/docs/docs/explanation/privacy/lgpd-full.mdx": "Draft privacy page whose recipients section names the approved eight; checked for excluded vendors and claims, not parsed as a list.",
+  "apps/docs/docs/explanation/residency/lgpd-brazil.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/docs/trust/data-handling.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/docs/trust/index.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/docs/trust/pci-dss.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/docusaurus.config.ts": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx": "Draft privacy page whose recipients section names the approved eight; checked for excluded vendors and claims, not parsed as a list.",
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/privacy/lgpd-full.mdx": "Draft privacy page whose recipients section names the approved eight; checked for excluded vendors and claims, not parsed as a list.",
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/residency/lgpd-brazil.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/trust/data-handling.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/trust/index.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/trust/pci-dss.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx": "Draft privacy page whose recipients section names the approved eight; checked for excluded vendors and claims, not parsed as a list.",
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/explanation/privacy/lgpd-full.mdx": "Draft privacy page whose recipients section names the approved eight; checked for excluded vendors and claims, not parsed as a list.",
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/explanation/residency/lgpd-brazil.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/trust/data-handling.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/trust/index.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/trust/pci-dss.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/privacy/gdpr.mdx": "Draft privacy page whose recipients section names the approved eight; checked for excluded vendors and claims, not parsed as a list.",
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/privacy/lgpd-full.mdx": "Draft privacy page whose recipients section names the approved eight; checked for excluded vendors and claims, not parsed as a list.",
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/residency/lgpd-brazil.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/trust/data-handling.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/trust/index.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/trust/pci-dss.mdx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/src/pages/legal/privacy.tsx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/src/pages/legal/terms.tsx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "apps/docs/src/pages/trust/center.tsx": "Names vendors in context and links to the sub-processor list; not itself a list. Checked for excluded vendors and claims.",
+  "legal/dpia/REVIEW_PROCESS.md": "Legal process document naming vendors in context; checked for excluded vendors and claims.",
+  "marketing/corelink-feature-catalog.html": "Sales or questionnaire material that cites the sub-processor list; checked for excluded vendors, counts, dates, approvals and notice channels.",
+  "marketing/sales/FAQ-MASTER.md": "Sales or questionnaire material that cites the sub-processor list; checked for excluded vendors, counts, dates, approvals and notice channels.",
+  "marketing/sales/legal-questionnaires/CAIQ-V4-pre-filled.md": "Sales or questionnaire material that cites the sub-processor list; checked for excluded vendors, counts, dates, approvals and notice channels.",
+  "marketing/sales/legal-questionnaires/EVIDENCE-PACK-INDEX.md": "Sales or questionnaire material that cites the sub-processor list; checked for excluded vendors, counts, dates, approvals and notice channels.",
+  "marketing/sales/legal-questionnaires/SIG-LITE-2026-pre-filled.md": "Sales or questionnaire material that cites the sub-processor list; checked for excluded vendors, counts, dates, approvals and notice channels.",
+  "marketing/sales/legal-questionnaires/VENDOR-QUESTIONNAIRE-RESPONSE-TEMPLATE.md": "Sales or questionnaire material that cites the sub-processor list; checked for excluded vendors, counts, dates, approvals and notice channels."
+ },
+ "claim_line_allowlist": {
+  "apps/docs/docs/trust/subprocessors.mdx": [
+   {
+    "line": "removed on **2026-09-08** after review established that it never executed, so",
+    "reason": "Date the Sigstore signing workflow was removed (B-118); not a vendor contract claim."
+   }
+  ],
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/trust/subprocessors.mdx": [
+   {
+    "line": "removed on **2026-09-08** after it never executed; no Fulcio certificate or",
+    "reason": "Date the Sigstore signing workflow was removed (B-118); not a vendor contract claim."
+   }
+  ],
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/trust/subprocessors.mdx": [
+   {
+    "line": "removed on **2026-09-08** after it never executed; no Fulcio certificate or",
+    "reason": "Date the Sigstore signing workflow was removed (B-118); not a vendor contract claim."
+   }
+  ],
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/trust/subprocessors.mdx": [
+   {
+    "line": "removed on **2026-09-08** after it never executed; no Fulcio certificate or",
+    "reason": "Date the Sigstore signing workflow was removed (B-118); not a vendor contract claim."
+   }
+  ],
+  "apps/docs/src/pages/legal/sub-processors.tsx": [
+   {
+    "line": "* Audit cross-reference: `specs/_audits/2026-05-27-sub-processors-finalization.md`",
+    "reason": "File name of an internal audit; not a vendor contract claim."
+   }
+  ],
+  "apps/docs/src/pages/trust/center.tsx": [
+   {
+    "line": "\"GDPR Art. 28 + 32 DPA available; LGPD ROPA + residency attestation 2026-05-15; CCPA disclosures live.\",",
+    "reason": "CoreLink's own LGPD/residency artefact date; not a vendor contract claim (outside B-316)."
+   }
+  ],
+  "docs/compliance/vendor-reviews/cloudflare-dpa-review-2026-04.md": [
+   {
+    "line": "**Public statements observed.** Cloudflare publishes DPA v6.4, effective 2026-04-03. It says customer acceptance/signature or another agreement date sets the DPA effective date. The DPA says subprocessor additions/replacements are listed at least 30 days before processing. Customer audit evidence is provided through a report no older than 13 months.",
+    "reason": "Date printed on the vendor's own public DPA page (dates are allowed only from the vendor's own page)."
+   },
+   {
+    "line": "| DPA changes | Public DPA version 6.4 is effective 2026-04-03. Whether it changed terms applicable to CoreLink cannot be determined without the executed prior and current copies. |",
+    "reason": "Date printed on the vendor's own public DPA page (dates are allowed only from the vendor's own page)."
+   },
+   {
+    "line": "- [Cloudflare Customer Data Processing Addendum, v6.4 effective 2026-04-03](https://www.cloudflare.com/cloudflare-customer-dpa/)",
+    "reason": "Date printed on the vendor's own public DPA page (dates are allowed only from the vendor's own page)."
+   }
+  ],
+  "docs/compliance/vendor-reviews/stripe-dpa-review-2026-04.md": [
+   {
+    "line": "**Public statements observed.** Stripe’s DPA page says the DPA is part of its Services Agreement and lists 2025-11-18 as its last update. It distinguishes processing roles, links a dynamic service-provider/subprocessor list, and says a subscribed customer can receive notice of list changes.",
+    "reason": "Date printed on the vendor's own public DPA page (dates are allowed only from the vendor's own page)."
+   },
+   {
+    "line": "| DPA changes | The public DPA is marked last updated 2025-11-18. Without the agreement/version in force for CoreLink and its prior version, applicable changes cannot be determined. |",
+    "reason": "Date printed on the vendor's own public DPA page (dates are allowed only from the vendor's own page)."
+   },
+   {
+    "line": "- [Stripe Data Processing Agreement, last updated 2025-11-18](https://stripe.com/legal/dpa)",
+    "reason": "Date printed on the vendor's own public DPA page (dates are allowed only from the vendor's own page)."
+   }
+  ],
+  "legal/dpa/SUB-PROCESSOR-COMMITMENTS.md": [
+   {
+    "line": "# recorded, so none is stated. v1.0.0 was effective 2026-05-14.",
+    "reason": "Version history of the commitments document itself, not a vendor date."
+   },
+   {
+    "line": "previous_effective_date: \"2026-05-14\"",
+    "reason": "Version history of the commitments document itself, not a vendor date."
+   },
+   {
+    "line": "> recorded) · v1.0.0 was effective 2026-05-14 · Origin WI-S20-005 · Canonical",
+    "reason": "Version history of the commitments document itself, not a vendor date."
+   },
+   {
+    "line": "**Contract basis (owner re-charter, 2026-10-01).** CoreLink is a single-owner",
+    "reason": "Date of the owner's re-charter decision (#2593), not a vendor acceptance date."
+   }
+  ],
+  "legal/dpia/REVIEW_PROCESS.md": [
+   {
+    "line": "| DPIA-S10-001 | Billing data cross-border (Stripe US) | S-10 | 2026-05-13 | DRAFT (pending sign-off) |",
+    "reason": "DPIA register entry date; not a vendor contract claim."
+   }
+  ],
+  "legal/sub-processors.md": [
+   {
+    "line": "# Approved launch set (B-316 / #2593 owner re-charter, 2026-10-01): exactly these",
+    "reason": "Date of the owner's re-charter decision (#2593), not a vendor acceptance date."
+   },
+   {
+    "line": "There is no objection API: `POST /v1/privacy/sub-processor-objection` is not",
+    "reason": "States that the objection API does not exist."
+   },
+   {
+    "line": "### Contract basis (owner re-charter, 2026-10-01)",
+    "reason": "Date of the owner's re-charter decision (#2593), not a vendor acceptance date."
+   }
+  ],
+  "marketing/corelink-feature-catalog.html": [
+   {
+    "line": "<div class=\"card\" data-status=\"near-ready\" data-text=\"dpa click-through acceptance + rs256 jwt receipt (3 locales) post /v1/dpa/accept captures a 6-field consent proof (ctrl-priv-consent-001..006) in 3 locales (en-us/pt-br/es-419) with content-addressable notice-text hashing, enforces corelink_locale cookie==payload locale (else 400 + dpa.locale_mismatch audit), is idempotent per signup_id, hashes the ip server-side (sha256(ip||salt), zero raw ips), and issues an rs256-signed jwt receipt {tenant_id,dpa_version,accepted_at,jurisdiction,jti}. selling b2b requires a signed data processing agreement; a verifiable, locale-correct, replay-safe click-through receipt is the proof a customer&#x27;s legal/procurement team demands — without it the deal stalls. dpa / consent capture\">",
+    "reason": "Describes CoreLink's own customer DPA click-through feature, not a vendor contract."
+   },
+   {
+    "line": "<p class=\"prob\"><span class=\"probl\">Solves</span> Selling B2B requires a signed Data Processing Agreement; a verifiable, locale-correct, replay-safe click-through receipt is the proof a customer&#x27;s legal/procurement team demands — without it the deal stalls.</p>",
+    "reason": "Describes CoreLink's own customer DPA click-through feature, not a vendor contract."
+   }
+  ],
+  "marketing/sales/FAQ-MASTER.md": [
+   {
+    "line": "**A:** Two cases. (1) **You cancel for convenience** (mid-annual-prepay): the refund posture is governed by the applicable agreement. (2) **For an SLA breach:** no service-credit program is currently active. If a future SLA becomes effective, its service credits are the sole remedy for covered breaches except for a valid termination under that SLA&rsquo;s §8; a pro-rata refund of prepaid fees applies only on that valid termination and is not added again for the same breach. A material DPA breach is governed by the applicable executed DPA and agreement; this FAQ does not establish a separate refund entitlement. The audit-chain export is included free in either case — your data is yours, content-addressed, and portable by construction (you can leave any time; we are aware \"BLAKE3 digests are content-addressed\" is *itself* an escape hatch, see P34).",
+    "reason": "Conditional statement about CoreLink's own customer contract; claims no vendor execution."
+   },
+   {
+    "line": "**Self-service surface.** Free, Solo, Starter, Pro, and Max cancel through the Stripe Customer Portal — see the customer guide at `apps/docs/docs/how-to/billing/manage-subscription.mdx` (published as `/how-to/billing/manage-subscription`). Enterprise cancellation routes through your sales contact for the paper amendment + DPA closure (see `specs/_audits/sealed/2026-05-15-stripe-customer-portal-spec.md` §2.2 — Enterprise downgrade rule).",
+    "reason": "File name of a sealed spec; not a vendor contract claim."
+   },
+   {
+    "line": "**What a prospect may nonetheless see, stated precisely so we are never caught understating it:** a workflow named `.github/workflows/byok_kill_switch_drill_weekly.yml` **does exist, is on `cron: 0 3 * * 0`, and its 8 most recent runs (all `schedule`, 2026-07-05 → 2026-08-30) are green.** It proves nothing, because what it executes — `scripts/byok_kill_switch_drill.sh`, 181 lines of shell — **contacts no KMS, no CoreLink API, and no CoreLink binary at all** (every KMS credential in the job is commented out). Every asserted outcome is a shell literal: `TENANT_STATUS=\"active\"` (`:51`), `DETECTED=true` (`:82`), `DEK_CACHE_EMPTY=true` (`:100`), `TENANT_STATUS_POST=\"degraded_read_only\"` (`:101`), `RECOVERY_STATUS=\"active\"` (`:129`). The \"≤ 5 min\" round-trip is `date +%s` taken before and after a `sleep 2` (`:62`, `:81`, `:112`). No assertion in it can be false, so the green is structurally inevitable, and no run has ever left evidence in the repo — the report step `git commit`s without `git push`, and `ls specs/_audits/ | grep -c byok-kill-switch-drill` returns **0**. These are the same **facts** the CAIQ `CEK-10.1` and SIG-LITE `N.6` carry — the wording is not identical across the three documents (`N.6` omits two of the shell literals, the CAIQ adds a code citation and a closing instruction, and only this FAQ states outright that the drill proves nothing), so cite the facts, not a shared sentence. Do not describe those facts any other way.",
+    "reason": "Dates of CI runs (BYOK drill); not a vendor contract claim (outside B-316)."
+   }
+  ],
+  "marketing/sales/legal-questionnaires/CAIQ-V4-pre-filled.md": [
+   {
+    "line": "> - CoreLink is **PCI DSS SAQ-A self-attested** 2026-05-15 (not externally audited; Stripe handles all CHD).",
+    "reason": "CoreLink's own PCI SAQ-A self-attestation date; not a vendor contract claim (outside B-316)."
+   },
+   {
+    "line": "| CEK-10.1 | Kill-switch / key-revocation supported? | N | CSP | The `/deactivate` Shred route is implemented, but customer key revocation and the contractual kill-switch p99 have **no verified customer rollout**. `POST /v1/admin/byok/activate` fails closed with `501 Not Implemented` / `byok_not_available` if provider construction or CMK access fails (`crates/corelink-container/src/routes/byok_admin.rs:245-257`); the Dockerfile production build selects `byok-aws-real`, but customer CMK activation, revocation and kill-switch p99 lack runtime evidence. See CEK-09.1. **On the weekly drill, stated precisely, because the workflow is real but the drill is not:** `.github/workflows/byok_kill_switch_drill_weekly.yml` exists, is on `cron: 0 3 * * 0`, and its 8 most recent runs (all `schedule`, 2026-07-05 → 2026-08-30) are all `success`. What runs is `scripts/byok_kill_switch_drill.sh` (181 lines of shell), and **it is a shell simulation with the PASS values written into it as literals.** It contacts nothing: no customer KMS (every KMS credential in the job is commented out, `# AWS_ACCESS_KEY_ID: …`), no CoreLink API or D1 — and **not the compiled AWS KMS provider either**, because the script invokes no CoreLink binary at all. Every asserted outcome is a hard-coded assignment: `TENANT_STATUS=\"active\"` (`:51`), `DETECTED=true` (`:82`), `DEK_CACHE_EMPTY=true` (`:100`), `TENANT_STATUS_POST=\"degraded_read_only\"` (`:101`), `RECOVERY_STATUS=\"active\"` (`:129`); the provider revoke/restore calls exist only as comments (`:64-67`, `:125`). The timing is `date +%s` taken before and after a `sleep 2` (`:62`, `:81`, `:112`), so **the `byok-kill-switch-rtt` \"≤ 5 min\" figure is a measurement of that sleep, not of any revocation**. Precisely: `DETECT_LATENCY_S` (`:75` → `:86`) and `TOTAL_S` (`:62` → `:112`) span the **same** single `sleep 2`, so the two reported numbers are not independent measurements; the two `sleep 1` calls (`:126`, `:128`) run after `:112` and fall outside both. And because no assertion can be false, the green result is structurally unfailable. No run has ever left evidence in the repo: the \"Commit drill report\" step of the workflow `git commit`s without `git push` (cited by step name, not line number, because the file shifts), and `specs/_audits/` contains **zero** `*-byok-kill-switch-drill-*.md` files. Treat the drill as unexecuted for assurance purposes. | C1.1 |",
+    "reason": "Dates of CI runs (BYOK drill); not a vendor contract claim (outside B-316)."
+   }
+  ],
+  "marketing/sales/legal-questionnaires/EVIDENCE-PACK-INDEX.md": [
+   {
+    "line": "| 80 | **DPA — standard** | `legal/dpa/v1.0.0` (EN-EU+UK) | NDA (signed copy with each tenant) |",
+    "reason": "CoreLink's own customer DPA handling for future tenants; not a vendor contract."
+   }
+  ],
+  "marketing/sales/legal-questionnaires/SIG-LITE-2026-pre-filled.md": [
+   {
+    "line": "> - CoreLink is **PCI DSS SAQ-A self-attested 2026-05-15** — not externally audited; Stripe (PCI L1 Service Provider) handles all CHD (`specs/_compliance/PCI-DSS-SAQ-A-2026-05-15.md`).",
+    "reason": "CoreLink's own PCI SAQ-A self-attestation date; not a vendor contract claim (outside B-316)."
+   },
+   {
+    "line": "| D.7 | Do you maintain a software bill of materials (SBOM)? | P | CycloneDX 1.6 SBOM maintained in-repo and shared under NDA: `.sbom/cyclonedx-rust.json` (413 components) + admin-ui (50) + docs (25), generated 2026-05-28. It is **not** published per release and **not** signed — the release-attachment job has never completed green, and there are no Cosign signatures, no Rekor entries and no SLSA attestation today (roadmap). Public integrity evidence = per-binary SHA-256 checksums on CLI releases. | `.sbom/cyclonedx-rust.json` (NDA); `https://github.com/HuGR-Labs/corelink-cli/releases/download/v0.1.1/checksums.txt`; `EVIDENCE-PACK-INDEX.md` §1.1 |",
+    "reason": "SBOM refresh date; not a vendor contract claim (outside B-316)."
+   },
+   {
+    "line": "| M.3 | Do you maintain a Records of Processing Activities (ROPA)? | Y | Yes — `specs/_compliance/LGPD-ROPA-2026-05-15.md`; equivalent GDPR ROPA covered under DPA §3. | `specs/_compliance/LGPD-ROPA-2026-05-15.md`; `legal/dpa/v1.0.0` §3 |",
+    "reason": "File name of the ROPA; not a vendor contract claim."
+   }
+  ],
+  "marketing/sales/legal-questionnaires/VENDOR-QUESTIONNAIRE-RESPONSE-TEMPLATE.md": [
+   {
+    "line": "> - **LGPD / GDPR:** compliant as processor (joint controller for limited service-telemetry); DPO appointed 2026-05-15 (`dpo@humangr.com`); SCC Modules 2/3 in the DPA. **EU data residency is live** — EU (`weur`) tenants' data stays in physically-EU R2 buckets (via the `lhr` cluster). US (`enam`) is the default region. Brazil/`sam` and APAC residency are on the roadmap (Enterprise-on-request, not GA; Cloudflare R2 has no South-America region today, so BR physical residency is not yet possible).",
+    "reason": "CoreLink governance date; not a vendor contract claim (outside B-316)."
+   },
+   {
+    "line": "> **A:** PCI DSS SAQ-A compliant (self-attested 2026-05-15; validity through 2027-05-14). CoreLink is not in your PCI CDE — Stripe (PCI Level 1 Service Provider, SAQ-D-SP) tokenizes all card data via Stripe Elements; CoreLink stores only opaque Stripe identifiers (`cus_…`, `sub_…`, `pm_…`, `in_…`). Boundary diagram + signed SAQ-A available via `trust@humangr.com`.",
+    "reason": "CoreLink's own PCI SAQ-A self-attestation date; not a vendor contract claim (outside B-316)."
+   },
+   {
+    "line": "> **A:** CoreLink serves tenant-pinned R2/DO state through a **US (ENAM)** default path and a **physically-EU (WEUR)** path. EU (`weur`) CAS and AC blobs are stored in physically-EU Cloudflare R2 buckets (`corelink-cas-eu` / `corelink-ac-eu`, both EEUR) via London/`lhr`; this is an R2 residency statement. The D1 control plane is one shared global database, with its primary currently reported in ENAM and no D1 jurisdiction. The prelaunch DPA/TIA text does not establish an approved transfer basis or executed customer terms for that D1 posture. Other jurisdictions (`sam` São Paulo, `oce` Sydney, `apc` Tokyo/Singapore, `mea` Dubai) are roadmap items, not GA.",
+    "reason": "Explicit non-claim about executed terms."
+   }
+  ]
+ },
+ "locale_deltas": {
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/trust/subprocessors.mdx": [
+   {
+    "en": [],
+    "locale": [
+     "",
+     "<!-- i18n:MT (de) — bootstrap MT-stub from EN source; replace with native-speaker translation before GA -->",
+     "",
+     "> MT: Diese Seite wird übersetzt. Die englische Fassung gilt als verbindlich, bis ein Muttersprachler die Übersetzung freigibt (D+14).",
+     ">",
+     "> Canonical EN source: `docs/trust/subprocessors.mdx`",
+     ""
+    ]
+   },
+   {
+    "en": [
+     "Each sub-processor below is engaged on that vendor's own standard terms and",
+     "data processing agreement (DPA), linked in the table. CoreLink accepted them",
+     "online when it created each account; the acceptance dates were not recorded,",
+     "so this page shows none."
+    ],
+    "locale": [
+     "Jeder unten aufgeführte Unterauftragsverarbeiter wird zu den eigenen",
+     "Standardbedingungen und dem Auftragsverarbeitungsvertrag (DPA) des jeweiligen",
+     "Anbieters eingesetzt, die in der Tabelle verlinkt sind. CoreLink hat sie bei",
+     "der Einrichtung des jeweiligen Kontos online akzeptiert; die Annahmedaten",
+     "wurden nicht erfasst, daher zeigt diese Seite keine an."
+    ]
+   },
+   {
+    "en": [
+     "| 5 | **Resend, Inc.** | Transactional email + newsletter-audience delivery (`apps/admin-ui/src/app/api/newslett... | pii (recipient email address) | United States (data storage; [sending region may vary](https://resend.com/security/gdpr)) | [Terms](https://resend.com/legal/terms-of-service) | [DPA](https://resend.com/legal/dpa) |"
+    ],
+    "locale": [
+     "| 5 | **Resend, Inc.** | Transactional email + newsletter-audience delivery (`apps/admin-ui/src/app/api/newslett... | pii (recipient email address) | Vereinigte Staaten (Datenspeicherung; [Versandregion kann variieren](https://resend.com/security/gdpr)) | [Terms](https://resend.com/legal/terms-of-service) | [DPA](https://resend.com/legal/dpa) |"
+    ]
+   },
+   {
+    "en": [
+     "| 7 | **Plausible Insights OÜ (Plausible Analytics)** | Web analytics that sets no cookies | telemetry (pageview metadata; optional custom events/properties not verified for the CoreLink account) | European Union (visitor data) | [Terms](https://plausible.io/terms) | [DPA](https://plausible.io/dpa) |"
+    ],
+    "locale": [
+     "| 7 | **Plausible Insights OÜ (Plausible Analytics)** | Cookieless web analytics | Telemetrie (Seitenaufruf-Metadaten; benutzerdefinierte Ereignisse/Eigenschaften des Kontos nicht verifiziert) | Europäische Union (Besucherdaten) | [Terms](https://plausible.io/terms) | [DPA](https://plausible.io/dpa) |"
+    ]
+   },
+   {
+    "en": [
+     "  removed on **2026-09-08** after review established that it never executed, so",
+     "  no Fulcio certificate or Rekor entry was issued for that lane. The separate",
+     "  release-SLSA and CAS signing paths remain independently gated.",
+     "  Current release-SLSA, CAS, and TSA paths send only CoreLink-owned",
+     "  artifact/signing metadata to Sigstore; no customer-data path is wired.",
+     "  The separate transparency-log seam is not a live transport; any future",
+     "  pseudonymous-tenant use requires a new Legal/DPO review. Sigstore is not a",
+     "  customer-data sub-processor in the current register; the separate GDPR transfer",
+     "  table remains subject to Legal/DPO review."
+    ],
+    "locale": [
+     "  removed on **2026-09-08** after it never executed; no Fulcio certificate or",
+     "  Rekor entry was issued for that lane. Separate release-SLSA and CAS signing",
+     "  paths remain independently gated. Current release-SLSA, CAS, and TSA paths",
+     "  send only CoreLink-owned artifact/signing metadata to Sigstore; no",
+     "  customer-data path is wired. The separate transparency-log seam is not a",
+     "  live transport; any future pseudonymous-tenant use requires a new",
+     "  Legal/DPO review. Sigstore is not a customer-data sub-processor",
+     "  in the current register; the separate GDPR transfer table remains subject to",
+     "  Legal/DPO review."
+    ]
+   }
+  ],
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/trust/subprocessors.mdx": [
+   {
+    "en": [],
+    "locale": [
+     "",
+     "<!-- i18n:MT (es-419) — bootstrap MT-stub from EN source; replace with native-speaker translation before GA -->",
+     "",
+     "> MT: Esta página está en traducción. La versión canónica en inglés es la fuente de verdad hasta la revisión por hablante nativo (D+10).",
+     ">",
+     "> Canonical EN source: `docs/trust/subprocessors.mdx`",
+     ""
+    ]
+   },
+   {
+    "en": [
+     "Each sub-processor below is engaged on that vendor's own standard terms and",
+     "data processing agreement (DPA), linked in the table. CoreLink accepted them",
+     "online when it created each account; the acceptance dates were not recorded,",
+     "so this page shows none."
+    ],
+    "locale": [
+     "Cada subprocesador a continuación se contrata según los términos estándar y",
+     "el acuerdo de procesamiento de datos (DPA) del propio proveedor, enlazados en",
+     "la tabla. CoreLink los aceptó en línea al crear cada cuenta; las fechas de",
+     "aceptación no se registraron, por eso esta página no muestra ninguna."
+    ]
+   },
+   {
+    "en": [
+     "| 5 | **Resend, Inc.** | Transactional email + newsletter-audience delivery (`apps/admin-ui/src/app/api/newslett... | pii (recipient email address) | United States (data storage; [sending region may vary](https://resend.com/security/gdpr)) | [Terms](https://resend.com/legal/terms-of-service) | [DPA](https://resend.com/legal/dpa) |"
+    ],
+    "locale": [
+     "| 5 | **Resend, Inc.** | Transactional email + newsletter-audience delivery (`apps/admin-ui/src/app/api/newslett... | pii (recipient email address) | Estados Unidos (almacenamiento de datos; [la región de envío puede variar](https://resend.com/security/gdpr)) | [Terms](https://resend.com/legal/terms-of-service) | [DPA](https://resend.com/legal/dpa) |"
+    ]
+   },
+   {
+    "en": [
+     "| 7 | **Plausible Insights OÜ (Plausible Analytics)** | Web analytics that sets no cookies | telemetry (pageview metadata; optional custom events/properties not verified for the CoreLink account) | European Union (visitor data) | [Terms](https://plausible.io/terms) | [DPA](https://plausible.io/dpa) |"
+    ],
+    "locale": [
+     "| 7 | **Plausible Insights OÜ (Plausible Analytics)** | Cookieless web analytics | telemetría (metadatos de páginas vistas; eventos/propiedades personalizados de la cuenta sin verificar) | Unión Europea (datos de visitantes) | [Terms](https://plausible.io/terms) | [DPA](https://plausible.io/dpa) |"
+    ]
+   },
+   {
+    "en": [
+     "  removed on **2026-09-08** after review established that it never executed, so",
+     "  no Fulcio certificate or Rekor entry was issued for that lane. The separate",
+     "  release-SLSA and CAS signing paths remain independently gated.",
+     "  Current release-SLSA, CAS, and TSA paths send only CoreLink-owned",
+     "  artifact/signing metadata to Sigstore; no customer-data path is wired.",
+     "  The separate transparency-log seam is not a live transport; any future",
+     "  pseudonymous-tenant use requires a new Legal/DPO review. Sigstore is not a",
+     "  customer-data sub-processor in the current register; the separate GDPR transfer",
+     "  table remains subject to Legal/DPO review."
+    ],
+    "locale": [
+     "  removed on **2026-09-08** after it never executed; no Fulcio certificate or",
+     "  Rekor entry was issued for that lane. Separate release-SLSA and CAS signing",
+     "  paths remain independently gated. Current release-SLSA, CAS, and TSA paths",
+     "  send only CoreLink-owned artifact/signing metadata to Sigstore; no",
+     "  customer-data path is wired. The separate transparency-log seam is not a",
+     "  live transport; any future pseudonymous-tenant use requires a new",
+     "  Legal/DPO review. Sigstore is not a customer-data sub-processor",
+     "  in the current register; the separate GDPR transfer table remains subject to",
+     "  Legal/DPO review."
+    ]
+   }
+  ],
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/trust/subprocessors.mdx": [
+   {
+    "en": [],
+    "locale": [
+     "",
+     "<!-- i18n:MT (pt-BR) — bootstrap MT-stub from EN source; replace with native-speaker translation before GA -->",
+     "",
+     "> MT: Esta página está em tradução. A versão canônica em inglês é a fonte de verdade até a revisão por falante nativo (D+10).",
+     ">",
+     "> Canonical EN source: `docs/trust/subprocessors.mdx`",
+     ""
+    ]
+   },
+   {
+    "en": [
+     "Each sub-processor below is engaged on that vendor's own standard terms and",
+     "data processing agreement (DPA), linked in the table. CoreLink accepted them",
+     "online when it created each account; the acceptance dates were not recorded,",
+     "so this page shows none."
+    ],
+    "locale": [
+     "Cada subprocessador abaixo é contratado pelos termos padrão e pelo acordo de",
+     "processamento de dados (DPA) do próprio fornecedor, com links na tabela. A",
+     "CoreLink os aceitou online ao criar cada conta; as datas de aceite não foram",
+     "registradas, por isso esta página não mostra nenhuma."
+    ]
+   },
+   {
+    "en": [
+     "| 5 | **Resend, Inc.** | Transactional email + newsletter-audience delivery (`apps/admin-ui/src/app/api/newslett... | pii (recipient email address) | United States (data storage; [sending region may vary](https://resend.com/security/gdpr)) | [Terms](https://resend.com/legal/terms-of-service) | [DPA](https://resend.com/legal/dpa) |"
+    ],
+    "locale": [
+     "| 5 | **Resend, Inc.** | Transactional email + newsletter-audience delivery (`apps/admin-ui/src/app/api/newslett... | pii (recipient email address) | Estados Unidos (armazenamento dos dados; [a região de envio pode variar](https://resend.com/security/gdpr)) | [Terms](https://resend.com/legal/terms-of-service) | [DPA](https://resend.com/legal/dpa) |"
+    ]
+   },
+   {
+    "en": [
+     "| 7 | **Plausible Insights OÜ (Plausible Analytics)** | Web analytics that sets no cookies | telemetry (pageview metadata; optional custom events/properties not verified for the CoreLink account) | European Union (visitor data) | [Terms](https://plausible.io/terms) | [DPA](https://plausible.io/dpa) |"
+    ],
+    "locale": [
+     "| 7 | **Plausible Insights OÜ (Plausible Analytics)** | Cookieless web analytics | telemetria (metadados de visualizações; eventos/propriedades personalizados da conta não verificados) | União Europeia (dados de visitantes) | [Terms](https://plausible.io/terms) | [DPA](https://plausible.io/dpa) |"
+    ]
+   },
+   {
+    "en": [
+     "  removed on **2026-09-08** after review established that it never executed, so",
+     "  no Fulcio certificate or Rekor entry was issued for that lane. The separate",
+     "  release-SLSA and CAS signing paths remain independently gated.",
+     "  Current release-SLSA, CAS, and TSA paths send only CoreLink-owned",
+     "  artifact/signing metadata to Sigstore; no customer-data path is wired.",
+     "  The separate transparency-log seam is not a live transport; any future",
+     "  pseudonymous-tenant use requires a new Legal/DPO review. Sigstore is not a",
+     "  customer-data sub-processor in the current register; the separate GDPR transfer",
+     "  table remains subject to Legal/DPO review."
+    ],
+    "locale": [
+     "  removed on **2026-09-08** after it never executed; no Fulcio certificate or",
+     "  Rekor entry was issued for that lane. Separate release-SLSA and CAS signing",
+     "  paths remain independently gated. Current release-SLSA, CAS, and TSA paths",
+     "  send only CoreLink-owned artifact/signing metadata to Sigstore; no",
+     "  customer-data path is wired. The separate transparency-log seam is not a",
+     "  live transport; any future pseudonymous-tenant use requires a new",
+     "  Legal/DPO review. Sigstore is not a customer-data sub-processor",
+     "  in the current register; the separate GDPR transfer table remains subject to",
+     "  Legal/DPO review."
+    ]
+   }
+  ],
+  "apps/docs/i18n/de/docusaurus-plugin-content-docs/current/explanation/compliance/sub-processors.mdx": [
+   {
+    "en": [
+     "description: \"Current list of CoreLink sub-processors and the 30-day change-notice policy.\""
+    ],
+    "locale": [
+     "description: \"Aktuelle Liste der CoreLink-Sub-Prozessoren und Richtlinie zur 30-tägigen Vorankündigung.\""
+    ]
+   },
+   {
+    "en": [
+     "import { DraftBanner } from \"../../../src/components/DraftBanner\";"
+    ],
+    "locale": [
+     "<!-- i18n:MT (de) — bootstrap MT-stub from EN source; replace with native-speaker translation before GA -->",
+     "",
+     "> MT: Diese Seite wird übersetzt. Die englische Fassung gilt als verbindlich, bis ein Muttersprachler die Übersetzung freigibt (D+14).",
+     ">",
+     "> Canonical EN source: `docs/explanation/compliance/sub-processors.mdx`",
+     "",
+     "import { DraftBanner } from \"@site/src/components/DraftBanner\";"
+    ]
+   }
+  ],
+  "apps/docs/i18n/es-419/docusaurus-plugin-content-docs/current/explanation/compliance/sub-processors.mdx": [
+   {
+    "en": [
+     "title: \"Sub-processors\""
+    ],
+    "locale": [
+     "title: \"Subprocesadores\""
+    ]
+   },
+   {
+    "en": [
+     "description: \"Current list of CoreLink sub-processors and the 30-day change-notice policy.\""
+    ],
+    "locale": [
+     "description: \"Lista actual de subprocesadores de CoreLink y política de aviso previo de 30 días.\""
+    ]
+   },
+   {
+    "en": [
+     "import { DraftBanner } from \"../../../src/components/DraftBanner\";"
+    ],
+    "locale": [
+     "<!-- i18n:MT (es-419) — TMX-seeded machine-translation stub; replace with native-speaker translation before GA -->",
+     "",
+     "> MT: Esta página está en traducción. La versión canónica en inglés es la fuente de verdad hasta la revisión por hablante nativo (D+10).",
+     ">",
+     "> Canonical EN source: `docs/explanation/compliance/sub-processors.mdx`",
+     "",
+     "import { DraftBanner } from \"@site/src/components/DraftBanner\";"
+    ]
+   }
+  ],
+  "apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/explanation/compliance/sub-processors.mdx": [
+   {
+    "en": [
+     "title: \"Sub-processors\""
+    ],
+    "locale": [
+     "title: \"Sub-processadores\""
+    ]
+   },
+   {
+    "en": [
+     "description: \"Current list of CoreLink sub-processors and the 30-day change-notice policy.\""
+    ],
+    "locale": [
+     "description: \"Lista atual de sub-processadores do CoreLink e política de aviso prévio de 30 dias.\""
+    ]
+   },
+   {
+    "en": [
+     "import { DraftBanner } from \"../../../src/components/DraftBanner\";"
+    ],
+    "locale": [
+     "<!-- i18n:MT (pt-BR) — TMX-seeded machine-translation stub; replace with native-speaker translation before GA -->",
+     "",
+     "> MT: Esta página está em tradução. A versão canônica em inglês é a fonte de verdade até a revisão por falante nativo (D+10).",
+     ">",
+     "> Canonical EN source: `docs/explanation/compliance/sub-processors.mdx`",
+     "",
+     "import { DraftBanner } from \"@site/src/components/DraftBanner\";"
+    ]
+   }
+  ]
+ }
+}

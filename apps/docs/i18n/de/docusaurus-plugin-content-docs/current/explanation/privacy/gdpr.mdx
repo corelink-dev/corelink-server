@@ -35,8 +35,7 @@ import { DraftBanner } from "@site/src/components/DraftBanner";
 
 CoreLink is a Brazilian company building infrastructure used by European
 developers, ML teams, and EU enterprises. Because we offer services to
-people in the EU (Art. 3(2)(a)) and we run a sub-processor leg through
-Neon's Frankfurt cluster (Art. 3(1)), **GDPR applies to us**. We treat
+people in the EU (Art. 3(2)(a)), **GDPR applies to us**. We treat
 that obligation as a design constraint, not a compliance overlay.
 
 ## 1. The eight rights, our service level, how to exercise
@@ -194,33 +193,29 @@ Kalendertage.
 
 ## 6. Where your data goes (international transfers)
 
-Most of your data stays in the EU. CoreLink defaults to residency-pinned
-EU edges for EU-tenant blob workloads, EU audit chain, EU telemetry, and
-EU-region BYOK. The exceptions cross the Atlantic and are governed by
-either the **EU-US Data Privacy Framework (DPF)** adequacy decision (10
-July 2023) or the **EU Standard Contractual Clauses 2021/914 Module 2**
-with a Schrems II Transfer Impact Assessment (TIA) on file.
+Data is processed by the sub-processors on the
+[sub-processor list](/legal/sub-processors), each under its own standard terms
+and data processing agreement (DPA). Where a recipient is outside the EU/EEA,
+the transfer mechanism is the one set out in that recipient's DPA, such as the
+**EU-US Data Privacy Framework (DPF)** adequacy decision (10 July 2023) or the
+**EU Standard Contractual Clauses 2021/914**. CoreLink has not recorded a
+separate Schrems II Transfer Impact Assessment for any recipient.
 
 | Recipient | Country | Mechanism | What's transferred |
 |---|---|---|---|
-| Cloudflare | EU edges by default | Intra-EU (adequacy) | Workers / R2 / D1 / KV / DO for EU subjects |
-| Neon | EU (DE) for EU subjects | Intra-EU (adequacy) | Account, billing, consent, DSR ticket rows |
-| Stripe | US | **EU-US DPF (primary)** + SCC Module 2 (fallback) + Art. 49(1)(b) (belt-and-suspenders) | Email, pseudonymised customer ID, amount — **no card data ever touches CoreLink** |
-| Clerk | US | EU-US DPF (primary) + SCC Module 2 (fallback) | Auth tokens + email only |
-| AWS / GCP / Azure (BYOK) | EU regions for EU tenants | Intra-EU (adequacy) | Envelope key URI only; HuGR never sees key material |
-| Grafana Labs | EU (Frankfurt) | Intra-EU (adequacy) | Pseudonymised metrics for EU tenants |
+| Cloudflare | R2/DO tenant-pinned; D1 control plane global | As set out in Cloudflare's DPA | Workers / R2 / D1 / KV / DO data |
+| Clerk | US | As set out in Clerk's DPA | Auth tokens + email only |
+| Resend | US | As set out in Resend's DPA | Recipient email address and message content |
+| Stripe | US | As set out in Stripe's DPA | Email, pseudonymised customer ID, amount — **no card data ever touches CoreLink** |
+| Sentry | US | As set out in Sentry's DPA | Scrubbed error events |
+| Plausible | EU | As set out in Plausible's DPA | Docs-site visitor analytics |
+| Better Stack | EU | As set out in Better Stack's DPA | Synthetic probe results only; no customer data |
+| AWS / GCP / Azure (BYOK) | — | Not a recipient today | BYOK is not shipped; no customer envelope key is held anywhere |
 | PagerDuty / GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata; no end-user PII |
 
-Sentry, PostHog, and LogRocket are **disabled by default for EU
-subjects** pending a sub-processor review (tracked as GAP-14). To enable
-them for your data, you would opt in with explicit consent and we would
-publish the corresponding TIA.
-
-Our full SCC execution status, Schrems II TIA register, and the
-contingency plan for a hypothetical "Schrems-III" challenge to the DPF
-are documented in the [Transfer Impact Assessment register](/privacy/sub-processors).
-We pre-staged SCC Module 2 in every US sub-processor DPA so a DPF
-challenge would not require renegotiation — only an activation switch.
+The last row is held byte-exact by the signed B-314 decision and still names
+a vendor the owner deferred on 2026-10-01; GitHub is the only current
+recipient in it. It changes when that decision is re-pinned.
 
 ## 7. Automated decisions and profiling (Art. 22)
 

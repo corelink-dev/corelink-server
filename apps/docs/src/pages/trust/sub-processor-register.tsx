@@ -110,10 +110,15 @@ export default function SubProcessorRegister(): ReactElement {
             </Translate>
           </p>
           <p>
-            Each sub-processor below is engaged on its own standard terms and
-            data processing agreement (DPA), linked in the table. CoreLink
-            accepted them online when it created each account; the acceptance
-            dates were not recorded, so none are shown.
+            <Translate
+              id="trust.subprocessor.contract_basis"
+              description="How each sub-processor is engaged; no acceptance dates are recorded"
+            >
+              Each sub-processor below is engaged on its own standard terms and
+              data processing agreement (DPA), linked in the table. CoreLink
+              accepted them online when it created each account; the acceptance
+              dates were not recorded, so none are shown.
+            </Translate>
           </p>
           <p>
             <strong>
@@ -173,8 +178,15 @@ export default function SubProcessorRegister(): ReactElement {
           </p>
           <ul>
             <li>
-              <strong>Email digest</strong> — configure{" "}
-              <code>subprocessor-changes@</code> in tenant settings.
+              <strong>Email</strong> —{" "}
+              <Translate
+                id="trust.subprocessor.notice.email"
+                description="How change notices are delivered today"
+              >
+                notices are sent by email to the account owner of record; to
+                add another recipient, write to privacy@humangr.com. There is no
+                notice setting in the product and no automatic digest.
+              </Translate>
             </li>
             <li>
               <strong>Status page</strong> —{" "}
