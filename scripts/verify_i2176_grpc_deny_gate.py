@@ -825,6 +825,7 @@ WAVE_GROUPS: dict[str, dict[Path, tuple[tuple[int, str] | None, tuple[int, str] 
 # e845feb68, where #2876 had moved two #2565 successor paths and #2882/#2884
 # eight i1700 successor paths (all reviewed below), and against main
 # 3e7080062 and 0284fdf14, where #2885/#2886/#2870/#2887 moved no pinned path.
+# #2896 then moved the #2568 workflow pin (account 6a, CF_API_TOKEN; reviewed below).
 # REBASELINE_LEDGER below holds one row per moved pin: the PRs that moved it,
 # its transport class, its disposition and the reason its bytes are admitted.
 # The path set and the all-or-nothing predicate are unchanged; only reviewed
@@ -832,7 +833,7 @@ WAVE_GROUPS: dict[str, dict[Path, tuple[tuple[int, str] | None, tuple[int, str] 
 WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('.github/workflows/container-build-push-prod.yml'): (0o0644, "8ee0d29eff20ef5d473e4a712279a727fcdc6c881ba2bb46433f7659802f598f"),
     Path('.github/workflows/issue-2183-reapi-composition.yml'): (0o0644, "bb382d6898ce95fb690c62bfc50334e94889dbf371fa7a0871dd7bac5e24b431"),
-    Path('.github/workflows/issue-2568-sla-credit-real.yml'): (0o0644, "1376e1b9eb4136ef1faba62abbe3e051bcf9c9df837351697e0b3048bac55390"),
+    Path('.github/workflows/issue-2568-sla-credit-real.yml'): (0o0644, "e897b9411dbbb492bb36f8f1bfbdde22233ef0b08a6f6fe2751bb95dd655b7ed"),
     Path('.github/workflows/issue-2730-dsr-alert-receiver.yml'): (0o0644, "00ed5dab40391114b3a3a5bc299f98568e78c2dfcd14a05ccf5bac4276a6a235"),
     Path('.github/workflows/staging-quarantine-apply.yml'): (0o0644, "574c37a78fbed91be485fddc98309e464521d99bfc3a5d05c269daa486d4130b"),
     Path('Cargo.lock'): (0o0644, "02dd662ecdf7bcd6836c9ae18384b9f964c52dc739f63661de2d1a6e8b99929e"),
@@ -973,6 +974,18 @@ REBASELINE_LEDGER: dict[Path, tuple[str, str, tuple[str, ...], str]] = {
         "environment, token != the route-read token, exact preimage deployment and version, refusal if the secret already exists, a "
         "45-minute broker lifetime, and cleanup that restores the disabled subdomain and deletes the secret with binding readback. The "
         "DO gives the proof Container an empty CORELINK_ADMIN_AUTH_KEY. #2882 prints one redacted bootstrap failure line."
+    )),
+    Path(".github/workflows/issue-2568-sla-credit-real.yml"): ("#2896", "transport-reviewed", ("WAVE_BASE_CONTROLS",), (
+        "Credential flow. Source: the CF_API_TOKEN Actions secret (#2896; before it the never-issued CF_I2568_API_TOKEN secret), "
+        "still read by issue_2568_sla_credit_real.py as CF_I2568_API_TOKEN. Destination: api.cloudflare.com and pinned Wrangler "
+        "4.111.0 only, on account 6a1fc1c6 instead of 51284495; the token never enters Worker or Container env. With it the "
+        "operator writes the unchanged stripe-test STRIPE_SECRET_KEY (rk_test_ only) as a secret of its own disposable Worker. "
+        "Scope: one Worker and one D1, both corelink-i2568-sla-credit-6a, created and deleted by the run; every Cloudflare call "
+        "passes an allowlist that refuses other accounts, Workers, paths and methods and the production and staging D1 UUIDs. "
+        "The disposable Worker has workers.dev and preview URLs off and no routes, crons or service bindings, and it is not "
+        "corelink-staging or any #2176 Worker. Guards: protected main, dispatch-only full-real with confirm "
+        "run-i2568-sla-credit-test-mode, the stripe-test environment and its reviewers, I2568_PROVIDER_APPROVED == true, "
+        "fresh-main checks before every provider effect, and absence readback after cleanup."
     )),
     Path(".github/workflows/real-ignored-harnesses.yml"): ("#2800, #2811", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i2565]",), (
         "Dispatch-only harness lanes in the protected real-integration environment on ubuntu-24.04. Its credentials reach only CI "
