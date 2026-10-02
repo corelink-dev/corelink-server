@@ -77,12 +77,30 @@
 #     refusal, checked before any ancestry read.
 # Both are tested against the real helper in scripts/b315_merge_harness.py.
 #
+# ── Only a successful merge call can end in success (2026-10-02 review) ─────
+# A refused (409/405) or lost merge call is never reported as a clean merge.
+# After it, the PR can still show MERGED: the response was lost, OR another
+# actor merged a DIFFERENT head H2 after the head moved, and H2 can carry the
+# very same tree, so base, reachability, parent and tree proofs all pass for
+# it. So the proof first requires the PR's merged head (headRefOid) to be the
+# captured head, else MERGED_BY_OTHER_ACTOR (5); and after a non-success
+# response a landing that passes every proof still exits 3, unclaimed.
+#
+# ── The local lock spans the merge call itself ──────────────────────────────
+# backlog_lock_healthy is the LAST statement before the PUT (a holder that died
+# or released during the boundary reads is a refusal) and the FIRST after it (a
+# loss during the call is reported loudly and the landing exits 3). It asks the
+# process table, so a holder that died but is not yet reaped (a zombie, which
+# no longer holds the flock) reads as lost.
+#
 # Exit status: 0 = merged and proven (or a clean dry run); 1 = refused and NOT
 # merged; 2 = bad arguments; 3 = LANDED_UNPROVEN (GitHub says MERGED but the
-# parent/tree proof failed or could not be read; inspect main);
+# parent/tree proof failed or could not be read, or the merge call did not
+# report success, or the lock was lost during it; inspect main);
 # 4 = MERGED_INTO_UNEXPECTED_BASE (GitHub says MERGED, but the PR's base is not
 # main or the merge commit is not on refs/heads/main; follow the printed
-# recovery steps).
+# recovery steps); 5 = MERGED_BY_OTHER_ACTOR (GitHub says MERGED, but at a head
+# this helper did not validate; follow the printed recovery steps).
 # A dry run stops before the remote lease and before the merge endpoint.
 set -euo pipefail
 export GIT_NO_REPLACE_OBJECTS=1
@@ -95,6 +113,7 @@ ALLOC="$SCRIPT_DIR/backlog_id_alloc.py"
 MERGE_METHOD=squash
 LANDED_UNPROVEN=3
 MERGED_INTO_UNEXPECTED_BASE=4
+MERGED_BY_OTHER_ACTOR=5
 REMOTE_LEASE_REF=refs/heads/corelink-backlog-id-merge-lock
 REMOTE_LEASE_OID=; REMOTE_LEASE_HELD=0; REMOTE_LEASE_CONFIRMED=0
 LOCK_PID=; LOCK_READY=; TMP=
@@ -142,7 +161,16 @@ done
 grep -q '^locked ' "$LOCK_READY" || { echo "⛔ local allocation lock did not become ready." >&2; return 1; }
 }
 start_backlog_allocation_lock || exit 1
-backlog_lock_healthy() { kill -0 "$LOCK_PID" 2>/dev/null && [ -s "$LOCK_READY" ] && grep -q '^locked ' "$LOCK_READY"; }
+# Healthy = the holder process exists and is not a zombie (a dead holder no
+# longer holds the flock, and `kill -0` still succeeds on an unreaped zombie),
+# and it reported the lock taken and never reported it lost.
+backlog_lock_healthy() {
+  local stat
+  stat="$(ps -o stat= -p "$LOCK_PID" 2>/dev/null)" || return 1
+  stat="${stat//[[:space:]]/}"
+  case "$stat" in ""|Z*) return 1 ;; esac
+  [ -s "$LOCK_READY" ] && grep -q '^locked ' "$LOCK_READY"
+}
 
 # json_fields <json> <dotted.path>... prints the scalar values on one line. A
 # parse error, a missing key, or an empty/whitespace-bearing value fails: every
@@ -237,24 +265,30 @@ boundary_pr_check
 main_sha_final="$(remote_main)" || refuse "origin main unreadable at the merge boundary."
 [ "$main_sha_final" = "$CAPTURED_MAIN" ] || refuse "main moved at merge boundary; retry."
 boundary_pr_check   # the LAST read before the PUT: only gh's start-up separates them
-api_sha=""
-if merge_json="$(gh api -X PUT "repos/{owner}/{repo}/pulls/$PR/merge" -f sha="$CAPTURED_HEAD" -f merge_method="$MERGE_METHOD" 2>"$TMP/merge.err")"; then
+api_sha=""; api_ok=0; put_rc=0; merge_json=""
+backlog_lock_healthy || refuse "local allocation lock lost before the merge call; not merging."
+merge_json="$(gh api -X PUT "repos/{owner}/{repo}/pulls/$PR/merge" -f sha="$CAPTURED_HEAD" -f merge_method="$MERGE_METHOD" 2>"$TMP/merge.err")" || put_rc=$?
+lock_held_after_put=1; backlog_lock_healthy || lock_held_after_put=0
+[ "$lock_held_after_put" -eq 1 ] || echo "⛔ LOCK LOST DURING THE MERGE CALL: the local allocation lock (holder pid $LOCK_PID) was not held when the merge call returned; whatever GitHub did, this landing will not be reported as clean." >&2
+if [ "$put_rc" -eq 0 ]; then
   read -r api_sha api_merged <<<"$(json_fields "$merge_json" sha merged || true)"
-  [ "${api_merged:-}" = true ] && is_oid "${api_sha:-}" || api_sha=""
+  if [ "${api_merged:-}" = true ] && is_oid "${api_sha:-}"; then api_ok=1; else api_sha=""; fi
   post_tries=6
-else
-  echo "⛔ merge API call for PR #$PR at head $CAPTURED_HEAD did not return success:" >&2
+fi
+if [ "$api_ok" -ne 1 ]; then
+  echo "⛔ merge API call for PR #$PR at head $CAPTURED_HEAD did not report success (exit $put_rc):" >&2
   cat "$TMP/merge.err" >&2; [ -z "${merge_json:-}" ] || printf '%s\n' "$merge_json" >&2
-  post_tries=1   # a refusal is final; one read only to catch a merge whose response was lost
+  post_tries=1   # a refusal is final; one read only to catch a merge that happened anyway
 fi
 
 # ── 6. post-merge proof ─────────────────────────────────────────────────────
-post_state=UNKNOWN; merge_oid=; post_base=; main_oid=
+post_state=UNKNOWN; merge_oid=; post_base=; post_head=; main_oid=
 for try in $(seq 1 "$post_tries"); do
-  post_json="$(gh pr view "$PR" --json state,mergeCommit,baseRefName 2>/dev/null || echo '{}')"
+  post_json="$(gh pr view "$PR" --json state,mergeCommit,baseRefName,headRefOid 2>/dev/null || echo '{}')"
   post_state="$(json_fields "$post_json" state || echo UNKNOWN)"
   merge_oid="$(json_fields "$post_json" mergeCommit.oid || true)"
   post_base="$(json_fields "$post_json" baseRefName || true)"
+  post_head="$(json_fields "$post_json" headRefOid || true)"
   [ "$post_state" = MERGED ] && break
   [ "$try" -eq "$post_tries" ] || sleep 2
 done
@@ -269,8 +303,20 @@ wrong_base() {
   echo "             3) open a new PR from head $CAPTURED_HEAD into main and gate it again; the head branch is left in place." >&2
   exit "$MERGED_INTO_UNEXPECTED_BASE"
 }
+other_actor() {
+  echo "⛔ merged_by_other_actor: PR #$PR is MERGED, but not at the head this helper validated: $*" >&2
+  echo "   merged head=${post_head:-unreadable} captured head=$CAPTURED_HEAD merge commit=${merge_oid:-unreadable} merge call exit=$put_rc success=$api_ok" >&2
+  echo "   That head's BACKLOG.md was never allocated or validated here. Do NOT re-run this helper for PR #$PR." >&2
+  echo "   Recovery: 1) gh pr view $PR --json headRefOid,mergeCommit,baseRefName   (what landed, and where)" >&2
+  echo "             2) run scripts/backlog_id_alloc.py --main/--candidate/--base on the landed BACKLOG.md bytes" >&2
+  echo "             3) if its ids collide or it was not meant to land, revert ${merge_oid:-the merge commit} through a revert PR." >&2
+  exit "$MERGED_BY_OTHER_ACTOR"
+}
 is_oid "$merge_oid" || unproven "PR mergeCommit unreadable."
 [ -z "$api_sha" ] || [ "$api_sha" = "$merge_oid" ] || unproven "API merge sha $api_sha != PR mergeCommit $merge_oid."
+# WHICH head merged? First: another actor's merge of a different head with the
+# same tree passes every proof below.
+[ "$post_head" = "$CAPTURED_HEAD" ] || other_actor "the PR's merged head reads '${post_head:-unreadable}', not the captured $CAPTURED_HEAD."
 # Where did it land? Asked before the parent/tree proof, which could pass on
 # another base: a branch cut from the captured main has the same tip.
 [ -n "$post_base" ] || unproven "PR base unreadable after merge."
@@ -289,4 +335,8 @@ parents="$(git rev-list --parents -n 1 "$merge_oid" 2>/dev/null || true)"
 [ "$parents" = "$merge_oid $CAPTURED_MAIN" ] || unproven "merge commit parents [${parents#"$merge_oid"} ] != [ $CAPTURED_MAIN ]: it landed on a main this helper did not validate."
 actual_tree="$(git rev-parse --verify --quiet "$merge_oid^{tree}" || true)"
 [ "$actual_tree" = "$head_tree" ] || unproven "resulting main tree mismatch: $actual_tree != tree(head) $head_tree."
+# Only a successful merge call can end in success: after a refused or lost call
+# this helper cannot tell its own merge from an identical one made by others.
+[ "$api_ok" -eq 1 ] || unproven "merge_response_not_success: the merge call did not report success (exit $put_rc), so this helper does not claim the merge, although the PR is MERGED at the captured head with parent=captured main and tree=tree(head)."
+[ "$lock_held_after_put" -eq 1 ] || unproven "the local allocation lock was lost during the merge call."
 echo "✅ PR #$PR MERGED via the PR API: commit=$merge_oid parent=$CAPTURED_MAIN tree=$actual_tree = tree(head $CAPTURED_HEAD)"

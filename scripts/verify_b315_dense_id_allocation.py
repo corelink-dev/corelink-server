@@ -20,11 +20,14 @@ Four layers, each a refusal on its own:
    fake GitHub in throwaway repositories (land, dry run, every race, a 409, a
    405, a merge on an unvalidated main, a wrong tree, a lost response, a stale
    lease, a busy lock, a refs/replace-substituted BACKLOG.md blob, a graft that
-   hides a BEHIND head, a PR retargeted at the merge boundary, and a merge
-   GitHub lands on another base or that main does not contain), and at every
-   merge-endpoint call checks that the local allocation lock and the remote
-   lease are still held. It proves the helper against the harness's model of
-   GitHub; that GitHub enforces the model is argued, not proven, here.
+   hides a BEHIND head, a PR retargeted at the merge boundary, a merge GitHub
+   lands on another base or that main does not contain, a refused merge call
+   after which another actor merges a head with the same tree, and the lock
+   holder dying before or during the merge call). At every merge-endpoint call
+   it checks that the local allocation lock and the remote lease are still
+   held, and every scenario allows no mutating gh call but its pinned merge
+   PUT (a dry run: none at all). It proves the helper against the harness's
+   model of GitHub; that GitHub enforces the model is argued, not proven, here.
 
 Trust: the BASE-owned candidate gate in scripts/backlog_verify.py, when it runs
 (its lane, backlog-verify.yml, was disabled_manually on 2026-10-01), refuses a
@@ -32,8 +35,10 @@ PR that changes this file or the harness: its static closure follows the
 ``spec_from_file_location(..., HARNESS)`` below. Freezing those two files is
 not enough on its own, because what they DO depends on how Python resolves
 imports in the checkout they run in, and a candidate can ADD files there that
-no closure lists. So this verifier (a) re-runs itself in an isolated
-interpreter before importing anything a file could shadow, (b) loads the
+no closure lists. So B-315's declared verify command starts the interpreter
+isolated (``python3 -I -S -B``: no PYTHONPATH, no site hooks, no script
+directory on sys.path), and this verifier (a) re-runs itself that way when a
+caller did not, before importing anything a file could shadow, (b) loads the
 harness by path, compiled from its source bytes (no package import, no
 bytecode cache), and checks that the self_test it calls is the function those
 bytes define, and (c) refuses outright when the checkout carries a file that
@@ -50,16 +55,21 @@ import sys  # built in: no file in any checkout can stand in for it
 def _isolate() -> None:
     """Re-run this verifier where no checkout file can steer its imports.
 
-    Run as ``python3 scripts/verify_b315_dense_id_allocation.py`` (B-315's
-    declared verify command), Python puts scripts/ first on sys.path, so a
-    candidate file such as scripts/tempfile.py would replace a standard-library
-    module this verifier imports before any check here could run (measured
-    2026-10-02: a shadow tempfile.py ran from the script's directory). So the
-    first thing this verifier does, using only built-in modules, is re-exec
-    itself with -I (no PYTHON* environment, no user site and, since Python
-    3.11, no script directory on sys.path), -S (no site hooks, so no
-    sitecustomize, usercustomize or .pth processing) and -B (no bytecode
-    written).
+    Run as plain ``python3 scripts/verify_b315_dense_id_allocation.py``, Python
+    puts scripts/ first on sys.path, so a candidate file such as
+    scripts/tempfile.py would replace a standard-library module this verifier
+    imports before any check here could run (measured 2026-10-02: a shadow
+    tempfile.py ran from the script's directory). So the first thing this
+    verifier does, using only built-in modules, is re-exec itself with -I (no
+    PYTHON* environment, no user site and, since Python 3.11, no script
+    directory on sys.path), -S (no site hooks, so no sitecustomize,
+    usercustomize or .pth processing) and -B (no bytecode written).
+
+    This is a backstop, not the defence: a re-exec cannot undo what already ran
+    while the first interpreter started. With PYTHONPATH pointing into the
+    checkout, a sitecustomize.py there runs during startup and can print PASS
+    and exit before this function is reached (review round 5). That is why
+    B-315's declared verify command itself starts with ``python3 -I -S -B``.
     """
     flags = sys.flags
     if flags.isolated and flags.no_site and flags.dont_write_bytecode:
@@ -155,6 +165,15 @@ REQUIRED = (
     "merged_into_unexpected_base",
     '[ "$post_base" = main ] || wrong_base',
     'git merge-base --is-ancestor "$merge_oid" "$main_oid"',
+    # a refused or lost merge call is never success, and the merged head must be
+    # the captured one; the lock is re-checked right before and right after the PUT
+    "MERGED_BY_OTHER_ACTOR=5",
+    "merged_by_other_actor",
+    '[ "$post_head" = "$CAPTURED_HEAD" ] || other_actor',
+    '[ "$api_ok" -eq 1 ] || unproven "merge_response_not_success',
+    'backlog_lock_healthy || refuse "local allocation lock lost before the merge call',
+    "lock_held_after_put=1; backlog_lock_healthy || lock_held_after_put=0",
+    'case "$stat" in ""|Z*) return 1 ;; esac',
 )
 
 # Retired designs. The first three were the pre-B-315 squash CLI; the rest are

@@ -29,6 +29,19 @@ main tip (the hardest retarget to see: parent and tree proofs alone would
 pass), and ``rewind_base_after_merge`` lands the merge and then puts the base
 back, so GitHub reports MERGED for a commit main does not contain.
 
+Two more faults model what can happen around a REFUSED merge call and around
+the lock: ``same_tree_head_merged_by_other`` pushes a head H2 carrying H1's
+exact tree (so the pinned PUT gets 409) and then lets another actor merge H2,
+and ``kill_lock_holder`` SIGKILLs the helper's allocation-lock holder and waits
+until the kernel has released its flock.
+
+Every call the helper (or the wrapper) makes to the fake is classified by
+``is_mutating``: only ``pr view``/``pr checks``/``pr list`` and GET ``api``
+calls are reads; anything else, including an unknown subcommand, mutates. A
+scenario allows exactly its pinned merge PUTs and nothing else, so a dry run
+must make ZERO mutating calls. ``run_wrapper`` executes the real
+scripts/pre-merge-gate-check.sh from the world's clone against the same fake.
+
 Every scenario also asserts the helper never pushed to main and never left the
 remote lease behind, and, at every call of the merge endpoint, that the local
 allocation lock (probed with the allocator's own ``fcntl.flock``) and the
@@ -47,6 +60,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -57,6 +71,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "b315_atomic_merge.sh"
+GATE = ROOT / "scripts" / "pre-merge-gate-check.sh"
 ALLOCATOR = ROOT / "scripts" / "backlog_id_alloc.py"
 PR = 7
 OWNER, REPO, HEAD_REF = "acme", "corelink-server", "feature"
@@ -271,10 +286,40 @@ def _inject(state: dict, origin: str, point: str) -> None:
             _git(env, "--git-dir", origin, "update-ref", f"refs/heads/{RETARGET_REF}", tip)
             state["base_ref"] = RETARGET_REF
             state["base_sha"] = tip
+        elif action == "same_tree_head_merged_by_other":
+            # H2: a new commit with H1's exact tree. The pinned PUT now gets 409,
+            # and another actor merges H2 right after it (see _fake_dispatch).
+            head_ref = f"refs/heads/{state['head_ref']}"
+            head = _rev(origin, head_ref)
+            tree = _rev(origin, f"{head}^{{tree}}")
+            other = _git(env, "--git-dir", origin, "commit-tree", tree, "-p", head, "-m", "same tree, other head")
+            _git(env, "--git-dir", origin, "update-ref", head_ref, other, head)
+            state["other_actor_merges_after_put"] = True
+        elif action == "kill_lock_holder":
+            _kill_lock_holder()
         elif action in {"land_wrong_tree", "drop_merge_response", "rewind_base_after_merge"}:
             state[action] = True
         else:
             raise HarnessError(f"unknown injection {action!r}")
+
+
+def _kill_lock_holder() -> None:
+    """SIGKILL the helper's allocation-lock holder (its pid is in the ready
+    file next to the lock) and wait until the kernel has released the flock."""
+    lock = Path(os.environ["B315_FAKE_LOCK"])
+    pids = []
+    for ready in lock.parent.glob("backlogalloc.ready.*"):
+        match = re.match(r"locked pid=(\d+)", ready.read_text(encoding="utf-8"))
+        if match:
+            pids.append(int(match.group(1)))
+    if len(pids) != 1:
+        raise HarnessError(f"expected exactly one lock holder, found {pids}")
+    os.kill(pids[0], signal.SIGKILL)
+    deadline = time.monotonic() + 10
+    while lock_held(lock):
+        if time.monotonic() > deadline:
+            raise HarnessError("the allocation lock is still held after its holder was killed")
+        time.sleep(0.02)
 
 
 def lock_held(path: Path) -> bool:
@@ -341,6 +386,18 @@ def _fake_merge(state: dict, origin: str, params: dict[str, str]) -> int:
     )
     if ancestor.returncode:
         return _http_error(405, "Head branch is out of date with the base branch.")
+    new = _land(state, origin, head)
+    if state.get("drop_merge_response"):
+        return _http_error(502, "Bad Gateway")
+    print(json.dumps({"sha": new, "merged": True, "message": "Pull Request successfully merged"}))
+    return 0
+
+
+def _land(state: dict, origin: str, head: str) -> str:
+    """Squash ``head`` onto the PR's current base, as a successful merge does."""
+    env = dict(os.environ)
+    base_ref = f"refs/heads/{state['base_ref']}"
+    base = _rev(origin, base_ref)
     tree_of = base if state.get("land_wrong_tree") else head
     tree = _rev(origin, f"{tree_of}^{{tree}}")
     new = _git(env, "--git-dir", origin, "commit-tree", tree, "-p", base, "-m", f"squash (#{state['pr']})")
@@ -349,10 +406,64 @@ def _fake_merge(state: dict, origin: str, params: dict[str, str]) -> int:
         _git(env, "--git-dir", origin, "update-ref", base_ref, base, new)
     state["state"] = "MERGED"
     state["merge_commit"] = new
-    if state.get("drop_merge_response"):
-        return _http_error(502, "Bad Gateway")
-    print(json.dumps({"sha": new, "merged": True, "message": "Pull Request successfully merged"}))
-    return 0
+    return new
+
+
+READ_SUBCOMMANDS = {("pr", "view"), ("pr", "checks"), ("pr", "list")}
+MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def is_mutating(argv: list[str]) -> bool:
+    """True unless ``argv`` is a gh call that only reads. Fail-closed: any
+    subcommand not known to read, and any ``api`` call that is not a GET,
+    counts as a mutation. ``gh api`` sends POST when it is given fields and no
+    explicit method, so that case is a mutation too."""
+    if tuple(argv[:2]) in READ_SUBCOMMANDS:
+        return False
+    if argv[:1] != ["api"]:
+        return True
+    method, _path, params = _parse_api(argv)
+    explicit = any(arg in {"-X", "--method"} for arg in argv)
+    if not explicit and (params or "--input" in argv):
+        method = "POST"
+    return method.upper() != "GET"
+
+
+PR_CHECKS = [
+    {"name": "dco", "bucket": "pass", "link": ""},
+    {"name": "gitleaks detect", "bucket": "pass", "link": ""},
+    {"name": "CHANGELOG.md updated when feat/fix present", "bucket": "pass", "link": ""},
+]
+
+
+def _flag_value(argv: list[str], names: tuple[str, ...]) -> str | None:
+    for index, arg in enumerate(argv[:-1]):
+        if arg in names:
+            return argv[index + 1]
+    return None
+
+
+def _jq(expression: str, data: dict) -> str | None:
+    """The two jq shapes the gate wrapper uses: ``.a.b`` and a string with
+    ``\\(.a.b)`` interpolations. Anything else is unsupported (None)."""
+
+    def lookup(path: str):
+        value = data
+        for key in path.strip(".").split("."):
+            if key:
+                value = value.get(key) if isinstance(value, dict) else None
+        return value
+
+    def render(value) -> str:
+        if value is True or value is False:
+            return "true" if value else "false"
+        return "null" if value is None else str(value)
+
+    if len(expression) >= 2 and expression[0] == expression[-1] == '"':
+        return re.sub(r"\\\((\.[A-Za-z0-9_.]*)\)", lambda match: render(lookup(match.group(1))), expression[1:-1])
+    if re.fullmatch(r"\.[A-Za-z0-9_.]*", expression):
+        return render(lookup(expression))
+    return None
 
 
 def _parse_api(argv: list[str]) -> tuple[str, str | None, dict[str, str]]:
@@ -395,19 +506,40 @@ def _fake_dispatch(state: dict, origin: str, argv: list[str]) -> int:
             "headRepository": {"name": state["repo"]},
             "state": state["state"],
             "mergeCommit": {"oid": state["merge_commit"]} if state["merge_commit"] else None,
+            "mergeable": "MERGEABLE" if state["state"] == "OPEN" else "UNKNOWN",
+            "mergeStateStatus": "CLEAN",
+            "isDraft": False,
         }
         unknown = [name for name in fields if name not in full]
         if unknown:
             print(f"fake gh: unknown JSON fields {unknown}", file=sys.stderr)
             return 1
-        print(json.dumps({name: full[name] for name in fields}))
+        selected = {name: full[name] for name in fields}
+        expression = _flag_value(argv, ("-q", "--jq"))
+        if expression is None:
+            print(json.dumps(selected))
+            return 0
+        rendered = _jq(expression, selected)
+        if rendered is None:
+            print(f"fake gh: unsupported jq {expression!r}", file=sys.stderr)
+            return 2
+        print(rendered)
+        return 0
+    if argv[:2] == ["pr", "checks"]:
+        if len(argv) < 3 or argv[2] != str(state["pr"]) or "--json" not in argv:
+            print("fake gh: unsupported pr checks", file=sys.stderr)
+            return 2
+        print(json.dumps(PR_CHECKS))
         return 0
     if argv[:1] == ["api"]:
         method, path, params = _parse_api(argv)
         if method == "PUT" and path == f"repos/{{owner}}/{{repo}}/pulls/{state['pr']}/merge":
             _record_guards_at_merge_call(state, origin)
             _inject(state, origin, "put")
-            return _fake_merge(state, origin, params)
+            code = _fake_merge(state, origin, params)
+            if state.pop("other_actor_merges_after_put", False):
+                _land(state, origin, _rev(origin, f"refs/heads/{state['head_ref']}"))
+            return code
     print(f"fake gh: unsupported invocation {argv}", file=sys.stderr)
     return 2
 
@@ -436,24 +568,40 @@ class Run:
     pushes: str
     lease: str
     main: str
+    mutations: list[list[str]] = field(default_factory=list)
 
 
 def run_helper(
     world: World, *, dry_run: bool = False, expected_head: str | None = None, helper: Path = HELPER
 ) -> Run:
+    return _run(world, ["bash", str(helper), str(PR), expected_head or world.head, "1" if dry_run else "0",
+                        HEAD_REF, OWNER, REPO])
+
+
+def run_wrapper(world: World, *args: str, wrapper: Path = GATE) -> Run:
+    """Execute the merge gate wrapper from the world's clone, as an operator
+    runs it from a checkout. It calls ``bash scripts/b315_atomic_merge.sh``
+    relative to its working directory, so the clone gets scripts/ links to the
+    real helper and allocator (untracked; the helper does not read the tree)."""
+    scripts = world.work / "scripts"
+    scripts.mkdir(exist_ok=True)
+    for name in ("b315_atomic_merge.sh", "backlog_id_alloc.py"):
+        if not (scripts / name).exists():
+            (scripts / name).symlink_to(ROOT / "scripts" / name)
+    return _run(world, ["bash", str(wrapper), *args])
+
+
+def _run(world: World, argv: list[str]) -> Run:
     env = dict(world.env)
     env["PATH"] = f"{world.bin}{os.pathsep}{env.get('PATH', '')}"
     env["B315_FAKE_STATE"] = str(world.state)
     env["B315_FAKE_ORIGIN"] = str(world.origin)
     env["B315_FAKE_LOCK"] = str(lock_path(world))
     env["TMPDIR"] = str(world.root / "tmp")
-    result = subprocess.run(
-        ["bash", str(helper), str(PR), expected_head or world.head, "1" if dry_run else "0",
-         HEAD_REF, OWNER, REPO],
-        cwd=world.work, env=env, capture_output=True, text=True, timeout=120, check=False,
-    )
+    result = subprocess.run(argv, cwd=world.work, env=env, capture_output=True, text=True, timeout=180, check=False)
     state = json.loads(world.state.read_text(encoding="utf-8"))
     puts = [call for call in state["calls"] if call[:1] == ["api"] and "PUT" in call]
+    mutations = [call for call in state["calls"] if is_mutating(call)]
     pushes_log = world.origin / "pushes.log"
     pushes = pushes_log.read_text(encoding="utf-8") if pushes_log.exists() else ""
     lease = subprocess.run(
@@ -461,7 +609,7 @@ def run_helper(
         env=world.env, capture_output=True, text=True, check=False,
     ).stdout.strip()
     main = _git(world.env, "--git-dir", str(world.origin), "rev-parse", "refs/heads/main")
-    return Run(result.returncode, result.stdout, result.stderr, state, puts, pushes, lease, main)
+    return Run(result.returncode, result.stdout, result.stderr, state, puts, pushes, lease, main, mutations)
 
 
 @dataclass(frozen=True)
@@ -501,7 +649,9 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("landed_on_unvalidated_main", 3, 1, True, "did not validate",
              inject={"put": ["ff_main_to_head_parent"]}),
     Scenario("landed_tree_mismatch", 3, 1, True, "tree mismatch", inject={"put": ["land_wrong_tree"]}),
-    Scenario("lost_merge_response_still_proven", 0, 1, True, "MERGED via the PR API",
+    # A merge whose call did not report success is never claimed, even when it
+    # landed exactly as validated.
+    Scenario("lost_merge_response_never_claimed", 3, 1, True, "merge_response_not_success",
              inject={"put": ["drop_merge_response"]}),
     Scenario("stale_remote_lease_refused", 1, 0, False, "stale remote lease observed", precondition="lease"),
     Scenario("local_lock_busy_refused", 1, 0, False, "lock busy", precondition="lock"),
@@ -516,6 +666,12 @@ SCENARIOS: tuple[Scenario, ...] = (
              inject={"put": ["retarget_base"]}),
     Scenario("merge_missing_from_main_detected", 4, 1, True, "is not reachable from refs/heads/main",
              inject={"put": ["rewind_base_after_merge"]}),
+    Scenario("same_tree_head_merged_by_other_actor_after_409", 5, 1, True, "merged_by_other_actor",
+             inject={"put": ["same_tree_head_merged_by_other"]}),
+    Scenario("lock_holder_dies_before_merge_call_refused", 1, 0, False, "lock lost before the merge call",
+             inject={"view4": ["kill_lock_holder"]}),
+    Scenario("lock_holder_dies_during_merge_call_reported", 3, 1, True, "LOCK LOST DURING THE MERGE CALL",
+             inject={"put": ["kill_lock_holder"]}),
 )
 
 
@@ -627,6 +783,10 @@ def run_scenario(
         failures.append("helper attempted a direct push to main")
     if run.lease != planted_lease:
         failures.append(f"remote lease left as {run.lease or '<absent>'}, expected {planted_lease or '<absent>'}")
+    if run.mutations != run.puts:
+        failures.append(f"mutating gh calls besides the pinned merge PUTs: {run.mutations}")
+    if scenario.dry_run and run.pushes:
+        failures.append(f"dry run pushed to origin: {run.pushes.strip()}")
     if scenario.rc == 4 and "merged_into_unexpected_base" not in run.err:
         failures.append("exit 4 without the merged_into_unexpected_base marker")
     if run.state.get("base_ref", "main") != "main" or run.state.get("rewind_base_after_merge"):

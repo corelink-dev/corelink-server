@@ -289,6 +289,7 @@ def test_scenarios_are_named_and_cover_land_dry_run_and_refusal():
     assert (1, 1, False, False) in outcomes  # API refused, no merged claim
     assert (3, 1, True, False) in outcomes  # merged but unproven
     assert (4, 1, True, False) in outcomes  # merged, but not into main
+    assert (5, 1, True, False) in outcomes  # merged, but another head than the one validated
 
 
 def _fake_gh(world, *args: str) -> subprocess.CompletedProcess:
@@ -371,11 +372,84 @@ def _mutated_helper(tmp_path: Path, needle: str, replacement: str) -> Path:
 def test_releasing_a_guard_before_the_merge_call_is_caught(tmp_path: Path, replacement: str, named: str):
     """Teeth for the lock/lease-at-merge check: a helper that drops either guard
     after its last health check still merges, and the harness must say so."""
-    helper = _mutated_helper(tmp_path, 'backlog_lock_healthy || refuse "local lock lost."', replacement)
+    helper = _mutated_helper(
+        tmp_path, 'backlog_lock_healthy || refuse "local allocation lock lost before the merge call; not merging."',
+        replacement,
+    )
     landing = next(s for s in harness.SCENARIOS if s.name == "lands_through_pr_api")
     run, failures = harness.run_scenario(landing, tmp_path / "world", helper=helper)
     assert run.puts, "the mutant never reached the merge endpoint, so nothing was probed"
     assert named in failures, failures
+
+
+def _lock_health(pid: int, ready: Path) -> str:
+    """Run the helper's own backlog_lock_healthy (extracted by its delimiters)
+    against ``pid`` and ``ready``."""
+    helper = (ROOT / "scripts/b315_atomic_merge.sh").read_text(encoding="utf-8")
+    start = helper.index("backlog_lock_healthy() {")
+    function = helper[start: helper.index("\n}\n", start) + 3]
+    result = subprocess.run(
+        ["bash", "-c", function + "backlog_lock_healthy && echo healthy || echo lost\n"],
+        env={**os.environ, "LOCK_PID": str(pid), "LOCK_READY": str(ready)}, capture_output=True, text=True, check=True,
+    )
+    return result.stdout.strip()
+
+
+def test_lock_health_reads_an_unreaped_zombie_holder_as_lost(tmp_path: Path):
+    """A holder that died but was not yet reaped is a zombie: `kill -0` still
+    succeeds on it, yet it no longer holds the flock. The health check must
+    read it as lost. (In the harness bash reaps the killed holder before the
+    check, so only this test reaches the zombie case.)"""
+    ready = tmp_path / "ready"
+    ready.write_text("locked pid=0\n", encoding="utf-8")
+    zombie = subprocess.Popen([sys.executable, "-c", "pass"])
+    alive = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        deadline = time.monotonic() + 10
+        while not subprocess.run(["ps", "-o", "stat=", "-p", str(zombie.pid)], capture_output=True,
+                                 text=True).stdout.strip().startswith("Z"):
+            assert time.monotonic() < deadline, "the probe child never became a zombie"
+            time.sleep(0.02)
+        assert subprocess.run(["kill", "-0", str(zombie.pid)]).returncode == 0  # why kill -0 is not enough
+        assert _lock_health(alive.pid, ready) == "healthy"  # positive control
+        assert _lock_health(zombie.pid, ready) == "lost"
+        ready.write_text("lost lock path changed while held\n", encoding="utf-8")
+        assert _lock_health(alive.pid, ready) == "lost"
+    finally:
+        alive.kill()
+        alive.wait()
+        zombie.wait()
+
+
+@pytest.mark.parametrize(
+    "planted",
+    ['gh api -X PATCH "repos/{owner}/{repo}/pulls/$PR" -f state=closed >/dev/null 2>&1 || true; ',
+     'gh api "repos/{owner}/{repo}/issues/$PR/comments" -f body=x >/dev/null 2>&1 || true; ',
+     'gh pr comment "$PR" --body x >/dev/null 2>&1 || true; '],
+)
+def test_a_dry_run_that_mutates_anything_is_caught(tmp_path: Path, planted: str):
+    """Teeth for the zero-mutation rule: a dry run that sends any mutating gh
+    call (an explicit PATCH, gh api's implicit POST when given fields, a PR
+    comment) is named, although it never calls the merge endpoint."""
+    needle = 'if [ "$DRY_RUN" -eq 1 ]; then echo'
+    helper = _mutated_helper(tmp_path, needle, 'if [ "$DRY_RUN" -eq 1 ]; then ' + planted + "echo")
+    dry = next(s for s in harness.SCENARIOS if s.dry_run)
+    run, failures = harness.run_scenario(dry, tmp_path / "world", helper=helper)
+    assert run.rc == 0 and not run.puts, run.err
+    assert any("mutating gh calls besides the pinned merge PUTs" in failure for failure in failures), failures
+
+
+@pytest.mark.parametrize(
+    ("call", "mutating"),
+    [(["pr", "view", "7", "--json", "state"], False), (["pr", "checks", "7"], False),
+     (["api", "-H", "Accept: application/vnd.github.raw", "repos/o/r/contents/BACKLOG.md"], False),
+     (["api", "-X", "GET", "repos/o/r/pulls", "-f", "state=open"], False),
+     (["api", "-X", "PUT", "repos/o/r/pulls/7/merge"], True), (["api", "repos/o/r/issues/7/comments", "-f", "body=x"], True),
+     (["api", "--method", "delete", "repos/o/r/git/refs/heads/x"], True), (["pr", "merge", "7"], True),
+     (["pr", "comment", "7"], True), (["pr", "edit", "7"], True), (["repo", "view"], True)],
+)
+def test_mutating_call_classifier_is_fail_closed(call: list, mutating: bool):
+    assert harness.is_mutating(call) is mutating
 
 
 def test_replace_precondition_fools_plain_git_but_not_no_replace_git(tmp_path: Path):
@@ -616,11 +690,46 @@ def _checkout(tmp_path: Path, *, harness_source: str | None = None, support: boo
 
 
 def _run_verifier(root: Path, **env: str) -> subprocess.CompletedProcess:
-    """B-315's declared verify command, run in ``root`` exactly as declared."""
+    """The verifier run by a caller that does NOT start it isolated (B-315's
+    declared command until review round 5), so these tests exercise the
+    verifier's own re-exec backstop and its by-path harness load."""
     return subprocess.run(
         ["python3", VERIFIER_CONTROL, "--self-test"],
         cwd=root, env={**os.environ, **env}, capture_output=True, text=True, check=False, timeout=600,
     )
+
+
+def _declared_verify_command() -> str:
+    from scripts import backlog_verify
+
+    items = backlog_verify.parse((ROOT / "BACKLOG.md").read_text(encoding="utf-8"))
+    return next(item for item in items if item.raw.get("id") == "B-315").raw["verify"]
+
+
+def test_declared_verify_command_starts_isolated_so_a_startup_sitecustomize_cannot_pass_it(tmp_path: Path):
+    """Review round 5: the re-exec runs AFTER Python's startup, so with
+    PYTHONPATH pointing into the checkout an added sitecustomize.py printed
+    PASS and exited 0 before any verifier code ran. The declared command
+    itself must start isolated. Executed the way backlog_verify.py runs it."""
+    root = _checkout(tmp_path)
+    (root / "sitecustomize.py").write_text(
+        "import os\nprint('SITECUSTOMIZE: 99 " + PASS_LINE + "', flush=True)\nos._exit(0)\n", encoding="utf-8"
+    )
+    env = {**os.environ, "PYTHONPATH": str(root)}
+
+    def run(command: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["/bin/bash", "-o", "pipefail", "-c", command], cwd=root, env=env,
+                              capture_output=True, text=True, check=False, timeout=600)
+
+    # Positive control: the pre-round-5 command runs the planted hook and "passes".
+    plain = run(f"python3 {VERIFIER_CONTROL} --self-test")
+    assert plain.returncode == 0 and "SITECUSTOMIZE" in plain.stdout, plain.stdout + plain.stderr
+    declared = _declared_verify_command()
+    assert declared == f"python3 -I -S -B {VERIFIER_CONTROL} --self-test", declared
+    result = run(declared)
+    assert "SITECUSTOMIZE" not in result.stdout, result.stdout
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "sitecustomize.py would steer Python's import resolution" in result.stderr, result.stderr
 
 
 def test_added_scripts_init_that_stubs_self_test_is_refused(tmp_path: Path):
@@ -754,11 +863,73 @@ def test_gate_header_states_the_real_required_checks():
         assert fact in header, fact
 
 
-def test_gate_reports_a_merged_but_unproven_landing_as_exit_3():
+# The wrapper itself is EXECUTED here: harness.run_wrapper runs the real
+# scripts/pre-merge-gate-check.sh from a throwaway world's clone, with the same
+# fake gh (which also answers the wrapper's pr view -q/--jq and pr checks).
+
+
+def _world_with(tmp_path: Path, inject: dict):
+    world = harness.build_world(tmp_path / "world")
+    state = json.loads(world.state.read_text(encoding="utf-8"))
+    state["inject"] = inject
+    world.state.write_text(json.dumps(state), encoding="utf-8")
+    return world
+
+
+def test_wrapper_dry_run_makes_no_mutating_call(tmp_path: Path):
+    world = _world_with(tmp_path, {})
+    run = harness.run_wrapper(world, "--merge", "--dry-run", str(harness.PR))
+    assert run.rc == 0, run.out + run.err
+    assert "All gates green" in run.out and "merge endpoint NOT called" in run.out, run.out + run.err
+    assert run.mutations == [], run.mutations
+    assert run.pushes == "" and run.lease == "" and run.state["state"] == "OPEN"
+    assert run.main == world.main0
+
+
+def _unproven_wrapper_failures(run, helper_rc: int, marker: str) -> list[str]:
+    failures = []
+    if run.rc != 3:
+        failures.append(f"wrapper exit {run.rc}, expected 3")
+    if "UNPROVEN" not in run.out or f"merge helper exited {helper_rc}" not in run.out:
+        failures.append("wrapper did not report the merge as UNPROVEN with the helper's exit")
+    if "PR #7 merged." in run.out:
+        failures.append("wrapper reported a clean merge")
+    if marker not in run.err:
+        failures.append(f"helper marker {marker!r} missing")
+    if run.mutations != run.puts or len(run.puts) != 1:
+        failures.append(f"wrapper made mutating calls besides the one merge PUT: {run.mutations}")
+    return failures
+
+
+UNPROVEN_LANDINGS = [
+    ({"put": ["land_wrong_tree"]}, 3, "tree mismatch"),
+    ({"put": ["drop_merge_response"]}, 3, "merge_response_not_success"),
+    ({"put": ["retarget_base"]}, 4, "merged_into_unexpected_base"),
+    ({"put": ["same_tree_head_merged_by_other"]}, 5, "merged_by_other_actor"),
+]
+
+
+@pytest.mark.parametrize(("inject", "helper_rc", "marker"), UNPROVEN_LANDINGS,
+                         ids=[marker for _, _, marker in UNPROVEN_LANDINGS])
+def test_wrapper_reports_a_merged_but_unproven_landing_as_exit_3(tmp_path: Path, inject: dict, helper_rc: int,
+                                                                   marker: str):
+    run = harness.run_wrapper(_world_with(tmp_path, inject), "--merge", str(harness.PR))
+    assert run.state["state"] == "MERGED", run.err
+    assert _unproven_wrapper_failures(run, helper_rc, marker) == [], run.out + run.err
+
+
+def test_a_wrapper_that_calls_an_unproven_landing_clean_is_caught(tmp_path: Path):
+    """Teeth: with the MERGED-but-helper-failed branch disabled, the wrapper
+    reports a clean merge (and goes on to record lanes and delete the branch)."""
     gate = (ROOT / "scripts/pre-merge-gate-check.sh").read_text(encoding="utf-8")
-    section = gate[gate.index('if [ "$post_state" != "MERGED" ]; then'): gate.index("# ── Record the checked lane set")]
-    assert "UNPROVEN" in section and "exit 3" in section
-    assert "cosmetic" not in section
+    needle = 'if [ "$merge_rc" -ne 0 ]; then\n  echo "  ⛔ PR #$PR IS MERGED'
+    assert gate.count(needle) == 1
+    mutant = tmp_path / "pre-merge-gate-check.sh"
+    mutant.write_text(gate.replace(needle, 'if false; then\n  echo "  ⛔ PR #$PR IS MERGED'), encoding="utf-8")
+    run = harness.run_wrapper(_world_with(tmp_path, {"put": ["land_wrong_tree"]}), "--merge", str(harness.PR),
+                              wrapper=mutant)
+    failures = _unproven_wrapper_failures(run, 3, "tree mismatch")
+    assert "wrapper exit 0, expected 3" in failures and "wrapper reported a clean merge" in failures, failures
 
 
 @pytest.mark.parametrize("mutation", ["--squash", "--match-head-commit", "gh pr merge", "--atomic"])
