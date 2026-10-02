@@ -24,6 +24,13 @@ DOCS_PATH = ROOT / "apps/docs/docs/explanation/rate-limits.mdx"
 PRICING_PATH = ROOT / "apps/docs/src/lib/pricing.ts"
 MAX_PROOF_BYTES = 2_000_000
 MAX_PROOF_LINE_CHARS = 16_384
+# A string-masked billing arm: the masked labels leave only blanks and `|`
+# before `=>`.  This was ``^\s*(?:\s*\|\s*)*\s*=>\s*(Tier::[A-Za-z]+)\s*,?\s*$``,
+# whose nested and adjacent ``\s*`` let a line of `|` separators backtrack
+# exponentially (CodeQL py/redos).  ``[\s|]*`` is the same set (any run of
+# blanks and pipes) and ``\s*(?:,\s*)?`` the same tail, each character now
+# having exactly one way to match.
+LABEL_ARM_SHAPE = re.compile(r"^[\s|]*=>\s*(Tier::[A-Za-z]+)\s*(?:,\s*)?$")
 
 
 class VerificationError(RuntimeError):
@@ -361,14 +368,13 @@ def rust_label_arm(body: str, label: str) -> str:
     # remain available but comments do not.
     structural = _mask_rust(body, mask_strings=True)
     code = _mask_rust(body, mask_strings=False)
-    arm_shape = re.compile(r"^\s*(?:\s*\|\s*)*\s*=>\s*(Tier::[A-Za-z]+)\s*,?\s*$")
     label_re = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"')
     matches: list[str] = []
     label_occurrences = 0
     offset = 0
     for line in structural.splitlines(keepends=True):
         candidate = line.rstrip("\r\n")
-        arm_match = arm_shape.fullmatch(candidate)
+        arm_match = LABEL_ARM_SHAPE.fullmatch(candidate)
         if arm_match:
             original = code[offset : offset + len(line)].rstrip("\r\n")
             labels = [item.group(1) for item in label_re.finditer(original)]
