@@ -172,6 +172,24 @@ paths = ['''^scripts/b094_published_inventory\.json$''']
 regexTarget = "line"
 regexes = ['''^\s*"(?:README\.md|(?:apps/docs|marketing|legal)/[^"]+\.(?:md|mdx|html|htm))": "[a-f0-9]{64}",?$''']
 
+[[rules.allowlists]]
+description = "B-156's generated published-claims file digests: only a published-path JSON key with an exact SHA-256 value, and only in the exact census inventory."
+# Why: a key such as `apps/docs/tests/reapi-gen.test.ts` carries the `api`
+# keyword (inside `reapi`), so refreshing its digest trips this heuristic.
+# `condition = "AND"` is load-bearing. gitleaks ORs an allowlist's predicates by
+# default, so without it the path alone would mute EVERY generic-api-key finding
+# in this file (scripts/ is an operational tree), and the line shape alone would
+# mute a digest-shaped line in ANY file. Roots, root file and extensions are
+# ROOTS / ROOT_FILES / EXTENSIONS of scripts/published_claims_census.py, and
+# its validate() recomputes every value from the named file's bytes, so a
+# pasted credential cannot stay in a line this admits. The key alphabet is the
+# inventory's own; a new character fails loud here, never silent.
+# Teeth: scripts/tests/gitleaks-shape-regression.sh (published-claims cells).
+condition = "AND"
+paths = ['''^scripts/published_claims_inventory\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"(?:README\.md|(?:apps/docs|marketing|legal)/[A-Za-z0-9._/-]+\.(?:md|mdx|html|htm|js|jsx|ts|tsx))": "[a-f0-9]{64}",?$''']
+
 # ── MOVED-FIXTURE CLOSURE — exactly one finding, in one unmerged PR commit ────
 # Not a secret, and not a deferral. `tools/sbom-publish/src/main.rs` carries a
 # made-up UUID in its unit test (`let secret_uuid = "…"`), whose job is to prove

@@ -65,8 +65,8 @@ curl -X POST \
   -H 'Authorization: Bearer <YOUR_PAT>' \
   -H 'Content-Type: application/json' \
   -d '{
-  "cancel_url": "https://corelink.humangr.com/example",
-  "success_url": "https://corelink.humangr.com/example",
+  "cancel_url": "https://humangr.com/corelink/example",
+  "success_url": "https://humangr.com/corelink/example",
   "tier": "free"
 }'
 ```
@@ -82,8 +82,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::new();
     let body: Value = serde_json::from_str(r#"
 {
-  "cancel_url": "https://corelink.humangr.com/example",
-  "success_url": "https://corelink.humangr.com/example",
+  "cancel_url": "https://humangr.com/corelink/example",
+  "success_url": "https://humangr.com/corelink/example",
   "tier": "free"
 }
     "#)?;
@@ -112,8 +112,8 @@ def main() -> None:
         "Content-Type": "application/json",
     }
     body = {
-  "cancel_url": "https://corelink.humangr.com/example",
-  "success_url": "https://corelink.humangr.com/example",
+  "cancel_url": "https://humangr.com/corelink/example",
+  "success_url": "https://humangr.com/corelink/example",
   "tier": "free"
 }
     resp = httpx.post(
@@ -142,8 +142,8 @@ import (
 
 func main() {
     body := []byte(`{
-  "cancel_url": "https://corelink.humangr.com/example",
-  "success_url": "https://corelink.humangr.com/example",
+  "cancel_url": "https://humangr.com/corelink/example",
+  "success_url": "https://humangr.com/corelink/example",
   "tier": "free"
 }`)
     req, err := http.NewRequest("POST", "https://corelink-api.humangr.com/v1/onboarding/tier-select", bytes.NewReader(body))
@@ -172,8 +172,8 @@ const resp = await fetch("https://corelink-api.humangr.com/v1/onboarding/tier-se
     "Content-Type": "application/json",
   },
   body: JSON.stringify({
-  "cancel_url": "https://corelink.humangr.com/example",
-  "success_url": "https://corelink.humangr.com/example",
+  "cancel_url": "https://humangr.com/corelink/example",
+  "success_url": "https://humangr.com/corelink/example",
   "tier": "free"
 }),
 });

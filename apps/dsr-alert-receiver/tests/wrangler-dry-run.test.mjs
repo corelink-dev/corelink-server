@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { TARGET } from "../scripts/deploy-route.mjs";
 import {
+  DRY_RUN_DATABASE_ID,
   buildDryRunConfig,
   buildWranglerArgs,
   buildWranglerEnvironment,
@@ -12,13 +13,13 @@ import {
 } from "../scripts/run-wrangler-dry-run.mjs";
 
 describe("credentialless B-216 Wrangler dry-run", () => {
-  it("replaces only the tracked placeholder with the independent exact D1 UUID", async () => {
+  it("replaces only the tracked placeholder with the fixed offline D1 UUID", async () => {
     const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
     const projectDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
     const materialized = buildDryRunConfig(config, migration, projectDir);
     const expected = config
-      .replace(`database_id = "${TARGET.placeholderId}"`, `database_id = "${TARGET.databaseId}"`)
+      .replace(`database_id = "${TARGET.placeholderId}"`, `database_id = "${DRY_RUN_DATABASE_ID}"`)
       .replace('main = "src/index.ts"', `main = "${resolve(projectDir, "src/index.ts")}"`)
       .replace('migrations_dir = "migrations"', `migrations_dir = "${resolve(projectDir, "migrations")}"`);
     expect(materialized).toBe(expected);
@@ -69,7 +70,7 @@ describe("credentialless B-216 Wrangler dry-run", () => {
     });
     expect(invocation.command).toBe("pnpm");
     expect(invocation.args).toContain("--dry-run");
-    expect(invocation.config).toContain(`database_id = "${TARGET.databaseId}"`);
+    expect(invocation.config).toContain(`database_id = "${DRY_RUN_DATABASE_ID}"`);
     expect(invocation.options.env).not.toHaveProperty("CLOUDFLARE_API_TOKEN");
     expect(invocation.options.env).not.toHaveProperty("B216_CF_RECEIVER_WRITE_TOKEN");
     expect(receipt).toMatchObject({ schema_version: 1, outcome: "bundle_failed", exit_code: 19 });

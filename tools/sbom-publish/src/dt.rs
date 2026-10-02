@@ -76,7 +76,7 @@ impl DtApiKey {
 /// # Arguments
 ///
 /// * `sbom_bytes`    — raw `sbom.cdx.json` bytes.
-/// * `dt_endpoint`   — base URL of the DT instance (e.g. `https://dt.corelink.humangr.com`).
+/// * `dt_endpoint`   — base URL of the DT instance (e.g. `https://dependency-track.example.com`).
 /// * `api_key`       — DT API key (read from env via [`DtApiKey::from_env`]).
 /// * `project_name`  — DT project name; a new project is created if absent (`autoCreate=true`).
 /// * `project_version` — project version string (e.g. `0.1.2`).
@@ -99,7 +99,7 @@ impl DtApiKey {
 ///
 /// std::env::set_var("DT_API_KEY", "test-key");
 /// let key = DtApiKey::from_env("DT_API_KEY").unwrap();
-/// let endpoint = Url::parse("https://dt.corelink.humangr.com").unwrap();
+/// let endpoint = Url::parse("https://dependency-track.example.com").unwrap();
 /// let uuid = ingest_into_dt(b"{}", &endpoint, &key, "corelink-server", "0.1.0", None).await;
 /// println!("{uuid:?}");
 /// ```

@@ -17,13 +17,19 @@ last_updated: "2026-05-15"
 # API stability & deprecation policy
 
 > **Audience.** Customers, platform engineers, and SDK maintainers integrating
-> against `corelink-api.humangr.com` (REST) or `cas.corelink.humangr.com` / `bytestream.corelink.humangr.com` (gRPC REAPI v2).
+> against `corelink-api.humangr.com` — including the Bazel REAPI v2 surface at
+> `/bazel/cache` (stock-HTTP alias) and `/bazel/v2` (REAPI/ByteStream over
+> REST). There is no separate gRPC host: CoreLink has no gRPC ingress at all
+> (the data plane is a single HTTP/1.1 listener behind Cloudflare Workers, and
+> `workerd` implements no HTTP trailers, which gRPC requires — see
+> [Migrate from a Docker registry](/how-to/migrate/from-docker-registry) for
+> the same constraint on the OCI surface).
 >
 > **Status.** Public policy. **Binding for GA endpoints** once promoted; subject to MSA §6.
 >
-> **Scope.** All HTTP REST endpoints under `/v1/*` and `/api/*`, plus the gRPC
-> REAPI v2 services (`build.bazel.remote.execution.v2.*`, `google.bytestream.*`,
-> `build.bazel.remote.execution.v2.Capabilities`).
+> **Scope.** All HTTP REST endpoints under `/v1/*` and `/api/*`, plus the
+> Bazel REAPI v2 semantics (`ContentAddressableStorage`, `ActionCache`,
+> `ByteStream`, `Capabilities`) served as HTTP/REST under `/bazel/v2`.
 
 CoreLink commits to a **predictable, written API contract** so that customers
 can build CI/CD pipelines, SDKs, and downstream products against us with
@@ -171,7 +177,7 @@ Content-Type: application/problem+json
 Link: </v2/pats>; rel="successor-version"
 
 {
-  "type": "https://corelink.humangr.com/errors/endpoint-sunset",
+  "type": "https://corelink-docs.humangr.com/explanation/api-stability#33-what-410-gone-looks-like",
   "title": "Endpoint sunset",
   "status": 410,
   "detail": "POST /v1/pats was sunset on 2028-05-15. Use POST /v2/pats.",

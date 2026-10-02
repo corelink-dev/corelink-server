@@ -94,7 +94,10 @@ Today: shared cache, no audit, no per-tenant boundary.
 
 ```bash
 $ corelink version
-corelink 1.0.0 (build sha=abc1234 slsa=https://releases.corelink.humangr.com/cli/1.0.0/slsa)
+corelink 1.0.0
+  git rev:      abc1234
+  built:        epoch:1767225600
+  target:       aarch64-apple-darwin
 
 $ export CORELINK_PAT="corelink_pat_0123456789ABCDEF.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBA" # synthetic shape
 $ corelink doctor

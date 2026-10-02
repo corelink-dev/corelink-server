@@ -30,7 +30,9 @@ const API_ORIGIN =
   (typeof process !== "undefined" ? process.env?.NEXT_PUBLIC_CORELINK_API_URL : undefined) ??
   "https://corelink-api.humangr.com";
 
-const DOCS = "https://docs.humangr.com/corelink/connect";
+// Live docs site (the dotted `docs.` name under the apex never resolved).
+const DOCS_ROOT = "https://humangr.com/corelink/docs";
+const DOCS = `${DOCS_ROOT}/integrations`;
 
 // The env-var name every snippet reads its token from. Referenced, never inlined.
 const TOKEN_ENV = "CORELINK_TOKEN";
@@ -86,7 +88,7 @@ turbo run build --remote-only`,
       help: "Configures sccache to use CoreLink over WebDAV. The bearer token is read from $" +
         TOKEN_ENV +
         " — never embedded in the URL.",
-      docsHref: `${DOCS}/sccache`,
+      docsHref: `${DOCS}/sccache-cargo`,
       code: `# sccache → CoreLink (WebDAV backend) — needs sccache >= 0.15
 export SCCACHE_WEBDAV_ENDPOINT=${origin}/cargo/${tenantId}
 export SCCACHE_WEBDAV_TOKEN="\${${TOKEN_ENV}}"
@@ -139,7 +141,7 @@ pip install -r requirements.txt`,
       help: "The native CAS surface: content addressed by BLAKE3. Use it to smoke-test your token. The bearer is read from $" +
         TOKEN_ENV +
         " so it never lands in your shell history as a literal.",
-      docsHref: `${DOCS}/cas`,
+      docsHref: `${DOCS}/raw-curl`,
       code: `# Native CAS — write one blob, then read it back (token via env only)
 #   export ${TOKEN_ENV}=<paste a PAT from /customer/keys>
 # Needs b3sum (macOS: brew install b3sum; Linux: cargo install b3sum) —
@@ -258,7 +260,7 @@ export function ConnectClient(): React.ReactElement {
         title="Point a build tool at your cache"
         meta={`Endpoint ${API_ORIGIN} · tenant ${overview.tenant_id}`}
         actions={
-          <Button href={DOCS} variant="ghost" size="sm" target="_blank" rel="noopener noreferrer">
+          <Button href={DOCS_ROOT} variant="ghost" size="sm" target="_blank" rel="noopener noreferrer">
             Docs
           </Button>
         }
