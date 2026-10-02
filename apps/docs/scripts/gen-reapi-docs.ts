@@ -149,8 +149,18 @@ function parseProto(file: string): ServiceDoc[] {
   return services;
 }
 
-function mdEscape(text: string): string {
-  return text.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\|/g, "\\|");
+/**
+ * Escape a type name for a GFM table cell. GFM reads `\\` as an escaped
+ * backslash, so a backslash already in the input would consume the `\`
+ * inserted before a following `|` and end the cell. Backslashes are
+ * therefore escaped first.
+ */
+export function mdEscape(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\|/g, "\\|");
 }
 
 /** Render untrusted proto comments as literal text in Markdown/MDX. */

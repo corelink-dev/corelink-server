@@ -49,11 +49,7 @@ const COPY: Record<Locale, Strings> = {
           PGP key.
         </p>
         <p>
-          Prefer a web form? Use{" "}
-          <a href="https://corelink.humangr.com/.well-known/security-report">
-            /.well-known/security-report
-          </a>
-          .
+          There is no web form: email is the only intake channel.
         </p>
       </>
     ),
@@ -121,11 +117,7 @@ const COPY: Record<Locale, Strings> = {
           criptografe com nossa chave PGP.
         </p>
         <p>
-          Prefere formulário web? Use{" "}
-          <a href="https://corelink.humangr.com/.well-known/security-report">
-            /.well-known/security-report
-          </a>
-          .
+          Não há formulário web: o e-mail é o único canal de recebimento.
         </p>
       </>
     ),
@@ -193,11 +185,7 @@ const COPY: Record<Locale, Strings> = {
           cifra con nuestra clave PGP.
         </p>
         <p>
-          ¿Prefieres un formulario web? Usa{" "}
-          <a href="https://corelink.humangr.com/.well-known/security-report">
-            /.well-known/security-report
-          </a>
-          .
+          No hay formulario web: el correo es el único canal de recepción.
         </p>
       </>
     ),
@@ -269,11 +257,7 @@ const COPY: Record<Locale, Strings> = {
           unserem PGP-Schlüssel verschlüsseln.
         </p>
         <p>
-          Lieber ein Webformular? Verwenden Sie{" "}
-          <a href="https://corelink.humangr.com/.well-known/security-report">
-            /.well-known/security-report
-          </a>
-          .
+          Es gibt kein Webformular: E-Mail ist der einzige Meldekanal.
         </p>
       </>
     ),

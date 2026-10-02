@@ -35,7 +35,7 @@ companion_docs:
 | **Business** | 26 – 250 engineers | 10 TB | Per-seat monthly + usage |
 | **Enterprise** | > 250 engineers / regulated | Custom | Annual contract; BYOK required; dedicated CSM |
 
-Interactive pricing calculator at `docs.corelink.humangr.com/pricing`. Final
+Interactive pricing calculator at `humangr.com/corelink/docs/pricing`. Final
 pricing for any tier change is gated on Finance + Legal + Security
 review per the S-18 cross-functional anti-scope gate (§10).
 
@@ -77,8 +77,8 @@ non-EU region without explicit DPA addendum signature).
 Cross-border transfer mechanisms:
 
 - **EU → US:** SCCs (Standard Contractual Clauses) executed; Schrems II
-  TIA (Transfer Impact Assessment) published at
-  `docs.corelink.humangr.com/legal/schrems-ii-tia`.
+  TIA (Transfer Impact Assessment) on file, available on request to
+  `trust@humangr.com` (DPA on file required).
 - **MX:** LFPDPPP-aligned engineering-side; attorney sign-off pending
   (DEBT-025, hard-cap 2026-10-01 — see Q5).
 
@@ -175,14 +175,13 @@ If your build already uses any REAPI-v2-compatible remote cache, the
 migration is:
 
 ```bash
-# Bazel (credential-helper protocol, Bazel 6+)
-build --remote_cache=https://cache.corelink.humangr.com/<tenant_id>
-build --credential_helper=*=$HOME/.corelink/credential-helper
+# Bazel (stock HTTP remote cache; the tenant comes from the PAT)
+build --remote_cache=https://corelink-api.humangr.com/bazel/cache
+build --credential_helper=corelink-api.humangr.com=%workspace%/.bazel/corelink-credential-helper.sh
 
-# Buck2 (.buckconfig)
-[cas]
-endpoint = grpcs://cas.corelink.humangr.com:443
-auth_method = credential_helper
+# Buck2: not supported today. Buck2 speaks REAPI over gRPC only, and
+# CoreLink serves no gRPC ingress (see the "Migrate from a Bazel remote
+# cache" guide on the docs site).
 ```
 
 **Migration assist:**
@@ -190,9 +189,10 @@ auth_method = credential_helper
 - Side-by-side cache-hit-rate dashboards for the first 30 days.
 - Dual-write mode for the migration window (writes go to both caches;
   reads prefer CoreLink, fall back to the legacy cache).
-- A migration runbook (`docs.corelink.humangr.com/migration/from-buildbuddy`,
-  `docs.corelink.humangr.com/migration/from-engflow`, etc.) walking through
-  flag-by-flag config translation.
+- A migration guide
+  (`humangr.com/corelink/docs/how-to/migrate/from-bazel-remote-cache`,
+  covering `bazel-remote` and BuildBuddy) walking through flag-by-flag
+  config translation.
 
 **Action Cache (AC)** is fully supported — same wire, plus
 **HKDF-keyed MAC signatures** and **RFC 6962-style domain separation**
@@ -202,12 +202,12 @@ for dedup-safe action results.
 
 ## Q8. Is the price list final? Can I lock pricing for 12 months?
 
-**Pricing is published** on `docs.corelink.humangr.com/pricing` with a
+**Pricing is published** on `humangr.com/corelink/docs/pricing` with a
 **12-month price lock** available on annual contracts (Business and
 Enterprise tiers). Solo and Team monthly customers receive **90-day
 written notice** before any price change, per the published terms.
 
-**Pricing calculator** at `docs.corelink.humangr.com/pricing` (wave-29
+**Pricing calculator** at `humangr.com/corelink/docs/pricing` (wave-29
 stream #7 — SSR-rendered, 4-tier comparison, internal cost-worksheet).
 
 **Volume + commit discounts** available on Business tier (≥ 250 seats

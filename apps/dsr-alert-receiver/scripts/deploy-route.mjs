@@ -1,24 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
-import { ReadbackError, readWorkerInventory } from "./readback-route.mjs";
+import { readWorkerInventory } from "./readback-route.mjs";
+import { RECEIVER_TARGET, ReceiverTargetError, assertReceiverResourceName } from "./receiver-target.mjs";
 
+// The D1 database is adopted by its exact pinned name (D1 names are unique per
+// account) rather than by a UUID frozen in source: the lead creates it once on the
+// shared account, and every route re-resolves and re-checks it before use.
 export const TARGET = Object.freeze({
-  repository: "HuGR-dev/corelink-server",
-  accountId: "51284495e71acdb5a7677e7383ab026b",
-  workerName: "corelink-dsr-b216-alert-receiver-20260927",
-  databaseName: "corelink-dsr-b216-alert-receipts-20260927",
-  databaseId: "dce5e90a-2c3d-43d2-8037-a6d15d74e1cb",
+  ...RECEIVER_TARGET,
   databaseBinding: "ALERT_RECEIPTS_DB",
   migration: "0001_alert_receipts.sql",
-  apiTokenSecret: "B216_CF_RECEIVER_WRITE_TOKEN",
-  bootstrapTokenSecret: "B216_CF_RECEIVER_BOOTSTRAP_TOKEN",
-  receiverSecret: "B216_DSR_ALERT_RECEIVER_TOKEN",
+  apiTokenSecret: "STAGING_CF_WORKER_API_TOKEN",
+  receiverSecret: "STAGING_DSR_DLQ_ALERT_AUTH_TOKEN",
   workerSecret: "DSR_ALERT_RECEIVER_TOKEN",
   placeholderId: "00000000-0000-0000-0000-000000000000",
-  configSha256: "212e2779067b91d65ccb037f49cc5464325da9cb73d7ec93d929ad684380264b",
+  configSha256: "8b9aae44f049b14966c4a35b938c561785a40d0c924c0f5d7c6ffeb2ef2ea496",
   migrationSha256: "7b9819d1f155645d84b1037e8376063e46ff117dd4d57553b66e22c2d2822bb2",
 });
 
@@ -34,7 +34,6 @@ export class RouteError extends Error {
 const fail = (code) => { throw new RouteError(code); };
 const isUuid = (value) => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const D1_PAGE_SIZE = 100;
-const BOOTSTRAP_ALLOWED_WORKERS = new Set(["corelink-i2568-sla-credit-test-20260928"]);
 
 const PROVIDER_FAILURE_CLASSES = new Set([
   "provider_error_code",
@@ -334,158 +333,76 @@ export function validateDispatch(context) {
   return context.sha.toLowerCase();
 }
 
-export function validateBootstrapDispatch(context) {
-  if (context.repository !== TARGET.repository) fail("repository_mismatch");
-  if (context.ref !== "refs/heads/main") fail("main_ref_required");
-  if (typeof context.sha !== "string" || !/^[0-9a-f]{40}$/i.test(context.sha)) fail("exact_sha_required");
-  if (context.checkoutSha !== context.sha) fail("checkout_sha_mismatch");
-  if (!/^\d{1,20}$/.test(context.runId ?? "") || !/^\d{1,6}$/.test(context.runAttempt ?? "")) fail("workflow_run_identity_required");
-  if (context.apiToken !== undefined || context.receiverToken !== undefined) fail("bootstrap_context_credential_mismatch");
-  if (!context.bootstrapToken) fail("bootstrap_token_missing");
-  return context.sha.toLowerCase();
+// The adopted D1 UUID: a real UUID, never the source placeholder.
+function adoptedDatabaseId(databaseId) {
+  if (!isUuid(databaseId) || databaseId === TARGET.placeholderId) fail("database_identity_mismatch");
+  return databaseId;
 }
 
-export function validateBootstrapPreexistingWorkerNames(names) {
-  if (!Array.isArray(names) || names.length > BOOTSTRAP_ALLOWED_WORKERS.size
-    || names.some((name) => typeof name !== "string" || !BOOTSTRAP_ALLOWED_WORKERS.has(name))
-    || new Set(names).size !== names.length
-    || JSON.stringify(names) !== JSON.stringify([...names].sort())) fail("worker_inventory_unexpected_name");
-  return names;
-}
-
-export function validateBootstrapFinalizeDispatch(context) {
-  if (context.bootstrapToken !== undefined) fail("bootstrap_token_forbidden_in_finalize");
-  const sha = validateDispatch(context);
-  if (!context.bootstrapReceipt || typeof context.bootstrapReceipt !== "object") fail("bootstrap_handoff_missing");
-  const handoff = context.bootstrapReceipt;
-  validateBootstrapPreexistingWorkerNames(handoff.preexisting_worker_names);
-  if (!Number.isInteger(handoff.worker_inventory_count_preimage)
-    || handoff.worker_inventory_count_preimage !== handoff.preexisting_worker_names.length
-    || !Number.isInteger(handoff.worker_inventory_count_postflight)
-    || handoff.worker_inventory_count_postflight !== handoff.worker_inventory_count_preimage + 1) fail("bootstrap_handoff_mismatch");
-  if (handoff.schema_version !== 1 || handoff.status !== "private_version_uploaded"
-    || handoff.repository !== TARGET.repository || handoff.reviewed_main_sha !== sha
-    || handoff.account_id !== TARGET.accountId || handoff.worker_name !== TARGET.workerName
-    || handoff.database_name !== TARGET.databaseName || handoff.database_id !== TARGET.databaseId
-    || handoff.binding !== TARGET.databaseBinding || handoff.migration !== TARGET.migration
-    || handoff.migration_sha256 !== TARGET.migrationSha256
-    || !/^\d{1,20}$/.test(context.runId ?? "") || !/^\d{1,6}$/.test(context.runAttempt ?? "")
-    || handoff.run_id !== context.runId || handoff.run_attempt !== context.runAttempt
-    || handoff.workers_dev !== false || handoff.secret_provisioned !== false
-    || handoff.custom_routes_status !== "unknown" && handoff.custom_routes_status !== "absent"
-    || !isUuid(handoff.worker_revision)
-    || handoff.worker_revision_tag !== `b216-source-${sha}`
-    || handoff.deployments_postflight !== "absent"
-    || !["absent", "disabled"].includes(handoff.subdomain_postflight)) fail("bootstrap_handoff_mismatch");
-  return sha;
-}
-
-export function preparePrivateBootstrapConfig(config, migration, databaseId, appDir) {
+export function preparePrivateReceiverConfig(config, migration, databaseId, appDir) {
   validateTrackedInputs(config, migration);
-  if (databaseId !== TARGET.databaseId) fail("database_identity_mismatch");
+  adoptedDatabaseId(databaseId);
   const workersDevSettings = [...config.matchAll(/^workers_dev\s*=\s*(true|false)\s*$/gm)];
-  if (workersDevSettings.length !== 1 || workersDevSettings[0][1] !== "true") fail("bootstrap_config_drift");
-  if (/^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(config)) fail("bootstrap_route_config_forbidden");
+  if (workersDevSettings.length !== 1 || workersDevSettings[0][1] !== "true") fail("private_config_drift");
+  if (/^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(config)) fail("private_route_config_forbidden");
   const privateConfig = config
     .replace(`database_id = "${TARGET.placeholderId}"`, `database_id = "${databaseId}"`)
     .replace(/^workers_dev\s*=\s*true\s*$/m, "workers_dev = false")
     .replace('main = "src/index.ts"', `main = "${resolve(appDir, "src/index.ts")}"`)
     .replace('migrations_dir = "migrations"', `migrations_dir = "${resolve(appDir, "migrations")}"`);
-  if (!privateConfig.includes('workers_dev = false') || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(privateConfig)) fail("bootstrap_config_drift");
+  if (!privateConfig.includes('workers_dev = false') || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(privateConfig)) fail("private_config_drift");
   return privateConfig;
 }
 
-export function prepareWorkersDevBootstrapConfig(config, migration, databaseId, appDir) {
-  validateTrackedInputs(config, migration);
-  if (databaseId !== TARGET.databaseId) fail("database_identity_mismatch");
-  const workersDevSettings = [...config.matchAll(/^workers_dev\s*=\s*(true|false)\s*$/gm)];
-  if (workersDevSettings.length !== 1 || workersDevSettings[0][1] !== "true") fail("bootstrap_config_drift");
-  if (/^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(config)) fail("bootstrap_route_config_forbidden");
-  const publicConfig = config
-    .replace(`database_id = "${TARGET.placeholderId}"`, `database_id = "${databaseId}"`)
-    .replace('main = "src/index.ts"', `main = "${resolve(appDir, "src/index.ts")}"`)
-    .replace('migrations_dir = "migrations"', `migrations_dir = "${resolve(appDir, "migrations")}"`);
-  if (!publicConfig.includes('workers_dev = true') || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(publicConfig)) fail("bootstrap_config_drift");
-  return publicConfig;
-}
-
 export function prepareInitialPrivateReceiverConfig(config, migration, databaseId, appDir) {
-  const privateConfig = preparePrivateBootstrapConfig(config, migration, databaseId, appDir);
-  if (/^\s*preview_urls\s*=/im.test(privateConfig)) fail("bootstrap_config_drift");
+  const privateConfig = preparePrivateReceiverConfig(config, migration, databaseId, appDir);
+  if (/^\s*preview_urls\s*=/im.test(privateConfig)) fail("private_config_drift");
   const guardedConfig = privateConfig.replace(/^workers_dev\s*=\s*false\s*$/m, "workers_dev = false\npreview_urls = false");
   if (!guardedConfig.includes("workers_dev = false\npreview_urls = false")
-    || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(guardedConfig)) fail("bootstrap_config_drift");
+    || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(guardedConfig)) fail("private_config_drift");
   return guardedConfig;
 }
 
 export function prepareFinalReceiverConfig(config, migration, databaseId, appDir) {
   validateTrackedInputs(config, migration);
-  if (databaseId !== TARGET.databaseId) fail("database_identity_mismatch");
+  adoptedDatabaseId(databaseId);
   if (/^\s*preview_urls\s*=/im.test(config)
-    || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(config)) fail("bootstrap_config_drift");
+    || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(config)) fail("private_config_drift");
   const finalConfig = config
     .replace(`database_id = "${TARGET.placeholderId}"`, `database_id = "${databaseId}"`)
     .replace('main = "src/index.ts"', `main = "${resolve(appDir, "src/index.ts")}"`)
     .replace('migrations_dir = "migrations"', `migrations_dir = "${resolve(appDir, "migrations")}"`)
     .replace(/^workers_dev\s*=\s*true\s*$/m, "workers_dev = true\npreview_urls = false");
   if (!finalConfig.includes("workers_dev = true\npreview_urls = false")
-    || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(finalConfig)) fail("bootstrap_config_drift");
+    || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/im.test(finalConfig)) fail("private_config_drift");
   return finalConfig;
 }
 
-export function validateBootstrapWorkerScriptInventory(rows, { allowTarget = false } = {}) {
-  if (!Array.isArray(rows)) fail("worker_inventory_ambiguous");
-  const info = rows.result_info;
-  if (info !== undefined) {
-    if (!info || typeof info !== "object" || Array.isArray(info)) fail("worker_inventory_ambiguous");
-    if (info.count !== undefined && (!Number.isInteger(info.count) || info.count !== rows.length)) fail("worker_inventory_ambiguous");
-    if (info.total_count !== undefined && (!Number.isInteger(info.total_count) || info.total_count !== rows.length)) fail("worker_inventory_truncated");
-    if (info.page !== undefined && info.page !== 1) fail("worker_inventory_truncated");
-    if (info.total_pages !== undefined && info.total_pages !== 1) fail("worker_inventory_truncated");
-    if (info.per_page !== undefined && (!Number.isInteger(info.per_page) || info.per_page < rows.length)) fail("worker_inventory_ambiguous");
+// Name refusal as a route failure: a protected production/staging name or anything
+// other than the exact pinned receiver pair stops the route before a request.
+export function requireReceiverResourceName(name, kind) {
+  try {
+    return assertReceiverResourceName(name, kind);
+  } catch (error) {
+    fail(error instanceof ReceiverTargetError ? error.code : "receiver_resource_name_refused");
   }
-  const completeRows = rows;
-  const names = [];
-  const seen = new Set();
-  for (const row of completeRows) {
-    if (!row || typeof row.id !== "string" || row.id.length === 0) fail("worker_inventory_ambiguous");
-    if (seen.has(row.id)) fail("worker_duplicate_name");
-    seen.add(row.id);
-    if (row.id === TARGET.workerName) {
-      if (!allowTarget) fail("worker_bootstrap_target_not_absent");
-    } else if (!BOOTSTRAP_ALLOWED_WORKERS.has(row.id)) {
-      fail("worker_inventory_unexpected_name");
-    } else {
-      names.push(row.id);
-    }
-  }
-  return { count: completeRows.length, preexisting_worker_names: names.sort(), target_exists: seen.has(TARGET.workerName) };
 }
 
-export function validateBootstrapWorkerPreimage(inventory, scriptRows) {
-  const scriptInventory = validateBootstrapWorkerScriptInventory(scriptRows);
-  if (!inventory || inventory.status !== "complete") fail("worker_inventory_ambiguous");
-  if (inventory.worker?.exists === true) fail("worker_bootstrap_target_not_absent");
-  if (inventory.worker?.exists !== false || !Number.isInteger(inventory.worker?.inventory_count) || inventory.worker.inventory_count < 0) fail("worker_inventory_ambiguous");
-  if (inventory.worker.inventory_count !== scriptInventory.count
-    || inventory.worker.exists !== scriptInventory.target_exists
-    || inventory.versions?.status !== "absent"
-    || inventory.deployments?.status !== "absent"
-    || inventory.subdomain?.status !== "absent"
-    || inventory.inventory_consistency !== "worker_absent") fail("worker_bootstrap_target_not_absent");
-  if (inventory.routes?.status === "known" && inventory.routes.count !== 0) fail("worker_custom_route_present");
-  if (!new Set(["known", "unknown"]).has(inventory.routes?.status)) fail("worker_routes_ambiguous");
-  return {
-    worker: "absent",
-    routes: inventory.routes.status === "known" ? "absent" : "unknown",
-    worker_inventory_count: scriptInventory.count,
-    preexisting_worker_names: scriptInventory.preexisting_worker_names,
-  };
+// Independent of the config hash pin: the tracked config must name exactly one
+// Worker and one D1, and both must be the pinned receiver pair.
+export function assertConfigTargetNames(config) {
+  const names = [...config.matchAll(/^\s*name\s*=\s*"([^"\n]*)"\s*$/gm)].map((match) => match[1]);
+  const databases = [...config.matchAll(/^\s*database_name\s*=\s*"([^"\n]*)"\s*$/gm)].map((match) => match[1]);
+  if (names.length !== 1 || databases.length !== 1) fail("worker_target_drift");
+  requireReceiverResourceName(names[0], "worker");
+  requireReceiverResourceName(databases[0], "database");
+  return true;
 }
 
 export function validateTrackedInputs(config, migration) {
   if (createHash("sha256").update(config).digest("hex") !== TARGET.configSha256) fail("wrangler_config_drift");
   if (createHash("sha256").update(migration).digest("hex") !== TARGET.migrationSha256) fail("migration_drift");
+  assertConfigTargetNames(config);
   if (!config.includes(`account_id = "${TARGET.accountId}"`) || !config.includes(`name = "${TARGET.workerName}"`)) fail("worker_target_drift");
   if (!config.includes(`binding = "${TARGET.databaseBinding}"`) || !config.includes(`database_name = "${TARGET.databaseName}"`)) fail("database_target_drift");
   if (!config.includes(`database_id = "${TARGET.placeholderId}"`)) fail("placeholder_uuid_contract_drift");
@@ -494,19 +411,23 @@ export function validateTrackedInputs(config, migration) {
 }
 
 export function selectNamedResource(resources, expectedName, kind) {
+  requireReceiverResourceName(expectedName, kind);
   if (!Array.isArray(resources)) fail(`${kind}_inventory_ambiguous`);
   const matches = resources.filter((resource) => (resource?.name ?? resource?.id) === expectedName);
   if (matches.length > 1) fail(`${kind}_duplicate_name`);
   return matches[0] ?? null;
 }
 
+// Adopts the receiver D1 by its exact pinned name on the pinned account. Its UUID
+// comes from the provider, so it is checked for shape and consistency only.
 export function validateDatabaseIdentity(database) {
   if (!database || database.name !== TARGET.databaseName) fail("database_identity_ambiguous");
+  requireReceiverResourceName(database.name, "database");
   if (database.account_id !== undefined && database.account_id !== TARGET.accountId) fail("database_account_mismatch");
+  if (database.uuid !== undefined && database.id !== undefined && database.uuid !== database.id) fail("database_identity_ambiguous");
   const id = database.uuid ?? database.id;
   if (id === TARGET.placeholderId) fail("placeholder_uuid_rejected");
   if (!isUuid(id)) fail("database_identity_ambiguous");
-  if (id !== TARGET.databaseId) fail("database_identity_mismatch");
   return id;
 }
 
@@ -676,9 +597,55 @@ export function validateInitialPrivateVersion(version, expectedDatabaseId) {
 }
 
 const apiBase = "https://api.cloudflare.com/client/v4";
+const PROVIDER_ACCOUNT_PATH = `/accounts/${TARGET.accountId}`;
+const PROVIDER_WORKER_PATH = `${PROVIDER_ACCOUNT_PATH}/workers/scripts/${TARGET.workerName}`;
+const UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const WORKER_VERSION_PATH = new RegExp(`^/versions/${UUID_PATTERN}$`, "i");
+const D1_LIST_PATH = new RegExp(`^${escapeRegExp(PROVIDER_ACCOUNT_PATH)}/d1/database\\?name=${escapeRegExp(TARGET.databaseName)}&page=[1-9][0-9]{0,2}&per_page=${D1_PAGE_SIZE}$`);
+const ZONE_PAGE_SIZE = 50;
+const MAX_ZONE_PAGES = 20;
+const ZONE_LIST_PATH = new RegExp(`^/zones\\?account\\.id=${TARGET.accountId}&page=[1-9][0-9]?&per_page=${ZONE_PAGE_SIZE}$`);
+const ZONE_ROUTES_PATH = /^\/zones\/([0-9a-f]{32})\/workers\/routes$/;
+const ZONE_ID = /^[0-9a-f]{32}$/;
+const PROVIDER_SERVICE_ROUTES_PATH = `${PROVIDER_ACCOUNT_PATH}/workers/services/${TARGET.workerName}/environments/production/routes`;
+
+// Every Cloudflare API request this route makes, on an account it shares with
+// production:
+// - reads of the account, its script list and its workers.dev subdomain;
+// - reads of the receiver Worker's deployments, versions, secrets and subdomain,
+//   and the one write that toggles that subdomain;
+// - the exact-name D1 lookup, and queries against the D1 UUID adopted in this run;
+// - the ingress proof: the account's Workers custom domains, its zone list, and
+//   the Worker routes of the zones that list returned;
+// - one DELETE of the receiver Worker, only after this run created it from an
+//   absent preimage.
+// Anything else, a D1 query before adoption, a zone not adopted from the list, or
+// a DELETE that was not armed, is refused before a request is sent.
+export function assertProviderRequest(path, method, state = {}) {
+  const { database = null, zones = null, deletion = false } = state;
+  if (typeof path !== "string" || !["GET", "POST", "DELETE"].includes(method)) fail("provider_path_refused");
+  if (method === "DELETE") {
+    if (deletion === true && path === PROVIDER_WORKER_PATH) return true;
+    fail("provider_path_refused");
+  }
+  if (method === "GET" && [PROVIDER_ACCOUNT_PATH, `${PROVIDER_ACCOUNT_PATH}/workers/scripts`, `${PROVIDER_ACCOUNT_PATH}/workers/subdomain`, `${PROVIDER_ACCOUNT_PATH}/workers/domains`, PROVIDER_SERVICE_ROUTES_PATH].includes(path)) return true;
+  if (path.startsWith(`${PROVIDER_WORKER_PATH}/`)) {
+    const rest = path.slice(PROVIDER_WORKER_PATH.length);
+    if (method === "GET" && (["/deployments", "/secrets", "/subdomain", "/versions?per_page=100&deployable=true"].includes(rest) || WORKER_VERSION_PATH.test(rest))) return true;
+    if (method === "POST" && rest === "/subdomain") return true;
+  }
+  if (method === "GET" && D1_LIST_PATH.test(path)) return true;
+  if (method === "POST" && database !== null && path === `${PROVIDER_ACCOUNT_PATH}/d1/database/${database}/query`) return true;
+  if (method === "GET" && ZONE_LIST_PATH.test(path)) return true;
+  const zoneRoutes = ZONE_ROUTES_PATH.exec(path);
+  if (method === "GET" && zoneRoutes && zones instanceof Set && zones.has(zoneRoutes[1])) return true;
+  fail("provider_path_refused");
+}
 
 export function makeCloudflareApi(token, fetchImpl = fetch) {
-  return async function request(path, { method = "GET", body } = {}) {
+  const state = { database: null, zones: null, deletion: false };
+  async function request(path, { method = "GET", body } = {}) {
+    assertProviderRequest(path, method, state);
     let response;
     try {
       response = await fetchImpl(`${apiBase}${path}`, {
@@ -692,12 +659,172 @@ export function makeCloudflareApi(token, fetchImpl = fetch) {
     }
     let payload;
     try { payload = await response.json(); } catch { fail("provider_response_ambiguous"); }
-    if (!response.ok || payload?.success !== true) fail("provider_response_rejected");
+    if (!response.ok || payload?.success !== true) {
+      const rejected = new RouteError("provider_response_rejected");
+      rejected.httpStatus = Number.isInteger(response.status) && response.status >= 100 && response.status <= 599 ? response.status : null;
+      throw rejected;
+    }
     if (Array.isArray(payload.result) && payload.result_info) {
       Object.defineProperty(payload.result, "result_info", { value: payload.result_info });
     }
     return payload.result;
+  }
+  // Binds this client to the one D1 UUID resolved from the exact pinned name.
+  request.adoptDatabase = (databaseId) => {
+    adoptedDatabaseId(databaseId);
+    if (state.database !== null && state.database !== databaseId) fail("database_adoption_changed");
+    state.database = databaseId;
+    return databaseId;
   };
+  // Binds zone-route reads to the zones the account's own zone list returned.
+  request.adoptZones = (zoneIds) => {
+    if (!Array.isArray(zoneIds) || zoneIds.some((id) => typeof id !== "string" || !ZONE_ID.test(id)) || new Set(zoneIds).size !== zoneIds.length) fail("ingress_zones_ambiguous");
+    state.zones = new Set(zoneIds);
+    return zoneIds.length;
+  };
+  // Allows the one DELETE of the receiver Worker; armed only by a run that created it.
+  request.armWorkerDeletion = () => {
+    state.deletion = true;
+  };
+  return request;
+}
+
+// The refusals that mean something other than workers.dev reaches the receiver.
+// Once either is seen, no route performs another write: no rollback, no delete,
+// no workers.dev change. It reports `halted_external_ingress_detected` instead.
+export const EXTERNAL_INGRESS_CODES = Object.freeze(["worker_custom_domain_present", "worker_zone_route_present", "worker_custom_route_present"]);
+export function isExternalIngressError(error) {
+  return error instanceof RouteError && EXTERNAL_INGRESS_CODES.includes(error.code);
+}
+
+// Reads one ingress list and classifies an unreadable answer: a 401/403 is a missing
+// read permission, anything else is unreadable. Either refuses the run.
+async function readIngress(api, path, kind) {
+  try {
+    return await api(path);
+  } catch (error) {
+    if (error instanceof RouteError && error.code === "provider_response_rejected" && [401, 403].includes(error.httpStatus)) fail(`ingress_${kind}_permission_denied`);
+    fail(`ingress_${kind}_unreadable`);
+  }
+}
+
+function completeListPage(rows, kind) {
+  if (!Array.isArray(rows)) fail(`ingress_${kind}_unreadable`);
+  const info = rows.result_info;
+  if (info !== undefined) {
+    if (!info || typeof info !== "object" || Array.isArray(info)) fail(`ingress_${kind}_unreadable`);
+    if (info.total_pages !== undefined && info.total_pages !== 1 && info.total_pages !== 0) fail(`ingress_${kind}_truncated`);
+    if (info.total_count !== undefined && info.total_count !== rows.length) fail(`ingress_${kind}_truncated`);
+  }
+  return rows;
+}
+
+// Before any write, and again after deploy and after cleanup: positively read that
+// no Workers custom domain and no zone route sends traffic to the receiver Worker.
+// workers.dev is the only ingress the route ever enables, so anything else attached
+// to the pinned name refuses the run. Unknown, unreadable or truncated lists refuse
+// too. The zone scan sees the zones this token can list. Once the Worker exists, its
+// own service route list is read as well, and that list covers every zone.
+export async function proveNoExternalIngress(api, { workerExists }) {
+  if (typeof workerExists !== "boolean") fail("ingress_worker_state_unknown");
+  let serviceRoutes = null;
+  if (workerExists) {
+    const routes = completeListPage(await readIngress(api, PROVIDER_SERVICE_ROUTES_PATH, "service_routes"), "service_routes");
+    if (routes.some((route) => !route || typeof route !== "object")) fail("ingress_service_routes_unreadable");
+    if (routes.length !== 0) fail("worker_zone_route_present");
+    serviceRoutes = 0;
+  }
+  const domains = completeListPage(await readIngress(api, `${PROVIDER_ACCOUNT_PATH}/workers/domains`, "custom_domains"), "custom_domains");
+  if (domains.some((domain) => !domain || typeof domain !== "object" || typeof domain.service !== "string")) fail("ingress_custom_domains_unreadable");
+  const zoneIds = [];
+  let totalPages = null;
+  for (let page = 1; page <= MAX_ZONE_PAGES; page += 1) {
+    const rows = await readIngress(api, `/zones?account.id=${TARGET.accountId}&page=${page}&per_page=${ZONE_PAGE_SIZE}`, "zones");
+    const info = rows?.result_info;
+    if (!Array.isArray(rows) || !info || !Number.isInteger(info.total_pages) || !Number.isInteger(info.total_count) || info.page !== page || rows.length > ZONE_PAGE_SIZE) fail("ingress_zones_unreadable");
+    if (totalPages === null) totalPages = info.total_pages;
+    if (info.total_pages !== totalPages) fail("ingress_zones_unreadable");
+    for (const zone of rows) {
+      if (!zone || typeof zone.id !== "string" || !ZONE_ID.test(zone.id) || (zone.account?.id !== undefined && zone.account.id !== TARGET.accountId)) fail("ingress_zones_unreadable");
+      zoneIds.push(zone.id);
+    }
+    if (page >= totalPages) {
+      if (zoneIds.length !== info.total_count) fail("ingress_zones_truncated");
+      break;
+    }
+    if (page === MAX_ZONE_PAGES) fail("ingress_zones_truncated");
+  }
+  if (totalPages === null) fail("ingress_zones_unreadable");
+  api.adoptZones(zoneIds);
+  let zoneRoutes = 0;
+  for (const zoneId of zoneIds) {
+    const routes = completeListPage(await readIngress(api, `/zones/${zoneId}/workers/routes`, "zone_routes"), "zone_routes");
+    if (routes.some((route) => !route || typeof route !== "object" || typeof route.pattern !== "string" || (route.script !== undefined && route.script !== null && typeof route.script !== "string"))) fail("ingress_zone_routes_unreadable");
+    zoneRoutes += routes.filter((route) => route.script === TARGET.workerName).length;
+  }
+  const customDomains = domains.filter((domain) => domain.service === TARGET.workerName).length;
+  if (customDomains !== 0) fail("worker_custom_domain_present");
+  if (zoneRoutes !== 0) fail("worker_zone_route_present");
+  return Object.freeze({ zones_checked: zoneIds.length, zone_routes: 0, custom_domains: 0, service_routes: serviceRoutes === null ? "worker_absent" : 0 });
+}
+
+// A revision this route itself produced: its secret-put step tags it
+// `b216-<40-hex reviewed main SHA>`, and it binds exactly the receiver D1 (the UUID
+// adopted in this run) and the receiver secret, with nothing else. Only such a
+// revision may serve as a rollback target; a pre-existing receiver Worker whose
+// active revision is anything else refuses the run before any write; and the
+// synthetic exercise sends nothing to an active revision that fails it.
+export function validateRouteOwnedRevision(version, databaseId) {
+  const tag = version?.metadata?.annotations?.["workers/tag"];
+  if (!isUuid(version?.id) || typeof tag !== "string" || !/^b216-[0-9a-f]{40}$/.test(tag)) fail("worker_revision_not_route_owned");
+  const bindings = version?.resources?.bindings;
+  if (!Array.isArray(bindings) || bindings.length !== 2) fail("worker_revision_bindings_not_exact");
+  const database = bindings.filter((binding) => binding?.type === "d1" && binding.name === TARGET.databaseBinding && (binding.database_id ?? binding.id) === databaseId);
+  const secret = bindings.filter((binding) => binding?.type === "secret_text" && binding.name === TARGET.workerSecret);
+  if (database.length !== 1 || secret.length !== 1) fail("worker_revision_bindings_not_exact");
+  return version.id;
+}
+
+const VERSION_ID = new RegExp(`^${UUID_PATTERN}$`, "i");
+const VERSION_AT_100 = new RegExp(`^${UUID_PATTERN}@100%$`, "i");
+// Each Wrangler invocation this route makes, by exact shape: argument count, fixed
+// positions, which position carries the config and which kind of generated config
+// it must be, where the entry point goes, and which positions carry free values
+// (tag, message) that may not look like an option.
+const WRANGLER_COMMANDS = Object.freeze({
+  deploy: { length: 6, config: 3, kind: "initial_private", entry: 1, values: [5], fixed: { 2: "--config", 4: "--message" } },
+  "versions upload": { length: 9, config: 4, kind: "final", entry: 2, values: [6, 8], fixed: { 3: "--config", 5: "--tag", 7: "--message" } },
+  "versions secret put": { length: 10, config: 5, kind: "final", values: [7, 9], fixed: { 3: TARGET.workerSecret, 4: "--config", 6: "--tag", 8: "--message" } },
+  "versions deploy": { length: 6, config: 5, kind: "final", values: [], fixed: { 3: "--yes", 4: "--config" }, check: (args) => VERSION_AT_100.test(args[2]) },
+  "d1 migrations apply": { length: 7, config: 6, kind: "final", values: [], fixed: { 4: "--remote", 5: "--config" }, check: (args) => requireReceiverResourceName(args[3], "database") === TARGET.databaseName },
+  rollback: { length: 6, config: 3, kind: "final", values: [5], fixed: { 2: "--config", 4: "--message" }, check: (args) => VERSION_ID.test(args[1]) },
+});
+
+// The Wrangler invocations this route makes. Each names its target only through a
+// config file this run generated: the exact path it wrote, of the kind the command
+// needs, with the content hash it had when written. The entry point is the run's
+// exact source path, and no argument can add an option such as --name or --env.
+export function assertWranglerCommand(args, { configs, entrypoint } = {}) {
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) fail("wrangler_command_refused");
+  const key = args[0] === "versions" ? (args[1] === "secret" && args[2] === "put" ? "versions secret put" : `versions ${args[1]}`) : args[0] === "d1" ? `d1 ${args[1]} ${args[2]}` : args[0];
+  const shape = Object.hasOwn(WRANGLER_COMMANDS, key) ? WRANGLER_COMMANDS[key] : null;
+  if (!shape || args.length !== shape.length) fail("wrangler_command_refused");
+  if (args.some((arg) => /^--(?:name|env|script-name|dispatch-namespace|routes?|account-id)(?:=|$)/.test(arg))) fail("wrangler_command_refused");
+  for (const [index, value] of Object.entries(shape.fixed)) {
+    if (args[Number(index)] !== value) fail("wrangler_command_refused");
+  }
+  if (shape.entry !== undefined && (typeof entrypoint !== "string" || args[shape.entry] !== entrypoint)) fail("wrangler_command_refused");
+  for (const index of shape.values) {
+    if (args[index].length === 0 || args[index].startsWith("-")) fail("wrangler_command_refused");
+  }
+  if (shape.check && !shape.check(args)) fail("wrangler_command_refused");
+  const configPath = args[shape.config];
+  const recorded = configs instanceof Map ? configs.get(configPath) : undefined;
+  if (!recorded || recorded.kind !== shape.kind) fail("wrangler_command_refused");
+  let content;
+  try { content = readFileSync(configPath, "utf8"); } catch { fail("wrangler_command_refused"); }
+  if (createHash("sha256").update(content).digest("hex") !== recorded.sha256) fail("wrangler_command_refused");
+  return true;
 }
 
 function runWrangler(args, { cwd, home, apiToken, receiverToken, input } = {}) {
@@ -725,10 +852,34 @@ function writeReceipt(path, receipt) {
   return writeFile(path, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
 }
 
-export async function runRoute({ context, config, migration, fetchImpl = fetch, command = runWrangler, receiptPath, worktree = process.cwd() }) {
+export async function runRoute({ context, config, migration, fetchImpl = fetch, command: runCommand = runWrangler, receiptPath, worktree = process.cwd() }) {
   const sha = validateDispatch(context);
   validateTrackedInputs(config, migration);
   const api = makeCloudflareApi(context.apiToken, fetchImpl);
+  const appDir = resolve(worktree, "apps/dsr-alert-receiver");
+  const entrypoint = resolve(appDir, "src/index.ts");
+  // Every config Wrangler may read is one this run wrote; its kind and content
+  // hash are recorded at write time and checked again before each command.
+  const generatedConfigs = new Map();
+  const writeRunConfig = async (path, content, kind) => {
+    await writeFile(path, content, { mode: 0o600, flag: "wx" });
+    generatedConfigs.set(path, { kind, sha256: createHash("sha256").update(content).digest("hex") });
+  };
+  const command = (args, options) => {
+    assertWranglerCommand(args, { configs: generatedConfigs, entrypoint });
+    return runCommand(args, options);
+  };
+  const readInventory = () => readWorkerInventory({
+    context: {
+      repository: context.repository,
+      ref: context.ref,
+      sha: context.sha,
+      checkoutSha: context.checkoutSha,
+      readbackOnly: "true",
+      apiToken: context.apiToken,
+    },
+    fetchImpl,
+  });
   const receipt = {
     schema_version: 1,
     issue: 1678,
@@ -740,12 +891,13 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     binding: TARGET.databaseBinding,
     migration: TARGET.migration,
     migration_sha256: TARGET.migrationSha256,
-    disjointness_note: "B-216 adopts its dedicated exact-name and UUID target; #2563 uses a separate distinct D1 resource.",
+    disjointness_note: "B-216 adopts only its dedicated exact-name Worker and D1 on the shared account; production and staging names are refused.",
     captured_at: new Date().toISOString(),
     status: "started",
   };
   let stage = "account_readback";
   let workerMutationStarted = false;
+  let workerCreatedThisRun = false;
   let priorWorkerVersion = null;
   let privateInitialVersion = null;
   let tempConfig = null;
@@ -764,14 +916,9 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     const priorWorker = selectNamedResource(workerPage, TARGET.workerName, "worker");
     let customRoutesStatus = summarizeCustomRoutes(priorWorker);
     receipt.custom_routes_status = customRoutesStatus;
-    if (priorWorker) {
-      const deployments = normalizeDeploymentList(await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`));
-      priorWorkerVersion = selectPriorRevision(deployments);
-      if (!priorWorkerVersion) fail("worker_preimage_ambiguous");
-    }
-    receipt.worker_preimage = priorWorkerVersion ?? "absent";
     if (priorDatabase) {
-      receipt.database_id = validateDatabaseIdentity(priorDatabase);
+      receipt.database_id = api.adoptDatabase(validateDatabaseIdentity(priorDatabase));
+      receipt.database_adoption = "exact_name_unique_on_pinned_account";
       receipt.database_preimage = "existing_exact_target";
       stage = "database_schema_preimage";
       const tables = await queryDatabase(api, receipt.database_id, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
@@ -783,6 +930,20 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       receipt.database_preimage = "absent";
       fail("database_target_missing");
     }
+    if (priorWorker) {
+      // A receiver Worker that already exists must be one this route produced, with
+      // exactly the receiver bindings; otherwise nothing is written, and its revision
+      // is never a rollback target.
+      stage = "worker_preimage_ownership";
+      const deployments = normalizeDeploymentList(await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`));
+      priorWorkerVersion = selectPriorRevision(deployments);
+      if (!priorWorkerVersion) fail("worker_preimage_ambiguous");
+      validateRouteOwnedRevision(await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${priorWorkerVersion}`), receipt.database_id);
+      receipt.worker_preimage_owner = "this_route_exact_bindings";
+    }
+    receipt.worker_preimage = priorWorkerVersion ?? "absent";
+    stage = "ingress_preimage";
+    receipt.ingress_preimage = await proveNoExternalIngress(api, { workerExists: Boolean(priorWorker) });
 
     const runDir = process.env.RUNNER_TEMP || tmpdir();
     tempConfigDir = join(runDir, `b216-${randomUUID()}`);
@@ -790,9 +951,7 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     wranglerHome = join(tempConfigDir, "home");
     await mkdir(wranglerHome, { mode: 0o700 });
     tempConfig = join(tempConfigDir, "wrangler.toml");
-    const appDir = resolve(worktree, "apps/dsr-alert-receiver");
-    const runnableConfig = prepareFinalReceiverConfig(config, migration, receipt.database_id, appDir);
-    await writeFile(tempConfig, runnableConfig, { mode: 0o600, flag: "wx" });
+    await writeRunConfig(tempConfig, prepareFinalReceiverConfig(config, migration, receipt.database_id, appDir), "final");
 
     stage = "migration_apply";
     const beforeMigration = await queryDatabase(api, receipt.database_id, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
@@ -821,27 +980,18 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     if (!priorWorker) {
       stage = "worker_initial_private_config";
       initialPrivateConfig = join(tempConfigDir, "wrangler-initial-private.toml");
-      await writeFile(initialPrivateConfig, prepareInitialPrivateReceiverConfig(config, migration, receipt.database_id, appDir), { mode: 0o600, flag: "wx" });
+      await writeRunConfig(initialPrivateConfig, prepareInitialPrivateReceiverConfig(config, migration, receipt.database_id, appDir), "initial_private");
       stage = "worker_initial_private_deploy";
       workerMutationStarted = true;
-      command(["deploy", resolve(appDir, "src/index.ts"), "--config", initialPrivateConfig, "--message", `B-216 private initial revision ${sha}`], {
+      workerCreatedThisRun = true;
+      command(["deploy", entrypoint, "--config", initialPrivateConfig, "--message", `B-216 private initial revision ${sha}`], {
         cwd: appDir,
         home: wranglerHome,
         apiToken: context.apiToken,
       });
 
       stage = "worker_initial_private_readback";
-      const privateInventory = await readWorkerInventory({
-        context: {
-          repository: context.repository,
-          ref: context.ref,
-          sha: context.sha,
-          checkoutSha: context.checkoutSha,
-          readbackOnly: "true",
-          apiToken: context.apiToken,
-        },
-        fetchImpl,
-      });
+      const privateInventory = await readInventory();
       privateInitialVersion = validateInitialPrivateDeployment(privateInventory, workerPage.length + 1);
       const privateRevision = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${privateInitialVersion}`);
       validateInitialPrivateVersion(privateRevision, receipt.database_id);
@@ -850,18 +1000,21 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       receipt.initial_private_preview_urls = "disabled_verified";
       receipt.initial_private_custom_routes = privateInventory.routes.status === "known" ? "absent" : "unknown";
       customRoutesStatus = receipt.initial_private_custom_routes;
+      // The Worker now exists, so its own service route list (every zone) is
+      // readable: prove nothing routes to it before it gets code or a secret.
+      stage = "ingress_after_create";
+      receipt.ingress_after_create = await proveNoExternalIngress(api, { workerExists: true });
     }
 
     const versionTag = `b216-${sha}`;
     workerMutationStarted = true;
     stage = "worker_version_upload";
-    command(["versions", "upload", resolve(appDir, "src/index.ts"), "--config", tempConfig, "--tag", `b216-source-${sha}`, "--message", `B-216 reviewed main ${sha}`], {
+    command(["versions", "upload", entrypoint, "--config", tempConfig, "--tag", `b216-source-${sha}`, "--message", `B-216 reviewed main ${sha}`], {
       cwd: appDir,
       home: wranglerHome,
       apiToken: context.apiToken,
     });
     stage = "worker_secret_provision";
-    workerMutationStarted = true;
     command(["versions", "secret", "put", TARGET.workerSecret, "--config", tempConfig, "--tag", versionTag, "--message", `B-216 reviewed main ${sha}`], {
       cwd: appDir,
       home: wranglerHome,
@@ -873,6 +1026,9 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     if (tagged.length !== 1 || !isUuid(tagged[0]?.id)) fail("worker_uploaded_revision_ambiguous");
     const candidateVersion = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${tagged[0].id}`);
     validateCandidateVersion(candidateVersion, receipt.database_id, versionTag);
+    // Before activation: the same exact check as rollback and the exercise. Route
+    // tag, and the receiver D1 and secret are the only bindings.
+    validateRouteOwnedRevision(candidateVersion, receipt.database_id);
 
     stage = "worker_deploy";
     command(["versions", "deploy", `${tagged[0].id}@100%`, "--yes", "--config", tempConfig], { cwd: appDir, home: wranglerHome, apiToken: context.apiToken });
@@ -887,6 +1043,8 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     if (activeVersion !== tagged[0].id) fail("worker_revision_readback_mismatch");
     const bindings = version?.resources?.bindings ?? [];
     validatePostflight({ versionId: activeVersion, deployment: deployments[0], bindings, secrets, expectedTag: versionTag }, receipt.database_id, versionTag);
+    // And again on what is actually active.
+    validateRouteOwnedRevision(version, receipt.database_id);
     if (!priorWorker) {
       stage = "worker_public_ingress_enable";
       await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`, {
@@ -896,6 +1054,8 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
       const subdomain = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`);
       validateWorkersDevEnabled(subdomain);
     }
+    stage = "ingress_postflight";
+    receipt.ingress_postflight = await proveNoExternalIngress(api, { workerExists: true });
     receipt.worker_preimage = priorWorkerVersion ?? "absent";
     if (privateInitialVersion) receipt.initial_private_revision = privateInitialVersion;
     receipt.worker_revision = activeVersion;
@@ -913,50 +1073,50 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
     receipt.failed_stage = stage;
     receipt.failure_code = error instanceof RouteError ? error.code : "route_failed_closed";
     if (error instanceof RouteError && error.providerFailure) Object.assign(receipt, error.providerFailure);
-    if (workerMutationStarted && tempConfig) {
-      receipt.rollback_target = priorWorkerVersion ?? privateInitialVersion ?? "absent_preimage";
+    if (isExternalIngressError(error)) {
+      // External ingress reaches the receiver: whatever serves it now may be
+      // production traffic, so no rollback and no delete. The lead decides.
+      receipt.rollback_status = "halted_external_ingress_detected";
+      receipt.escalation = "lead_review_required";
+    } else if (workerMutationStarted && tempConfig) {
+      receipt.rollback_target = priorWorkerVersion ?? "delete_worker_created_this_run";
       try {
-        const appDir = resolve(worktree, "apps/dsr-alert-receiver");
         if (priorWorkerVersion) {
+          // The prior revision was proven route-owned with exact bindings above. A
+          // rollback is a write, so zero ingress is proven immediately before it.
+          receipt.cleanup_ingress_preimage = await proveNoExternalIngress(api, { workerExists: true });
           command(["rollback", priorWorkerVersion, "--config", tempConfig, "--message", "B-216 exact preimage rollback"], { cwd: appDir, home: wranglerHome, apiToken: context.apiToken });
           const deployments = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`);
           validateRollbackReadback(deployments, priorWorkerVersion);
-          receipt.rollback_status = "restored_exact_revision";
-        } else {
+          receipt.rollback_status = "restored_route_owned_revision";
+          receipt.rollback_ingress = await proveNoExternalIngress(api, { workerExists: true });
+        } else if (workerCreatedThisRun) {
+          // The preimage was absent, so cleanup removes the Worker this run created,
+          // but only once zero ingress is proven immediately before the delete.
           let inventory;
-          try {
-            inventory = await readWorkerInventory({
-              context: {
-                repository: context.repository,
-                ref: context.ref,
-                sha: context.sha,
-                checkoutSha: context.checkoutSha,
-                readbackOnly: "true",
-                apiToken: context.apiToken,
-              },
-              fetchImpl,
-            });
-          } catch {
-            inventory = null;
-          }
+          try { inventory = await readInventory(); } catch { inventory = null; }
           if (inventory?.worker?.exists === false && inventory.inventory_consistency === "worker_absent") {
             receipt.rollback_status = "absent_preimage_verified";
           } else {
             const currentScripts = await api(`/accounts/${TARGET.accountId}/workers/scripts`);
             validateInventoryPage(currentScripts, "worker");
             if (!selectNamedResource(currentScripts, TARGET.workerName, "worker")) fail("worker_rollback_target_ambiguous");
-            await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`, {
-              method: "POST",
-              body: { enabled: false, previews_enabled: false },
-            });
-            const subdomain = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`);
-            validateIntakeDisabled(subdomain);
-            receipt.rollback_status = "workers_dev_disabled_worker_retained";
-            receipt.rollback_custom_routes_status = inventory?.routes?.status === "known" ? (inventory.routes.count === 0 ? "absent" : "present") : "unknown";
+            receipt.cleanup_ingress_preimage = await proveNoExternalIngress(api, { workerExists: true });
+            api.armWorkerDeletion();
+            await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}`, { method: "DELETE" });
+            const after = await readInventory();
+            if (after?.worker?.exists !== false || after.inventory_consistency !== "worker_absent") fail("worker_delete_readback_mismatch");
+            receipt.rollback_status = "created_worker_deleted";
           }
+          receipt.rollback_ingress = await proveNoExternalIngress(api, { workerExists: false });
         }
-      } catch {
-        receipt.rollback_status = "ambiguous_do_not_retry";
+      } catch (cleanupError) {
+        if (isExternalIngressError(cleanupError)) {
+          receipt.rollback_status = "halted_external_ingress_detected";
+          receipt.escalation = "lead_review_required";
+        } else {
+          receipt.rollback_status = "ambiguous_do_not_retry";
+        }
       }
     }
     if (receiptPath) await writeReceipt(receiptPath, receipt);
@@ -966,376 +1126,9 @@ export async function runRoute({ context, config, migration, fetchImpl = fetch, 
   }
 }
 
-async function readBootstrapDatabase(api, migration) {
-  const databases = await listNamedD1Databases(api);
-  const target = selectNamedResource(databases, TARGET.databaseName, "database");
-  const databaseId = validateDatabaseIdentity(target);
-  const schema = await queryBootstrapDatabase(api, databaseId, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
-  if (validateReceiptSchema(schema, migration) !== "applied") fail("database_schema_not_applied");
-  validateMigrationLedger(await queryBootstrapDatabase(api, databaseId, "SELECT name FROM d1_migrations ORDER BY name"));
-  return databaseId;
-}
-
-async function assertPrivateWorkerState(inventory) {
-  if (inventory.worker?.exists !== true || inventory.worker.inventory_count < 1) fail("worker_bootstrap_handoff_mismatch");
-  if (inventory.versions?.status !== "known" || !Array.isArray(inventory.versions.items)) fail("worker_versions_ambiguous");
-  if (inventory.deployments?.status !== "absent"
-    && !(inventory.deployments?.status === "known" && inventory.deployments.count === 0)) fail("worker_bootstrap_handoff_mismatch");
-  if (!["absent", "known"].includes(inventory.subdomain?.status)) fail("worker_subdomain_ambiguous");
-  if (inventory.subdomain.status === "known") validateIntakeDisabled(inventory.subdomain);
-  if (inventory.routes?.status === "known" && inventory.routes.count !== 0) fail("worker_custom_route_present");
-  if (!new Set(["known", "unknown"]).has(inventory.routes?.status)) fail("worker_routes_ambiguous");
-  return true;
-}
-
-export function validateBootstrapFinalizeInventory(inventory, handoff) {
-  if (!inventory || inventory.status !== "complete" || !handoff) fail("worker_bootstrap_handoff_mismatch");
-  const subdomainPrivate = inventory.subdomain?.status === "absent"
-    || inventory.subdomain?.status === "known" && inventory.subdomain.enabled === false && inventory.subdomain.previews_enabled === false;
-  const routesPrivate = inventory.routes?.status === "unknown"
-    || inventory.routes?.status === "known" && inventory.routes.count === 0;
-  if (inventory.worker?.exists !== true || inventory.worker.inventory_count < 1
-    || inventory.versions?.status !== "known" || inventory.versions.count !== 1
-    || !Array.isArray(inventory.versions.items) || inventory.versions.items.length !== 1
-    || inventory.versions.items[0]?.id !== handoff.worker_revision
-    || inventory.versions.items[0]?.tag !== handoff.worker_revision_tag
-    || inventory.deployments?.status !== "absent" && !(inventory.deployments?.status === "known" && inventory.deployments.count === 0)
-    || !subdomainPrivate || !routesPrivate) fail("worker_bootstrap_handoff_mismatch");
-  return true;
-}
-
-export function validateBootstrapDeployedInventory(inventory, versionId) {
-  if (inventory?.worker?.exists !== true || inventory.deployments?.status !== "known"
-    || !inventory.deployments.active || !Array.isArray(inventory.deployments.active.versions)) fail("worker_revision_readback_mismatch");
-  const deploymentList = normalizeDeploymentList({ deployments: [inventory.deployments.active] });
-  if (selectPriorRevision(deploymentList) !== versionId) fail("worker_revision_readback_mismatch");
-  if (inventory.routes?.status === "known" && inventory.routes.count !== 0) fail("worker_custom_route_present");
-  if (inventory.subdomain?.status !== "known" || inventory.subdomain.enabled !== true || inventory.subdomain.previews_enabled !== false) fail("worker_subdomain_readback_mismatch");
-  return true;
-}
-
 export function validateWorkersDevEnabled(subdomain) {
   if (!subdomain || subdomain.enabled !== true || subdomain.previews_enabled !== false) fail("worker_subdomain_readback_mismatch");
   return true;
-}
-
-async function readWorkerWithToken(context, api, apiToken, fetchImpl, { allowTarget = false } = {}) {
-  let inventory;
-  try {
-    inventory = await readWorkerInventory({
-      context: {
-        repository: context.repository,
-        ref: context.ref,
-        sha: context.sha,
-        checkoutSha: context.checkoutSha,
-        readbackOnly: "true",
-        apiToken,
-      },
-      fetchImpl,
-    });
-  } catch (error) {
-    fail(error instanceof ReadbackError ? error.code : "worker_inventory_ambiguous");
-  }
-  const scriptRows = await api(`/accounts/${TARGET.accountId}/workers/scripts`);
-  const scriptSummary = validateBootstrapWorkerScriptInventory(scriptRows, { allowTarget });
-  if (inventory.worker?.exists !== scriptSummary.target_exists
-    || inventory.worker?.inventory_count !== scriptSummary.count) fail("worker_inventory_changed");
-  const preimageSummary = allowTarget ? null : validateBootstrapWorkerPreimage(inventory, scriptRows);
-  return { inventory, scriptSummary, preimageSummary };
-}
-
-export async function runBootstrapUpload({ context, config, migration, fetchImpl = fetch, command = runWrangler, receiptPath, worktree = process.cwd() }) {
-  const sha = validateBootstrapDispatch(context);
-  validateTrackedInputs(config, migration);
-  const api = makeCloudflareApi(context.bootstrapToken, fetchImpl);
-  const receipt = {
-    schema_version: 1,
-    issue: 1678,
-    mode: "bootstrap_upload",
-    run_id: context.runId,
-    run_attempt: context.runAttempt,
-    repository: TARGET.repository,
-    reviewed_main_sha: sha,
-    account_id: TARGET.accountId,
-    worker_name: TARGET.workerName,
-    database_name: TARGET.databaseName,
-    database_id: TARGET.databaseId,
-    binding: TARGET.databaseBinding,
-    migration: TARGET.migration,
-    migration_sha256: TARGET.migrationSha256,
-    workers_dev: false,
-    notifier: "not_configured",
-    custom_routes_status: "unknown",
-    captured_at: new Date().toISOString(),
-    status: "started",
-  };
-  let workerMutationStarted = false;
-  let tempDir = null;
-  let tempConfig = null;
-  let wranglerHome = null;
-  let stage = "account_readback";
-  try {
-    const account = await api(`/accounts/${TARGET.accountId}`);
-    if (account?.id !== TARGET.accountId) fail("account_identity_mismatch");
-
-    stage = "worker_preimage";
-    const firstWorkerRead = await readWorkerWithToken(context, api, context.bootstrapToken, fetchImpl);
-    const firstWorkerSummary = firstWorkerRead.preimageSummary;
-    Object.assign(receipt, {
-      worker_preimage: "absent",
-      custom_routes_status: firstWorkerSummary.routes,
-      worker_inventory_count_preimage: firstWorkerSummary.worker_inventory_count,
-      preexisting_worker_names: firstWorkerSummary.preexisting_worker_names,
-      versions_preimage: firstWorkerRead.inventory.versions.status,
-      deployments_preimage: firstWorkerRead.inventory.deployments.status,
-      subdomain_preimage: firstWorkerRead.inventory.subdomain.status,
-    });
-
-    stage = "database_schema_preimage";
-    const databaseId = await readBootstrapDatabase(api, migration);
-    if (databaseId !== TARGET.databaseId) fail("database_identity_mismatch");
-    receipt.database_preimage = "existing_exact_target";
-    receipt.database_schema_preimage = "applied";
-    receipt.database_migration_ledger = [TARGET.migration];
-
-    const runDir = process.env.RUNNER_TEMP || tmpdir();
-    tempDir = join(runDir, `b216-bootstrap-${randomUUID()}`);
-    await mkdir(tempDir, { recursive: true, mode: 0o700 });
-    wranglerHome = join(tempDir, "home");
-    await mkdir(wranglerHome, { mode: 0o700 });
-    tempConfig = join(tempDir, "wrangler.toml");
-    const appDir = resolve(worktree, "apps/dsr-alert-receiver");
-    const privateConfig = preparePrivateBootstrapConfig(config, migration, databaseId, appDir);
-    await writeFile(tempConfig, privateConfig, { mode: 0o600, flag: "wx" });
-
-    stage = "bootstrap_preimage_recheck";
-    const verifiedDatabaseId = await readBootstrapDatabase(api, migration);
-    if (verifiedDatabaseId !== TARGET.databaseId) fail("database_identity_mismatch");
-    receipt.database_schema_postflight = "exact_migration_applied";
-    const finalWorkerRead = await readWorkerWithToken(context, api, context.bootstrapToken, fetchImpl);
-    const finalWorkerSummary = finalWorkerRead.preimageSummary;
-    if (finalWorkerSummary.worker_inventory_count !== firstWorkerSummary.worker_inventory_count
-      || JSON.stringify(finalWorkerSummary.preexisting_worker_names) !== JSON.stringify(firstWorkerSummary.preexisting_worker_names)) fail("worker_inventory_changed");
-    Object.assign(receipt, {
-      custom_routes_status: finalWorkerSummary.routes,
-      worker_inventory_count_preimage: finalWorkerSummary.worker_inventory_count,
-      preexisting_worker_names: finalWorkerSummary.preexisting_worker_names,
-      versions_preimage: finalWorkerRead.inventory.versions.status,
-      deployments_preimage: finalWorkerRead.inventory.deployments.status,
-      subdomain_preimage: finalWorkerRead.inventory.subdomain.status,
-    });
-
-    workerMutationStarted = true;
-    stage = "worker_version_upload";
-    command(["versions", "upload", resolve(appDir, "src/index.ts"), "--config", tempConfig, "--tag", `b216-source-${sha}`, "--message", `B-216 private bootstrap reviewed main ${sha}`], {
-      cwd: appDir,
-      home: wranglerHome,
-      apiToken: context.bootstrapToken,
-    });
-
-    stage = "bootstrap_upload_readback";
-    const postUploadState = await readWorkerWithToken(context, api, context.bootstrapToken, fetchImpl, { allowTarget: true });
-    const postUploadInventory = postUploadState.inventory;
-    await assertPrivateWorkerState(postUploadInventory);
-    if (!postUploadState.scriptSummary.target_exists
-      || postUploadState.scriptSummary.count !== firstWorkerSummary.worker_inventory_count + 1
-      || JSON.stringify(postUploadState.scriptSummary.preexisting_worker_names) !== JSON.stringify(firstWorkerSummary.preexisting_worker_names)) fail("worker_inventory_changed");
-    const sourceTag = `b216-source-${sha}`;
-    const sourceVersions = postUploadInventory.versions.items.filter((version) => version.tag === sourceTag);
-    if (sourceVersions.length !== 1 || postUploadInventory.versions.count !== 1) fail("worker_uploaded_revision_ambiguous");
-    const sourceVersion = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${sourceVersions[0].id}`);
-    if (sourceVersion?.id !== sourceVersions[0].id
-      || sourceVersion?.metadata?.annotations?.["workers/tag"] !== sourceTag
-      || sourceVersion?.resources?.bindings?.some((binding) => binding?.type === "d1" && binding.name === TARGET.databaseBinding && (binding.database_id ?? binding.id) === TARGET.databaseId) !== true
-      || sourceVersion?.resources?.bindings?.some((binding) => binding?.type === "secret_text" && binding.name === TARGET.workerSecret) === true) fail("worker_bootstrap_version_mismatch");
-    receipt.worker_revision = sourceVersions[0].id;
-    receipt.worker_revision_tag = sourceTag;
-    receipt.secret_provisioned = false;
-    receipt.worker_inventory_count_postflight = postUploadState.scriptSummary.count;
-    receipt.preexisting_worker_names = postUploadState.scriptSummary.preexisting_worker_names;
-    receipt.deployments_postflight = "absent";
-    receipt.custom_routes_status = postUploadInventory.routes.status === "known" ? "absent" : "unknown";
-    receipt.custom_routes_count = postUploadInventory.routes.status === "known" ? 0 : null;
-    receipt.subdomain_postflight = postUploadInventory.subdomain.status === "absent"
-      ? "absent"
-      : postUploadInventory.subdomain.enabled === false && postUploadInventory.subdomain.previews_enabled === false
-        ? "disabled"
-        : "unknown";
-    if (postUploadInventory.deployments.status !== "absent"
-      && !(postUploadInventory.deployments.status === "known" && postUploadInventory.deployments.count === 0)
-      || receipt.subdomain_postflight === "unknown") fail("worker_bootstrap_postflight_mismatch");
-    receipt.public_ingress_status = receipt.custom_routes_status === "absent"
-      ? "workers_dev_disabled_routes_absent_subdomain_disabled"
-      : "workers_dev_disabled_subdomain_disabled_routes_unknown";
-    receipt.status = "private_version_uploaded";
-    receipt.completed_at = new Date().toISOString();
-    if (receiptPath) await writeReceipt(receiptPath, receipt);
-    return receipt;
-  } catch (error) {
-    receipt.status = "failed";
-    receipt.failed_stage = stage;
-    receipt.failure_code = error instanceof RouteError ? error.code : "route_failed_closed";
-    if (stage === "worker_version_upload" && error instanceof RouteError && error.providerFailure) {
-      Object.assign(receipt, error.providerFailure);
-    }
-    if (workerMutationStarted) receipt.rollback_status = "ambiguous_do_not_retry";
-    if (receiptPath) await writeReceipt(receiptPath, receipt);
-    throw error instanceof RouteError ? error : new RouteError("route_failed_closed");
-  } finally {
-    if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-export async function runBootstrapFinalize({ context, config, migration, fetchImpl = fetch, command = runWrangler, receiptPath, bootstrapReceipt, worktree = process.cwd() }) {
-  const sha = validateBootstrapFinalizeDispatch({ ...context, bootstrapReceipt });
-  validateTrackedInputs(config, migration);
-  const api = makeCloudflareApi(context.apiToken, fetchImpl);
-  const receipt = {
-    schema_version: 1,
-    issue: 1678,
-    mode: "bootstrap_finalize",
-    run_id: context.runId,
-    run_attempt: context.runAttempt,
-    reviewed_main_sha: sha,
-    account_id: TARGET.accountId,
-    worker_name: TARGET.workerName,
-    database_name: TARGET.databaseName,
-    database_id: TARGET.databaseId,
-    binding: TARGET.databaseBinding,
-    worker_revision: bootstrapReceipt.worker_revision,
-    worker_revision_tag: bootstrapReceipt.worker_revision_tag,
-    workers_dev: true,
-    preexisting_worker_names: bootstrapReceipt.preexisting_worker_names,
-    worker_inventory_count_preimage: bootstrapReceipt.worker_inventory_count_preimage,
-    secret_provisioned: false,
-    custom_routes_status: bootstrapReceipt.custom_routes_status,
-    captured_at: new Date().toISOString(),
-    status: "started",
-  };
-  let stage = "database_schema_preimage";
-  let mutationStarted = false;
-  let tempDir = null;
-  let tempConfig = null;
-  let wranglerHome = null;
-  try {
-    const account = await api(`/accounts/${TARGET.accountId}`);
-    if (account?.id !== TARGET.accountId) fail("account_identity_mismatch");
-    if (await readBootstrapDatabase(api, migration) !== TARGET.databaseId) fail("database_identity_mismatch");
-    receipt.database_schema_preimage = "exact_migration_applied";
-    receipt.database_migration_ledger = [TARGET.migration];
-    const initialWorkerState = await readWorkerWithToken(context, api, context.apiToken, fetchImpl, { allowTarget: true });
-    const initialInventory = initialWorkerState.inventory;
-    validateBootstrapFinalizeInventory(initialInventory, bootstrapReceipt);
-    if (!initialWorkerState.scriptSummary.target_exists
-      || initialWorkerState.scriptSummary.count !== bootstrapReceipt.worker_inventory_count_preimage + 1
-      || JSON.stringify(initialWorkerState.scriptSummary.preexisting_worker_names) !== JSON.stringify(bootstrapReceipt.preexisting_worker_names)) fail("worker_inventory_changed");
-    const initialTags = initialInventory.versions.items.filter((version) => version.id === bootstrapReceipt.worker_revision && version.tag === bootstrapReceipt.worker_revision_tag);
-    if (initialTags.length !== 1 || initialInventory.versions.count !== 1) fail("worker_bootstrap_handoff_mismatch");
-    const initialVersion = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${bootstrapReceipt.worker_revision}`);
-    if (initialVersion?.metadata?.annotations?.["workers/tag"] !== bootstrapReceipt.worker_revision_tag
-      || initialVersion?.resources?.bindings?.some((binding) => binding?.type === "d1" && binding.name === TARGET.databaseBinding && (binding.database_id ?? binding.id) === TARGET.databaseId) !== true
-      || initialVersion?.resources?.bindings?.some((binding) => binding?.type === "secret_text" && binding.name === TARGET.workerSecret) === true) fail("worker_bootstrap_handoff_mismatch");
-
-    const runDir = process.env.RUNNER_TEMP || tmpdir();
-    tempDir = join(runDir, `b216-bootstrap-finalize-${randomUUID()}`);
-    await mkdir(tempDir, { recursive: true, mode: 0o700 });
-    wranglerHome = join(tempDir, "home");
-    await mkdir(wranglerHome, { mode: 0o700 });
-    tempConfig = join(tempDir, "wrangler.toml");
-    const appDir = resolve(worktree, "apps/dsr-alert-receiver");
-    await writeFile(tempConfig, prepareWorkersDevBootstrapConfig(config, migration, TARGET.databaseId, appDir), { mode: 0o600, flag: "wx" });
-
-    stage = "bootstrap_prewrite_recheck";
-    if (await readBootstrapDatabase(api, migration) !== TARGET.databaseId) fail("database_identity_mismatch");
-    const latestWorkerState = await readWorkerWithToken(context, api, context.apiToken, fetchImpl, { allowTarget: true });
-    const latestInventory = latestWorkerState.inventory;
-    validateBootstrapFinalizeInventory(latestInventory, bootstrapReceipt);
-    if (latestWorkerState.scriptSummary.count !== initialWorkerState.scriptSummary.count
-      || JSON.stringify(latestWorkerState.scriptSummary.preexisting_worker_names) !== JSON.stringify(initialWorkerState.scriptSummary.preexisting_worker_names)) fail("worker_inventory_changed");
-
-    const versionTag = `b216-${sha}`;
-    mutationStarted = true;
-    stage = "worker_secret_provision";
-    command(["versions", "secret", "put", TARGET.workerSecret, "--config", tempConfig, "--tag", versionTag, "--message", `B-216 private bootstrap reviewed main ${sha}`], {
-      cwd: appDir,
-      home: wranglerHome,
-      apiToken: context.apiToken,
-      input: context.receiverToken,
-    });
-
-    stage = "worker_secret_readback";
-    const versionList = normalizeVersionList(await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions?per_page=100&deployable=true`));
-    const tagged = versionList.filter((version) => version?.metadata?.annotations?.["workers/tag"] === versionTag);
-    const source = versionList.filter((version) => version?.metadata?.annotations?.["workers/tag"] === bootstrapReceipt.worker_revision_tag);
-    if (versionList.length !== 2 || tagged.length !== 1 || source.length !== 1 || source[0]?.id !== bootstrapReceipt.worker_revision || !isUuid(tagged[0]?.id)) fail("worker_uploaded_revision_ambiguous");
-    const candidateVersion = await api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${tagged[0].id}`);
-    validateCandidateVersion(candidateVersion, TARGET.databaseId, versionTag);
-
-    stage = "worker_workers_dev_deploy";
-    command(["versions", "deploy", `${tagged[0].id}@100%`, "--yes", "--config", tempConfig], {
-      cwd: appDir,
-      home: wranglerHome,
-      apiToken: context.apiToken,
-    });
-
-    stage = "worker_workers_dev_readback";
-    const [deploymentResponse, deployedVersion, secrets] = await Promise.all([
-      api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/deployments`),
-      api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/versions/${tagged[0].id}`),
-      api(`/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/secrets`),
-    ]);
-    const deployments = normalizeDeploymentList(deploymentResponse);
-    if (selectPriorRevision(deployments) !== tagged[0].id) fail("worker_revision_readback_mismatch");
-    validatePostflight({
-      versionId: tagged[0].id,
-      deployment: deployments[0],
-      bindings: deployedVersion?.resources?.bindings ?? [],
-      secrets,
-      expectedTag: versionTag,
-    }, TARGET.databaseId, versionTag);
-    const postWorkerState = await readWorkerWithToken(context, api, context.apiToken, fetchImpl, { allowTarget: true });
-    const postInventory = postWorkerState.inventory;
-    validateBootstrapDeployedInventory(postInventory, tagged[0].id);
-    if (postWorkerState.scriptSummary.count !== initialWorkerState.scriptSummary.count
-      || JSON.stringify(postWorkerState.scriptSummary.preexisting_worker_names) !== JSON.stringify(initialWorkerState.scriptSummary.preexisting_worker_names)) fail("worker_inventory_changed");
-    receipt.worker_revision = tagged[0].id;
-    receipt.worker_revision_tag = versionTag;
-    receipt.secret_provisioned = true;
-    receipt.deployment_revision = tagged[0].id;
-    receipt.worker_inventory_count_postflight = postWorkerState.scriptSummary.count;
-    receipt.custom_routes_status = postInventory.routes.status === "known" ? "absent" : "unknown";
-    receipt.subdomain_postflight = postInventory.subdomain.status === "absent"
-      ? "absent"
-      : postInventory.subdomain.enabled === true && postInventory.subdomain.previews_enabled === false ? "enabled" : "unknown";
-    validateWorkersDevEnabled(postInventory.subdomain);
-    receipt.public_ingress_status = receipt.custom_routes_status === "absent"
-      ? "workers_dev_enabled_custom_routes_absent_previews_disabled"
-      : "workers_dev_enabled_no_custom_routes_configured_previews_disabled";
-    receipt.status = "workers_dev_receiver_deployed_and_verified";
-    receipt.completed_at = new Date().toISOString();
-    if (receiptPath) await writeReceipt(receiptPath, receipt);
-    return receipt;
-  } catch (error) {
-    receipt.status = "failed";
-    receipt.failed_stage = stage;
-    receipt.failure_code = error instanceof RouteError ? error.code : "route_failed_closed";
-    if (stage === "worker_secret_provision" && error instanceof RouteError && error.providerFailure) Object.assign(receipt, error.providerFailure);
-    if (mutationStarted) {
-      try {
-        const path = `/accounts/${TARGET.accountId}/workers/scripts/${TARGET.workerName}/subdomain`;
-        await api(path, { method: "POST", body: { enabled: false, previews_enabled: false } });
-        const disabled = await api(path);
-        if (disabled?.enabled !== false || disabled?.previews_enabled !== false) fail("workers_dev_rollback_readback_mismatch");
-        receipt.rollback_status = "workers_dev_disabled_verified";
-      } catch {
-        receipt.rollback_status = "ambiguous_manual_disable_required";
-      }
-    }
-    if (receiptPath) await writeReceipt(receiptPath, receipt);
-    throw error instanceof RouteError ? error : new RouteError("route_failed_closed");
-  } finally {
-    if (tempDir) await rm(tempDir, { recursive: true, force: true }).catch(() => {});
-  }
 }
 
 async function queryDatabase(api, id, sql, params = []) {
@@ -1344,9 +1137,9 @@ async function queryDatabase(api, id, sql, params = []) {
   return results[0].results;
 }
 
-export async function queryBootstrapDatabase(api, id, sql, params = []) {
-  if (!/^SELECT\b/i.test(sql) || /\b(?:CREATE|DROP|ALTER|INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)) fail("bootstrap_database_query_not_read_only");
-  if (!Array.isArray(params) || params.some((parameter) => typeof parameter !== "string" && typeof parameter !== "number" && typeof parameter !== "boolean" && parameter !== null)) fail("bootstrap_database_query_not_read_only");
+export async function queryReadOnlyDatabase(api, id, sql, params = []) {
+  if (!/^SELECT\b/i.test(sql) || /\b(?:CREATE|DROP|ALTER|INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)) fail("database_query_not_read_only");
+  if (!Array.isArray(params) || params.some((parameter) => typeof parameter !== "string" && typeof parameter !== "number" && typeof parameter !== "boolean" && parameter !== null)) fail("database_query_not_read_only");
   return queryDatabase(api, id, sql, params);
 }
 
@@ -1355,9 +1148,10 @@ export async function main() {
   const appDir = resolve(worktree, "apps/dsr-alert-receiver");
   const config = await readFile(resolve(appDir, "wrangler.toml"), "utf8");
   const migration = await readFile(resolve(appDir, "migrations", TARGET.migration), "utf8");
-  const bootstrapStage = process.env.B216_BOOTSTRAP_STAGE;
-  if (bootstrapStage !== undefined && !["upload", "finalize"].includes(bootstrapStage)) {
-    process.stderr.write("B-216 route stopped: bootstrap_stage_invalid\n");
+  // The two-stage bootstrap (#2765) needed an account whose whole Worker inventory
+  // it could pin; on the shared account it cannot exist, and it is retired.
+  if (process.env.B216_BOOTSTRAP_STAGE !== undefined) {
+    process.stderr.write("B-216 route stopped: bootstrap_retired_on_shared_account\n");
     process.exitCode = 1;
     return;
   }
@@ -1366,26 +1160,13 @@ export async function main() {
     ref: process.env.GITHUB_REF,
     sha: process.env.GITHUB_SHA,
     checkoutSha: execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8" }).trim(),
-    ...(bootstrapStage === "upload"
-      ? { bootstrapToken: process.env.B216_CF_RECEIVER_BOOTSTRAP_TOKEN }
-      : { apiToken: process.env.B216_CF_RECEIVER_WRITE_TOKEN, receiverToken: process.env.B216_DSR_ALERT_RECEIVER_TOKEN }),
-    runId: process.env.GITHUB_RUN_ID,
-    runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+    apiToken: process.env.B216_CF_RECEIVER_WRITE_TOKEN,
+    receiverToken: process.env.B216_DSR_ALERT_RECEIVER_TOKEN,
   };
   const runDir = process.env.RUNNER_TEMP || tmpdir();
-  const receiptPath = join(runDir, bootstrapStage === "upload" ? "b216-receiver-bootstrap-stage-a.json" : "b216-receiver-route-receipt.json");
+  const receiptPath = join(runDir, "b216-receiver-route-receipt.json");
   try {
-    if (bootstrapStage === "upload") {
-      await runBootstrapUpload({ context, config, migration, receiptPath, worktree });
-    } else if (bootstrapStage === "finalize") {
-      const handoffPath = process.env.B216_BOOTSTRAP_HANDOFF_PATH;
-      if (!handoffPath) fail("bootstrap_handoff_missing");
-      let bootstrapReceipt;
-      try { bootstrapReceipt = JSON.parse(await readFile(handoffPath, "utf8")); } catch { fail("bootstrap_handoff_ambiguous"); }
-      await runBootstrapFinalize({ context, config, migration, receiptPath, bootstrapReceipt, worktree });
-    } else {
-      await runRoute({ context, config, migration, receiptPath, worktree });
-    }
+    await runRoute({ context, config, migration, receiptPath, worktree });
   } catch (error) {
     const code = error instanceof RouteError ? error.code : "route_failed_closed";
     try {
@@ -1393,7 +1174,7 @@ export async function main() {
     } catch {
       await writeReceipt(receiptPath, {
         schema_version: 1,
-        issue: bootstrapStage ? 1678 : 2741,
+        issue: 1678,
         repository: TARGET.repository,
         reviewed_main_sha: context.sha,
         account_id: TARGET.accountId,
@@ -1402,7 +1183,7 @@ export async function main() {
         binding: TARGET.databaseBinding,
         migration: TARGET.migration,
         migration_sha256: TARGET.migrationSha256,
-        disjointness_note: "B-216 uses its dedicated exact-name resource; #2563 has no current D1 target and its future owner must provision a distinct disposable database.",
+        disjointness_note: "B-216 adopts only its dedicated exact-name Worker and D1 on the shared account; production and staging names are refused.",
         captured_at: new Date().toISOString(),
         status: "failed",
         failure_code: code,

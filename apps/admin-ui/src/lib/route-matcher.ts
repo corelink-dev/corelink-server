@@ -217,7 +217,7 @@ export function isProtectedPath(pathname: string): boolean {
  *
  * This used to branch on whether `pathname` already carried `/corelink`, to
  * support the subdomain→path migration where the app answered on BOTH
- * `corelink-app.humangr.com/*` (no prefix) and `humangr.com/corelink/*`. That
+ * the retired `corelink-app` subdomain (no prefix) and `humangr.com/corelink/*`. That
  * branch was wrong in production for two independent reasons, and the two
  * cancelled out into a silent breakage:
  *

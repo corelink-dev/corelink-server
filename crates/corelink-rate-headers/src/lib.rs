@@ -176,7 +176,7 @@
 //!   `prop_rate_limit_body_always_consistent_with_headers` at 10k
 //!   iterations PR-gate; 100k nightly).
 //! - The canonical customer-facing docs URL
-//!   [`headers::DOCS_URL`] = `https://docs.corelink.humangr.com/explanation/rate-limits`
+//!   [`headers::DOCS_URL`] = `https://corelink-docs.humangr.com/explanation/rate-limits`
 //!   (matches `apps/docs/docs/explanation/rate-limits.mdx`).
 //!
 //! Customer SDKs pattern-match on `error.kind` (5-arm taxonomy) +

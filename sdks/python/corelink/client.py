@@ -50,8 +50,8 @@ from .types import (
 )
 
 # Canonical flat prod host (`corelink-*.humangr.com`). NOTE: the dotted
-# `*.corelink.humangr.com` pattern is DEAD — the previous default
-# `api.corelink.humangr.com` never resolved.
+# `*.corelink.humangr.com` pattern is DEAD — the previous default, the
+# dotted `api.` name under it, never resolved.
 _DEFAULT_BASE_URL = "https://corelink-api.humangr.com"
 _DEFAULT_TIMEOUT = 30.0
 
