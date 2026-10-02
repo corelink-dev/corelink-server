@@ -336,100 +336,12 @@ fn b126_t1_files_remain_below_the_1000_line_ceiling() {
             include_str!("routes/dsr/adapter_d1/classification.rs"),
         ),
     ];
-    let violations = b126_ceiling_violations(FILES, B126_DECLARED_DEBT);
-    assert!(violations.is_empty(), "{}", violations.join("\n"));
-}
-
-/// B-126's exclusive line ceiling for every file in the list above.
-const B126_CEILING: usize = 1_000;
-
-/// Files over the ceiling on main, each bounded at its measured line count.
-/// `main.rs` was 1047 lines on 2026-10-01. Splitting it changes its sha256,
-/// which `scripts/verify_i2176_grpc_deny_gate.py`,
-/// `scripts/verify_i2574_grpc_diagnostic_policy.py` and
-/// `scripts/backlog_verify.py` pin, so the split belongs to the owners of
-/// those pins. Until then it may not grow, and its bound comes down with it.
-/// Shrink-only; an entry whose file is back under the ceiling is deleted.
-const B126_DECLARED_DEBT: &[(&str, usize)] = &[("main.rs", 1_047)];
-
-/// Every B-126 ceiling breach in `files`, all of them rather than the first:
-/// a file without declared debt at or above the ceiling, a file with debt
-/// above its bound, a bound that no longer matches its shrunken file, and a
-/// debt entry for a file the list does not hold.
-fn b126_ceiling_violations(files: &[(&str, &str)], debt: &[(&str, usize)]) -> Vec<String> {
-    let mut violations = Vec::new();
-    for (path, bound) in debt {
-        if !files.iter().any(|(listed, _)| listed == path) {
-            violations.push(format!(
-                "B-126 declared debt names {path} ({bound} lines), which the ceiling list does not hold"
-            ));
-        }
+    for (path, source) in FILES {
+        assert!(
+            source.lines().count() < 1_000,
+            "B-126 regression: {path} reached the 1000-line ceiling"
+        );
     }
-    for (path, source) in files {
-        let lines = source.lines().count();
-        let bound = debt
-            .iter()
-            .find(|(declared, _)| declared == path)
-            .map(|(_, bound)| *bound);
-        match bound {
-            None if lines >= B126_CEILING => violations.push(format!(
-                "B-126 regression: {path} has {lines} lines, reaching the {B126_CEILING}-line ceiling"
-            )),
-            Some(bound) if lines > bound => violations.push(format!(
-                "B-126 regression: {path} grew to {lines} lines, past its declared debt of {bound}"
-            )),
-            Some(bound) if lines < B126_CEILING => violations.push(format!(
-                "{path} is back under the {B126_CEILING}-line ceiling ({lines} lines): \
-                 delete its B-126 declared debt entry ({bound})"
-            )),
-            Some(bound) if lines < bound => violations.push(format!(
-                "{path} shrank to {lines} lines: lower its B-126 declared debt from {bound} to {lines}"
-            )),
-            None | Some(_) => {}
-        }
-    }
-    violations
-}
-
-/// Teeth for the ceiling check, on synthetic files: declared debt for one
-/// file must not hide a breach in another, and must not let its own file grow.
-#[test]
-fn b126_t1_declared_debt_is_isolated_and_bounded() {
-    let (at_bound, grown, shrunk) = (
-        "x\n".repeat(1_047),
-        "x\n".repeat(1_048),
-        "x\n".repeat(1_046),
-    );
-    let (under, at_ceiling) = ("x\n".repeat(999), "x\n".repeat(1_000));
-    let (at_bound, grown, shrunk) = (at_bound.as_str(), grown.as_str(), shrunk.as_str());
-    let (under, at_ceiling) = (under.as_str(), at_ceiling.as_str());
-    let debt: &[(&str, usize)] = &[("main.rs", 1_047)];
-    let check = |files: &[(&str, &str)]| b126_ceiling_violations(files, debt);
-
-    assert!(check(&[("main.rs", at_bound), ("a.rs", under)]).is_empty());
-    assert_eq!(
-        check(&[("main.rs", at_bound), ("a.rs", at_ceiling)]),
-        ["B-126 regression: a.rs has 1000 lines, reaching the 1000-line ceiling"]
-    );
-    assert_eq!(
-        check(&[("main.rs", grown)]),
-        ["B-126 regression: main.rs grew to 1048 lines, past its declared debt of 1047"]
-    );
-    assert_eq!(
-        check(&[("main.rs", shrunk)]),
-        ["main.rs shrank to 1046 lines: lower its B-126 declared debt from 1047 to 1046"]
-    );
-    assert_eq!(
-        check(&[("main.rs", under)]),
-        ["main.rs is back under the 1000-line ceiling (999 lines): \
-             delete its B-126 declared debt entry (1047)"]
-    );
-    assert_eq!(
-        check(&[("a.rs", under)]),
-        ["B-126 declared debt names main.rs (1047 lines), which the ceiling list does not hold"]
-    );
-    // Every breach is reported, not only the first one met.
-    assert_eq!(check(&[("main.rs", grown), ("a.rs", at_ceiling)]).len(), 2);
 }
 
 #[test]
