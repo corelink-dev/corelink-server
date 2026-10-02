@@ -1306,8 +1306,9 @@ describe("B-216 protected receiver route admission", () => {
     expect(workflow).toContain('if [[ "$STAGING_CF_ACCOUNT_ID" != "$EXPECTED_ACCOUNT" ]]; then');
     expect(workflow).toContain("staging_account_mismatch");
     const secretReferences = [...workflow.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)\s*\}\}/g)].map((match) => match[1]);
-    expect(new Set(secretReferences)).toEqual(new Set(["STAGING_CF_ACCOUNT_ID", "STAGING_CF_WORKER_API_TOKEN", "STAGING_DSR_DLQ_ALERT_AUTH_TOKEN"]));
-    expect(workflow).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}");
+    expect(new Set(secretReferences)).toEqual(new Set(["STAGING_CF_ACCOUNT_ID", TARGET.apiTokenSecret, "STAGING_DSR_DLQ_ALERT_AUTH_TOKEN"]));
+    expect(TARGET.apiTokenSecret).toBe("CF_API_TOKEN");
+    expect(workflow.match(/B216_CF_RECEIVER_WRITE_TOKEN: \$\{\{ secrets\.CF_API_TOKEN \}\}/g)).toHaveLength(4);
     expect(workflow).toContain("B216_DSR_ALERT_RECEIVER_TOKEN: ${{ secrets.STAGING_DSR_DLQ_ALERT_AUTH_TOKEN }}");
     expect(workflow).not.toMatch(/^  (push|pull_request|schedule):/m);
     const inputReferences = [...workflow.matchAll(/\$\{\{\s*!?inputs\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g)].map((match) => match[1]);
@@ -1318,7 +1319,9 @@ describe("B-216 protected receiver route admission", () => {
     expect(workflow).toContain("run-disable-workers-dev.mjs");
     expect(route).not.toContain("runBootstrap");
     expect(route).toContain("bootstrap_retired_on_shared_account");
-    expect(workflow).not.toContain("secrets." + "CF_API_TOKEN");
+    // Lead decision after readback run 37028034683: the repository deploy token
+    // replaces the staging Worker token in every mode.
+    expect(workflow).not.toContain("STAGING_CF_WORKER_API_TOKEN");
     expect(workflow).not.toContain("secrets." + "CLOUDFLARE_API_TOKEN");
     expect(workflow).not.toContain("env.CLOUDFLARE_API_TOKEN");
     expect(workflow).not.toMatch(/runs-on:\s*\[?self-hosted/i);

@@ -62,7 +62,11 @@ class MemoryDb implements D1DatabaseLike {
         if (sql.includes("tenant_billing")) return { results: this.customer && !this.missingTenants.has(String(args[0])) ? [{ stripe_customer_id: this.customer }] as T[] : [] as T[] };
         if (sql.includes("FROM sla_credit_ledger")) {
           const now = Number(args[0]);
-          return { results: [...this.ledger.values()].map((row) => ({ ...row,
+          // Annotated as Row: spreading an index-signature type drops the
+          // signature, so without it the joined row narrows to
+          // { measurement_tier } and the filter below fails TS2339. Row is the
+          // same Record<string, unknown> the production LEFT JOIN query reads.
+          return { results: [...this.ledger.values()].map((row): Row => ({ ...row,
             measurement_tier: this.measurements.find((measurement) => measurement.tenant_id === row.tenant_id && measurement.service_period === row.service_period)?.tier,
           })).filter((row) =>
             ((row.status === "pending" || row.status === "failed") && Number(row.next_attempt_at_ms) <= now) ||
