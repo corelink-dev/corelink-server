@@ -11,22 +11,23 @@ const MIN_CLEANUP_MS = 75 * 60_000;
 const workflowPath = new URL("../../.github/workflows/issue-1700-container-staging-deploy.yml", import.meta.url);
 const runtimePath = new URL("../issue_1700_runtime_probe.mjs", import.meta.url);
 
-test("v14 window and full-cleanup admission boundaries are exact", () => {
+test("v15 window and full-cleanup admission boundaries are exact", () => {
   assert.deepEqual(PROBE_WINDOW, {
     cron: "*/2 * * * *",
-    starts_ms: Date.parse("2026-10-02T10:00:00Z"),
-    last_entry_ms: Date.parse("2026-10-02T12:00:00Z"),
-    expires_ms: Date.parse("2026-10-02T13:15:00Z"),
-    nonce: "issue-1700-recovery-20261002-v14",
+    starts_ms: Date.parse("2026-10-02T18:00:00Z"),
+    last_entry_ms: Date.parse("2026-10-02T20:00:00Z"),
+    expires_ms: Date.parse("2026-10-02T21:15:00Z"),
+    nonce: "issue-1700-recovery-20261002-v15",
   });
   assert.equal(isApprovedProbeWindow({ ...PROBE_WINDOW }), true);
   for (const nonce of ["issue-1700-recovery-20261001-v7", "issue-1700-recovery-20261001-v10",
     "issue-1700-recovery-20261001-v11", "issue-1700-recovery-20261002-v12",
-    "issue-1700-recovery-20261002-v13"]) {
+    "issue-1700-recovery-20261002-v13", "issue-1700-recovery-20261002-v14"]) {
     assert.equal(isApprovedProbeWindow({ ...PROBE_WINDOW, nonce }), false);
   }
   // The expired, never-dispatched v11 tuple, the superseded, never-dispatched
-  // v12 tuple and the dispatched, failed-closed v13 tuple are never reused.
+  // v12 tuple, the dispatched, failed-closed v13 tuple and the expired, never-
+  // dispatched v14 tuple are never reused.
   const expiredV11 = { cron: "*/2 * * * *", starts_ms: Date.parse("2026-10-01T20:00:00Z"),
     last_entry_ms: Date.parse("2026-10-01T22:00:00Z"), expires_ms: Date.parse("2026-10-01T23:15:00Z"),
     nonce: "issue-1700-recovery-20261001-v11" };
@@ -36,7 +37,10 @@ test("v14 window and full-cleanup admission boundaries are exact", () => {
   const failedV13 = { cron: "*/2 * * * *", starts_ms: Date.parse("2026-10-02T07:00:00Z"),
     last_entry_ms: Date.parse("2026-10-02T09:00:00Z"), expires_ms: Date.parse("2026-10-02T10:15:00Z"),
     nonce: "issue-1700-recovery-20261002-v13" };
-  for (const retired of [expiredV11, supersededV12, failedV13]) {
+  const expiredV14 = { cron: "*/2 * * * *", starts_ms: Date.parse("2026-10-02T10:00:00Z"),
+    last_entry_ms: Date.parse("2026-10-02T12:00:00Z"), expires_ms: Date.parse("2026-10-02T13:15:00Z"),
+    nonce: "issue-1700-recovery-20261002-v14" };
+  for (const retired of [expiredV11, supersededV12, failedV13, expiredV14]) {
     assert.equal(isApprovedProbeWindow(retired), false);
     assert.equal(isApprovedProbeWindow({ ...retired, nonce: PROBE_WINDOW.nonce }), false);
     assert.equal(isApprovedProbeWindow({ ...PROBE_WINDOW, nonce: retired.nonce }), false);
@@ -44,7 +48,7 @@ test("v14 window and full-cleanup admission boundaries are exact", () => {
   }
   assert.equal(deploymentWindowAllows(PROBE_WINDOW.starts_ms - 1), false);
   assert.equal(deploymentWindowAllows(PROBE_WINDOW.starts_ms), true);
-  const dispatchEnd = Date.parse("2026-10-02T10:20:00Z");
+  const dispatchEnd = Date.parse("2026-10-02T18:20:00Z");
   assert.equal(deploymentWindowAllows(PROBE_WINDOW.starts_ms + 1), true);
   assert.equal(deploymentWindowAllows(dispatchEnd - 1), true);
   assert.equal(deploymentWindowAllows(dispatchEnd), false);
@@ -80,7 +84,7 @@ test("pre-install window module executes from an empty node_modules directory", 
     await copyFile(modulePath, localModule);
     const child = spawnSync(process.execPath, ["--input-type=module", "-e",
       `import { PROBE_WINDOW, deploymentWindowAllows } from ${JSON.stringify(pathToFileURL(localModule).href)};\n` +
-      `if (PROBE_WINDOW.nonce !== "issue-1700-recovery-20261002-v14") process.exit(2);\n` +
+      `if (PROBE_WINDOW.nonce !== "issue-1700-recovery-20261002-v15") process.exit(2);\n` +
       `if (!deploymentWindowAllows(PROBE_WINDOW.starts_ms)) process.exit(3);\n` +
       `if (deploymentWindowAllows(PROBE_WINDOW.last_entry_ms - 75 * 60_000)) process.exit(4);\n`
     ], { cwd: temporary, encoding: "utf8", timeout: 5000 });
@@ -91,7 +95,7 @@ test("pre-install window module executes from an empty node_modules directory", 
 });
 
 
-test("all compiled admission and cleanup consumers agree on the v14 tuple", async () => {
+test("all compiled admission and cleanup consumers agree on the v15 tuple", async () => {
   const source = async path => readFile(new URL(`../../${path}`, import.meta.url), "utf8");
   const iso = ms => new Date(ms).toISOString().replace(/\.000Z$/, "Z");
   assert.deepEqual(JSON.parse(await source("crates/corelink-container/src/routes/staging_d1_probe_window.json")), PROBE_WINDOW);
@@ -105,13 +109,13 @@ test("all compiled admission and cleanup consumers agree on the v14 tuple", asyn
   for (const path of ["scripts/issue_1700_rollback_quiescence.py", "scripts/verify_i2575_readiness.py"]) {
     const text = await source(path);
     for (const value of [PROBE_WINDOW.nonce, PROBE_WINDOW.starts_ms, PROBE_WINDOW.last_entry_ms, PROBE_WINDOW.expires_ms]) assert.ok(text.includes(String(value)), `${path}: ${value}`);
-    assert.doesNotMatch(text, /issue-1700-recovery-20261001-v1[01]|issue-1700-recovery-20261002-v1[23]|1790856000000|1790877600000|1790882100000|1790884800000|1790892000000|1790896500000|1790953200000|1790960400000|1790964900000|1790924400000|1790931600000|1790936100000/);
+    assert.doesNotMatch(text, /issue-1700-recovery-20261001-v1[01]|issue-1700-recovery-20261002-v1[234]|1790856000000|1790877600000|1790882100000|1790884800000|1790892000000|1790896500000|1790953200000|1790960400000|1790964900000|1790924400000|1790931600000|1790936100000|1790935200000|1790942400000|1790946900000/);
   }
   for (const path of ["scripts/issue_1700_http_probe.mjs", "scripts/issue_1700_runtime_probe.mjs"]) {
     const text = await source(path);
     assert.ok(text.includes(`Date.parse("${iso(PROBE_WINDOW.starts_ms)}")`), `${path}: start`);
     assert.ok(text.includes(`Date.parse("${iso(PROBE_WINDOW.expires_ms)}")`), `${path}: expiry`);
-    assert.doesNotMatch(text, /issue-1700-recovery-20261001-v1[01]|issue-1700-recovery-20261002-v1[23]|2026-10-01T19:15:00Z|2026-10-01T20:00:00Z|2026-10-01T23:15:00Z|2026-10-02T15:00:00Z|2026-10-02T18:15:00Z|2026-10-02T07:00:00Z|2026-10-02T10:15:00Z/);
+    assert.doesNotMatch(text, /issue-1700-recovery-20261001-v1[01]|issue-1700-recovery-20261002-v1[234]|2026-10-01T19:15:00Z|2026-10-01T20:00:00Z|2026-10-01T23:15:00Z|2026-10-02T15:00:00Z|2026-10-02T18:15:00Z|2026-10-02T07:00:00Z|2026-10-02T10:15:00Z|2026-10-02T10:00:00Z|2026-10-02T13:15:00Z/);
   }
   // The legacy scheduled admission stays HTTP-only for the compiled nonce.
   const durableObject = await source("worker/src/durable_object.ts");

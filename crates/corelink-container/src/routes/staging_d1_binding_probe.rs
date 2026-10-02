@@ -414,7 +414,7 @@ mod tests {
     };
 
     const RELEASE: &str = "0123456789abcdef0123456789abcdef01234567";
-    const TIME: u64 = 1790935320000;
+    const TIME: u64 = 1790964120000;
 
     fn input() -> ProbeRequest {
         ProbeRequest {
@@ -429,10 +429,10 @@ mod tests {
     fn accepts_only_exact_timed_staging_probe_contract() {
         let window = probe_window();
         assert_eq!(window.cron, "*/2 * * * *");
-        assert_eq!(window.starts_ms, 1790935200000);
-        assert_eq!(window.last_entry_ms, 1790942400000);
-        assert_eq!(window.expires_ms, 1790946900000);
-        assert_eq!(window.nonce, "issue-1700-recovery-20261002-v14");
+        assert_eq!(window.starts_ms, 1790964000000);
+        assert_eq!(window.last_entry_ms, 1790971200000);
+        assert_eq!(window.expires_ms, 1790975700000);
+        assert_eq!(window.nonce, "issue-1700-recovery-20261002-v15");
         assert!(valid_request(&input(), TIME));
         let mut last_valid = input();
         last_valid.scheduled_time_ms = probe_window().last_entry_ms;
@@ -463,7 +463,7 @@ mod tests {
     fn probe_table_identifier_is_derived_only_from_hex_release_and_time() {
         assert_eq!(
             format!("corelink_staging_d1_probe_{}_{}", &RELEASE[..16], TIME),
-            "corelink_staging_d1_probe_0123456789abcdef_1790935320000"
+            "corelink_staging_d1_probe_0123456789abcdef_1790964120000"
         );
     }
 

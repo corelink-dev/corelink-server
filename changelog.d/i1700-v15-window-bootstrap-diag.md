@@ -1,16 +1,18 @@
 ### Fixed
 
-- **#1700 native staging proof moved from the failed v13 window to the v14
+- **#1700 native staging proof moved from the failed v13 window to the v15
   window.** V13 (run 36976287686) passed every read check and the preimage
   capture, then failed closed at the first bootstrap write; an independent
   readback showed no provider change, and its nonce
-  `issue-1700-recovery-20261002-v13` is never reused. Every compiled consumer
+  `issue-1700-recovery-20261002-v13` is never reused. The interim v14 tuple
+  (`issue-1700-recovery-20261002-v14`, 2026-10-02T10:00Z–13:15Z) expired
+  without being dispatched and is never reused. Every compiled consumer
   (native window JSON, Worker cleanup window, PID1 supervisor, deploy guard,
   HTTP/runtime receipt validators, rollback quiescence and i2575 readiness) now
-  binds `issue-1700-recovery-20261002-v14`: dispatch 2026-10-02T10:00Z–10:20Z,
-  last admission 12:00Z inclusive, expiry 13:15Z exclusive (exactly v13 + 3 h).
-  The legacy scheduled path stays HTTP-only for v14. Source only: no provider
-  call, dispatch or deploy.
+  binds `issue-1700-recovery-20261002-v15`: dispatch 2026-10-02T18:00Z–18:20Z,
+  last admission 20:00Z inclusive, expiry 21:15Z exclusive (exactly v14 + 8 h).
+  The legacy scheduled path stays HTTP-only for v14 and v15; tests reject the
+  v11–v14 tuples and nonces. Source only: no provider call, dispatch or deploy.
 - **#1700 bootstrap failures are now classified in the receipt instead of all
   reading `bootstrap_unknown`.** V13's secret PUT was refused about 0.9 s after
   the request, and nothing recorded the HTTP status or Cloudflare error codes.
