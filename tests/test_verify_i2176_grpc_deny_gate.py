@@ -134,25 +134,31 @@ class P0WaveClassifierTests(unittest.TestCase):
             if verifier_sha == verify.WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256:
                 self.assertEqual(hashlib.sha256(restored).hexdigest(), base_verifier_sha)
             else:
-                self._pin_derived_pre_route_verifier(hashlib.sha256(restored).hexdigest())
+                self._pin_derived_pre_route_verifier(hashlib.sha256(restored).hexdigest(), verifier_sha)
             replace_fixture(verifier_path, restored)
         else:
             self.assertEqual(verifier_sha, base_verifier_sha, "unexpected B068 source in route fixture")
 
-    def _pin_derived_pre_route_verifier(self, digest: str) -> None:
+    def _pin_derived_pre_route_verifier(self, digest: str, transformed_digest: str) -> None:
         """Stand in for the historical pre-route verifier in fixture tests only.
 
-        The pre-route B068 verifier (the 377bcacb #2565 target) predates the
-        #2800/#2811 edits and is not in this tree. The exact inverse of the
-        route transform applied to the reviewed successor replaces it, so the
-        transform is exercised on today's bytes. Production pins stay
-        historical; the patch is undone when the test ends.
+        The pre-route B068 verifier (the 377bcacb #2565 target) and its #2792
+        transform (294ea6c1) predate the #2800/#2811 edits and are not in this
+        tree. The exact inverse of the route transform applied to the reviewed
+        successor stands in for 377bcacb, and the successor itself, which is
+        that stand-in's exact transform, stands in for 294ea6c1. The admitted
+        verifier set is bound to the #2565 state, so both stand-ins are
+        needed for the delivered ("new") era. Production pins stay historical;
+        both patches are undone when the test ends.
         """
         group = verify.WAVE_GROUPS["i2565"]
         old_pin, _new_pin = group[verify.WALLET_ROUTE_VERIFIER_PATH]
         patcher = patch.dict(group, {verify.WALLET_ROUTE_VERIFIER_PATH: (old_pin, (0o644, digest))})
         patcher.start()
         self.addCleanup(patcher.stop)
+        transformed = patch.object(verify, "WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256", transformed_digest)
+        transformed.start()
+        self.addCleanup(transformed.stop)
 
     def _wallet_route_classifier_patches(self):
         states = {name: "new" for name in ("i1652", "i1648", "i1700", "i2565")}
@@ -204,7 +210,9 @@ class P0WaveClassifierTests(unittest.TestCase):
             self._normalize_old_wallet_route_fixture(trusted)
             base_live, transformed_live = verify._wallet_route_expected_live(trusted)
             self.assertNotEqual(base_live, transformed_live)
-            transformed_verifier = verify._wallet_route_expected_verifier(trusted, transformed_live)
+            transformed_verifier = verify._wallet_route_expected_verifier(
+                trusted, transformed_live, verify._i2565_endpoint_state(trusted)
+            )
             replace_bytes(trusted, verify.WALLET_ROUTE_LIVE_PATH, transformed_live)
             replace_bytes(trusted, verify.WALLET_ROUTE_VERIFIER_PATH, transformed_verifier)
             for relative in verify.WALLET_ROUTE_ORDINARY_PATHS:
@@ -230,7 +238,7 @@ class P0WaveClassifierTests(unittest.TestCase):
         self.assertEqual(base_live.count(verify.WALLET_ROUTE_LITERAL), 11)
         (candidate / verify.WALLET_ROUTE_LIVE_PATH).write_bytes(transformed_live)
         (candidate / verify.WALLET_ROUTE_VERIFIER_PATH).write_bytes(
-            verify._wallet_route_expected_verifier(trusted, transformed_live)
+            verify._wallet_route_expected_verifier(trusted, transformed_live, "new")
         )
         for relative in verify.WALLET_ROUTE_ORDINARY_PATHS:
             target = candidate / relative
@@ -268,7 +276,7 @@ class P0WaveClassifierTests(unittest.TestCase):
                 for relative in verify.WALLET_ROUTE_ORDINARY_PATHS:
                     target = candidate / relative
                     target.write_bytes(target.read_bytes() + b"\n")
-                verifier = verify._wallet_route_expected_verifier(trusted, transformed_live)
+                verifier = verify._wallet_route_expected_verifier(trusted, transformed_live, "new")
                 start = verifier.index(verify.WALLET_ROUTE_VERIFIER_KEY) + len(verify.WALLET_ROUTE_VERIFIER_KEY)
                 verifier = verifier[:start] + b"0" * 64 + verifier[start + 64:]
                 (candidate / verify.WALLET_ROUTE_VERIFIER_PATH).write_bytes(verifier)
@@ -668,6 +676,75 @@ class ReviewedBaselineTests(unittest.TestCase):
                     with self.assertRaisesRegex(verify.ContractError, message):
                         verify.validate_wave(self.base, self.base, set())
         self.assertTrue(verify.validate_wave(self.base, self.base, set()))
+
+    def test_b068_verifier_set_is_bound_to_the_2565_state(self) -> None:
+        delivered = verify.WAVE_GROUPS["i2565"][verify.WALLET_ROUTE_VERIFIER_PATH][1][1]
+        successor = verify.WAVE_GROUP_SUCCESSOR_PINS["i2565"][verify.WALLET_ROUTE_VERIFIER_PATH][1]
+        new = verify._wallet_route_allowed_verifiers("new")
+        self.assertEqual(new, {delivered, verify.WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256})
+        self.assertEqual(verify._wallet_route_allowed_verifiers("successor"), {successor})
+        self.assertTrue(new.isdisjoint({successor}))
+        for state in ("old", "partial", ""):
+            with self.subTest(state), self.assertRaises(verify.ContractError):
+                verify._wallet_route_allowed_verifiers(state)
+
+    def test_validate_wave_refuses_a_b068_verifier_from_another_2565_era(self) -> None:
+        """Production path: real validate_wave on the real tree with one mixed pair.
+
+        The #2565 endpoint classifier skips the wallet-route paths, so the
+        B068 verifier was checked only against the union of every era. A BASE
+        with successor endpoints and the stale #2792 verifier (294ea6c1) was
+        labelled "successor", and validate_wave(base, base, set()) returned
+        True. Neither 294ea6c1 nor 377bcacb is in this tree, and CI checks out
+        at fetch-depth 1, so each era verifier is stood in by real bytes whose
+        digest is patched into that era's pin. The live harness is exact.
+        """
+        base = self.base
+        verifier_path, live_path = verify.WALLET_ROUTE_VERIFIER_PATH, verify.WALLET_ROUTE_LIVE_PATH
+        successor_verifier = (base / verifier_path).read_bytes()
+        live = (base / live_path).read_bytes()
+        self.assertEqual(hashlib.sha256(live).hexdigest(), verify.WALLET_ROUTE_TRANSFORMED_LIVE_SHA256)
+        self.assertTrue(verify.validate_wave(base, base, set()), "positive control: the unmixed BASE")
+
+        # #2792 era: a verifier that still embeds the transformed live digest.
+        stale = successor_verifier + b"\n# stand-in for the #2792 B068 verifier (294ea6c1)\n"
+        # Delivered era: the exact pre-route live harness and a verifier that
+        # embeds its digest (the inverse of the #2792 transform).
+        module, end_marker = verify.WALLET_ROUTE_LIVE_MODULE, verify.WALLET_ROUTE_LIVE_END
+        start = live.index(module)
+        region_end = live.index(end_marker, start) + len(end_marker) - len(b"\n\nimpl Drop for HarnessCleanup")
+        region = live[start:region_end]
+        pre_route_live = live[:start] + region.replace(
+            b'"/stripe-prod-test', b'"/_wallet/proxy/stripe-prod-test'
+        ) + live[region_end:]
+        delivered_live_sha = verify.WAVE_GROUPS["i2565"][live_path][1][1]
+        self.assertEqual(hashlib.sha256(pre_route_live).hexdigest(), delivered_live_sha)
+        key = verify.WALLET_ROUTE_VERIFIER_KEY
+        at = successor_verifier.index(key) + len(key)
+        delivered_verifier = successor_verifier[:at] + delivered_live_sha.encode("ascii") + successor_verifier[at + 64:]
+
+        group = verify.WAVE_GROUPS["i2565"]
+        old_pin = group[verifier_path][0]
+        cases = (
+            ("#2792 verifier beside successor endpoints", {verifier_path: stale},
+             patch.object(verify, "WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256", hashlib.sha256(stale).hexdigest())),
+            ("delivered live and verifier beside successor endpoints",
+             {verifier_path: delivered_verifier, live_path: pre_route_live},
+             patch.dict(group, {verifier_path: (old_pin, (0o644, hashlib.sha256(delivered_verifier).hexdigest()))})),
+        )
+        for name, moved, era_pin in cases:
+            with self.subTest(name), era_pin, contextlib.ExitStack() as stack:
+                for relative, content in moved.items():
+                    stack.enter_context(self._moved(base, relative, content))
+                # The full-group classifier already calls this BASE mixed.
+                with self.assertRaisesRegex(verify.ContractError, "partial trusted BASE delivery state: i2565"):
+                    verify._wave_group_state(base, "i2565")
+                # Production path first: before the fix this returned True.
+                with self.assertRaisesRegex(verify.ContractError, "partial trusted BASE delivery state: i2565"):
+                    verify.validate_wave(base, base, set())
+                with self.assertRaisesRegex(verify.ContractError, "not admitted in #2565 state successor"):
+                    verify._wallet_route_base_states(base)
+        self.assertTrue(verify.validate_wave(base, base, set()))
 
 
 class ReviewedBaselineLedgerTests(unittest.TestCase):

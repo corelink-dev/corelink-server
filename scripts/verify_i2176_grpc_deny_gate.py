@@ -1160,7 +1160,28 @@ def _wallet_route_expected_live(base: Path) -> tuple[bytes, bytes]:
     return source, transformed
 
 
-def _wallet_route_expected_verifier(base: Path, accepted_live: bytes) -> bytes:
+def _wallet_route_allowed_verifiers(state: str) -> frozenset[str]:
+    """The B068 verifier digests that one classified #2565 endpoint state admits.
+
+    Never the union of every era. "new" admits the delivered verifier and its
+    exact #2792 route transform; "successor" admits only the reviewed
+    successor. A stale verifier next to successor endpoints, or a successor
+    verifier next to delivered endpoints, is a mixed BASE and fails closed.
+    """
+    if state == "new":
+        return frozenset((
+            WAVE_GROUPS["i2565"][WALLET_ROUTE_VERIFIER_PATH][1][1],
+            WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256,
+        ))
+    if state == "successor":
+        successor = WAVE_GROUP_SUCCESSOR_PINS.get("i2565", {}).get(WALLET_ROUTE_VERIFIER_PATH)
+        if successor is None:
+            raise ContractError("#2565 successor state has no reviewed B068 verifier")
+        return frozenset((successor[1],))
+    raise ContractError(f"unknown #2565 endpoint state: {state}")
+
+
+def _wallet_route_expected_verifier(base: Path, accepted_live: bytes, state: str) -> bytes:
     source = (base / WALLET_ROUTE_VERIFIER_PATH).read_bytes()
     if source.count(WALLET_ROUTE_VERIFIER_KEY) != 1:
         raise ContractError("trusted B068 live source pin is ambiguous")
@@ -1174,16 +1195,12 @@ def _wallet_route_expected_verifier(base: Path, accepted_live: bytes) -> bytes:
     accepted = hashlib.sha256(accepted_live).hexdigest().encode("ascii")
     expected = source[:start] + accepted + source[end:]
     expected_sha = hashlib.sha256(expected).hexdigest()
-    allowed = [
-        WAVE_GROUPS["i2565"][WALLET_ROUTE_VERIFIER_PATH][1][1],
-        WALLET_ROUTE_TRANSFORMED_VERIFIER_SHA256,
-    ]
-    # The reviewed successor keeps the transformed live digest (#2800, #2811).
-    successor = WAVE_GROUP_SUCCESSOR_PINS.get("i2565", {}).get(WALLET_ROUTE_VERIFIER_PATH)
-    if successor is not None:
-        allowed.append(successor[1])
-    if expected_sha not in allowed:
-        raise ContractError("trusted B068 verifier is not the frozen BASE or exact route transform")
+    # Bound to the classified endpoint state: the embedded live digest pairs
+    # the verifier with its live harness, and this set pairs it with the
+    # #2565 endpoints. The reviewed successor keeps the transformed live
+    # digest (#2800, #2811).
+    if expected_sha not in _wallet_route_allowed_verifiers(state):
+        raise ContractError(f"trusted B068 verifier is not admitted in #2565 state {state}")
     return expected
 
 
@@ -1225,11 +1242,13 @@ def _wallet_route_base_states(trusted_base: Path) -> dict[str, str]:
         expected_live_pin[1], WALLET_ROUTE_TRANSFORMED_LIVE_SHA256
     ):
         raise ContractError("trusted wallet live harness does not prove consumed #2565")
-    verifier = _wallet_route_expected_verifier(trusted_base, actual_live)
+    # Classify the endpoints first: the B068 verifier is admitted only for
+    # that state, so a stale or mixed verifier cannot ride on it.
+    endpoint_state = _i2565_endpoint_state(trusted_base)
+    verifier = _wallet_route_expected_verifier(trusted_base, actual_live, endpoint_state)
     actual_verifier = (trusted_base / WALLET_ROUTE_VERIFIER_PATH).read_bytes()
     if actual_verifier != verifier:
         raise ContractError("trusted B068 verifier is not paired with its wallet live harness")
-    endpoint_state = _i2565_endpoint_state(trusted_base)
     for relative in WALLET_ROUTE_PATHS:
         require_regular_mode(trusted_base, relative)
     states["i2565"] = endpoint_state
@@ -1267,7 +1286,7 @@ def validate_wallet_route_candidate(
         raise ContractError("wallet live harness must be BASE or exact 11-literal route transform")
     if actual_live != base_live and not WALLET_ROUTE_ORDINARY_PATHS <= changes:
         raise ContractError("wallet live route transform requires all three ordinary Stripe source paths")
-    expected_verifier = _wallet_route_expected_verifier(trusted_base, actual_live)
+    expected_verifier = _wallet_route_expected_verifier(trusted_base, actual_live, states["i2565"])
     actual_verifier = (candidate / WALLET_ROUTE_VERIFIER_PATH).read_bytes()
     if actual_verifier != expected_verifier:
         raise ContractError("B068 verifier may change only the BASE-derived live source digest")
