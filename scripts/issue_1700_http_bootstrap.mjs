@@ -30,7 +30,9 @@ const SHA = /^[0-9a-f]{40}$/;
 const MAX_API_BYTES = 262_144;
 const MAX_IPC_BYTES = 32_768;
 const SOURCE = fileURLToPath(import.meta.url);
-const reject = () => new Error("bootstrap_rejected");
+// A refusal may name the acceptance check that failed, from FAILURE_VALIDATIONS only.
+const VALIDATION = Symbol("validation");
+const reject = (validation = null) => Object.assign(new Error("bootstrap_rejected"), { [VALIDATION]: validation });
 const unknown = () => new Error("bootstrap_unknown");
 const record = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const exact = (value, keys) => record(value) && Reflect.ownKeys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
@@ -38,18 +40,106 @@ const uuid = value => typeof value === "string" && UUID.test(value);
 const byName = (a, b) => a.name.localeCompare(b.name);
 const wrappedSettings = bindings => ({ success: true, errors: [], messages: [], result: { bindings } });
 
+// Redacted failure record: the receipt names WHERE a provider call failed and HOW,
+// using fixed enums and bounded integers only. It never holds a body, URL, ID,
+// token, secret or provider-supplied text.
+export const FAILURE_PHASES = Object.freeze([
+  "prepare_deployments_before", "prepare_subdomain_before", "prepare_settings_before", "prepare_put_secret",
+  "prepare_settings_after", "prepare_deployments_after",
+  "bind_verify_candidate", "bind_subdomain_before", "bind_enable_subdomain", "bind_subdomain_after",
+  "probe_verify_candidate",
+  "cleanup_verify_before_restore", "cleanup_subdomain_before", "cleanup_restore_subdomain", "cleanup_subdomain_after",
+  "cleanup_verify_before_delete", "cleanup_delete_secret", "cleanup_settings_after", "cleanup_deployments_after",
+  "cleanup_version_after",
+]);
+export const FAILURE_ENDPOINTS = Object.freeze(["settings", "deployments", "subdomain", "secrets", "secret_named", "version"]);
+export const FAILURE_MESSAGE_CLASSES = Object.freeze(["authentication", "permission", "not_found", "rate_limit",
+  "conflict", "workers_dev", "other"]);
+export const FAILURE_VALIDATIONS = Object.freeze([
+  // The HTTP response itself (validation is null for a non-2xx status: the status says it).
+  "redirected_url", "status_not_200", "content_type_not_json", "body_missing", "body_too_large", "body_not_json",
+  // The Cloudflare v4 envelope.
+  "envelope_not_object", "envelope_not_success", "envelope_errors_present", "envelope_messages_present",
+  "envelope_result_missing",
+  // The result shape and the exact checks made on it.
+  "bindings_invalid", "subdomain_invalid", "deployments_invalid", "preimage_mismatch", "subdomain_not_disabled",
+  "secret_already_present", "result_not_exact_name_type", "name_mismatch", "type_mismatch", "secret_not_bound",
+  "deployment_chain_mismatch", "version_mismatch", "release_binding_mismatch", "subdomain_not_enabled",
+  "subdomain_state_mismatch", "etag_invalid", "result_not_empty", "secret_still_bound", "derivative_mismatch",
+]);
+export const FAILURE_KEYS = Object.freeze(["phase", "endpoint_label", "http_status", "cf_error_codes", "cf_message_class",
+  "validation_failed", "timed_out", "aborted"]);
+const httpStatus = response => Number.isSafeInteger(response?.status) && response.status >= 100 && response.status <= 599 ? response.status : null;
+const MAX_CF_CODES = 8;
+const MAX_CF_CODE = 2_147_483_647;
+// Well-known Cloudflare API error messages, matched on a bounded prefix and reduced to a class.
+const CF_MESSAGE_PATTERNS = [
+  ["authentication", /authentication error|unable to authenticate|invalid (?:api |access )?token|unauthori[sz]ed/i],
+  ["permission", /permission|not authori[sz]ed|forbidden|access denied/i],
+  ["rate_limit", /rate limit|too many requests|throttl/i],
+  ["not_found", /not[ _]found|does not exist/i],
+  ["workers_dev", /workers\.dev|subdomain/i],
+  ["conflict", /conflict|already exists|in progress|concurrent|version|etag/i],
+];
+function endpointLabel(path) {
+  if (path === "/settings") return "settings";
+  if (path === "/deployments") return "deployments";
+  if (path === "/subdomain") return "subdomain";
+  if (path === "/secrets") return "secrets";
+  if (path === `/secrets/${SECRET_NAME}`) return "secret_named";
+  return /^\/versions\/[0-9a-f-]{36}$/.test(path) ? "version" : null;
+}
+function messageClass(rows) {
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!record(row) || typeof row.message !== "string") continue;
+    const text = row.message.slice(0, 256);
+    return CF_MESSAGE_PATTERNS.find(([, pattern]) => pattern.test(text))?.[0] ?? "other";
+  }
+  return null;
+}
+// Reads only integer `errors[].code` and a message class; nothing else of the body is kept.
+function describeBody(call, body) {
+  if (!record(body)) return;
+  call.cf_error_codes = (Array.isArray(body.errors) ? body.errors : [])
+    .filter(row => record(row) && Number.isSafeInteger(row.code) && row.code >= 0 && row.code <= MAX_CF_CODE)
+    .slice(0, MAX_CF_CODES).map(row => row.code);
+  call.cf_message_class = messageClass(body.errors) ?? messageClass(body.messages);
+}
+export function validFailure(value) {
+  return exact(value, FAILURE_KEYS) && FAILURE_PHASES.includes(value.phase) && FAILURE_ENDPOINTS.includes(value.endpoint_label) &&
+    (value.http_status === null || (Number.isSafeInteger(value.http_status) && value.http_status >= 100 && value.http_status <= 599)) &&
+    Array.isArray(value.cf_error_codes) && value.cf_error_codes.length <= MAX_CF_CODES &&
+    value.cf_error_codes.every(code => Number.isSafeInteger(code) && code >= 0 && code <= MAX_CF_CODE) &&
+    (value.cf_message_class === null || FAILURE_MESSAGE_CLASSES.includes(value.cf_message_class)) &&
+    (value.validation_failed === null || FAILURE_VALIDATIONS.includes(value.validation_failed)) &&
+    typeof value.timed_out === "boolean" && typeof value.aborted === "boolean";
+}
+// One line for the workflow log, re-validated so a tampered ledger cannot print free text.
+export function failureLine(snapshot) {
+  const value = record(snapshot) ? snapshot.failure : undefined;
+  if (value === null) return "issue-1700 bootstrap failure none_recorded";
+  if (!validFailure(value)) return "issue-1700 bootstrap failure unavailable";
+  return `issue-1700 bootstrap failure phase=${value.phase} endpoint=${value.endpoint_label} ` +
+    `http_status=${value.http_status ?? "none"} cf_error_codes=${value.cf_error_codes.join(",") || "none"} ` +
+    `cf_message_class=${value.cf_message_class ?? "none"} validation_failed=${value.validation_failed ?? "none"} ` +
+    `timed_out=${value.timed_out} aborted=${value.aborted}`;
+}
+
 function envelope(value) {
-  if (!record(value) || value.success !== true || !Array.isArray(value.errors) || value.errors.length !== 0 ||
-      !Array.isArray(value.messages) || value.messages.length !== 0 || !Object.hasOwn(value, "result")) throw reject();
+  if (!record(value)) throw reject("envelope_not_object");
+  if (value.success !== true) throw reject("envelope_not_success");
+  if (!Array.isArray(value.errors) || value.errors.length !== 0) throw reject("envelope_errors_present");
+  if (!Array.isArray(value.messages) || value.messages.length !== 0) throw reject("envelope_messages_present");
+  if (!Object.hasOwn(value, "result")) throw reject("envelope_result_missing");
   return value.result;
 }
 export function bindingInventory(value) {
   const result = envelope(value);
-  if (!record(result) || !Array.isArray(result.bindings) || result.bindings.length > 128) throw reject();
+  if (!record(result) || !Array.isArray(result.bindings) || result.bindings.length > 128) throw reject("bindings_invalid");
   const names = new Set();
   return result.bindings.map(binding => {
     if (!record(binding) || typeof binding.name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(binding.name) ||
-        typeof binding.type !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(binding.type) || names.has(binding.name)) throw reject();
+        typeof binding.type !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(binding.type) || names.has(binding.name)) throw reject("bindings_invalid");
     names.add(binding.name);
     // No binding values (including plaintext fields) leave this extractor.
     return { name: binding.name, type: binding.type };
@@ -58,20 +148,20 @@ export function bindingInventory(value) {
 export function subdomainState(value) {
   const result = envelope(value);
   if (!exact(result, ["enabled", "previews_enabled"]) || typeof result.enabled !== "boolean" ||
-      typeof result.previews_enabled !== "boolean") throw reject();
+      typeof result.previews_enabled !== "boolean") throw reject("subdomain_invalid");
   return { enabled: result.enabled, previews_enabled: result.previews_enabled };
 }
 export function deploymentInventory(value) {
   const result = envelope(value);
   if (!exact(result, ["deployments"]) || !Array.isArray(result.deployments) ||
-      result.deployments.length < 1 || result.deployments.length > 10) throw reject();
+      result.deployments.length < 1 || result.deployments.length > 10) throw reject("deployments_invalid");
   const ids = new Set();
   let previous = Infinity;
   return result.deployments.map(row => {
     const at = typeof row?.created_on === "string" ? Date.parse(row.created_on) : NaN;
     if (!record(row) || !uuid(row.id) || ids.has(row.id) || !Number.isSafeInteger(at) || at > previous ||
         row.strategy !== "percentage" || !Array.isArray(row.versions) || row.versions.length !== 1 ||
-        !exact(row.versions[0], ["version_id", "percentage"]) || !uuid(row.versions[0].version_id) || row.versions[0].percentage !== 100) throw reject();
+        !exact(row.versions[0], ["version_id", "percentage"]) || !uuid(row.versions[0].version_id) || row.versions[0].percentage !== 100) throw reject("deployments_invalid");
     ids.add(row.id); previous = at;
     return { deployment_id: row.id, version_id: row.versions[0].version_id, created_at_ms: at };
   });
@@ -91,10 +181,9 @@ function candidateInput(value, input) {
       !/^sha256:[0-9a-f]{64}$/.test(value.image_digest ?? "")) throw reject();
   return { ...value };
 }
-async function boundedBody(response) {
-  if (response.status !== 200 || response.redirected || !/^application\/json(?:;|$)/i.test(response.headers.get("content-type") ?? "")) throw reject();
+async function boundedJson(response) {
   const reader = response.body?.getReader();
-  if (!reader) throw reject();
+  if (!reader) throw reject("body_missing");
   let length = 0;
   const chunks = [];
   try {
@@ -102,11 +191,28 @@ async function boundedBody(response) {
       const item = await reader.read();
       if (item.done) break;
       length += item.value.byteLength;
-      if (length > MAX_API_BYTES) throw reject();
+      if (length > MAX_API_BYTES) throw reject("body_too_large");
       chunks.push(item.value);
     }
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+    try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))); }
+    catch { throw reject("body_not_json"); }
   } finally { await reader.cancel().catch(() => {}); }
+}
+// Accepts only a 200, non-redirected, bounded JSON body. A refused non-200 JSON body is read
+// under the same bound solely for its integer error codes and message class.
+async function boundedBody(response, call) {
+  if (response.redirected) throw reject("redirected_url");
+  const json = /^application\/json(?:;|$)/i.test(response.headers.get("content-type") ?? "");
+  if (response.status !== 200) {
+    if (json) describeBody(call, await boundedJson(response).catch(() => undefined));
+    // A non-2xx status names itself; only a 2xx other than 200 is a failed acceptance check.
+    if (call.http_status >= 200 && call.http_status <= 299) throw reject("status_not_200");
+    throw reject();
+  }
+  if (!json) throw reject("content_type_not_json");
+  const body = await boundedJson(response);
+  describeBody(call, body);
+  return body;
 }
 export async function privateDirectory(directory, create = false) {
   if (typeof directory !== "string" || !isAbsolute(directory) || resolve(directory) !== directory ||
@@ -120,6 +226,25 @@ async function writeLedger(directory, value, initial = false) {
   const handle = await open(join(directory, BROKER_LEDGER), flags, 0o600);
   try { await handle.writeFile(`${JSON.stringify(value)}\n`); await handle.sync(); }
   finally { await handle.close(); }
+}
+// Prints exactly one redacted line and never throws: the ledger is read through one
+// no-follow, non-blocking descriptor, bounded, and only its re-validated `failure` is shown.
+export async function ledgerFailureLine(directory) {
+  try {
+    await privateDirectory(directory);
+    const handle = await open(join(directory, BROKER_LEDGER), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600 || stat.size > MAX_IPC_BYTES) throw reject();
+      const buffer = Buffer.alloc(MAX_IPC_BYTES + 1);
+      let length = 0;
+      for (let read; (read = (await handle.read(buffer, length, buffer.length - length, length)).bytesRead) > 0;) {
+        length += read;
+        if (length > MAX_IPC_BYTES) throw reject();
+      }
+      return failureLine(JSON.parse(buffer.toString("utf8", 0, length)));
+    } finally { await handle.close(); }
+  } catch { return "issue-1700 bootstrap failure unavailable"; }
 }
 
 // This closure alone owns both credentials. It exposes only fixed protocol data.
@@ -144,6 +269,7 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
   let restoreAttempted = false, restored = false, deleteAttempted = false, deleted = false;
   let secretAt = null, preimage = null, bindings = null, postDelete = null;
   let probeSeen = false, cleanupBasis = null, admissionClosed = false;
+  let failure = null, lastCall = null, ownedVersionCall = null;
   const snapshot = () => ({ contract: BROKER_CONTRACT, operation_id: input.operation_id,
     worker_release: input.expected_release, started_at_ms: started, expires_at_ms: deadline, state,
     secret_name: SECRET_NAME, secret_put_attempted: secretAttempted, secret_put_confirmed: secretConfirmed,
@@ -152,100 +278,128 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     secret_delete_attempted: deleteAttempted, secret_deleted: deleted,
     rollback_safe: state === "cleaned", cleanup_basis: cleanupBasis, probe_command_seen: probeSeen, admission_closed: admissionClosed,
     preimage, post_secret: afterSecret, post_delete: postDelete, candidate,
-    preimage_bindings: bindings, pid: process.pid });
+    preimage_bindings: bindings, failure, pid: process.pid });
   const alive = () => { if (now() >= deadline || controller.signal.aborted || state === "unknown" || state === "closed") throw unknown(); };
   async function persist() { await save(snapshot()); }
-  async function api(path, method = "GET", body) {
-    alive();
+  // First failure wins; only enums and bounded integers are copied out of a call.
+  function note(call, error, timedOut = false, aborted = false) {
+    if (failure !== null || call === null || call.endpoint_label === null) return;
+    const validation = error?.[VALIDATION] ?? null;
+    failure = { phase: call.phase, endpoint_label: call.endpoint_label, http_status: call.http_status,
+      cf_error_codes: [...call.cf_error_codes], cf_message_class: call.cf_message_class,
+      validation_failed: FAILURE_VALIDATIONS.includes(validation) ? validation : null, timed_out: timedOut, aborted };
+  }
+  // A check on an already-accepted response failed: attribute it to that call.
+  function refuse(validation, call = lastCall) {
+    const error = reject(validation);
+    note(call, error);
+    return error;
+  }
+  function nestedBindings(bindings, call = lastCall) {
+    try { return bindingInventory(wrappedSettings(bindings)); }
+    catch { throw refuse("bindings_invalid", call); }
+  }
+  async function api(phase, path, extract = value => value, method = "GET", body) {
+    if (!FAILURE_PHASES.includes(phase)) throw reject();
+    const call = lastCall = { phase, endpoint_label: endpointLabel(path), http_status: null, cf_error_codes: [], cf_message_class: null };
+    try { alive(); }
+    catch (error) { note(call, error, now() >= deadline, controller.signal.aborted); throw error; }
     if (!["/settings", "/deployments", "/subdomain", "/secrets", `/secrets/${SECRET_NAME}`].includes(path) &&
         !/^\/versions\/[0-9a-f-]{36}$/.test(path)) throw reject();
     const budget = Math.min(30_000, deadline - now());
-    let timer;
+    let timer, timedOut = false;
     const abort = new AbortController();
     const onAbort = () => abort.abort();
     controller.signal.addEventListener("abort", onAbort, { once: true });
-    const timeout = new Promise((_, fail) => { timer = setTimeout(() => { abort.abort(); fail(unknown()); }, budget); });
+    const timeout = new Promise((_, fail) => { timer = setTimeout(() => { timedOut = true; abort.abort(); fail(unknown()); }, budget); });
     const operation = (async () => {
       const url = API + path;
       const response = await request(url, { method, redirect: "error", credentials: "omit", cache: "no-store", signal: abort.signal,
         headers: { authorization: `Bearer ${input.api_token}`, accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-      if (response.url && response.url !== url) throw reject();
-      const result = await boundedBody(response);
+      call.http_status = httpStatus(response);
+      if (response.url && response.url !== url) throw reject("redirected_url");
+      const result = extract(await boundedBody(response, call));
       alive();
       return result;
     })();
     try { return await Promise.race([operation, timeout]); }
+    catch (error) { note(call, error, timedOut || now() >= deadline, !timedOut && controller.signal.aborted); throw error; }
     finally { clearTimeout(timer); controller.signal.removeEventListener("abort", onAbort); }
   }
   function requireSecret(inventory) {
     const found = inventory.filter(row => row.name === SECRET_NAME);
-    if (found.length !== 1 || found[0].type !== "secret_text") throw reject();
+    if (found.length !== 1 || found[0].type !== "secret_text") throw refuse("secret_not_bound");
   }
-  async function currentCandidate() {
-    const rows = deploymentInventory(await api("/deployments"));
+  async function currentCandidate(phase) {
+    const rows = await api(phase, "/deployments", deploymentInventory);
     const current = rows[0];
     if (!candidate || current.deployment_id !== candidate.candidate_deployment_id || current.version_id !== candidate.candidate_version_id ||
         !afterSecret || !rows.some(row => row.deployment_id === afterSecret.deployment_id && row.version_id === afterSecret.version_id) ||
-        current.created_at_ms < afterSecret.created_at_ms || current.created_at_ms > now()) throw reject();
-    const version = envelope(await api(`/versions/${candidate.candidate_version_id}`));
+        current.created_at_ms < afterSecret.created_at_ms || current.created_at_ms > now()) throw refuse("deployment_chain_mismatch");
+    const version = await api(phase, `/versions/${candidate.candidate_version_id}`, envelope);
+    const versionCall = ownedVersionCall = lastCall;
     if (!record(version) || version.id !== candidate.candidate_version_id ||
-        version.annotations?.["workers/message"] !== `issue-1700-route-free-${input.operation_id}-${input.expected_release}`) throw reject();
+        version.annotations?.["workers/message"] !== `issue-1700-route-free-${input.operation_id}-${input.expected_release}`) throw refuse("version_mismatch");
     const rawBindings = version.resources?.bindings;
-    if (!Array.isArray(rawBindings)) throw reject();
-    bindingInventory({ success: true, errors: [], messages: [], result: { bindings: rawBindings } });
+    if (!Array.isArray(rawBindings)) throw refuse("bindings_invalid");
+    nestedBindings(rawBindings, versionCall);
     const release = rawBindings.filter(row => row.name === "SENTRY_RELEASE");
-    if (release.length !== 1 || release[0].type !== "plain_text" || release[0].text !== input.expected_release) throw reject();
-    requireSecret(bindingInventory(await api("/settings")));
+    if (release.length !== 1 || release[0].type !== "plain_text" || release[0].text !== input.expected_release) throw refuse("release_binding_mismatch");
+    requireSecret(await api(phase, "/settings", bindingInventory));
     return version;
   }
-  async function currentOwned() {
-    if (candidate) return currentCandidate();
-    const rows = deploymentInventory(await api("/deployments"));
-    if (!afterSecret || rows[0].deployment_id !== afterSecret.deployment_id || rows[0].version_id !== afterSecret.version_id) throw reject();
-    requireSecret(bindingInventory(await api("/settings")));
-    const version = envelope(await api(`/versions/${afterSecret.version_id}`));
-    if (!record(version) || version.id !== afterSecret.version_id) throw reject();
+  async function currentOwned(phase) {
+    if (candidate) return currentCandidate(phase);
+    const rows = await api(phase, "/deployments", deploymentInventory);
+    if (!afterSecret || rows[0].deployment_id !== afterSecret.deployment_id || rows[0].version_id !== afterSecret.version_id) throw refuse("deployment_chain_mismatch");
+    requireSecret(await api(phase, "/settings", bindingInventory));
+    const version = await api(phase, `/versions/${afterSecret.version_id}`, envelope);
+    ownedVersionCall = lastCall;
+    if (!record(version) || version.id !== afterSecret.version_id) throw refuse("version_mismatch");
     return version;
   }
   async function prepare() {
     if (state !== "starting") throw reject();
-    const rows = deploymentInventory(await api("/deployments"));
-    if (rows[0].deployment_id !== input.preimage_deployment_id || rows[0].version_id !== input.preimage_version_id) throw reject();
-    preimage = { ...rows[0], subdomain: subdomainState(await api("/subdomain")) };
-    if (preimage.subdomain.enabled !== false || preimage.subdomain.previews_enabled !== false) throw reject();
+    const rows = await api("prepare_deployments_before", "/deployments", deploymentInventory);
+    if (rows[0].deployment_id !== input.preimage_deployment_id || rows[0].version_id !== input.preimage_version_id) throw refuse("preimage_mismatch");
+    preimage = { ...rows[0], subdomain: await api("prepare_subdomain_before", "/subdomain", subdomainState) };
+    if (preimage.subdomain.enabled !== false || preimage.subdomain.previews_enabled !== false) throw refuse("subdomain_not_disabled");
     // Last read immediately before PUT: inspect ALL binding types, not secret-only inventory.
-    bindings = bindingInventory(await api("/settings"));
-    if (bindings.some(row => row.name === SECRET_NAME)) throw reject();
+    bindings = await api("prepare_settings_before", "/settings", bindingInventory);
+    if (bindings.some(row => row.name === SECRET_NAME)) throw refuse("secret_already_present");
     secretAttempted = true; secretAt = now(); await persist();
-    const result = envelope(await api("/secrets", "PUT", { name: SECRET_NAME, type: "secret_text", text: key.toString("base64url") }));
-    if (!exact(result, ["name", "type"]) || result.name !== SECRET_NAME || result.type !== "secret_text") throw reject();
+    const result = await api("prepare_put_secret", "/secrets", envelope, "PUT",
+      { name: SECRET_NAME, type: "secret_text", text: key.toString("base64url") });
+    if (!exact(result, ["name", "type"])) throw refuse("result_not_exact_name_type");
+    if (result.name !== SECRET_NAME) throw refuse("name_mismatch");
+    if (result.type !== "secret_text") throw refuse("type_mismatch");
     secretConfirmed = true;
-    requireSecret(bindingInventory(await api("/settings")));
-    const after = deploymentInventory(await api("/deployments"));
+    requireSecret(await api("prepare_settings_after", "/settings", bindingInventory));
+    const after = await api("prepare_deployments_after", "/deployments", deploymentInventory);
     afterSecret = after[0];
     if (afterSecret.deployment_id === preimage.deployment_id || afterSecret.version_id === preimage.version_id ||
         afterSecret.created_at_ms < Math.floor(secretAt / 1000) * 1000 || afterSecret.created_at_ms > now() ||
-        !after.some(row => row.deployment_id === preimage.deployment_id && row.version_id === preimage.version_id)) throw reject();
+        !after.some(row => row.deployment_id === preimage.deployment_id && row.version_id === preimage.version_id)) throw refuse("deployment_chain_mismatch");
     state = "prepared"; await persist(); return snapshot();
   }
   async function bindCandidate(value) {
     if (state !== "prepared") throw reject();
     candidate = candidateInput(value, input);
     if (candidate.candidate_version_id === afterSecret.version_id || candidate.candidate_deployment_id === afterSecret.deployment_id) throw reject();
-    await currentCandidate();
-    const before = subdomainState(await api("/subdomain"));
-    if (before.enabled || before.previews_enabled) throw reject();
+    await currentCandidate("bind_verify_candidate");
+    const before = await api("bind_subdomain_before", "/subdomain", subdomainState);
+    if (before.enabled || before.previews_enabled) throw refuse("subdomain_not_disabled");
     enabledAttempted = true; await persist();
-    const result = subdomainState(await api("/subdomain", "POST", { enabled: true, previews_enabled: false }));
-    if (!result.enabled || result.previews_enabled) throw reject();
-    const readback = subdomainState(await api("/subdomain"));
-    if (!readback.enabled || readback.previews_enabled) throw reject();
+    const result = await api("bind_enable_subdomain", "/subdomain", subdomainState, "POST", { enabled: true, previews_enabled: false });
+    if (!result.enabled || result.previews_enabled) throw refuse("subdomain_not_enabled");
+    const readback = await api("bind_subdomain_after", "/subdomain", subdomainState);
+    if (!readback.enabled || readback.previews_enabled) throw refuse("subdomain_not_enabled");
     enabled = true; state = "enabled"; await persist(); return snapshot();
   }
   async function probe() {
     if (state !== "enabled") throw reject();
-    await currentCandidate();
+    await currentCandidate("probe_verify_candidate");
     state = "running"; await persist();
     proof = await proofRunner({ authKey: key.toString("base64url"), apiToken: input.api_token,
       release: input.expected_release, expectedSha: input.expected_release, imageDigest: candidate.image_digest,
@@ -268,38 +422,38 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     cleanupBasis = neverExecute ? "never_execute" : "complete_proof";
     await persist();
     if (neverExecute && await attemptExists()) throw reject();
-    await currentOwned();
-    const current = subdomainState(await api("/subdomain"));
-    if (current.enabled !== enabled || current.previews_enabled) throw reject();
+    await currentOwned("cleanup_verify_before_restore");
+    const current = await api("cleanup_subdomain_before", "/subdomain", subdomainState);
+    if (current.enabled !== enabled || current.previews_enabled) throw refuse("subdomain_state_mismatch");
     if (enabled) {
       restoreAttempted = true; await persist();
-      const restore = subdomainState(await api("/subdomain", "POST", preimage.subdomain));
-      if (restore.enabled || restore.previews_enabled) throw reject();
+      const restore = await api("cleanup_restore_subdomain", "/subdomain", subdomainState, "POST", preimage.subdomain);
+      if (restore.enabled || restore.previews_enabled) throw refuse("subdomain_not_disabled");
     }
-    const readback = subdomainState(await api("/subdomain"));
-    if (readback.enabled || readback.previews_enabled) throw reject();
+    const readback = await api("cleanup_subdomain_after", "/subdomain", subdomainState);
+    if (readback.enabled || readback.previews_enabled) throw refuse("subdomain_not_disabled");
     restored = true; enabled = false; await persist();
     // Check the exact candidate chain again immediately before deleting our binding.
-    const original = await currentOwned();
+    const original = await currentOwned("cleanup_verify_before_delete");
     const originalEtag = original.resources?.script?.etag;
-    if (typeof originalEtag !== "string" || originalEtag.length < 1 || originalEtag.length > 256) throw reject();
-    const originalBindings = bindingInventory(wrappedSettings(original.resources?.bindings)).filter(row => row.name !== SECRET_NAME);
+    if (typeof originalEtag !== "string" || originalEtag.length < 1 || originalEtag.length > 256) throw refuse("etag_invalid", ownedVersionCall);
+    const originalBindings = nestedBindings(original.resources?.bindings, ownedVersionCall).filter(row => row.name !== SECRET_NAME);
     const beforeDelete = candidate
       ? { deployment_id: candidate.candidate_deployment_id, version_id: candidate.candidate_version_id }
       : afterSecret;
     const deleteAt = now();
     deleteAttempted = true; await persist();
-    const result = envelope(await api(`/secrets/${SECRET_NAME}`, "DELETE"));
-    if (!exact(result, [])) throw reject();
-    if (bindingInventory(await api("/settings")).some(row => row.name === SECRET_NAME)) throw reject();
-    const after = deploymentInventory(await api("/deployments"));
+    const result = await api("cleanup_delete_secret", `/secrets/${SECRET_NAME}`, envelope, "DELETE");
+    if (!exact(result, [])) throw refuse("result_not_empty");
+    if ((await api("cleanup_settings_after", "/settings", bindingInventory)).some(row => row.name === SECRET_NAME)) throw refuse("secret_still_bound");
+    const after = await api("cleanup_deployments_after", "/deployments", deploymentInventory);
     postDelete = after[0];
     if (postDelete.deployment_id === beforeDelete.deployment_id || postDelete.version_id === beforeDelete.version_id ||
         postDelete.created_at_ms < Math.floor(deleteAt / 1000) * 1000 || postDelete.created_at_ms > now() ||
-        !after.some(row => row.deployment_id === beforeDelete.deployment_id && row.version_id === beforeDelete.version_id)) throw reject();
-    const derivative = envelope(await api(`/versions/${postDelete.version_id}`));
+        !after.some(row => row.deployment_id === beforeDelete.deployment_id && row.version_id === beforeDelete.version_id)) throw refuse("deployment_chain_mismatch");
+    const derivative = await api("cleanup_version_after", `/versions/${postDelete.version_id}`, envelope);
     if (!record(derivative) || derivative.id !== postDelete.version_id || derivative.resources?.script?.etag !== originalEtag ||
-        JSON.stringify(bindingInventory(wrappedSettings(derivative.resources?.bindings)).sort(byName)) !== JSON.stringify(originalBindings.sort(byName))) throw reject();
+        JSON.stringify(nestedBindings(derivative.resources?.bindings).sort(byName)) !== JSON.stringify(originalBindings.sort(byName))) throw refuse("derivative_mismatch");
     deleted = true; state = "cleaned"; key.fill(0); await persist(); return snapshot();
   }
   async function dispatch(command, value) {
@@ -544,6 +698,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.stdout.write(`${JSON.stringify(await startBroker(directory, startupInput(await stdinJson())))}\n`);
     } else if (command === "shutdown") {
       process.stdout.write(`${JSON.stringify(await shutdownBroker(directory))}\n`);
+    } else if (command === "failure") {
+      process.stdout.write(`${await ledgerFailureLine(directory)}\n`);
     } else if (["bind_candidate", "probe", "status", "cleanup", "close"].includes(command)) {
       const result = await brokerCommand(directory, command, command === "bind_candidate" ? await stdinJson() : null);
       process.stdout.write(`${JSON.stringify(result)}\n`);

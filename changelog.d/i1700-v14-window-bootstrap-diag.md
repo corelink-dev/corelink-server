@@ -11,3 +11,15 @@
   last admission 12:00Z inclusive, expiry 13:15Z exclusive (exactly v13 + 3 h).
   The legacy scheduled path stays HTTP-only for v14. Source only: no provider
   call, dispatch or deploy.
+- **#1700 bootstrap failures are now classified in the receipt instead of all
+  reading `bootstrap_unknown`.** V13's secret PUT was refused about 0.9 s after
+  the request, and nothing recorded the HTTP status or Cloudflare error codes.
+  The first failed provider call now writes an allowlisted `failure` object to
+  the bootstrap ledger: a fixed `phase` (for example `prepare_put_secret`), an
+  `endpoint_label`, `http_status`, up to 8 integer `errors[].code`, a
+  `cf_message_class` from a small allowlist, the failed `validation_failed`
+  check for a refused 2xx, and `timed_out` and `aborted`. It never records a
+  body, URL, ID, token or secret. A failed `Start owned temporary HTTP
+  bootstrap` step prints this as one re-validated line. Acceptance and
+  fail-closed behaviour are unchanged; rollback quiescence requires
+  `failure` to be null.

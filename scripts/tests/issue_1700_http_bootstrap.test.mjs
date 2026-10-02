@@ -12,6 +12,7 @@ import {
   BROKER_CONTRACT, BROKER_LEDGER, BROKER_SOCKET, BROKER_PROCESS, MAX_LIFETIME_MS, PROBE_RESERVE_MS, SECRET_NAME,
   bindingInventory, deploymentInventory, subdomainState, createBootstrapBroker,
   serveBroker, brokerCommand, startBroker, privateDirectory, captureBrokerProcess, shutdownBroker,
+  FAILURE_KEYS, FAILURE_PHASES, FAILURE_VALIDATIONS, failureLine, ledgerFailureLine, validFailure,
 } from "../issue_1700_http_bootstrap.mjs";
 import { APPROVED_ORIGIN, HTTP_CONTRACT, ATTEMPT_CONTRACT } from "../issue_1700_http_probe.mjs";
 import { PROBE_WINDOW } from "../issue_1700_probe_window.mjs";
@@ -193,6 +194,246 @@ for (const failure of ["enabled", "previews", "malformed-settings", "wrong-preim
     assert.equal(JSON.stringify(f.snapshots).includes(TOKEN), false);
   });
 }
+
+// Redacted failure classification. V13 (run 36976287686) failed at the first write and the
+// receipt could not say why: every refusal became bootstrap_unknown with no status or code.
+const SECRET_TEXT = Buffer.alloc(32, 73).toString("base64url");
+const ACCOUNT = "6a1fc1c626fc2628823e60b9db01f5cd";
+const PLANTED = "planted-provider-text";
+const ECHOES = [TOKEN, SECRET_TEXT, ACCOUNT, PLANTED, "api.cloudflare.com", "elsewhere.invalid"];
+const leakyErrors = codes => codes.map(code => ({ code,
+  message: `${PLANTED} ${TOKEN} ${SECRET_TEXT} ${id(1)} https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}` }));
+const cfError = (status, errors, messages = []) => Response.json({ success: false, errors, messages, result: null }, { status });
+const putOnly = respond => (path, init) => (path === "/secrets" && init.method === "PUT" ? respond() : undefined);
+const pending = init => new Promise((_yes, no) => init.signal.addEventListener("abort",
+  () => no(new DOMException("aborted", "AbortError")), { once: true }));
+const offOrigin = ({ redirected = false, url = "" }) => {
+  const real = response({ name: SECRET_NAME, type: "secret_text" });
+  return { status: 200, redirected, url, headers: real.headers, body: real.body };
+};
+const putFailure = overrides => ({ phase: "prepare_put_secret", endpoint_label: "secrets", http_status: null,
+  cf_error_codes: [], cf_message_class: null, validation_failed: null, timed_out: false, aborted: false, ...overrides });
+// Every classified failure must still fail closed: UNKNOWN, unconfirmed, never retried, persisted.
+async function failedPrepare(f) {
+  await assert.rejects(f.broker.dispatch("prepare"), /bootstrap_unknown/);
+  await assert.rejects(f.broker.dispatch("prepare"));
+  const snapshot = f.broker.snapshot();
+  assert.equal(snapshot.state, "unknown"); assert.equal(snapshot.rollback_safe, false);
+  assert.equal(snapshot.secret_put_confirmed, false);
+  assert.ok(f.calls.filter(call => call.method !== "GET").length <= 1);
+  assert.deepEqual(f.snapshots.at(-1).failure, snapshot.failure);
+  assert.equal(validFailure(snapshot.failure), true);
+  return snapshot.failure;
+}
+
+const PUT_FAILURES = [
+  ["403 authentication error 10000", () => cfError(403, [{ code: 10000, message: "Authentication error" }]),
+    { http_status: 403, cf_error_codes: [10000], cf_message_class: "authentication" }],
+  ["400 with a Cloudflare code", () => cfError(400, [{ code: 10021, message: "Version conflict: a deployment is in progress" }]),
+    { http_status: 400, cf_error_codes: [10021], cf_message_class: "conflict" }],
+  ["429 rate limit", () => cfError(429, [{ code: 971, message: "Please wait and consider throttling your request speed" }]),
+    { http_status: 429, cf_error_codes: [971], cf_message_class: "rate_limit" }],
+  ["2xx with extra result keys", () => response({ name: SECRET_NAME, type: "secret_text", text: SECRET_TEXT }),
+    { http_status: 200, validation_failed: "result_not_exact_name_type" }],
+  ["2xx with another name", () => response({ name: "OTHER_SECRET", type: "secret_text" }),
+    { http_status: 200, validation_failed: "name_mismatch" }],
+  ["2xx with another type", () => response({ name: SECRET_NAME, type: "plain_text" }),
+    { http_status: 200, validation_failed: "type_mismatch" }],
+  ["2xx unsuccessful envelope", () => Response.json({ success: false, errors: [], messages: [], result: null }),
+    { http_status: 200, validation_failed: "envelope_not_success" }],
+  ["2xx with envelope messages", () => Response.json({ success: true, errors: [],
+    messages: [{ code: 10200, message: "workers.dev subdomain notice" }], result: { name: SECRET_NAME, type: "secret_text" } }),
+  { http_status: 200, cf_message_class: "workers_dev", validation_failed: "envelope_messages_present" }],
+  ["201 instead of 200", () => Response.json(wrapped({ name: SECRET_NAME, type: "secret_text" }), { status: 201 }),
+    { http_status: 201, validation_failed: "status_not_200" }],
+  ["non-JSON content type", () => new Response("ok", { headers: { "content-type": "text/plain" } }),
+    { http_status: 200, validation_failed: "content_type_not_json" }],
+  ["non-JSON body", () => new Response("{not json", { headers: { "content-type": "application/json" } }),
+    { http_status: 200, validation_failed: "body_not_json" }],
+  ["oversized body", () => new Response(" ".repeat(262_145), { headers: { "content-type": "application/json" } }),
+    { http_status: 200, validation_failed: "body_too_large" }],
+  ["502 HTML gateway page", () => new Response("<html>bad gateway</html>", { status: 502, headers: { "content-type": "text/html" } }),
+    { http_status: 502 }],
+  ["redirected response", () => offOrigin({ redirected: true }), { http_status: 200, validation_failed: "redirected_url" }],
+  ["response from another URL", () => offOrigin({ url: "https://elsewhere.invalid/accounts/x" }),
+    { http_status: 200, validation_failed: "redirected_url" }],
+  ["fetch refuses a redirect", () => { throw new TypeError("fetch failed: unexpected redirect"); }, {}],
+];
+for (const [name, respond, expected] of PUT_FAILURES) {
+  test(`secret PUT ${name} is classified, redacted and still fails closed`, async () => {
+    const f = fixture({ request: putOnly(respond) });
+    assert.deepEqual(await failedPrepare(f), putFailure(expected));
+    assert.equal(f.calls.filter(call => call.method === "PUT").length, 1);
+    assert.equal(f.broker.snapshot().secret_put_attempted, true);
+  });
+}
+
+test("a provider call that outlives its budget records timed_out and still fails closed", async () => {
+  let f;
+  f = fixture({ request: (path, init) => {
+    // Bring the broker deadline 50ms ahead of the PUT so the real per-call timer fires quickly.
+    if (path === "/settings" && !f.calls.some(call => call.method === "PUT")) f.advance(MAX_LIFETIME_MS - 50);
+    if (path === "/secrets") return pending(init);
+  } });
+  assert.deepEqual(await failedPrepare(f), putFailure({ timed_out: true }));
+});
+
+test("closing the broker during a provider call records aborted and still fails closed", async () => {
+  const f = fixture({ request: (path, init) => (path === "/secrets" ? pending(init) : undefined) });
+  const preparing = f.broker.dispatch("prepare");
+  while (!f.calls.some(call => call.method === "PUT")) await new Promise(resolve => setImmediate(resolve));
+  await f.broker.close();
+  await assert.rejects(preparing, /bootstrap_unknown/);
+  assert.deepEqual(f.broker.snapshot().failure, putFailure({ aborted: true }));
+  assert.equal(f.broker.snapshot().secret_put_confirmed, false);
+});
+
+test("reads before the PUT are classified by phase and endpoint and never reach the write", async () => {
+  const cases = [
+    ["/deployments", () => cfError(403, [{ code: 10000, message: "Authentication error" }]),
+      { phase: "prepare_deployments_before", endpoint_label: "deployments", http_status: 403, cf_error_codes: [10000], cf_message_class: "authentication" }],
+    ["/subdomain", () => response({ enabled: true, previews_enabled: false }),
+      { phase: "prepare_subdomain_before", endpoint_label: "subdomain", http_status: 200, validation_failed: "subdomain_not_disabled" }],
+    ["/settings", () => response({ bindings: [null] }),
+      { phase: "prepare_settings_before", endpoint_label: "settings", http_status: 200, validation_failed: "bindings_invalid" }],
+    ["/deployments", () => response({ deployments: [deployment(9, NOW)] }),
+      { phase: "prepare_deployments_before", endpoint_label: "deployments", http_status: 200, validation_failed: "preimage_mismatch" }],
+  ];
+  for (const [target, respond, expected] of cases) {
+    const f = fixture({ request: path => (path === target ? respond() : undefined) });
+    assert.deepEqual(await failedPrepare(f), putFailure(expected), expected.validation_failed ?? target);
+    assert.equal(f.calls.some(call => call.method === "PUT"), false);
+    assert.equal(f.broker.snapshot().secret_put_attempted, false);
+  }
+});
+
+test("later phases attribute a refusal to the exact call that produced it", async () => {
+  const enable = fixture({ request: (path, init) => (path === "/subdomain" && init.method === "POST"
+    ? response({ enabled: false, previews_enabled: false }) : undefined) });
+  await enable.broker.dispatch("prepare"); enable.deploy();
+  await assert.rejects(enable.broker.dispatch("bind_candidate", candidate()), /bootstrap_unknown/);
+  assert.deepEqual(enable.broker.snapshot().failure, putFailure({ phase: "bind_enable_subdomain", endpoint_label: "subdomain",
+    http_status: 200, validation_failed: "subdomain_not_enabled" }));
+
+  const denied = fixture({ request: (path, init) => (init.method === "DELETE"
+    ? cfError(403, [{ code: 10000, message: "Authentication error" }]) : undefined) });
+  await denied.enabled(); await denied.broker.dispatch("probe");
+  await assert.rejects(denied.broker.dispatch("cleanup"), /bootstrap_unknown/);
+  assert.deepEqual(denied.broker.snapshot().failure, putFailure({ phase: "cleanup_delete_secret", endpoint_label: "secret_named",
+    http_status: 403, cf_error_codes: [10000], cf_message_class: "authentication" }));
+  assert.equal(denied.broker.snapshot().secret_deleted, false);
+
+  // The etag is read from the version response, although the settings read came after it.
+  const etagless = fixture({ request: (path, init, calls) => {
+    if (!path.startsWith("/versions/") || calls.filter(call => call.method === "POST").length !== 2) return undefined;
+    return response({ id: path.slice("/versions/".length),
+      annotations: { "workers/message": `issue-1700-route-free-${input().operation_id}-${RELEASE}` },
+      resources: { bindings: [...bindingFixture(), { name: SECRET_NAME, type: "secret_text" }], script: {} } });
+  } });
+  await etagless.enabled(); await etagless.broker.dispatch("probe");
+  await assert.rejects(etagless.broker.dispatch("cleanup"), /bootstrap_unknown/);
+  assert.deepEqual(etagless.broker.snapshot().failure, putFailure({ phase: "cleanup_verify_before_delete", endpoint_label: "version",
+    http_status: 200, validation_failed: "etag_invalid" }));
+  assert.equal(etagless.calls.some(call => call.method === "DELETE"), false);
+});
+
+test("no token, secret text, ID, URL or provider text reaches the receipt on any classified failure", async () => {
+  const responses = [
+    () => cfError(403, [...leakyErrors([10000, 10001]), { code: "10002" }, { code: -1 }, { code: 1.5 },
+      ...leakyErrors([1, 2, 3, 4, 5, 6, 7])], leakyErrors([9])),
+    () => response({ name: SECRET_NAME, type: "secret_text", text: SECRET_TEXT, id: id(1), echo: TOKEN }),
+    () => new Response(`${TOKEN} ${SECRET_TEXT} ${PLANTED}`, { status: 500, headers: { "content-type": "text/plain" } }),
+    () => offOrigin({ url: `https://elsewhere.invalid/${ACCOUNT}?token=${TOKEN}` }),
+    () => { throw new Error(`${TOKEN} ${SECRET_TEXT} ${PLANTED}`); },
+  ];
+  const failures = [];
+  for (const respond of responses) {
+    const f = fixture({ request: putOnly(respond) });
+    const failure = await failedPrepare(f);
+    failures.push(failure);
+    const receipt = JSON.stringify(f.snapshots), recorded = JSON.stringify(failure), line = failureLine(f.broker.snapshot());
+    for (const echo of ECHOES) {
+      assert.equal(receipt.includes(echo), false, echo);
+      assert.equal(line.includes(echo), false, echo);
+    }
+    for (const value of [id(1), id(11), RELEASE, "/"]) assert.equal(recorded.includes(value), false, value);
+    assert.deepEqual(Object.keys(failure), [...FAILURE_KEYS]);
+  }
+  // Integers only, at most eight, from errors[].code; the leaked message reduces to a class.
+  assert.deepEqual(failures[0].cf_error_codes, [10000, 10001, 1, 2, 3, 4, 5, 6]);
+  assert.equal(failures[0].cf_message_class, "other");
+  assert.equal(failures[2].http_status, 500);
+});
+
+test("every tagged refusal and API phase in the source is allowlisted, and every allowlist entry is used", async () => {
+  const source = await readFile(BOOTSTRAP_SOURCE, "utf8");
+  const tags = new Set([...source.matchAll(/\b(?:reject|refuse)\("([a-z0-9_]+)"/g)].map(match => match[1]));
+  const phases = new Set([...source.matchAll(/\b(?:api|currentCandidate|currentOwned)\("([a-z0-9_]+)"/g)].map(match => match[1]));
+  assert.deepEqual([...tags].sort(), [...FAILURE_VALIDATIONS].sort());
+  assert.deepEqual([...phases].sort(), [...FAILURE_PHASES].sort());
+  // Every provider call names its phase: no call site passes a bare path any more.
+  assert.doesNotMatch(source, /\bapi\(\s*[`"]\//);
+});
+
+test("the rollback-quiescence reader expects exactly the broker snapshot keys, failure included", async () => {
+  const python = await readFile(new URL("../issue_1700_rollback_quiescence.py", import.meta.url), "utf8");
+  const declared = /\n {4}keys = \(((?:\s*'[^']*')+)\)/.exec(python);
+  assert.ok(declared, "quiescence key list not found");
+  const keys = [...declared[1].matchAll(/'([^']*)'/g)].map(match => match[1]).join("").split(/\s+/).filter(Boolean);
+  assert.deepEqual(keys.sort(), Object.keys(fixture().broker.snapshot()).sort());
+  assert.match(python, /broker\['failure'\] is not None/);
+});
+
+test("the failure line re-validates the record and prints only enums and integers", () => {
+  const valid = putFailure({ http_status: 403, cf_error_codes: [10000, 7003], cf_message_class: "authentication" });
+  assert.equal(failureLine({ failure: valid }), "issue-1700 bootstrap failure phase=prepare_put_secret endpoint=secrets " +
+    "http_status=403 cf_error_codes=10000,7003 cf_message_class=authentication validation_failed=none timed_out=false aborted=false");
+  assert.equal(failureLine({ failure: null }), "issue-1700 bootstrap failure none_recorded");
+  for (const tampered of [{ ...valid, phase: `free text ${TOKEN}` }, { ...valid, endpoint_label: "url" },
+    { ...valid, http_status: 99 }, { ...valid, http_status: 600 }, { ...valid, http_status: "403" },
+    { ...valid, cf_error_codes: [1, 2, 3, 4, 5, 6, 7, 8, 9] }, { ...valid, cf_error_codes: ["10000"] }, { ...valid, cf_error_codes: [-1] },
+    { ...valid, cf_message_class: PLANTED }, { ...valid, validation_failed: PLANTED }, { ...valid, timed_out: 0 },
+    { ...valid, extra: TOKEN }, (({ aborted: _aborted, ...rest }) => rest)(valid), undefined, "text"]) {
+    assert.equal(failureLine({ failure: tampered }), "issue-1700 bootstrap failure unavailable");
+    assert.equal(validFailure(tampered), false);
+  }
+  assert.equal(failureLine(null), "issue-1700 bootstrap failure unavailable");
+});
+
+test("a failed start leaves a receipt whose failure prints as one redacted line from the CLI", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "i1700-fail-")); await chmod(directory, 0o700);
+  const request = async url => {
+    const path = new URL(url).pathname.split("/corelink-staging")[1];
+    if (path === "/deployments") return response({ deployments: [deployment(1, NOW - 1000)] });
+    if (path === "/subdomain") return response({ enabled: false, previews_enabled: false });
+    if (path === "/settings") return response({ bindings: bindingFixture() });
+    if (path === "/secrets") return cfError(403, leakyErrors([10000]));
+    assert.fail(`Unexpected fixture API path ${path}`);
+  };
+  const expected = "issue-1700 bootstrap failure phase=prepare_put_secret endpoint=secrets http_status=403 " +
+    "cf_error_codes=10000 cf_message_class=other validation_failed=none timed_out=false aborted=false";
+  try {
+    await assert.rejects(serveBroker(directory, input(), { brokerFactory: (value, options) => createBootstrapBroker(value,
+      { ...options, request, now: () => NOW, random: () => Buffer.alloc(32, 73) }) }), /bootstrap_unknown/);
+    const ledger = await readFile(join(directory, BROKER_LEDGER), "utf8");
+    for (const echo of ECHOES) assert.equal(ledger.includes(echo), false, echo);
+    assert.equal(JSON.parse(ledger).state, "unknown");
+    assert.equal(await ledgerFailureLine(directory), expected);
+    const child = spawn(process.execPath, [BOOTSTRAP_SOURCE, "failure", directory], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    const [code] = await once(child, "close");
+    assert.equal(code, 0); assert.equal(stdout, `${expected}\n`);
+    // A substituted ledger is never followed: the reader reports unavailable, still one line.
+    const { symlink } = await import("node:fs/promises");
+    await rm(join(directory, BROKER_LEDGER));
+    await writeFile(join(directory, "elsewhere.json"), JSON.stringify({ failure: putFailure({}) }), { mode: 0o600 });
+    await symlink(join(directory, "elsewhere.json"), join(directory, BROKER_LEDGER));
+    assert.equal(await ledgerFailureLine(directory), "issue-1700 bootstrap failure unavailable");
+    await rm(join(directory, BROKER_LEDGER));
+    assert.equal(await ledgerFailureLine(directory), "issue-1700 bootstrap failure unavailable");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test("one secret PUT, exact candidate verification, one probe, safe restore then owned secret DELETE", async () => {
   const f = fixture();
