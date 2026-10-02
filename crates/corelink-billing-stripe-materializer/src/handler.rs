@@ -595,6 +595,7 @@ impl D1SubscriptionStateHandler {
     /// REVOKES it (`corelink.tenant.runners_entitlement_revoked.v1`) rather than
     /// leaving a permanently-granted stale row. The signup-worker is the primary
     /// authority; this is the container's defense-in-depth convergent write.
+    #[allow(clippy::too_many_arguments)] // six reconcile inputs plus the request context (#2660)
     fn reconcile_runners(
         &self,
         env: &StripeWebhookEnvelope,

@@ -65,7 +65,7 @@ describe("B-216 read-only Worker inventory", () => {
     expect(workflow).toContain("if: ${{ inputs.readback_only }}");
     expect(workflow).toContain("if: ${{ inputs.deploy_once }}");
     const readback = workflow.split("- name: Read fixed Worker inventory without mutation")[1].split("- name: Deploy exact receiver target")[0];
-    expect(readback).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}");
+    expect(readback).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.CF_API_TOKEN }}");
     expect(readback).not.toContain("B216_DSR_ALERT_RECEIVER_TOKEN");
     expect(readback).not.toContain("run-deploy-route.mjs");
   });
@@ -75,7 +75,7 @@ describe("B-216 read-only Worker inventory", () => {
     const runner = await readFile(new URL("../scripts/run-readback-route.mjs", import.meta.url), "utf8");
     expect(workflow).toContain("if: ${{ inputs.readback_only }}");
     const readback = workflow.split("- name: Read fixed Worker inventory without mutation")[1].split("- name: Deploy exact receiver target")[0];
-    expect(readback).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.STAGING_CF_WORKER_API_TOKEN }}");
+    expect(readback).toContain("B216_CF_RECEIVER_WRITE_TOKEN: ${{ secrets.CF_API_TOKEN }}");
     expect(readback).not.toContain("B216_DSR_ALERT_RECEIVER_TOKEN");
     expect(runner).toContain("includeTokenPolicyDiagnostic: true");
   });

@@ -413,6 +413,7 @@ pub trait DurableWebhookInbox: fmt::Debug + Send + Sync {
     /// Existing inboxes retain their behavior through this default. An
     /// ownership-aware implementation uses the context in the same D1 batch
     /// as the pending effect witness.
+    #[allow(clippy::too_many_arguments)] // `reserve_effect`'s six plus the context
     fn reserve_effect_with_context(
         &self,
         claim: &InboxClaim,
@@ -457,6 +458,7 @@ pub trait DurableWebhookInbox: fmt::Debug + Send + Sync {
 
     /// Commit an effect while carrying the same request authority used to
     /// reserve it. Implementations fail closed if that registration is absent.
+    #[allow(clippy::too_many_arguments)] // `commit_effect`'s six plus the context
     fn commit_effect_with_context(
         &self,
         claim: &InboxClaim,

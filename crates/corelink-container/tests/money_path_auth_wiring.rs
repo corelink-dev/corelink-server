@@ -41,6 +41,7 @@ const ENV_VARS: &[&str] = &[
     "CORELINK_INTERNAL_AUTH_KEY",
     "CORELINK_TIER_SELECT_AUTH_KEY",
     "D1_DATABASE_ID",
+    "DPA_ACCEPT_IP_HASH_SALT",
     "DPA_RECEIPT_SIGNING_KEY",
     "R2_S3_ACCESS_KEY_ID",
     "R2_S3_ENDPOINT",
@@ -199,6 +200,9 @@ fn set_common_env(signing_key_pem: &str, stripe_url: &str) {
     env::set_var("STRIPE_API_BASE", stripe_url);
     env::set_var("STRIPE_SECRET_KEY", "test-stripe-placeholder");
     env::set_var("DPA_RECEIPT_SIGNING_KEY", signing_key_pem);
+    // dpa-accept mounts only with a valid 32-byte salt since #2852; a fixed
+    // non-zero fixture keeps the auth matrix the only variable under test.
+    env::set_var("DPA_ACCEPT_IP_HASH_SALT", "5a".repeat(32));
 }
 
 fn clear_auth_env() {

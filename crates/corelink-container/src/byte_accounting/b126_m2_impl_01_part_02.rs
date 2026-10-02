@@ -293,11 +293,6 @@ impl AccountingCasHandler {
     pub(crate) fn byok_for_test(&self) -> Option<&Arc<crate::storage::byok_cas::DataPlaneByok>> {
         self.byok.as_ref()
     }
-
-    #[cfg(test)]
-    pub(crate) fn byok_config_cache_for_test(&self) -> Option<&Arc<ByokConfigCache>> {
-        self.test_byok_config_cache.as_ref()
-    }
 }
 
 impl corelink_handler_cas::CasWriteHandler for AccountingCasHandler {

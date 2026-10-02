@@ -76,10 +76,11 @@ mod tests {
     }
 
     #[test]
-    fn debug_redacts_salt_bytes() {
-        let salt = IpHashSalt::new(Some(&[0x5a; 32])).expect("valid fixture salt");
+    fn debug_redacts_salt_bytes() -> Result<(), DpaAcceptanceError> {
+        let salt = IpHashSalt::new(Some(&[0x5a; 32]))?;
         let debug = format!("{salt:?}");
         assert_eq!(debug, "IpHashSalt([REDACTED])");
         assert!(!debug.contains("5a"));
+        Ok(())
     }
 }

@@ -589,6 +589,10 @@ fn real_latency_probe_under_5ms_p99() {
     samples.sort_unstable();
     // Nearest-rank p99 uses rank ceil(0.99 * N), with ranks starting at one.
     // Keep the inclusive 5 ms boundary on that exact order statistic.
+    #[expect(
+        clippy::manual_div_ceil,
+        reason = "scripts/verify_b251_quota_cas_budget.py pins this exact nearest-rank expression"
+    )]
     let p99_rank = (samples.len() * 99 + 99) / 100;
     let p99 = samples[p99_rank - 1];
     writeln!(
