@@ -14,6 +14,8 @@
     qualify. Neither does `d1`'s `not_applicable`, which means a legal hold preserved the data. Those rows
     stay `unevaluable`.
   - **No row lost:** a read-only production check on 2026-10-02 found all 3,526 rows covered.
+  - **Diagnostic aligned:** `scripts/b127_residual_classification.sql` uses the same condition, and a test
+    pins it to the verifier's residual.
   - **Still failing:** unexplained orphans, violations and invalid `_public` rows.
   - **Receipts:** query hashes are pinned per receipt schema. Schema-v1 receipts are verified against the v1
     queries and the pre-policy-B rule (`assess_pre_policy_b`), so the retained production receipt 35697251287

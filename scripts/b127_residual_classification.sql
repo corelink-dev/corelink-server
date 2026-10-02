@@ -1,6 +1,14 @@
 -- B-127 read-only residual classifier. Output contains stable aliases only;
 -- raw tenant, request, digest, subject, and payload values never cross the
 -- SELECT boundary.
+--
+-- The residual is every customer orphan whose tenant has NO completed D1
+-- erasure: no dsr_erasure_log entry with backend = 'd1' AND outcome = 'erased'.
+-- This is the same erased-lineage condition as scripts/verify_audit_residency.py
+-- (ERASED_LINEAGE_BACKEND / ERASED_LINEAGE_OUTCOMES, #1669 policy B as narrowed
+-- 2026-10-02). A tenant whose log shows only partial_failure, failed,
+-- not_applicable (legal hold: data preserved), pseudonymized, an unknown
+-- value, NULL or another backend stays in the residual.
 WITH residual_ids AS (
     SELECT DISTINCT a.tenant_id
     FROM audit_outbox AS a
@@ -10,6 +18,8 @@ WITH residual_ids AS (
       AND NOT EXISTS (
           SELECT 1 FROM dsr_erasure_log AS d
           WHERE d.tenant_id = a.tenant_id
+            AND d.backend = 'd1'
+            AND d.outcome = 'erased'
       )
 ),
 aliases AS (

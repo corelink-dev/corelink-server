@@ -8,6 +8,14 @@ The reproducible redacted query is `scripts/b127_residual_classification.sql`.
 It excludes `_public` from orphan numbering and emits that reserved namespace
 separately as `reserved_public` / `reserved_namespace` when rows exist.
 
+> **2026-10-02 note.** The query's erased condition was narrowed from "any
+> `dsr_erasure_log` entry" to a completed D1 erasure (`backend = 'd1' AND
+> outcome = 'erased'`), the same condition as `scripts/verify_audit_residency.py`
+> (#1669). A read-only aggregate production read on 2026-10-02 found the counts
+> below unchanged. All 170 erased tenants (3,526 rows) have a `d1`/`erased`
+> entry, and the four aliases (13 rows) have no erasure-log entry at all. The
+> numbers in this report remain the 2026-09-09 measurement.
+
 ## Population
 
 The raw full census was 84,932 audit rows. The earlier tenant-only partition

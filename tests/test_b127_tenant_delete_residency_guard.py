@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import sqlite3
+import importlib.util
 import re
+import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -99,7 +101,7 @@ def test_residual_classifier_is_redacted_read_only_and_deterministic() -> None:
             tenant_id TEXT, region TEXT, event_type TEXT,
             enqueued_at INTEGER, emitted_at INTEGER
         );
-        CREATE TABLE dsr_erasure_log (tenant_id TEXT);
+        CREATE TABLE dsr_erasure_log (tenant_id TEXT, backend TEXT, outcome TEXT);
         CREATE TABLE tenant_storage_state (
             tenant_id TEXT, region TEXT, bytes_used INTEGER,
             created_at_ms INTEGER, updated_at_ms INTEGER
@@ -141,6 +143,73 @@ def test_residual_classifier_is_redacted_read_only_and_deterministic() -> None:
     assert " delete " not in executable
     assert " update " not in executable
     assert " insert " not in executable
+
+
+def _verifier():
+    spec = importlib.util.spec_from_file_location(
+        "verify_audit_residency_for_b127_guard", ROOT / "scripts/verify_audit_residency.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _erasure_database(*log_rows: tuple) -> sqlite3.Connection:
+    """Two orphan tenants; 'gone-b' carries the given erasure-log rows."""
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(
+        """
+        CREATE TABLE tenant (tenant_id TEXT PRIMARY KEY, primary_region TEXT);
+        CREATE TABLE audit_outbox (
+            id TEXT PRIMARY KEY, tenant_id TEXT, region TEXT, event_type TEXT,
+            enqueued_at INTEGER, emitted_at INTEGER
+        );
+        CREATE TABLE dsr_erasure_log (tenant_id TEXT, backend TEXT, outcome TEXT);
+        CREATE TABLE tenant_storage_state (
+            tenant_id TEXT, region TEXT, bytes_used INTEGER,
+            created_at_ms INTEGER, updated_at_ms INTEGER
+        );
+        CREATE TABLE usage_daily (
+            tenant_id TEXT, reads INTEGER, writes INTEGER,
+            hits INTEGER, misses INTEGER
+        );
+        INSERT INTO audit_outbox VALUES
+            ('row-a', 'gone-a', 'wnam', 'read', 10, 11),
+            ('row-b1', 'gone-b', 'weur', 'write', 20, 21),
+            ('row-b2', 'gone-b', 'weur', 'read', 22, 23);
+        """
+    )
+    connection.executemany("INSERT INTO dsr_erasure_log VALUES ('gone-b', ?, ?)", log_rows)
+    return connection
+
+
+@pytest.mark.parametrize(
+    ("log_rows", "gone_b_in_residual"),
+    [
+        ((("d1", "erased"),), False),
+        ((("d1", "failed"), ("d1", "erased")), False),
+        ((("d1", "partial_failure"),), True),
+        ((("d1", "failed"),), True),
+        ((("d1", "not_applicable"),), True),  # legal hold: data preserved
+        ((("d1", "pseudonymized"),), True),
+        ((("d1", "bogus"),), True),
+        ((("d1", None),), True),
+        (((None, "erased"),), True),
+        ((("stripe", "erased"),), True),
+        ((), True),
+    ],
+)
+def test_residual_classifier_uses_the_completed_d1_erasure_condition(log_rows: tuple, gone_b_in_residual: bool) -> None:
+    connection = _erasure_database(*log_rows)
+    rows = connection.execute(CLASSIFIER.read_text(encoding="utf-8")).fetchall()
+    unexplained = [row for row in rows if row[1] == "unexplained_tenant"]
+    assert len(unexplained) == (2 if gone_b_in_residual else 1)
+    classified_rows = sum(row[4] for row in unexplained)
+    # Same residual as the verifier's RESIDUAL_REFS_SQL: the two definitions cannot drift.
+    verifier_rows = connection.execute(_verifier().RESIDUAL_REFS_SQL).fetchall()
+    assert classified_rows == len(verifier_rows) == (3 if gone_b_in_residual else 1)
 
 
 def assert_report_reconciled(report: str) -> None:
