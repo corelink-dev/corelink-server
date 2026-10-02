@@ -38,6 +38,41 @@ BYOK_MATRIX = Path("compliance/byok-fips-matrix.md")
 B086_RESOLUTION = Path("evidence/owner-actions/B-086/d1-residency-resolution.json")
 WRANGLER = Path("wrangler.toml")
 DOCKERFILE = Path("Dockerfile")
+B046_ACCEPTED_TARGET = Path("evidence/owner-actions/B-046/accepted-aws-target.json")
+B046_ACCEPTED_TARGET_SHA256 = "0bec97b785b6a68961e8f8fba0a10575cb3cecc01496f57844b02f03175f16fc"
+# B-154 is done: claim accuracy reached its terminal outcome. Both provider
+# rows ended in a narrowed launch claim, not in a promoted capability. The
+# BYOK runtime chain (#1653/#2165) stays open as product hardening, so
+# provider_chains_closed stays false and both capability rows stay UNPROVEN.
+B154_TERMINAL_STATUS = "DONE_PRELAUNCH_CLAIMS_MATCH_PROVEN_CAPABILITY"
+B154_TERMINAL_OUTCOMES = {
+    "recorded_at": "2026-10-02",
+    "object_lock": {
+        "parent_issue": 1646,
+        "parent_state": "CLOSED_COMPLETED",
+        "closed_at": "2026-09-30",
+        "closure_receipt": "https://github.com/HuGR-dev/corelink-server/issues/1646#issuecomment-5920191555",
+        "merge_pr": 2808,
+        "merge_commit": "896ac79038bf57dc742956fb764f47b28ee5b73a",
+        "accepted_receipt": B046_ACCEPTED_TARGET.as_posix(),
+        "accepted_receipt_sha256": B046_ACCEPTED_TARGET_SHA256,
+        "proven_scope": "ONE_NONPRODUCTION_SYNTHETIC_AWS_S3_VERSION_ONLY",
+        "launch_claim": "NARROWED_NOT_AVAILABLE_OR_PROMISED",
+    },
+    "byok_kill_switch": {
+        "owner_decision": "https://github.com/HuGR-dev/corelink-server/issues/1676#issuecomment-5941052514",
+        "decided_at": "2026-10-01",
+        "outcome": "FAIL_CLOSED_LIMITATION_ACCEPTED_FOR_LAUNCH",
+        "narrowing_pr": 2807,
+        "narrowing_commit": "f2ab5d43b1f7a5dc691f30e0cae419155b4643c5",
+        "runtime_followups": "#1653/#2165 OPEN_AT_RECORDING_AS_PRODUCT_HARDENING_NOT_B154_BLOCKERS",
+        "launch_claim": "NARROWED_NOT_AVAILABLE_OR_PROMISED",
+    },
+    "nonclaims": (
+        "No legal approval, executed instrument, customer notice, production Object Lock route, "
+        "seven-year retention, BYOK availability, or kill-switch p99 is established by these outcomes."
+    ),
+}
 PUBLIC_COPY_PATHS = (
     BYOK_DOCS,
     BYOK_MATRIX,
@@ -341,6 +376,17 @@ def verify_prelaunch_document_status(root: Path, overrides: dict[Path, str] | No
             raise VerificationError(f"{relative} retains an approved legal-review status")
 
 
+def validate_terminal_outcomes(outcomes: object, root: Path = ROOT) -> None:
+    """Pin B-154's reviewed terminal outcomes and the receipt bytes they cite."""
+    if outcomes != B154_TERMINAL_OUTCOMES:
+        raise VerificationError("B-154 terminal outcomes drifted from the reviewed #1646/BYOK record")
+    path = root / B046_ACCEPTED_TARGET
+    if not path.is_file() or path.is_symlink():
+        raise VerificationError("B-154 cites a missing or non-regular B-046 accepted target receipt")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != B046_ACCEPTED_TARGET_SHA256:
+        raise VerificationError("B-154 cites B-046 accepted target bytes that changed")
+
+
 def verify_prelaunch_resolution(root: Path) -> None:
     try:
         record = json.loads((root / RESOLUTION).read_text(encoding="utf-8"))
@@ -388,8 +434,11 @@ def verify_prelaunch_resolution(root: Path) -> None:
         "provider_module_scope": "NOT_CORELINK_SERVICE_CAPABILITY",
     }:
         raise VerificationError("B-154 BYOK docs source or limitation drifted")
-    if record.get("provider_chains_closed") is not False or record.get("status") != "OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW":
-        raise VerificationError("B-154 provider or counsel chain must remain open")
+    if record.get("status") != B154_TERMINAL_STATUS:
+        raise VerificationError("B-154 resolution must record its terminal claim-accuracy outcome")
+    if record.get("provider_chains_closed") is not False:
+        raise VerificationError("B-154 must not claim the BYOK runtime chain (#1653/#2165) closed")
+    validate_terminal_outcomes(record.get("terminal_outcomes"), root)
     d1 = claims.get("d1_residency")
     if not isinstance(d1, dict):
         raise VerificationError("B-154 shared-D1 owner resolution is missing")

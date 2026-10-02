@@ -27,10 +27,85 @@ def _sources() -> tuple[str, str]:
     )
 
 
-def test_backlog_b154_remains_open_until_root_reconciles_the_owner_row() -> None:
+def _b154_backlog_record() -> dict:
+    import yaml
+
     backlog = (ROOT / "BACKLOG.md").read_text(encoding="utf-8")
     section = backlog.split("### B-154 —", 1)[1].split("### B-155 —", 1)[0]
-    assert "status: open" in section
+    block = section.split("```backlog\n", 1)[1].split("```", 1)[0]
+    record = yaml.safe_load(block)
+    assert record["id"] == "B-154"
+    return record
+
+
+def test_backlog_b154_is_done_with_a_conjunctive_regression_guard() -> None:
+    record = _b154_backlog_record()
+    assert record["status"] == "done"
+    assert record["owner"] == "tl"
+    # The policy-pinned conjunction: a packet failure cannot be masked by the
+    # exit status of the claims check that follows it.
+    assert record["verify"] == (
+        "python3 -S scripts/verify_owner_action_packets.py --id B-154 &&\n"
+        "python3 -S scripts/verify_b154_instrument_claims.py --self-test\n"
+    )
+    assert record["verify-means"].lstrip().lower().startswith("done")
+
+
+def _resolution() -> dict:
+    return json.loads((ROOT / MODULE.RESOLUTION).read_text(encoding="utf-8"))
+
+
+def _resolution_with(tmp_path: Path, record: dict) -> Path:
+    """Copy every input verify_prelaunch_resolution reads, with a mutated resolution."""
+    for relative in (
+        MODULE.RESOLUTION, MODULE.B086_RESOLUTION, MODULE.WRANGLER, MODULE.B046_ACCEPTED_TARGET,
+        *MODULE.PUBLIC_COPY_PATHS,
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / relative).read_bytes())
+    (tmp_path / MODULE.RESOLUTION).write_text(json.dumps(record), encoding="utf-8")
+    return tmp_path
+
+
+def test_terminal_resolution_copy_is_accepted(tmp_path: Path) -> None:
+    MODULE.verify_prelaunch_resolution(_resolution_with(tmp_path, _resolution()))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda r: r.update(status="OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW"),
+        lambda r: r.update(provider_chains_closed=True),
+        lambda r: r.pop("terminal_outcomes"),
+        lambda r: r["terminal_outcomes"]["object_lock"].update(launch_claim="AVAILABLE"),
+        lambda r: r["terminal_outcomes"]["object_lock"].update(merge_commit="0" * 40),
+        lambda r: r["terminal_outcomes"]["byok_kill_switch"].update(outcome="CAPABILITY_PROVEN"),
+        lambda r: r["terminal_outcomes"]["byok_kill_switch"].update(
+            owner_decision="https://github.com/HuGR-dev/corelink-server/issues/1676#issuecomment-1"
+        ),
+        lambda r: r["terminal_outcomes"].update(nonclaims="Seven-year retention is established."),
+        lambda r: r["claims"]["byok_kill_switch"].update(capability_status="PROVEN"),
+    ],
+    ids=[
+        "status-reverted-open", "chains-claimed-closed", "outcomes-removed", "object-lock-promoted",
+        "merge-commit-swapped", "byok-promoted", "owner-decision-swapped", "nonclaims-weakened",
+        "byok-capability-promoted",
+    ],
+)
+def test_terminal_resolution_mutations_fail_closed(tmp_path: Path, mutate) -> None:
+    record = _resolution()
+    mutate(record)
+    with pytest.raises(MODULE.VerificationError):
+        MODULE.verify_prelaunch_resolution(_resolution_with(tmp_path, record))
+
+
+def test_terminal_outcome_rejects_changed_accepted_target_bytes(tmp_path: Path) -> None:
+    root = _resolution_with(tmp_path, _resolution())
+    accepted = root / MODULE.B046_ACCEPTED_TARGET
+    accepted.write_bytes(accepted.read_bytes() + b"\n")
+    with pytest.raises(MODULE.VerificationError, match="accepted target bytes"):
+        MODULE.verify_prelaunch_resolution(root)
 
 
 def test_current_instruments_publish_only_explicit_prelaunch_limits() -> None:
