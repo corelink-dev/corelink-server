@@ -16,7 +16,8 @@ import {
   bindingInventory, deploymentInventory, subdomainState, createBootstrapBroker,
   serveBroker, brokerCommand, startBroker, privateDirectory, captureBrokerProcess, shutdownBroker,
   FAILURE_KEYS, FAILURE_PHASES, FAILURE_VALIDATIONS, failureLine, ledgerFailureLine, validFailure,
-  SECRETS_FILE, RESTORE_CONTRACT, verifyRestoredPreimage,
+  SECRETS_FILE, RESTORE_CONTRACT, verifyRestoredPreimage, PROBE_HARD_STOP_MS, QUIESCENCE_WAIT_CONTRACT,
+  RECONCILE_CONTRACT, reconcileRunCandidate, awaitQuiescence,
 } from "../issue_1700_http_bootstrap.mjs";
 import { APPROVED_ORIGIN, HTTP_CONTRACT, ATTEMPT_CONTRACT } from "../issue_1700_http_probe.mjs";
 import { PROBE_WINDOW } from "../issue_1700_probe_window.mjs";
@@ -139,6 +140,7 @@ function fixture(options = {}) {
       if (override !== undefined) return override;
     }
     if (path === "/deployments") return response({ deployments });
+    if (path === "/versions") return response({ items: [...versions.keys()].reverse().map(versionId => ({ id: versionId })) });
     if (path.startsWith("/versions/")) {
       const body = versions.get(path.slice("/versions/".length));
       return body ? response(structuredClone(body)) : cfError(404, [{ code: 10007, message: "workers.api.error.version_not_found" }]);
@@ -164,6 +166,12 @@ function fixture(options = {}) {
     attemptExists: async () => options.attemptExists ?? attempt !== undefined,
     readAttempt: async () => { if (options.missingAttempt || !attempt) throw new Error("ENOENT"); return attempt; },
     proofRunner: async args => { runnerArgs.push(args); if (options.proofRunner) return options.proofRunner(args);
+      if (options.containerExitsAtBoot) {
+        // The write-ahead ledger is on disk and the POST went out, then the native process
+        // exited 1 at boot: no receipt ever arrives and the runner gives up.
+        attempt = completeProof(clock).attempt; clock += options.runnerMs ?? 0;
+        throw new Error("receipt_timeout: Container exited 1 at boot");
+      }
       // The Worker only answers the admin key stored on the version that is actually deployed.
       if (args.authKey !== values.get(deployedVersion())?.get(SECRET_NAME)) throw new Error("401 admin key rejected");
       const result = completeProof(clock); attempt = result.attempt; return result.proof; },
@@ -507,7 +515,7 @@ test("no token, key, ID, URL or provider text reaches the receipt on any classif
 test("every tagged refusal and API phase in the source is allowlisted, and every allowlist entry is used", async () => {
   const source = await readFile(BOOTSTRAP_SOURCE, "utf8");
   const tags = new Set([...source.matchAll(/\b(?:reject|refuse)\("([a-z0-9_]+)"/g)].map(match => match[1]));
-  const phases = new Set([...source.matchAll(/\b(?:api|currentCandidate)\("([a-z0-9_]+)"/g)].map(match => match[1]));
+  const phases = new Set([...source.matchAll(/\b(?:api|currentCandidate|ownedCandidate)\("([a-z0-9_]+)"/g)].map(match => match[1]));
   assert.deepEqual([...tags].sort(), [...FAILURE_VALIDATIONS].sort());
   assert.deepEqual([...phases].sort(), [...FAILURE_PHASES].sort());
   // Every provider call names its phase: no call site passes a bare path any more.
@@ -520,7 +528,10 @@ test("the rollback-quiescence reader expects exactly the broker snapshot keys, f
   assert.ok(declared, "quiescence key list not found");
   const keys = [...declared[1].matchAll(/'([^']*)'/g)].map(match => match[1]).join("").split(/\s+/).filter(Boolean);
   assert.deepEqual(keys.sort(), Object.keys(fixture().broker.snapshot()).sort());
-  assert.match(python, /broker\['failure'\] is None or \(broker\['state'\] in \('bind_failed', 'cleaned'\)/);
+  assert.match(python, /def _failure_from\(broker, phases\)/);
+  assert.match(python, /_failure_from\(broker, BIND_PHASES \| CLEANUP_PHASES\)/);
+  assert.match(python, /PROBE_HARD_STOP_MS = 120_000 \+ 1_200_000 \+ 60_000/);
+  assert.equal(PROBE_HARD_STOP_MS, 120_000 + 1_200_000 + 60_000);
   assert.ok(python.includes(`'${BROKER_CONTRACT}'`));
 });
 
@@ -620,7 +631,7 @@ test("after the exact preimage rollback, the restore readback proves the active 
     f.rollback();
     assert.deepEqual(await verifyRestoredPreimage(restoreInput, { directory, request: f.request }),
       { contract: RESTORE_CONTRACT, preimage_version_id: id(11), active_percentage: 100, admin_key_present: false,
-        secrets_file_present: false });
+        secrets_file_present: false, newest_upload_is_preimage: false, newest_upload_admin_key_present: true });
     const keyed = fixture({ preimageBindings: [{ name: SECRET_NAME, type: "secret_text" }] }); keyed.rollback();
     await assert.rejects(verifyRestoredPreimage(restoreInput, { directory, request: keyed.request }));
     // The original preimage deployment is not a restore; a new 100% deployment of that version is.
@@ -720,11 +731,12 @@ test("an upload that never consumed the key file cannot produce a proof, even wi
   // Names and types alone look right: the stale key was inherited as secret_text.
   assert.equal((await f.broker.dispatch("bind_candidate", candidate())).candidate_key_confirmed, true);
   assert.notEqual(f.values.get(id(13)).get(SECRET_NAME), JSON.parse(f.secretWrites[0])[SECRET_NAME]);
-  // The authenticated proof is what rejects it: no proof, no completion, no cleanup permission.
+  // The authenticated proof is what rejects it: no proof, no completion, no second probe.
   await assert.rejects(f.broker.dispatch("probe"), /bootstrap_unknown/);
   assert.equal(f.runnerArgs.length, 1);
-  assert.equal(f.broker.snapshot().state, "unknown");
-  await assert.rejects(f.broker.dispatch("cleanup"));
+  assert.equal(f.broker.snapshot().state, "probe_failed");
+  await assert.rejects(f.broker.dispatch("probe"));
+  assert.equal(f.runnerArgs.length, 1);
 });
 
 for (const [name, preimageBindings] of [
@@ -785,7 +797,8 @@ test("a failed bind before any enable re-proves ownership and leaves workers.dev
   assert.equal(f.broker.snapshot().state, "bind_failed");
   assert.equal(f.broker.snapshot().candidate_key_confirmed, false);
   const cleaned = await f.broker.dispatch("cleanup");
-  assert.equal(cleaned.state, "cleaned"); assert.equal(cleaned.candidate_key_confirmed, true);
+  // Ownership (chain, marker, version id) is re-proven; the key itself was never confirmed.
+  assert.equal(cleaned.state, "cleaned"); assert.equal(cleaned.candidate_key_confirmed, false);
   assert.equal(cleaned.subdomain_restore_attempted, false);
   assert.equal(f.calls.some(call => call.method === "POST"), false);
   // An origin this broker never tried to enable is not its to disable.
@@ -819,6 +832,132 @@ test("a bind interrupted by close or by a parse refusal is not fenced and cannot
   await late.broker.dispatch("prepare"); late.deploy();
   await assert.rejects(late.broker.dispatch("bind_candidate", candidate()), /bootstrap_unknown/);
   assert.equal(late.broker.snapshot().state, "unknown");
+});
+
+// ---- Round 3: every path that could leave the key-bearing candidate active ends restored. ----
+async function restoredAfter(f) {
+  f.rollback();
+  const directory = await mkdtemp(join(tmpdir(), "i1700-restored-")); await chmod(directory, 0o700);
+  try {
+    return await verifyRestoredPreimage({ api_token: TOKEN, preimage_deployment_id: id(1), preimage_version_id: id(11) },
+      { directory, request: f.request });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}
+
+test("attempt recorded, Container exited at boot, no proof: fenced, quiescent after the hard stop, fully restored", async () => {
+  const f = fixture({ containerExitsAtBoot: true, runnerMs: 30_000 });
+  await f.enabled();
+  await assert.rejects(f.broker.dispatch("probe"), /bootstrap_unknown/);
+  const failed = f.broker.snapshot();
+  assert.equal(failed.state, "probe_failed"); assert.equal(failed.admission_closed, true);
+  assert.equal(failed.probe_command_seen, true); assert.equal(failed.subdomain_enabled, true);
+  // The hard stop is the attempt's own bucket + 2 min admission + 20 min kill + 1 min skew.
+  const scheduled = Math.floor((f.clock() - 30_000) / 120_000) * 120_000;
+  assert.equal(failed.probe_quiescent_at_ms, scheduled + PROBE_HARD_STOP_MS);
+  // Before the hard stop nothing may be cleaned, and the refusal changes no state.
+  await assert.rejects(f.broker.dispatch("cleanup"));
+  assert.equal(f.broker.snapshot().state, "probe_failed");
+  await assert.rejects(f.broker.dispatch("probe"));
+  assert.equal(f.runnerArgs.length, 1);
+  f.advance(failed.probe_quiescent_at_ms - f.clock());
+  const cleaned = await f.broker.dispatch("cleanup");
+  assert.equal(cleaned.state, "cleaned"); assert.equal(cleaned.cleanup_basis, "expired_attempt");
+  assert.deepEqual(f.domain(), { enabled: false, previews_enabled: false });
+  await assert.rejects(f.broker.dispatch("probe"));
+  const restored = await restoredAfter(f);
+  assert.equal(restored.admin_key_present, false); assert.equal(f.deployedVersion(), id(11));
+});
+
+test("a probe that never reached the runner is quiescent at once; close and expiry are never fenced", async () => {
+  let fail = false;
+  const f = fixture({ request: path => (fail && path === "/deployments" ? cfError(503, []) : undefined) });
+  await f.enabled(); fail = true;
+  await assert.rejects(f.broker.dispatch("probe"), /bootstrap_unknown/);
+  assert.equal(f.runnerArgs.length, 0);
+  assert.equal(f.broker.snapshot().state, "probe_failed");
+  assert.ok(f.broker.snapshot().probe_quiescent_at_ms <= f.clock());
+  fail = false;
+  assert.equal((await f.broker.dispatch("cleanup")).cleanup_basis, "expired_attempt");
+  let finish;
+  const closing = fixture({ proofRunner: () => new Promise((_yes, no) => { finish = no; }) }); await closing.enabled();
+  const probing = closing.broker.dispatch("probe");
+  while (!finish) await new Promise(resolve => setImmediate(resolve));
+  await closing.broker.close(); finish(new Error("aborted"));
+  await assert.rejects(probing, /bootstrap_unknown/);
+  assert.equal(closing.broker.snapshot().state, "unknown");
+});
+
+test("the quiescence wait is bounded and only for a fenced failed attempt", async () => {
+  const at = NOW + 60_000, slept = [];
+  const status = state => async () => ({ contract: BROKER_CONTRACT, state, probe_quiescent_at_ms: at });
+  let clock = NOW;
+  const receipt = await awaitQuiescence("/unused", { command: status("probe_failed"), clock: () => clock,
+    sleep: async ms => { slept.push(ms); clock += ms; } });
+  assert.deepEqual(receipt, { contract: QUIESCENCE_WAIT_CONTRACT, quiescent_at_ms: at, waited_ms: 60_000 });
+  assert.deepEqual(slept, [61_000]);
+  await assert.rejects(awaitQuiescence("/unused", { command: status("enabled"), clock: () => NOW, sleep: async () => {} }));
+  await assert.rejects(awaitQuiescence("/unused", { command: async () => ({ contract: BROKER_CONTRACT, state: "probe_failed",
+    probe_quiescent_at_ms: NOW + 26 * 60_000 }), clock: () => NOW, sleep: async () => {} }));
+});
+
+test("a transient cleanup failure keeps custody and a bounded retry completes the restore", async () => {
+  // One lost ownership read, then one lost disable response: the basis survives both.
+  let reads = 0, lost = 0;
+  const f = fixture({ request: (path, init, calls) => {
+    if (path === "/deployments" && calls.filter(call => call.method === "POST").length === 1 && reads++ === 1) return cfError(502, []); // probe read, then this
+    return undefined;
+  }, subdomainResponse: init => (init.method === "POST" && !JSON.parse(init.body).enabled && lost++ === 0 ? cfError(504, []) : undefined) });
+  await f.enabled(); await f.broker.dispatch("probe");
+  await assert.rejects(f.broker.dispatch("cleanup"), /bootstrap_unknown/);
+  assert.equal(f.broker.snapshot().state, "cleanup_pending");
+  assert.equal(f.broker.snapshot().cleanup_basis, "complete_proof");
+  await assert.rejects(f.broker.dispatch("cleanup"), /bootstrap_unknown/); // the disable response is lost
+  assert.equal(f.broker.snapshot().state, "cleanup_pending");
+  const cleaned = await f.broker.dispatch("cleanup");
+  assert.equal(cleaned.state, "cleaned"); assert.equal(cleaned.cleanup_basis, "complete_proof");
+  assert.deepEqual(f.domain(), { enabled: false, previews_enabled: false });
+  assert.equal((await restoredAfter(f)).admin_key_present, false);
+  // Ownership drift is never retried.
+  const drifted = fixture(); await drifted.enabled(); await drifted.broker.dispatch("probe"); drifted.drift();
+  await assert.rejects(drifted.broker.dispatch("cleanup"), /bootstrap_unknown/);
+  assert.equal(drifted.broker.snapshot().state, "unknown");
+  await assert.rejects(drifted.broker.dispatch("cleanup"));
+});
+
+for (const [name, setup] of [
+  ["candidate_secret_drift", () => fixture({ latestSecrets: [{ name: "OTHER_SECRET", type: "secret_text" }] })],
+  ["candidate_key_missing", () => fixture({ latestIsDeployed: true })],
+]) {
+  test(`a bind refused for ${name} is still cleaned by ownership alone and restored`, async () => {
+    const f = setup();
+    await f.broker.dispatch("prepare");
+    f.deploy(name === "candidate_key_missing" ? { keyType: "secret_key" } : {});
+    await assert.rejects(f.broker.dispatch("bind_candidate", candidate()), /bootstrap_unknown/);
+    assert.equal(f.broker.snapshot().failure.validation_failed, name);
+    const cleaned = await f.broker.dispatch("cleanup");
+    assert.equal(cleaned.state, "cleaned"); assert.equal(cleaned.cleanup_basis, "never_execute");
+    assert.equal(f.calls.some(call => call.method === "POST"), false);
+    assert.equal((await restoredAfter(f)).admin_key_present, false);
+  });
+}
+
+test("an unverified run-owned candidate is reconciled by marker and preimage only", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "i1700-reconcile-")); await chmod(directory, 0o700);
+  const reconcile = { api_token: TOKEN, marker: `issue-1700-route-free-${input().operation_id}-${RELEASE}`,
+    preimage_deployment_id: id(1), preimage_version_id: id(11) };
+  try {
+    const f = fixture();
+    await writeFile(join(directory, BROKER_LEDGER), `${JSON.stringify({ contract: BROKER_CONTRACT, started_at_ms: NOW })}\n`, { mode: 0o600 });
+    assert.deepEqual(await reconcileRunCandidate(reconcile, { directory, request: f.request }),
+      { contract: RECONCILE_CONTRACT, outcome: "preimage_active" });
+    await f.broker.dispatch("prepare"); f.deploy();
+    assert.deepEqual(await reconcileRunCandidate(reconcile, { directory, request: f.request }),
+      { contract: RECONCILE_CONTRACT, outcome: "run_candidate_active", candidate_deployment_id: id(3), candidate_version_id: id(13) });
+    // Another run's marker, or somebody else's later deployment, is never ours to roll back.
+    await assert.rejects(reconcileRunCandidate({ ...reconcile, marker: `issue-1700-route-free-1-${RELEASE}` }, { directory, request: f.request }));
+    f.drift();
+    await assert.rejects(reconcileRunCandidate(reconcile, { directory, request: f.request }));
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("close and expiry remove an unconsumed key file without any provider call", async () => {

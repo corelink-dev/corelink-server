@@ -944,7 +944,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
     if (process.argv[2] === "wait-container-state") {
       const preimage = JSON.parse(await readFile(process.argv[3], "utf8"));
+      // An explicit budget keeps the caller's own restore inside its step timeout; the wait
+      // contract itself still refuses anything outside 1..600000 ms.
+      const budget = process.env.CONTAINER_WAIT_TIMEOUT_MS;
       const result = await waitForContainerState({
+        timeoutMs: budget === undefined ? 600_000 : Number(budget),
         preimage, expectedDigest: process.env.EXPECTED_CONTAINER_IMAGE_DIGEST,
         read: async (timeout) => readContainerDetail({ timeoutMs: Math.min(timeout, 30_000), requireHealthy: false }),
       });

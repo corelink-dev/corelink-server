@@ -10,7 +10,7 @@ import { createConnection, createServer } from "node:net";
 import { execFile, spawn } from "node:child_process";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { runProof, validateDeploymentProof } from "./issue_1700_http_probe.mjs";
+import { runProof, validateAttempt, validateDeploymentProof } from "./issue_1700_http_probe.mjs";
 
 export const BROKER_CONTRACT = "corelink-staging-http-bootstrap-v2";
 export const RESTORE_CONTRACT = "corelink-staging-http-bootstrap-restore-v1";
@@ -29,6 +29,16 @@ export const ATTEMPT_LEDGER = "staging-http-probe-attempt.json";
 // uploaded version is not the deployed one, which every exact-preimage rollback
 // leaves behind.
 export const SECRETS_FILE = "candidate-secrets.json";
+// Upper bound on any native execution an HTTP attempt can have started: the DO admits a POST
+// only inside its own 2-minute bucket, and the supervisor's KILL and the DO stop alarm end the
+// Container 20 minutes after admission; one more minute absorbs clock skew.
+export const PROBE_HARD_STOP_MS = 120_000 + 1_200_000 + 60_000;
+export const MAX_QUIESCENCE_WAIT_MS = 25 * 60_000;
+export const QUIESCENCE_WAIT_CONTRACT = "corelink-staging-http-bootstrap-quiescence-wait-v1";
+export const RECONCILE_CONTRACT = "corelink-staging-http-bootstrap-run-candidate-v1";
+const RUN_MARKER = /^issue-1700-route-free-[1-9][0-9]{0,19}-[0-9a-f]{40}$/;
+// Cleanup refusals that mean someone else owns the state now: never retried, never restored over.
+const OWNERSHIP_DRIFT = new Set(["deployment_chain_mismatch", "version_mismatch", "subdomain_state_mismatch"]);
 const API = "https://api.cloudflare.com/client/v4/accounts/6a1fc1c626fc2628823e60b9db01f5cd/workers/scripts/corelink-staging";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA = /^[0-9a-f]{40}$/;
@@ -237,30 +247,71 @@ async function removeSecretsFile(directory) {
   await unlink(join(directory, SECRETS_FILE)).catch(error => { if (error.code !== "ENOENT") throw error; });
 }
 // Name AND type of every hidden-value binding: a secret_key turned secret_text is drift.
+// Names of every hidden-value binding; the carried key's own type is checked separately.
 const secretSignature = inventory => inventory.filter(row => row.type === "secret_text" || row.type === "secret_key")
-  .map(row => `${row.name}:${row.type}`).sort();
-// After the workflow restores the exact preimage version, prove from the provider that it
-// is active at 100% and carries no admin key, and that the key file is gone. Read-only.
-export async function verifyRestoredPreimage(inputValue, { directory, request = fetch, timeoutMs = 30_000 } = {}) {
-  if (!exact(inputValue, ["api_token", "preimage_deployment_id", "preimage_version_id"]) ||
-      typeof inputValue.api_token !== "string" || inputValue.api_token.length < 1 || inputValue.api_token.length > 8192 ||
-      /[\r\n]/.test(inputValue.api_token) || !uuid(inputValue.preimage_deployment_id) || !uuid(inputValue.preimage_version_id)) throw reject();
-  await privateDirectory(directory);
-  await lstat(join(directory, SECRETS_FILE)).then(() => { throw reject(); }, error => { if (error.code !== "ENOENT") throw error; });
-  const read = async path => {
+  .map(row => row.name).sort();
+function readOnlyInput(value, keys) {
+  if (!exact(value, keys) || typeof value.api_token !== "string" || value.api_token.length < 1 ||
+      value.api_token.length > 8192 || /[\r\n]/.test(value.api_token) ||
+      !uuid(value.preimage_deployment_id) || !uuid(value.preimage_version_id)) throw reject();
+  return value;
+}
+function readOnlyClient(token, request, timeoutMs) {
+  return async path => {
     const url = API + path;
     const response = await request(url, { method: "GET", redirect: "error", credentials: "omit", cache: "no-store",
-      signal: AbortSignal.timeout(timeoutMs), headers: { authorization: `Bearer ${inputValue.api_token}`, accept: "application/json" } });
+      signal: AbortSignal.timeout(timeoutMs), headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
     if (response.url && response.url !== url) throw reject();
     return boundedBody(response, { http_status: httpStatus(response), cf_error_codes: [], cf_message_class: null });
   };
+}
+// After the workflow restores the exact preimage version, prove from the provider that it
+// is active at 100% and carries no admin key, and that the key file is gone. Read-only.
+// It also reports whether the newest (undeployed) upload still names the key: that residue
+// cannot be deleted while it is not deployed, and a later plain `wrangler deploy` inherits it.
+export async function verifyRestoredPreimage(inputValue, { directory, request = fetch, timeoutMs = 30_000 } = {}) {
+  readOnlyInput(inputValue, ["api_token", "preimage_deployment_id", "preimage_version_id"]);
+  await privateDirectory(directory);
+  await lstat(join(directory, SECRETS_FILE)).then(() => { throw reject(); }, error => { if (error.code !== "ENOENT") throw error; });
+  const read = readOnlyClient(inputValue.api_token, request, timeoutMs);
   const rows = deploymentInventory(await read("/deployments"));
   if (rows[0].version_id !== inputValue.preimage_version_id || rows[0].deployment_id === inputValue.preimage_deployment_id) throw reject();
   const version = envelope(await read(`/versions/${inputValue.preimage_version_id}`));
   if (!record(version) || version.id !== inputValue.preimage_version_id) throw reject();
   if (bindingInventory(wrappedSettings(version.resources?.bindings)).some(row => row.name === SECRET_NAME)) throw reject();
+  const listed = envelope(await read("/versions?per_page=1"));
+  const newestId = Array.isArray(listed?.items) ? listed.items[0]?.id : undefined;
+  if (!uuid(newestId)) throw reject();
+  let newestKey = false;
+  if (newestId !== inputValue.preimage_version_id) {
+    const newest = envelope(await read(`/versions/${newestId}`));
+    if (!record(newest) || newest.id !== newestId) throw reject();
+    newestKey = bindingInventory(wrappedSettings(newest.resources?.bindings)).some(row => row.name === SECRET_NAME);
+  }
   return { contract: RESTORE_CONTRACT, preimage_version_id: inputValue.preimage_version_id, active_percentage: 100,
-    admin_key_present: false, secrets_file_present: false };
+    admin_key_present: false, secrets_file_present: false, newest_upload_is_preimage: newestId === inputValue.preimage_version_id,
+    newest_upload_admin_key_present: newestKey };
+}
+// Ownership for a candidate that the workflow could not verify (image or Container capture
+// failed): independent of earlier step outcomes, keyed on this run's marker and the exact
+// captured preimage. Read-only; an unattributable active deployment fails closed.
+export async function reconcileRunCandidate(inputValue, { directory, request = fetch, timeoutMs = 30_000 } = {}) {
+  readOnlyInput(inputValue, ["api_token", "marker", "preimage_deployment_id", "preimage_version_id"]);
+  if (typeof inputValue.marker !== "string" || !RUN_MARKER.test(inputValue.marker)) throw reject();
+  await privateDirectory(directory);
+  const ledger = JSON.parse(await readFile(join(directory, BROKER_LEDGER), "utf8"));
+  if (!record(ledger) || ledger.contract !== BROKER_CONTRACT || !Number.isSafeInteger(ledger.started_at_ms)) throw reject();
+  const read = readOnlyClient(inputValue.api_token, request, timeoutMs);
+  const rows = deploymentInventory(await read("/deployments"));
+  const preimageRow = row => row.deployment_id === inputValue.preimage_deployment_id && row.version_id === inputValue.preimage_version_id;
+  if (preimageRow(rows[0])) return { contract: RECONCILE_CONTRACT, outcome: "preimage_active" };
+  const current = rows[0];
+  if (!rows.some(preimageRow) || current.created_at_ms < Math.floor(ledger.started_at_ms / 1000) * 1000) throw reject();
+  const version = envelope(await read(`/versions/${current.version_id}`));
+  if (!record(version) || version.id !== current.version_id ||
+      version.annotations?.["workers/message"] !== inputValue.marker) throw reject();
+  return { contract: RECONCILE_CONTRACT, outcome: "run_candidate_active",
+    candidate_deployment_id: current.deployment_id, candidate_version_id: current.version_id };
 }
 // Prints exactly one redacted line and never throws: the ledger is read through one
 // no-follow, non-blocking descriptor, bounded, and only its re-validated `failure` is shown.
@@ -307,6 +358,7 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
   let preimage = null, bindings = null;
   let probeSeen = false, cleanupBasis = null, admissionClosed = false;
   let failure = null, lastCall = null;
+  let probeDispatchedAt = null, probeSettledAt = null, quiescentAt = null, cleanupRetryable = false;
   // rollback_safe covers broker-owned state only (key file, subdomain). The key leaves the
   // deployed path when the workflow restores the exact, key-free preimage version.
   const snapshot = () => ({ contract: BROKER_CONTRACT, operation_id: input.operation_id,
@@ -316,7 +368,7 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     subdomain_enable_attempted: enabledAttempted, subdomain_enabled: enabled,
     subdomain_restore_attempted: restoreAttempted, subdomain_restored: restored,
     rollback_safe: state === "cleaned", cleanup_basis: cleanupBasis, probe_command_seen: probeSeen, admission_closed: admissionClosed,
-    preimage, candidate, preimage_bindings: bindings, failure, pid: process.pid });
+    probe_quiescent_at_ms: quiescentAt, preimage, candidate, preimage_bindings: bindings, failure, pid: process.pid });
   async function dropSecretsFile() {
     await removeSecrets();
     if (secretFileWritten) secretFileRemoved = true;
@@ -388,8 +440,33 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     // binding (the preimage has none, see prepare): any other secret came from inheritance.
     const carried = inventory.filter(row => row.name === SECRET_NAME);
     if (carried.length !== 1 || carried[0].type !== "secret_text") throw refuse("candidate_key_missing");
-    if (JSON.stringify(secretSignature(inventory)) !== JSON.stringify([`${SECRET_NAME}:secret_text`])) throw refuse("candidate_secret_drift");
+    if (JSON.stringify(secretSignature(inventory)) !== JSON.stringify([SECRET_NAME])) throw refuse("candidate_secret_drift");
     return version;
+  }
+  // Ownership only: this run's exact candidate is still the active deployment, stacked on the
+  // exact preimage, newer than this broker, and its version carries this run's marker. Secret,
+  // release and key checks are NOT repeated, so a candidate refused for them can still be cleaned.
+  async function ownedCandidate(phase) {
+    const rows = await api(phase, "/deployments", deploymentInventory);
+    const current = rows[0];
+    if (current.deployment_id !== candidate.candidate_deployment_id || current.version_id !== candidate.candidate_version_id ||
+        !rows.some(row => row.deployment_id === preimage.deployment_id && row.version_id === preimage.version_id) ||
+        current.created_at_ms < Math.floor(started / 1000) * 1000) throw refuse("deployment_chain_mismatch");
+    const version = await api(phase, `/versions/${candidate.candidate_version_id}`, envelope);
+    if (!record(version) || version.id !== candidate.candidate_version_id ||
+        version.annotations?.["workers/message"] !== `issue-1700-route-free-${input.operation_id}-${input.expected_release}`) throw refuse("version_mismatch");
+  }
+  // The latest instant any native execution started by this probe can still be running.
+  async function probeHardStop() {
+    if (probeDispatchedAt === null) return now(); // the proof runner never ran: no POST was possible
+    const settled = probeSettledAt ?? now();
+    let bound = settled + PROBE_HARD_STOP_MS;
+    try {
+      const recorded = await readAttempt();
+      if (validateAttempt(recorded, input.expected_release) && recorded.started_at_ms >= probeDispatchedAt &&
+          recorded.started_at_ms <= settled) bound = Math.min(bound, recorded.scheduled_time_ms + PROBE_HARD_STOP_MS);
+    } catch { /* no usable write-ahead ledger: keep the settle-time bound */ }
+    return bound;
   }
   async function prepare() {
     if (state !== "starting") throw reject();
@@ -433,9 +510,12 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     if (state !== "enabled") throw reject();
     await currentCandidate("probe_verify_candidate");
     state = "running"; await persist();
-    proof = await proofRunner({ authKey: key.toString("base64url"), apiToken: input.api_token,
-      release: input.expected_release, expectedSha: input.expected_release, imageDigest: candidate.image_digest,
-      attemptPath: join(directory, ATTEMPT_LEDGER), signal: controller.signal });
+    probeDispatchedAt = now();
+    try {
+      proof = await proofRunner({ authKey: key.toString("base64url"), apiToken: input.api_token,
+        release: input.expected_release, expectedSha: input.expected_release, imageDigest: candidate.image_digest,
+        attemptPath: join(directory, ATTEMPT_LEDGER), signal: controller.signal });
+    } finally { probeSettledAt = now(); }
     alive();
     attempt = await readAttempt();
     if (!validateDeploymentProof(proof, attempt, { expectedRelease: input.expected_release,
@@ -443,34 +523,45 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     state = "complete"; await persist(); return proof;
   }
   async function cleanup() {
-    const neverExecute = !probeSeen && ["prepared", "enabled", "bind_failed"].includes(state);
-    if (!secretFileWritten || restoreAttempted || (!neverExecute &&
-        (state !== "complete" || !validateDeploymentProof(proof, attempt, { expectedRelease: input.expected_release,
-          expectedImageDigest: candidate?.image_digest, observedAt: now() })))) throw reject();
+    cleanupRetryable = false;
+    // The basis is decided once and survives transport failures (state cleanup_pending).
+    const basis = state === "cleanup_pending" ? cleanupBasis
+      : !probeSeen && ["prepared", "enabled", "bind_failed"].includes(state) ? "never_execute"
+      : state === "probe_failed" && quiescentAt !== null && now() >= quiescentAt ? "expired_attempt"
+      : state === "complete" && validateDeploymentProof(proof, attempt, { expectedRelease: input.expected_release,
+        expectedImageDigest: candidate?.image_digest, observedAt: now() }) ? "complete_proof" : null;
+    if (!secretFileWritten || basis === null || (restoreAttempted && state !== "cleanup_pending")) throw reject();
     // Irreversible close latch before the first await. Missing disk state alone
     // never authorizes this arm: the broker must positively own never-executed RAM state.
     state = "closing";
     admissionClosed = true;
-    cleanupBasis = neverExecute ? "never_execute" : "complete_proof";
+    cleanupBasis = basis;
     await persist();
-    if (neverExecute && await attemptExists()) throw reject();
+    if (basis === "never_execute" && await attemptExists()) throw reject();
     await dropSecretsFile();
-    // A bound candidate must still be the exact active version before the restore. After a
-    // failed bind this re-proves ownership (including the carried key) before any write.
-    if (candidate) { await currentCandidate("cleanup_verify_before_restore"); candidateKeyConfirmed = true; }
-    const current = await api("cleanup_subdomain_before", "/subdomain", subdomainState);
-    // Undo only a toggle this broker attempted. An origin it never tried to enable, or a
-    // confirmed enable someone else has since reverted, is not ours to touch.
-    if (current.previews_enabled || (current.enabled && !enabledAttempted) || (enabled && !current.enabled)) {
-      throw refuse("subdomain_state_mismatch");
+    // From here a transport failure keeps custody (cleanup_pending, same basis); ownership
+    // drift does not.
+    cleanupRetryable = true;
+    try {
+      // A bound candidate must still be this run's exact active version before any write.
+      if (candidate) await ownedCandidate("cleanup_verify_before_restore");
+      const current = await api("cleanup_subdomain_before", "/subdomain", subdomainState);
+      // Undo only a toggle this broker attempted. An origin it never tried to enable, or a
+      // confirmed enable someone else reverted before any disable of ours, is not ours.
+      if (current.previews_enabled || (current.enabled && !enabledAttempted) || (enabled && !current.enabled && !restoreAttempted)) {
+        throw refuse("subdomain_state_mismatch");
+      }
+      if (current.enabled) {
+        restoreAttempted = true; await persist();
+        const restore = await api("cleanup_restore_subdomain", "/subdomain", subdomainState, "POST", preimage.subdomain);
+        if (restore.enabled || restore.previews_enabled) throw refuse("subdomain_not_disabled");
+      }
+      const readback = await api("cleanup_subdomain_after", "/subdomain", subdomainState);
+      if (readback.enabled || readback.previews_enabled) throw refuse("subdomain_not_disabled");
+    } catch (error) {
+      if (OWNERSHIP_DRIFT.has(error?.[VALIDATION])) cleanupRetryable = false;
+      throw error;
     }
-    if (current.enabled) {
-      restoreAttempted = true; await persist();
-      const restore = await api("cleanup_restore_subdomain", "/subdomain", subdomainState, "POST", preimage.subdomain);
-      if (restore.enabled || restore.previews_enabled) throw refuse("subdomain_not_disabled");
-    }
-    const readback = await api("cleanup_subdomain_after", "/subdomain", subdomainState);
-    if (readback.enabled || readback.previews_enabled) throw refuse("subdomain_not_disabled");
     restored = true; enabled = false; state = "cleaned"; key.fill(0); await persist(); return snapshot();
   }
   async function dispatch(command, value) {
@@ -481,6 +572,8 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
     if (command === "probe" && deadline - now() < PROBE_RESERVE_MS) {
       admissionClosed = true; await persist(); throw reject();
     }
+    // A failed attempt is cleaned only after its hard stop; asking earlier changes nothing.
+    if (command === "cleanup" && state === "probe_failed" && (quiescentAt === null || now() < quiescentAt)) throw reject();
     alive(); busy = true;
     if (command === "probe") probeSeen = true;
     try { return await ({ prepare, bind_candidate: bindCandidate, probe, cleanup })[command](value); }
@@ -492,8 +585,14 @@ export function createBootstrapBroker(inputValue, { directory, request = fetch, 
       // bind they interrupt is never left fenced.
       const fenced = command === "bind_candidate" && state === "prepared" && candidate !== null && !probeSeen &&
         now() < deadline;
-      state = fenced ? "bind_failed" : "unknown";
-      if (fenced) admissionClosed = true;
+      // A failed probe may have executed natively, but only until its hard stop. Fence it (no
+      // further probe is ever admitted) and record when cleanup becomes safe.
+      const attempted = command === "probe" && ["enabled", "running"].includes(state) && now() < deadline;
+      // A transport failure during cleanup keeps the basis; ownership drift ends custody.
+      const pending = command === "cleanup" && cleanupRetryable && state === "closing" && now() < deadline;
+      state = fenced ? "bind_failed" : attempted ? "probe_failed" : pending ? "cleanup_pending" : "unknown";
+      if (fenced || attempted) admissionClosed = true;
+      if (attempted) quiescentAt = await probeHardStop().catch(() => null);
       await persist().catch(() => {}); throw unknown();
     }
     finally { busy = false; }
@@ -690,6 +789,19 @@ export async function shutdownBroker(directory, { inspect = inspectBrokerProcess
   return { contract: "corelink-staging-http-bootstrap-shutdown-v1", pid: identity.pid,
     process_exited: true, provider_cleanup_claimed: false };
 }
+// Bounded wait, outside the broker, until a failed attempt's hard stop has passed.
+export async function awaitQuiescence(directory, { command = brokerCommand, clock = Date.now,
+  sleep = ms => new Promise(yes => setTimeout(yes, ms)) } = {}) {
+  const status = await command(directory, "status");
+  const at = status?.probe_quiescent_at_ms;
+  if (!record(status) || status.contract !== BROKER_CONTRACT || status.state !== "probe_failed" ||
+      !Number.isSafeInteger(at)) throw reject();
+  const wait = at - clock();
+  if (wait > MAX_QUIESCENCE_WAIT_MS) throw reject();
+  if (wait > 0) await sleep(wait + 1000);
+  if (clock() < at) throw reject();
+  return { contract: QUIESCENCE_WAIT_CONTRACT, quiescent_at_ms: at, waited_ms: Math.max(0, wait) };
+}
 async function stdinJson() {
   let data = Buffer.alloc(0);
   for await (const chunk of process.stdin) { data = Buffer.concat([data, chunk]); if (data.length > 16_384) throw reject(); }
@@ -745,6 +857,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.stdout.write(`${JSON.stringify(await startBroker(directory, startupInput(await stdinJson())))}\n`);
     } else if (command === "shutdown") {
       process.stdout.write(`${JSON.stringify(await shutdownBroker(directory))}\n`);
+    } else if (command === "await_quiescence") {
+      process.stdout.write(`${JSON.stringify(await awaitQuiescence(directory))}\n`);
+    } else if (command === "reconcile_run_candidate") {
+      process.stdout.write(`${JSON.stringify(await reconcileRunCandidate(await stdinJson(), { directory }))}\n`);
     } else if (command === "verify_restored") {
       process.stdout.write(`${JSON.stringify(await verifyRestoredPreimage(await stdinJson(), { directory }))}\n`);
     } else if (command === "failure") {

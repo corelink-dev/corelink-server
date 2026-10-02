@@ -24,7 +24,17 @@
   `EXIT` trap guarantees the exact Worker preimage restore once broker cleanup
   succeeded, even when the Container checks fail. Third, secrets are compared by
   name and type. Fourth, a preimage carrying any other secret is refused,
-  because inherited values cannot be proven. Broker
+  because inherited values cannot be proven. A third round makes every path
+  that could leave the key-bearing candidate active end restored or explicitly
+  residual. A failed HTTP attempt is fenced as `probe_failed`, waited out to its
+  hard stop (2-minute admission bucket + 20-minute native kill + 1 minute), and
+  then cleaned (`expired_attempt`) and restored. Cleanup transport failures keep
+  custody (`cleanup_pending`, at most three bounded retries), while ownership drift
+  still fails closed. Cleanup re-proves ownership by chain, marker and version id
+  only. The restore trap is armed before any Container inspection, and a failed
+  or unknown second quiescence gate withholds it with a residual receipt. The
+  Container wait is bounded inside a 30-minute step. A deploy whose capture or
+  verification failed is rolled back by run marker and exact preimage. Broker
   contract v2 drops the `secret_put_*`, `secret_delete_*`, `post_secret` and
   `post_delete` fields. Rollback quiescence reads v2. The broker makes at most
   15 management API calls, none to a secrets or settings path.

@@ -135,19 +135,60 @@ cleanup); a failed bind skips the probe. Each restore adds two read-only readbac
 Worker versions are immutable, and an upload inherits the newest upload's secrets.
 Rollback uploads can therefore leave an undeployed version that still names the
 admin key. Settings can follow that newest upload, so no check reads them; checks
-read the exact deployed version.
+read the exact deployed version. Nothing deletes that residue: Cloudflare refuses
+the delete while the newest upload is not deployed. Two consequences follow.
+First, a later ordinary `wrangler deploy` of corelink-staging inherits the stale
+key and deploys it. Its value is unknown, but it still gates admin `/_internal/*`
+routes and is passed to the Container. Recovery: right after such a deploy, while
+the newest upload is the deployed one, run
+`wrangler secret delete CORELINK_ADMIN_AUTH_KEY` and read it back absent. Second,
+the next #1700 run refuses with `preimage_key_present` if the deployed preimage
+carries the key. `verify_restored` reports `newest_upload_admin_key_present` after
+every restore, so the residue is never silent.
 See the official [Cloudflare secrets lifecycle](https://developers.cloudflare.com/workers/configuration/secrets/).
 
 This finite native proof always restores the exact Worker and Container
-preimages after accepted proof and owned bootstrap cleanup. Cleanup verifies the
-exact candidate and disables workers.dev. Restoring the exact preimage version
-then removes the key from the deployed path. A read-only `verify_restored` readback
-proves that version is active at 100%, carries no admin key and left no key file.
-The rollback upload inherits the candidate's key. So once quiescence and broker
-cleanup have succeeded, an `EXIT` trap attempts the exact Worker preimage restore
-and its readback however the later Container waits, digest checks or the second
-quiescence gate end. The step keeps its failure outcome, and the Worker and
-Container preimages are verified separately. The retained native proof
+preimages after accepted proof and owned bootstrap cleanup. Cleanup re-proves
+ownership of the exact candidate and disables workers.dev. Ownership means the
+deployment chain, this run's marker and the version id; the secret checks are not
+repeated, so a candidate refused at bind for its secrets is still cleaned.
+Restoring the exact preimage version then removes the key from the deployed path.
+A read-only `verify_restored` readback proves that version is active at 100%,
+carries no admin key and left no key file.
+
+Every path that can leave the key-bearing candidate active ends in a restore or an
+explicit residual receipt:
+
+- **Restore trap.** Once ownership, quiescence and broker cleanup are proven, an
+  `EXIT` trap is armed before any Container inspection. It attempts the exact Worker
+  preimage restore and its readback however the Container reads, digest checks,
+  rollback upload or bounded wait end. The wait is capped at 7 minutes inside a
+  30-minute step, so the restore keeps budget. The step keeps its failure outcome,
+  and the Worker and Container preimages are verified separately.
+- **Second quiescence gate.** A failed or unknown second gate withholds the restore.
+  Old code is never restored over an unproven probe schedule
+  (`issue-1700-runtime-recovery.md`). It leaves `staging-rollback-residual.json`
+  with `reason=second_quiescence_unproven`.
+- **Cleanup transport failures** keep the broker's basis (`cleanup_pending`). The
+  workflow retries cleanup at most three times. Ownership drift (another deployment,
+  another version, or a workers.dev state this broker did not cause) ends custody
+  and restores nothing.
+- **A failed HTTP attempt.** The write-ahead ledger is recorded, then the Container
+  exits at boot or no proof arrives. The broker fences this as `probe_failed`:
+  admission is closed and no second probe exists. It also records the attempt's
+  hard stop. The DO admits a POST only in its own 2-minute bucket, and the
+  supervisor KILL and DO alarm end the Container 20 minutes after admission, so the
+  hard stop is `scheduled_time_ms + 2 min + 20 min + 1 min`. A bounded step (at
+  most 25 minutes) waits until then. Rollback quiescence then accepts the attempt
+  as finished, and cleanup uses basis `expired_attempt`.
+- **Deploy succeeded but the image or Container capture, or candidate
+  verification, failed.** Neither verified rollback runs. A separate step decides
+  ownership by this run's marker on the active version and the exact captured
+  preimage only. It cleans the broker, restores the Container image with the
+  rollback upload and restores the exact Worker preimage. Container convergence is
+  not verified on that path, because the candidate Container state was never
+  captured. An active deployment that is neither the preimage nor marked as this
+  run's fails closed. The retained native proof
 describes that execution; it is not a claim that the candidate remains active.
 
 Native proof is only one part of #1700. Canonical Custom Domain publication,
