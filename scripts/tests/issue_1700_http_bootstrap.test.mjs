@@ -689,6 +689,19 @@ test("probe winning concurrency, lost response and expiry stay UNKNOWN with no c
   await assert.rejects(expired.broker.dispatch("cleanup"));
 });
 
+test("close and expiry remove an unconsumed key file without any provider call", async () => {
+  for (const end of ["close", "expire"]) {
+    const f = fixture(); await f.broker.dispatch("prepare");
+    assert.notEqual(f.secretsFile(), null);
+    const before = f.calls.length;
+    await f.broker[end]();
+    assert.equal(f.secretsFile(), null, end);
+    assert.equal(f.broker.snapshot().secret_file_removed, true, end);
+    assert.equal(f.broker.snapshot().state, "unknown", end);
+    assert.equal(f.calls.length, before, end);
+  }
+});
+
 test("cleanup drift after complete proof never restores state it does not own", async () => {
   const f = fixture(); await f.enabled(); await f.broker.dispatch("probe"); f.drift();
   await assert.rejects(f.broker.dispatch("cleanup"));
