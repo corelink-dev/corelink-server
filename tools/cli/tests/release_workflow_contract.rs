@@ -14,18 +14,28 @@
 )]
 
 #[path = "release_workflow_contract/assertions.rs"]
-#[expect(
-    dead_code,
-    reason = "assert_rekor_helper_contract has had no caller since #1838 retired the Rekor \
-              lane; it can only be deleted inside assertions.rs, which the issue-2572 gate \
-              keeps closed-world. Once it is gone this `expect` is unfulfilled and fails \
-              `-D warnings`."
-)]
 mod assertions;
 #[path = "release_workflow_contract/cases.rs"]
 mod cases;
 
 use assertions::*;
+
+/// The one retired item in `assertions`, named so that `dead_code` stays strict
+/// for every other one. `assertions::assert_rekor_helper_contract` has had no
+/// caller since #1838 retired the Rekor lane, and it can only be deleted inside
+/// assertions.rs, which the issue-2572 gate keeps closed-world. This wrapper is
+/// its only reference: the `expect` below covers the wrapper, and through it
+/// that helper alone. Delete the two together. Deleting only the helper is a
+/// compile error here; giving the wrapper a caller leaves the `expect`
+/// unfulfilled, which fails `-D warnings`.
+#[expect(
+    dead_code,
+    reason = "keeps the retired Rekor helper, which only the issue-2572 gate's own PR may \
+              delete, out of an otherwise strict dead_code check"
+)]
+fn retired_rekor_helper_contract(script: &str) {
+    assertions::assert_rekor_helper_contract(script);
+}
 
 fn assert_managed_cli_provenance_contract(caller: &str, generator: &str) {
     assert!(
