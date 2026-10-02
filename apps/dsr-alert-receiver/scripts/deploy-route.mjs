@@ -15,7 +15,7 @@ export const TARGET = Object.freeze({
   ...RECEIVER_TARGET,
   databaseBinding: "ALERT_RECEIPTS_DB",
   migration: "0001_alert_receipts.sql",
-  apiTokenSecret: "STAGING_CF_WORKER_API_TOKEN",
+  apiTokenSecret: "CF_API_TOKEN",
   receiverSecret: "STAGING_DSR_DLQ_ALERT_AUTH_TOKEN",
   workerSecret: "DSR_ALERT_RECEIVER_TOKEN",
   placeholderId: "00000000-0000-0000-0000-000000000000",
@@ -24,18 +24,21 @@ export const TARGET = Object.freeze({
 });
 
 // Cloudflare API permissions each workflow mode needs on account 6a1fc1c6…
-// (one token: account resources = this account; zone resources = all zones of
-// this account). A refused call is named in the receipt's `read_failure` /
-// `write_failure` endpoint label, so a missing grant shows up by name.
+// Every mode runs with one token, the repository secret CF_API_TOKEN, a user
+// token (as #2884 did for #1700; STAGING_CF_WORKER_API_TOKEN got 403 on Worker
+// version reads in readback run 37028034683). Account resources = this account;
+// zone resources = all zones of this account. A refused call is named in the
+// receipt's `read_failure` / `write_failure` endpoint label, so a missing grant
+// shows up by name.
 //
 // | mode / calls                                         | permission (resource)               |
 // |------------------------------------------------------|-------------------------------------|
 // | readback_only                                        |                                     |
 // |   GET workers/scripts, …/versions, …/deployments,    | Workers Scripts: Read (account)     |
 // |       …/subdomain                                    |                                     |
-// |   GET user|accounts tokens/verify                    | none (a token verifies itself)      |
-// |   GET token details (diagnostic only, optional)      | API Tokens: Read (user token) or    |
-// |                                                      | Account API Tokens: Read (account)  |
+// |   GET user/tokens/verify (a user token answers here; | none (a token verifies itself)      |
+// |       401/403 retries accounts/{id}/tokens/verify)   |                                     |
+// |   GET user/tokens/{id} (diagnostic only, optional)   | API Tokens: Read (user token)       |
 // | deploy_once                                          |                                     |
 // |   GET accounts/{id}                                  | Account Settings: Read (account)    |
 // |   GET d1/database?name=…, POST d1/…/query,           | D1: Edit (account; covers read)     |
@@ -58,9 +61,11 @@ export const TARGET = Object.freeze({
 // | disable_workers_dev                                  |                                     |
 // |   GET/POST …/subdomain                               | Workers Scripts: Edit (account)     |
 //
-// One key for every mode: Account Settings: Read, Workers Scripts: Edit, D1: Edit
-// (account 6a only); Zone: Read, Workers Routes: Read (all zones of account 6a);
-// optionally Account API Tokens: Read so readback can prove the key's own scope.
+// CF_API_TOKEN must therefore carry, for every mode: Account Settings: Read,
+// Workers Scripts: Edit, D1: Edit (account 6a); Zone: Read, Workers Routes: Read
+// (all zones of account 6a); optionally API Tokens: Read (user) so readback can
+// prove the token's own scope. The exact-name, ingress and binding guards below
+// hold whatever else the token can reach.
 
 export class RouteError extends Error {
   constructor(code, providerFailure = null) {
