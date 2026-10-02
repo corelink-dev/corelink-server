@@ -429,7 +429,7 @@ jobs:
             python3 -B scripts/apply_staging_b216_dsr_schema.py --check-contract
             bash -n scripts/verify-signup-worker-dsr-redrive-schema.sh
             python3 scripts/verify_staging_topology_contract.py --expect ready
-            test "$(sha256sum scripts/verify_i2574_grpc_diagnostic_policy.py | cut -d ' ' -f 1)" = "f159b00fa2938bf1062218dfbe0f55cd3e3ef72bd1f91ac40b88b7715eb836b4"
+            test "$(sha256sum scripts/verify_i2574_grpc_diagnostic_policy.py | cut -d ' ' -f 1)" = "0191626216bec198d5b470d70e0cb1ee9c9260bccfc83c99a425b5a19c09bcc6"
             test "$(sha256sum tests/test_verify_i2574_grpc_diagnostic_policy.py | cut -d ' ' -f 1)" = "8b9804a154df5c3b42c7a986f6a0c680e12f5c24657e6bad60b83c8a9f18ffd0"
             python3 -B -S -m unittest -v tests/test_verify_i2574_grpc_diagnostic_policy.py
             python3 -B -S - <<'PY'

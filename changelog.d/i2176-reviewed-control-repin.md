@@ -29,12 +29,13 @@
   credential that reaches only a CI, test or operator process, or only the
   Cloudflare API, is not-transport, and its reason says so.
 
-  All 47 rows were re-pinned and none was restored, because none adds a gRPC
-  admission. Unit tests require the ledger keys to equal the moved pins and
-  each disposition to name exactly the maps that moved. A cold review
-  (FIX_FIRST) found that credential flow and the authenticated probe path
-  had been classed as not-transport. Seven rows moved to transport-reviewed,
-  and a unit test pins them with their review records:
+  All 47 rows were re-pinned. One of them, `index_fetch.ts`, was repaired
+  before it was pinned, because it broke the #2176 contract. The other 46
+  add no gRPC admission. Unit tests require the ledger keys to equal the
+  moved pins and each disposition to name exactly the maps that moved. A
+  cold review (FIX_FIRST) found that credential flow and the authenticated
+  probe path had been classed as not-transport. Seven rows moved to
+  transport-reviewed, and a unit test pins them with their review records:
   - credential flow, naming source, destination, scope and guards:
     - the i1700 deploy workflow: since #2853 its broker PUTs a temporary
       `CORELINK_ADMIN_AUTH_KEY` into corelink-staging and opens workers.dev;
@@ -59,14 +60,23 @@
 
   The original eight transport-reviewed rows were read against the #2176
   contract:
-  - `index_fetch.ts` (#2853) runs the staging D1 proof handler before the
-    gRPC deny. The handler answers JSON and never proxies. On the proof path
-    it needs staging and admin auth. A gRPC POST gets 400, and an
-    authenticated GET reads the proof status. Any other request falls
-    through to the unchanged deny. One contract deviation is recorded: on
-    `*.workers.dev`, every request except the proof literal gets 404. A
-    gRPC request there is therefore denied with 404, not the 503 that the
-    contract text names.
+  - `index_fetch.ts` (#2853) ran the staging D1 proof handler before the
+    gRPC deny. An authenticated GET with `Content-Type: application/grpc`
+    to the proof literal therefore reached the proof handler, which selects
+    its Durable Object and returns the proof status as JSON. A gRPC POST got
+    400, and gRPC on `*.workers.dev` got 404.
+    The contract requires 503 before any Durable Object. #2868 restores the
+    deny and the diagnostic forward as the first two Fetch steps. The proof
+    handler now runs after them and sees only non-gRPC requests, which it
+    answers as before. A real-pipeline test asserts 503 and zero Durable
+    Object calls for gRPC-shaped proof requests on both origins. It also
+    checks that the two protected diagnostic paths still reach their
+    dedicated Durable Object.
+  - Nothing may run ahead of the deny. A unit test requires the deny and
+    the diagnostic forward to be the first Fetch steps. It also requires
+    every module they import to be a reviewed BASE pin that triggers both
+    transport workflows. `staging_d1_http.ts` is not in that set, because
+    it now runs after the deny.
   - `Dockerfile` and `durable_object_start.ts` (#2749, #2853, #2858) add a
     staging-only PID-1 supervisor. The final image keeps `USER corelink`,
     port 50051 and the `corelink-server` ENTRYPOINT.
@@ -84,7 +94,10 @@
   are a BASE state only. No candidate can move a group into or out of that
   state, and old -> new is still the only admitted transition. New tests run
   on hardlinked copies of the real tree:
-  - the baseline accepts itself and ordinary Stripe client maintenance;
+  - the baseline accepts itself and ordinary Stripe client maintenance, and
+    a maintained tree still reads as the reviewed baseline and accepts
+    itself (#2565 is recognised through the production wallet-route
+    classifier, with its endpoints and privileged pair still exact);
   - it refuses an edit to a control, a successor, the matrix, the B068
     verifier, or a new container path;
   - moving any one pin makes the BASE unrecognised.

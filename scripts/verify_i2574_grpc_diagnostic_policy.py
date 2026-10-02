@@ -39,8 +39,10 @@ EXPECTED = {
 # EXPECTED above is the historical #2574 delivery target; the delivery
 # fixtures still prove it. Main has since moved four of these paths. This is
 # the reviewed successor of the same twelve paths at main da2d3f8db, with
-# durable_object.ts re-reviewed at main 3891e88f5 after #2882 (#2868; the
-# causing PRs and the per-path review are the REBASELINE_LEDGER rows in
+# durable_object.ts re-reviewed at main 3891e88f5 after #2882, and
+# index_fetch.ts repaired by #2868 so the gRPC deny runs before the #2853
+# staging D1 proof handler (#2868; the causing PRs and the per-path review are
+# the REBASELINE_LEDGER rows in
 # verify_i2176_grpc_deny_gate.py). A BASE whose surface is exactly these bytes holds every
 # candidate to them: an ordinary candidate cannot move the surface, and cannot
 # downgrade it to EXPECTED. Any other BASE keeps the historical behavior.
@@ -49,7 +51,7 @@ REVIEWED_SURFACE = {
     "worker/src/grpc_transport_gate.ts": (0o644, "68b14c5537100733ff467d8beb80f3cadce07f9b3b5f43339ab323e8ca1cfcfd"),
     "worker/src/grpc_staging_authorization.ts": (0o644, "6b8e2f6eb6cc42d0b0d7404950d068bab9da47c4bb1bb4c4fa0a0073c3f48400"),
     "worker/src/grpc_staging_transport.ts": (0o644, "b3c0b471790ed7fd64138d99c0976b63c4fb620b0ce588f8c9852ea2de900f72"),
-    "worker/src/index_fetch.ts": (0o644, "88b39d72414468291d768342610a568e48f036d3eebd03156c2a3fce6d3c7c3a"),
+    "worker/src/index_fetch.ts": (0o644, "dfaa633e712fdffd8276a7c75010672df690826be7b441999b4684e7e844c38f"),
     "worker/src/index_env.ts": (0o644, "a6242775bc4a315db4fd8574f842498a54f2b63993e42ec178b50adb9a299daa"),
     "worker/src/index_env_contract.ts": (0o644, "ec259cf4d4f4c6bab582375b88a449c3d5a3d8d53c7680afdcb8e7728710eb9d"),
     "worker/src/durable_object.ts": (0o644, "f3dc2b18aa7f659c650c8c95394e8857ca01426bf1f2ba00a58c42d1a743caca"),

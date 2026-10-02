@@ -851,7 +851,7 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('infra/staging/topology.json'): (0o0644, "4855688905257f05c174d0f02c71bc1a9ffb23c2506a6bd00531d7b655eecd52"),
     Path('scripts/staging_bootstrap_provider.py'): (0o0644, "0861056f2377057909be7771ea7ee92cb90bc9c1839fc1cc6859a738b792ec80"),
     Path('scripts/verify_i2183_reapi_composition.py'): (0o0644, "532408187817e4ff508e9b2f5776e1646f7f304235ab697cf2e28fbab49a1b6c"),
-    Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "f159b00fa2938bf1062218dfbe0f55cd3e3ef72bd1f91ac40b88b7715eb836b4"),
+    Path('scripts/verify_i2574_grpc_diagnostic_policy.py'): (0o0644, "0191626216bec198d5b470d70e0cb1ee9c9260bccfc83c99a425b5a19c09bcc6"),
     Path('scripts/verify_staging_provider_preflight.py'): (0o0644, "2eeb30c175611229aab6717e37c72e25ac425cabf2a348dc286d4a85ff33a7b8"),
     Path('scripts/verify_staging_topology_contract.py'): (0o0644, "48b69bc6c4852ef8218058d53105fb82c4a60d22af25739b111dc4a0def79bf9"),
     Path('specs/03_architecture/issue-2176-grpc-transport-contract.md'): (0o0644, "351aa666c129c7dbc87db4f69f476f8bcdf522d0ba35223dca7eb507c8a926b3"),
@@ -869,7 +869,7 @@ WAVE_BASE_CONTROLS: dict[Path, tuple[int, str] | None] = {
     Path('worker/src/index_common.ts'): (0o0644, "dadbd05f00c855febed2266eb0ef308e2aaa80a909c4c8e463c400ed2d6bb4de"),
     Path('worker/src/index_env.ts'): (0o0644, "a6242775bc4a315db4fd8574f842498a54f2b63993e42ec178b50adb9a299daa"),
     Path('worker/src/index_env_contract.ts'): (0o0644, "ec259cf4d4f4c6bab582375b88a449c3d5a3d8d53c7680afdcb8e7728710eb9d"),
-    Path('worker/src/index_fetch.ts'): (0o0644, "88b39d72414468291d768342610a568e48f036d3eebd03156c2a3fce6d3c7c3a"),
+    Path('worker/src/index_fetch.ts'): (0o0644, "dfaa633e712fdffd8276a7c75010672df690826be7b441999b4684e7e844c38f"),
     Path('worker/src/lib/devenv_cleanup_route.ts'): (0o0644, "e279cb99a585388fbf4483313a80c042df3c14bf1ca5ef52c31dc451e329907c"),
     Path('worker/src/lib/internal_auth.ts'): (0o0644, "e773fa80db1ffd97ccdd20ae08e60e662482eea7e55bef6f19a3d61644b43acf"),
     Path('worker/src/lib/runner_credential_routes.ts'): (0o0644, "6cd7af8c032dd8315c619f6830c3ef63df1a459152f197ca6a7faedf847b5731"),
@@ -902,7 +902,7 @@ WAVE_GROUP_SUCCESSOR_PINS: dict[str, dict[Path, tuple[int, str]]] = {
         Path('tests/test_issue_1648_image_only.py'): (0o0644, "f42867c94486c7ff0cc9ca9a1f2da0493edfb192d4bf05953bbe2f383b4e51e5"),
     },
     "i1700": {
-        Path('.github/workflows/campaign-ci.yml'): (0o0644, "0fa794317117c791b0428407d4dd7c1f63bc06dea5e4239bcef5c09199655db9"),
+        Path('.github/workflows/campaign-ci.yml'): (0o0644, "07a90ec91a4ed3082c92e81ff7af804e4b61bac3d2eff5b07a2b72730f9dd078"),
         Path('.github/workflows/issue-1700-container-staging-deploy.yml'): (0o0644, "cd3f98c5b0c9043c99639405b8a4edfd041c6583c5f0e74bf10469287dd6dde4"),
         Path('crates/corelink-container/src/routes/staging_d1_binding_probe.rs'): (0o0644, "569e66f6604526d9008ddadee8087f69529ab4d3a13d5d28f72f7e744f2fa926"),
         Path('crates/corelink-container/src/routes/staging_d1_probe_window.json'): (0o0644, "b9826ebd5774b729276a3a58eef4d913d8dd018ed54e88481c5513e54f217428"),
@@ -950,8 +950,10 @@ WAVE_GROUP_SUCCESSOR_PINS: dict[str, dict[Path, tuple[int, str]]] = {
 #                 "not-transport" rows do none of (a)-(c). A credential that
 #                 reaches only a CI, test or operator process, or only the
 #                 Cloudflare API, is not-transport, and its reason says so.
-#   disposition - every pin map re-pinned to the reviewed bytes. No moved pin
-#                 was restored instead: none adds a gRPC admission.
+#   disposition - every pin map re-pinned to the reviewed bytes. Only
+#                 index_fetch.ts was repaired first (#2868 puts the gRPC deny
+#                 back ahead of the #2853 proof handler); no row adds a gRPC
+#                 admission.
 #   reason      - what the reviewed change does and why its bytes are admitted.
 # The verifier never reads this table. The unit tests require its keys to
 # equal the moved pins exactly, and each disposition to name exactly the maps
@@ -990,7 +992,7 @@ REBASELINE_LEDGER: dict[Path, tuple[str, str, tuple[str, ...], str]] = {
     Path("Dockerfile"): ("#2858", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Runtime base stage adds a staging-only PID-1 supervisor script; the final stage keeps USER corelink, PORT and EXPOSE 50051 and ENTRYPOINT corelink-server."),
     Path("crates/corelink-container/src/routes/staging_d1_binding_probe.rs"): ("#2795, #2801, #2812, #2819, #2825, #2844, #2853, #2858, #2865, #2881, #2882", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), "Probe windows move (#2882: test constants only); the route now also requires the validated lifetime env and returns 404 without it. Only the DO reaches it; DO fetch 404s the path."),
     Path("crates/corelink-container/src/routes/staging_d1_probe_window.json"): ("#2795, #2801, #2812, #2819, #2825, #2844, #2853, #2858, #2865, #2881, #2882", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), (
-        "Probe path. Path: the authenticated HTTP proof, index_fetch.ts -> staging_d1_http.ts (before the gRPC deny) -> DO "
+        "Probe path. Path: the authenticated HTTP proof, index_fetch.ts -> staging_d1_http.ts (after the gRPC deny since #2868) -> DO "
         "executeStagingD1HttpProof -> runStagingD1HttpSequence -> proof Container route staging_d1_binding_probe.rs. The handler, the "
         "DO, the sequence and the route (through include_str!) read this file and admit only inside it. Effect: from the reviewed v3 pin (2026-09-30 "
         "00:00-12:00Z) through v5..v15 it gains last_entry_ms. Now a POST is admitted only when the time and its 2-minute slot lie in "
@@ -1045,7 +1047,7 @@ REBASELINE_LEDGER: dict[Path, tuple[str, str, tuple[str, ...], str]] = {
     Path("worker/src/durable_object.ts"): ("#2749, #2773, #2788, #2812, #2844, #2853, #2858, #2865, #2881, #2882", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]", "REVIEWED_SURFACE"), "From #2574 EXPECTED, #2749/#2773/#2788 reach states already pinned (#1700 D1-proxy target, i1700 old/new). Since then fetch() only adds early 404/410 denials before the unchanged handler; the new HTTP-proof RPCs reach Container /_health and the probe path, never the gRPC forwarder. #2882 adds the v14/v15 nonces to the scheduled-admission refusal list."),
     Path("worker/src/durable_object_start.ts"): ("#2749, #2853, #2858", "transport-reviewed", ("WAVE_BASE_CONTROLS", "REVIEWED_SURFACE"), "From #2574 EXPECTED, #2749 is the already-pinned #1700 D1-proxy target. Then: supervisor entrypoint only with a validated staging deadline; port 50051 unchanged; the proof Container gets an empty CORELINK_ADMIN_AUTH_KEY and no DPA_ACCEPT_IP_HASH_SALT."),
     Path("worker/src/index_env.ts"): ("#2853", "not-transport", ("WAVE_BASE_CONTROLS", "REVIEWED_SURFACE"), "Adds the optional DPA_ACCEPT_IP_HASH_SALT type field only."),
-    Path("worker/src/index_fetch.ts"): ("#2853", "transport-reviewed", ("WAVE_BASE_CONTROLS", "REVIEWED_SURFACE"), "Runs the staging D1 proof handler before the gRPC deny; it answers JSON and never proxies. On *.workers.dev every request but the proof literal gets 404 (gRPC there is denied with 404, not the contract's 503). On the proof path: staging only, admin auth, POST needs exact application/json (gRPC POST 400), an authenticated GET reads the proof status. Else null to the unchanged deny."),
+    Path("worker/src/index_fetch.ts"): ("#2853, #2868", "transport-reviewed", ("WAVE_BASE_CONTROLS", "REVIEWED_SURFACE"), "#2853 ran the staging D1 proof handler before the gRPC deny, which broke the contract: an authenticated gRPC-shaped GET to the proof literal reached its Durable Object and read the proof status, a gRPC POST got 400 and gRPC on *.workers.dev got 404. #2868 restores the deny and the diagnostic forward as the first two Fetch steps; the proof handler runs after them, sees only non-gRPC requests and answers them as before (staging only, admin auth, JSON, never proxies)."),
     Path("worker/src/index_schedule.ts"): ("#2812, #2844, #2853", "not-transport", ("WAVE_GROUP_SUCCESSOR_PINS[i1652]",), "Scheduled (cron) handler, not a request path. Since #2853 its probe branch only reads a persisted receipt through a read-only DO RPC; it can no longer admit, retire or start a Container (that moved behind the authenticated HTTP proof)."),
     Path("worker/src/staging_d1_binding_proxy.ts"): ("#2858", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Loopback D1 service binding gains deadline checks that only return 502; parsing and D1 calls unchanged."),
     Path("worker/src/staging_d1_binding_proxy_entrypoint.ts"): ("#2858", "transport-reviewed", ("WAVE_BASE_CONTROLS",), "Empty props keep the old path; a validated deadline is passed through; anything else returns 502."),
@@ -1057,7 +1059,7 @@ REBASELINE_LEDGER: dict[Path, tuple[str, str, tuple[str, ...], str]] = {
         "the DO's durable claim, inside the lifecycle deadlines, and each DROP refuses outside starts_ms..expires_ms of the probe window."
     )),
     Path("worker/src/staging_runtime_d1_probe.ts"): ("#2801, #2812, #2844, #2853", "transport-reviewed", ("WAVE_GROUP_SUCCESSOR_PINS[i1700]",), (
-        "Probe path. Path: index_fetch.ts -> handleStagingD1HttpProof, which runs before the gRPC deny and imports this module's probe "
+        "Probe path. Path: index_fetch.ts -> handleStagingD1HttpProof, which runs after the gRPC deny (#2868) and imports this module's probe "
         "path literal and DO-name prefix -> DO executeStagingD1HttpProof -> runStagingD1HttpSequence (#2853) -> v8/v9 cleanup and "
         "old/v5 retirement RPCs on fixed-name DOs -> the local admit and run, which start the proof Container and call its probe "
         "route. Effect: the listed PRs add the v5/v8/v9 cleanup and retirement steps, the admission record and (#2853) this HTTP "

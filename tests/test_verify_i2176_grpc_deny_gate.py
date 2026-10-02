@@ -511,29 +511,124 @@ class ReviewedBaselineTests(unittest.TestCase):
         finally:
             write(original)
 
-    def test_real_tree_is_the_reviewed_baseline(self) -> None:
+    def _assert_reviewed_baseline(self, root: Path) -> None:
+        """The reviewed BASE, recognised the way production recognises it."""
         drift = sorted(
             str(path) for path, pin in verify.WAVE_BASE_CONTROLS.items()
-            if not verify._wave_pin_matches(self.root, path, pin)
+            if not verify._wave_pin_matches(root, path, pin)
         )
         self.assertEqual(drift, [], "controls moved after #2868; review them into REBASELINE_LEDGER")
-        self.assertTrue(verify._wave_pin_matches(self.root, MATRIX, (0o644, verify.WAVE_MATRIX_SHA256)))
-        for group in verify.WAVE_GROUPS:
-            self.assertEqual(verify._wave_group_state(self.root, group), "successor", group)
-        self.assertTrue(self.policy.at_reviewed_surface(self.root))
+        self.assertTrue(verify._wave_pin_matches(root, MATRIX, (0o644, verify.WAVE_MATRIX_SHA256)))
+        # validate_wave classifies #2565 through the wallet-route classifier,
+        # which admits ordinary Stripe client maintenance. Use it here too, so
+        # an admitted maintenance merge does not turn this suite red.
+        states = verify._wallet_route_base_states(root)
+        self.assertEqual(states, {group: "successor" for group in verify.WAVE_GROUPS})
+        # Still exact: every #2565 endpoint and the privileged live/B068 pair.
+        successor = verify._wave_group_successor_pins("i2565")
+        assert successor is not None
+        for relative, pin in successor.items():
+            if relative in verify.WALLET_ROUTE_ORDINARY_PATHS:
+                continue
+            self.assertTrue(verify._wave_pin_matches(root, relative, pin), str(relative))
+        self.assertIn(verify.WALLET_ROUTE_LIVE_PATH, successor)
+        self.assertIn(verify.WALLET_ROUTE_VERIFIER_PATH, successor)
+        self.assertTrue(self.policy.at_reviewed_surface(root))
+
+    def test_real_tree_is_the_reviewed_baseline(self) -> None:
+        self._assert_reviewed_baseline(self.root)
 
     def test_reviewed_baseline_accepts_itself_and_ordinary_wallet_maintenance(self) -> None:
         base, candidate = self.base, self.candidate
         verify.validate(candidate, base)
         self.policy.validate(base, candidate)
 
-        client = Path("crates/corelink-stripe-real/src/client.rs")
-        with self._moved(candidate, client, (base / client).read_bytes() + b"\n// ordinary maintenance\n"):
-            changes = verify.changed_paths(base, candidate)
-            self.assertEqual(changes, {client})
-            self.assertTrue(verify.validate_wave(candidate, base, changes))
-            self.policy.validate(base, candidate)
+        for ordinary in sorted(verify.WALLET_ROUTE_ORDINARY_PATHS, key=str):
+            with self.subTest(str(ordinary)):
+                maintained = (base / ordinary).read_bytes() + b"\n// ordinary maintenance\n"
+                with self._moved(candidate, ordinary, maintained):
+                    changes = verify.changed_paths(base, candidate)
+                    self.assertEqual(changes, {ordinary})
+                    self.assertTrue(verify.validate_wave(candidate, base, changes))
+                    self.policy.validate(base, candidate)
+                    # Once merged, the maintained tree is the next BASE: it
+                    # must still read as the reviewed baseline and admit itself.
+                    self._assert_reviewed_baseline(candidate)
+                    self.assertTrue(verify.validate_wave(candidate, candidate, set()))
         self.assertFalse((base / "scripts/__pycache__").exists())
+
+    def test_baseline_assertions_stay_exact_beyond_ordinary_maintenance(self) -> None:
+        for relative in (
+            verify.WALLET_ROUTE_LIVE_PATH,
+            verify.WALLET_ROUTE_VERIFIER_PATH,
+            Path("scripts/run-real-ignored-harnesses.sh"),
+            Path("worker/src/index_fetch.ts"),
+        ):
+            with self.subTest(str(relative)):
+                moved = (self.base / relative).read_bytes() + b"\n// moved without review\n"
+                with self._moved(self.candidate, relative, moved):
+                    with self.assertRaises((AssertionError, verify.ContractError)):
+                        self._assert_reviewed_baseline(self.candidate)
+        self._assert_reviewed_baseline(self.candidate)
+
+    def test_reviewed_index_denies_grpc_first_from_a_pinned_watched_closure(self) -> None:
+        index = (self.root / verify.INDEX).read_text()
+        self.assertEqual(index.count(verify.FETCH_OPENING), 1)
+        body = index.split(verify.FETCH_OPENING, 1)[1]
+        steps = [
+            line.strip() for line in body.splitlines()
+            if line.strip() and not line.strip().startswith("//")
+        ]
+        # Nothing may run before the #2176 deny and its diagnostic exception:
+        # a handler ahead of them could answer a gRPC-shaped request (#2868).
+        self.assertEqual(steps[:4], [
+            "const grpcTransportGate = rejectUnprovenGrpcTransport(request);",
+            "if (grpcTransportGate !== null) return grpcTransportGate;",
+            "const stagingGrpcResponse = await forwardStagingGrpcDiagnostic(request, env);",
+            "if (stagingGrpcResponse !== null) return stagingGrpcResponse;",
+        ])
+        self.assertGreater(
+            body.index("await handleStagingD1HttpProof(request, env);"),
+            body.index("return stagingGrpcResponse;"),
+        )
+
+        # The code those two steps execute: the transitive relative value
+        # imports of the deny and the diagnostic forwarder (type-only imports
+        # are erased at build time and never run).
+        importer = re.compile(r'^import (?!type )[^;]*? from "(\.{1,2}/[^"]+)\.js";', re.M | re.S)
+        pending = [verify.GATE, Path("worker/src/grpc_staging_transport.ts")]
+        closure: set[Path] = set()
+        while pending:
+            module = pending.pop()
+            if module in closure:
+                continue
+            closure.add(module)
+            for target in importer.findall((self.root / module).read_text()):
+                pending.append(Path(os.path.normpath(module.parent / f"{target}.ts")))
+        self.assertIn(Path("worker/src/grpc_staging_authorization.ts"), closure)
+        closure.add(verify.INDEX)
+
+        def patterns(workflow: str, trigger: str) -> list[str]:
+            text = (self.root / ".github/workflows" / workflow).read_text()
+            block = text.split(f"  {trigger}:\n", 1)[1].split("    paths:\n", 1)[1]
+            block = block.split("\npermissions:", 1)[0]
+            return [
+                line.strip()[3:-1] for line in block.splitlines()
+                if line.strip().startswith('- "') and line.strip().endswith('"')
+            ]
+
+        watched = {
+            "issue-2176 pull_request_target": patterns("issue-2176-grpc-deny-gate.yml", "pull_request_target"),
+            "issue-2574 pull_request": patterns("issue-2574-staging-grpc-diagnostic.yml", "pull_request"),
+        }
+        for module in sorted(closure, key=str):
+            with self.subTest(str(module)):
+                self.assertIn(module, verify.WAVE_BASE_CONTROLS, "pre-deny code must be a reviewed BASE pin")
+                for name, globs in watched.items():
+                    self.assertTrue(
+                        any(fnmatch.fnmatchcase(str(module), glob) for glob in globs),
+                        f"{name} does not trigger on {module}",
+                    )
 
     def test_reviewed_baseline_rejects_unreviewed_candidates(self) -> None:
         cases = (
