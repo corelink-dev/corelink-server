@@ -132,6 +132,13 @@ INERT_VENDORS = {
     ),
 }
 
+# Vendors the owner deferred from the approved launch set (register §4c).
+# They stay registered internally but appear on NO public list — neither the
+# active table nor the inert table. Keep this map in sync with register §4c.
+DEFERRED_VENDORS = {
+    "PagerDuty, Inc.": "Deferred by the owner on 2026-10-01 (#1648, #2593).",
+}
+
 
 @dataclass(frozen=True)
 class VendorRow:
@@ -152,6 +159,11 @@ class VendorRow:
     last_review: str
     next_review: str
     owner: str
+    # The vendor's own standard terms and DPA (B-316 owner re-charter,
+    # #2593). Published verbatim on the public page; `—` for vendors that are
+    # not on it.
+    terms: str = ""
+    dpa: str = ""
 
     @property
     def is_byok_custodian(self) -> bool:
@@ -174,10 +186,14 @@ class VendorRow:
         return INERT_VENDORS.get(self.vendor, "")
 
     @property
+    def is_deferred(self) -> bool:
+        return self.vendor in DEFERRED_VENDORS
+
+    @property
     def is_customer_data_processor(self) -> bool:
         """True if the vendor actually receives CoreLink-customer data and
         must appear on the public list per GDPR Art. 28 / LGPD Art. 39."""
-        if self.is_inert:
+        if self.is_inert or self.is_deferred:
             return False
         if self.is_byok_custodian or self.is_internal_llm or self.is_public_excluded:
             return False
@@ -227,7 +243,7 @@ def parse_register(register_text: str) -> tuple[list[VendorRow], str]:
         if not _TABLE_ROW.match(ln):
             continue
         cells = [c.strip() for c in ln.strip().strip("|").split("|")]
-        # Expected 15 columns per §2 header.
+        # Expected 17 columns per §2 header (15 risk columns + Terms + DPA).
         if len(cells) < 15:
             continue
         try:
@@ -251,6 +267,8 @@ def parse_register(register_text: str) -> tuple[list[VendorRow], str]:
                 last_review=cells[12],
                 next_review=cells[13],
                 owner=cells[14],
+                terms=cells[15] if len(cells) > 15 else "",
+                dpa=cells[16] if len(cells) > 16 else "",
             )
         )
     return rows, updated
@@ -260,21 +278,36 @@ def parse_register(register_text: str) -> tuple[list[VendorRow], str]:
 # Renderer
 # --------------------------------------------------------------------------
 
-DPA_LINK_RE = re.compile(r"\[([^\]]+DPA[^\]]*)\]\((https?://[^)]+)\)", re.IGNORECASE)
-ATTESTATION_URL_RE = re.compile(r"\((https?://[^)]+)\)")
+# A vendor page that could not be confirmed is published as this literal,
+# never as a guessed URL. The B-316 verifier reports any such vendor as open.
+LINK_PENDING = "link pending"
 
 
-def extract_dpa_link(attestation_cell: str, vendor: str) -> str:
-    """Best-effort DPA / trust-portal link extraction from the register
-    attestation cell. Falls back to a 'on request' string."""
-    m = DPA_LINK_RE.search(attestation_cell)
-    if m:
-        return f"[{m.group(1)}]({m.group(2)})"
-    # Trust portal as DPA proxy.
-    m2 = ATTESTATION_URL_RE.search(attestation_cell)
-    if m2:
-        return f"[Trust portal]({m2.group(1)})"
-    return f"{vendor.split(',')[0]} DPA (on request)"
+class MissingLegalLinks(ValueError):
+    """An active sub-processor has no public terms/DPA cell."""
+
+
+_LINK_CELL = {
+    "Terms": re.compile(r"\[Terms\]\(https://[^)\s]+\)"),
+    "DPA": re.compile(r"\[DPA\]\(https://[^)\s]+\)"),
+}
+
+
+def legal_links(row: "VendorRow") -> tuple[str, str]:
+    """Return the vendor's (terms, DPA) cells exactly as the register states
+    them. Fails closed: an active vendor whose register row lacks either a
+    `[Terms](https://…)` / `[DPA](https://…)` link or the literal
+    `link pending` cannot be published — never an "on request" fallback."""
+    cells = []
+    for label, value in (("Terms", row.terms), ("DPA", row.dpa)):
+        if value == LINK_PENDING or _LINK_CELL[label].fullmatch(value):
+            cells.append(value)
+            continue
+        raise MissingLegalLinks(
+            f"active sub-processor {row.vendor!r} has no {label} link in its register "
+            f"row (expected [{label}](https://…) or {LINK_PENDING!r}, found {value!r})"
+        )
+    return cells[0], cells[1]
 
 
 def shorten_region(scope: str, data_sharing: str, vendor: str | None = None) -> str:
@@ -310,17 +343,18 @@ def shorten_data_sharing(ds: str) -> str:
 
 def render_active_table(rows: Iterable[VendorRow]) -> str:
     out = [
-        "| # | Vendor | Service to CoreLink | Customer-data class | Regions | DPA |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| # | Vendor | Service to CoreLink | Customer-data class | Regions | Terms | DPA |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     n = 0
     for r in rows:
         n += 1
+        terms, dpa = legal_links(r)
         out.append(
             f"| {n} | **{r.vendor}** | {shorten_service(r.service)} | "
             f"{shorten_data_sharing(r.data_sharing)} | "
             f"{shorten_region(r.regulatory_scope, r.data_sharing, r.vendor)} | "
-            f"{extract_dpa_link(r.attestation, r.vendor)} |"
+            f"{terms} | {dpa} |"
         )
     return "\n".join(out)
 
@@ -361,7 +395,7 @@ def render_inert_table(rows: Iterable[VendorRow]) -> str:
 MDX_TEMPLATE = '''---
 title: "Sub-processors"
 slug: "/trust/subprocessors"
-description: "Public list of CoreLink sub-processors — vendor, service, region, DPA link, and the 30-day advance-notice mechanism for changes."
+description: "Public list of CoreLink sub-processors — vendor, service, region, links to each vendor's terms and DPA, and the 30-day advance-notice mechanism for changes."
 draft: false
 generator: "scripts/gen-public-subprocessors.py"
 source: "specs/_compliance/VENDOR-RISK-REGISTER.md"
@@ -396,9 +430,9 @@ vendors have a built integration but no live credential or code path yet —
 see "Contracted-but-not-active" below; they are not sub-processors until
 that changes.
 
-> **Last refreshed:** {last_updated}. This page is **auto-generated** from
-> the internal vendor register on every change; see
-> `.github/workflows/subprocessors-sync.yml` for the drift gate.
+> **Last refreshed:** {last_updated}. This page is **generated** from the
+> internal vendor register by `scripts/gen-public-subprocessors.py`; it is
+> regenerated in the same change that edits the register.
 
 ## Notice of changes (30-day grace)
 
@@ -406,11 +440,14 @@ Per our DPA (`legal/dpa/v1.0.0` §6) and LGPD Art. 27 §4º + GDPR Art. 28 §2,
 we will give **at least 30 calendar days' written notice** before adding or
 replacing a sub-processor that processes customer personal data.
 
-Subscribe to change notices:
+How notices reach you today:
 
-- **Email digest** — register a `subprocessor-changes@` distribution
-  address inside your tenant settings. We send a digest the moment a
-  change is queued, and a reminder 7 days before the change takes effect.
+- **Email** — notices are sent by email to the account owner of record.
+  To have them sent to another address as well (for example your DPO or
+  security team), write to `privacy@humangr.com`. CoreLink has no automated
+  notice delivery yet: there is no notice setting in the product, no
+  automatic digest and no reminder schedule; each notice is sent
+  individually.
 - **Status page** — [hugrl.betteruptime.com](https://hugrl.betteruptime.com)
   carries service state. It is **not** a sub-processor notification channel:
   subscriptions are switched off on that page, so email, SMS, RSS and webhook
@@ -425,6 +462,11 @@ out in DPA §6.4 (objection window, escalation, termination-for-cause if
 unresolved).
 
 ## Active sub-processors
+
+Each sub-processor below is engaged on that vendor's own standard terms and
+data processing agreement (DPA), linked in the table. CoreLink accepted them
+online when it created each account; the acceptance dates were not recorded,
+so this page shows none.
 
 {active_table}
 
@@ -495,10 +537,9 @@ held internally and available on request from support@humangr.com.
 ## Change management
 
 The operational runbook is held internally.
-The 30-day customer-broadcast pipeline is implemented by
-`scripts/subprocessor-change-notify.py` and the
-`corelink-privacy-sub-processor-emit` crate (CloudEvents
-`corelink.privacy.subprocessor.notify_required`).
+`scripts/subprocessor-change-notify.py` detects additions to the register
+and prepares the matching change event, but no production delivery is wired
+to it: the 30-day notice itself is sent by email as described above.
 
 ## Related
 
@@ -552,7 +593,11 @@ def main(argv: list[str] | None = None) -> int:
         print("error: parsed 0 vendor rows from register §2", file=sys.stderr)
         return 2
 
-    mdx = render_mdx(rows, updated)
+    try:
+        mdx = render_mdx(rows, updated)
+    except MissingLegalLinks as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     if args.dry_run:
         # Print compact summary at the bottom for human eyes.

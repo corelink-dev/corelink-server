@@ -88,7 +88,7 @@
     "description": "Source-of-truth pointer"
   },
   "trust.subprocessor.source.full": {
-    "message": "(registro completo de 19 fornecedores; apenas os 11 que processam dados pessoais de clientes em nome da CoreLink aparecem abaixo).",
+    "message": "(o registro completo de fornecedores é interno; abaixo aparecem apenas os fornecedores que processam dados pessoais de clientes em nome da CoreLink, cada um com links para os próprios termos e DPA). Disponível sob solicitação em trust@humangr.com.",
     "description": "Source of truth size context"
   },
   "trust.subprocessor.notice.title": {
@@ -96,8 +96,16 @@
     "description": "Notice section title"
   },
   "trust.subprocessor.notice.body": {
-    "message": "Conforme nosso DPA §6 e LGPD Art. 27 §4º + GDPR Art. 28 §2, daremos aviso por escrito com no mínimo 30 dias corridos antes de adicionar ou substituir um sub-processador que processe dados pessoais de clientes. Assine via digest por e-mail no tenant, status page ou feed RSS pós-GA.",
+    "message": "Conforme nosso DPA §6 e LGPD Art. 27 §4º + GDPR Art. 28 §2, daremos aviso por escrito com no mínimo 30 dias corridos antes de adicionar ou substituir um sub-processador que processe dados pessoais de clientes.",
     "description": "Notice section body"
+  },
+  "trust.subprocessor.contract_basis": {
+    "message": "Cada subprocessador abaixo é contratado pelos termos padrão e pelo acordo de processamento de dados (DPA) do próprio fornecedor, com links na tabela. A CoreLink os aceitou online ao criar cada conta; as datas de aceite não foram registradas, por isso nenhuma é exibida.",
+    "description": "How each sub-processor is engaged; no acceptance dates are recorded"
+  },
+  "trust.subprocessor.notice.email": {
+    "message": "os avisos são enviados por e-mail ao titular da conta; para incluir outro destinatário, escreva para privacy@humangr.com. Não há configuração de avisos no produto nem resumo automático.",
+    "description": "How change notices are delivered today"
   },
   "trust.subprocessor.active.title": {
     "message": "Sub-processadores ativos ({count})",

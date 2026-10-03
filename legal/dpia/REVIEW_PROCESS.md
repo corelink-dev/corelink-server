@@ -50,7 +50,7 @@ The current DPIA register is maintained in `legal/dpia/`. Active DPIAs:
 At the start of each quarter, Privacy Officer reviews this register and identifies DPIAs where:
 - (a) It has been ≥ 90 days since last review, OR
 - (b) A change-triggered event occurred (PR detected by `scripts/validate_dpia.py`), OR
-- (c) A sub-processor DPA/SCC has changed (Stripe, Cloudflare, Neon), OR
+- (c) A sub-processor DPA/SCC has changed (any vendor in `legal/sub-processors.md`), OR
 - (d) A supervisory authority (ANPD/DPC/ICO) has issued new guidance relevant to the DPIA scope.
 
 ### Step 2: Review each DPIA
@@ -62,7 +62,7 @@ For each DPIA identified in Step 1, Privacy Officer:
 3. **Checks sub-processor status:**
    - Stripe: verify DPF certification at `dataprivacyframework.gov`; verify DPA status at `stripe.com/legal/dpa`.
    - Cloudflare: verify DPA at `cloudflare.com/gdpr/`.
-   - Neon: verify DPA at `neon.tech/privacy`.
+   - Every other vendor in `legal/sub-processors.md`: re-read the terms and DPA linked there.
 4. **Checks regulatory landscape:**
    - Any new ANPD resolution impacting DPIA requirements?
    - Any CJEU/EDPB ruling impacting SCCs or cross-border transfer instruments?
@@ -139,7 +139,6 @@ Quarterly, Privacy Officer checks:
 | ICO (UK) | LIA guidance updates | Annual |
 | US DPF | Stripe DPF certification status | Quarterly |
 | Cloudflare | DPA updates; BCR status | Quarterly |
-| Neon | DPA updates | Quarterly |
 | Stripe | DPA updates; government access transparency report | Quarterly |
 
 ---

@@ -11,7 +11,7 @@ const items = [
     role: "CDN",
     region: "Global",
     certifications: ["ISO 27001", "SOC 2"],
-    last_audit: "2026-02-12",
+    terms_url: "https://www.cloudflare.com/terms/",
     dpa_url: "https://www.cloudflare.com/cloudflare-customer-dpa/",
   },
   {
@@ -20,7 +20,7 @@ const items = [
     role: "IdP",
     region: "US",
     certifications: ["SOC 2"],
-    last_audit: "2026-01-30",
+    terms_url: "https://clerk.com/legal/standard-terms",
     dpa_url: "https://clerk.com/legal/dpa",
   },
 ];
@@ -30,6 +30,22 @@ describe("SubProcessorsPage", () => {
     renderWithProviders(<SubProcessorsPage locale="en" version="2026-05-14" items={items} />);
     expect(screen.getByRole("table", { name: "Sub-processors" })).toBeInTheDocument();
     expect(screen.getByText("Cloudflare, Inc.")).toBeInTheDocument();
+  });
+
+  it("links each vendor's own terms and DPA", () => {
+    renderWithProviders(<SubProcessorsPage locale="en" version="2026-05-14" items={items} />);
+    for (const item of items) {
+      const terms = screen.getByRole("link", { name: `Vendor terms — ${item.name}` });
+      const dpa = screen.getByRole("link", { name: `Vendor DPA — ${item.name}` });
+      expect(terms).toHaveAttribute("href", item.terms_url);
+      expect(dpa).toHaveAttribute("href", item.dpa_url);
+      expect(terms).toHaveAttribute("rel", "noopener noreferrer");
+    }
+  });
+
+  it("shows no acceptance or audit dates", () => {
+    renderWithProviders(<SubProcessorsPage locale="en" version="2026-05-14" items={items} />);
+    expect(screen.queryByText(/last audit/i)).not.toBeInTheDocument();
   });
 
   it("table headers are keyboard-reachable via tab", async () => {
@@ -51,6 +67,8 @@ describe("SubProcessorsPage", () => {
     const csv = toCsv(items);
     expect(csv.split("\n")).toHaveLength(3);
     expect(csv).toContain("Cloudflare, Inc.");
+    expect(csv.split("\n")[0]).toBe("id,name,role,region,certifications,terms_url,dpa_url");
+    expect(csv).toContain("https://clerk.com/legal/dpa");
   });
 
   it("has no a11y violations", async () => {

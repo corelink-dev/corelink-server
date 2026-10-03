@@ -167,7 +167,7 @@ These are the 12 highest-frequency answer blocks. Lift them verbatim when the pr
 
 #### 12. Sub-processor management
 
-> **A:** 6 active sub-processors (full list at `apps/docs/docs/trust/subprocessors.mdx`; auto-generated from internal vendor risk register `specs/_compliance/VENDOR-RISK-REGISTER.md`). 30 calendar days advance notice on additions or replacements per DPA §6 + GDPR Art. 28 §2 + LGPD Art. 27 §4º. Notification channels: tenant-registered distribution email + status page + RSS (post-GA). Customer has right to object per DPA §6.4.
+> **A:** 8 active sub-processors, each engaged on its own standard terms and DPA (full list with links at `apps/docs/docs/trust/subprocessors.mdx`; generated from internal vendor risk register `specs/_compliance/VENDOR-RISK-REGISTER.md`). 30 calendar days advance notice on additions or replacements per DPA §6 + GDPR Art. 28 §2 + LGPD Art. 27 §4º. Notices are sent by email to the account owner of record, plus any address registered by writing to privacy@humangr.com; there is no automated notice delivery, status-page or RSS channel yet. Customer has right to object per DPA §6.4.
 
 ---
 

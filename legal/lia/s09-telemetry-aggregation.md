@@ -54,7 +54,7 @@ HuGR Labs (CoreLink) processes pseudonymized operational telemetry — API call 
 
 2. **Abuse and security detection:** CoreLink processes API requests from hundreds of tenants. Without rate-limit event monitoring and abuse pattern detection (S-08), credential stuffing attacks, tenant isolation violations, and API abuse cannot be detected. Security monitoring is a well-established legitimate interest under GDPR Rec. 47 + WP29 Op. 06/2014 §3.1 ("prevention of fraud" + "network security").
 
-3. **Capacity planning and cost management:** Accurate usage telemetry drives infrastructure scaling. Without it, CoreLink cannot efficiently provision Cloudflare Workers, R2 storage, and Neon compute — resulting in either over-provisioning (wasted cost) or under-provisioning (SLA breach). This is a direct operational efficiency interest of the data controller.
+3. **Capacity planning and cost management:** Accurate usage telemetry drives infrastructure scaling. Without it, CoreLink cannot efficiently provision Cloudflare Workers and R2 storage — resulting in either over-provisioning (wasted cost) or under-provisioning (SLA breach). This is a direct operational efficiency interest of the data controller.
 
 ### 1.2 Lawfulness of the interest
 

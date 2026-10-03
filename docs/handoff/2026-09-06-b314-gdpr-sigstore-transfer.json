@@ -55,9 +55,9 @@
   },
   "owner_action": [
     "RECEIPT: Apply the one-person dual-role Legal Counsel/DPO decision recorded in the signed issue comment; do not represent it as two independent signers.",
-    "RUN: Remove only / Sigstore from the Recipient cell in each of the four named GDPR transfer tables; preserve PagerDuty, GitHub, Country, Mechanism, and What's transferred.",
+    "RUN: Remove only / Sigstore from the Recipient cell in each of the four named GDPR transfer tables (signed 2026-09-27); then, under the unsigned 2026-10-02 owner-chat decision, remove PagerDuty as well and preserve GitHub, Country, Mechanism, and What's transferred.",
     "NOTICE: Record notice version B-314-prelaunch-2026-09-27 and the explicit no-individual-notice/no-re-consent determination for the prelaunch state.",
-    "VERIFY: Record the exact signed-comment reference, effective timestamp, four-file diff intent, and non-claims in the decision evidence; keep release/provider/legal decisions out of scope."
+    "VERIFY: Record the exact signed-comment reference, effective timestamp, four-file diff intent, and non-claims in the decision evidence, and the 2026-10-02 PagerDuty removal in evidence/owner-actions/B-314/gdpr-recipient-pagerduty-removal-2026-10-02.json without editing the signed record; keep release/provider/legal decisions out of scope."
   ],
   "evidence": {
     "path": "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json",
@@ -77,9 +77,9 @@
       "signed_artifact_sha256_or_reference",
       "effective_timestamp"
     ],
-    "completion_rule": "The four exact customer-data transfer rows match the signed remove_sigstore_row intent, preserve PagerDuty and GitHub plus every other field, link the one-person dual-role decision, record the approved prelaunch notice determination and effective timestamp, and make no broader Sigstore flow or transfer-basis claim."
+    "completion_rule": "The four exact customer-data transfer rows match the signed remove_sigstore_row intent and the unsigned 2026-10-02 owner-chat decision to remove PagerDuty: they preserve GitHub plus every other field, link the one-person dual-role decision, record the approved prelaunch notice determination and effective timestamp, and make no broader Sigstore flow or transfer-basis claim."
   },
-  "retry_and_rollback": "Do not silently restore Sigstore or alter the decision. Any later transfer-table change requires a superseding Legal/DPO decision and exact four-locale review.",
+  "retry_and_rollback": "Do not silently restore Sigstore or PagerDuty, and do not edit the signed record. Any later transfer-table change requires a superseding owner decision recorded next to the existing evidence and an exact four-locale review.",
   "references": [
     "BACKLOG.md#B-314",
     "https://github.com/HuGR-dev/corelink-server/issues/2601#issuecomment-5854794010",
@@ -88,6 +88,8 @@
     "scripts/gen-public-subprocessors.py",
     "legal/sub-processors.md",
     "specs/_compliance/VENDOR-RISK-REGISTER.md",
-    "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json"
+    "evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json",
+    "evidence/owner-actions/B-314/gdpr-recipient-pagerduty-removal-2026-10-02.json",
+    "https://github.com/HuGR-dev/corelink-server/issues/1648"
   ]
 }

@@ -40,9 +40,9 @@ CoreLink's data surface is intentionally narrow:
 | **Hot path / counters** | Short-TTL counters, idempotency keys, rate-limit windows | Cloudflare KV |
 | **Per-tenant coordination state** | Tenant-scoped Durable Object instances | Cloudflare Durable Objects |
 | **Identity records** | User identities, MFA, session tokens | Clerk (per CoreLink tenant) |
-| **Billing records** | Customer ID, subscription ID, invoice references | Stripe; mirrored summary in Neon control DB |
+| **Billing records** | Customer ID, subscription ID, invoice references | Stripe; subscription state in the Cloudflare D1 control-plane database |
 | **Audit chain** | Append-only Merkle-linked audit events | Cloudflare R2 (audit prefix) + reconcile job in D1 |
-| **Telemetry & logs** | Latency histograms, error counts, aggregate metrics — **no customer artefact content** | Grafana Cloud (no PII / no payloads) |
+| **Telemetry & logs** | Latency histograms, error counts, aggregate metrics — **no customer artefact content** | Sentry (scrubbed error events); the Grafana Cloud exporter is built but not enabled |
 
 We do **not** store: PHI, cardholder data (Stripe holds it), customer email
 beyond what's needed for billing notifications, or copies of customer code

@@ -33,7 +33,7 @@ tags: ["soc2", "cc9.2", "vendor-dd", "critical", "stripe", "pci-dss", "gap-14"]
 | HQ | 354 Oyster Point Blvd, South San Francisco, CA 94080, USA |
 | Public ticker | Private (late-stage) |
 | Atlas relationship | HuGR Labs, Inc. formation via Stripe Atlas (`legal/incorporation-package.md`) |
-| Contract effective | 2026-04-23 |
+| Contract effective | Not recorded — standard online terms and DPA accepted at account signup (owner statement, #2593 re-charter); no acceptance record is held |
 | Account ID | (Atlas application; live + test keys per `secrets-checklist.md` rows 1-3) |
 | Primary contact | Stripe Atlas success team + dedicated success manager (recorded in `legal/vendor-contacts.md`) |
 
@@ -72,8 +72,8 @@ tags: ["soc2", "cc9.2", "vendor-dd", "critical", "stripe", "pci-dss", "gap-14"]
 
 | Document | Signed | Notes |
 |---|---|---|
-| Stripe Services Agreement (SSA) | 2026-04-23 (click-through accepted at Atlas onboarding) | Includes acquiring + Billing + Tax modules |
-| DPA | 2026-04-23 (unilateral acceptance) | https://stripe.com/legal/dpa ; SCCs Module 2 |
+| Stripe Services Agreement (SSA) | Not recorded (accepted online) | https://stripe.com/legal/ssa |
+| DPA | Not recorded (accepted online with the terms) | https://stripe.com/legal/dpa |
 | Stripe Connected Account Agreement | N/A (CoreLink is direct merchant; not Connect platform yet) | — |
 | BAA | Not signed | No PHI in scope |
 

@@ -229,23 +229,30 @@ describe("postConsent origin", () => {
 
 // ---------------------------------------------------------------------------
 // 2b. The sub-processors SERVER page read.
-//     It used `process.env.CORELINK_API_BASE ?? ""` — an env var defined
-//     NOWHERE in this repo — so the URL degraded to a bare relative
-//     `/v1/subprocessors`, which Node's fetch rejects outright. The `try` block
-//     never reached the network once; the bundled JSON was always served.
+//     It used to try `/v1/subprocessors` (no handler exists anywhere) and
+//     render whatever came back, so a list served from elsewhere could
+//     disagree with the reviewed bundled list. B-316 (#2593) makes the
+//     bundled JSON the only source: the page must not touch the network, even
+//     when the API base resolves and would answer with a different list.
 // ---------------------------------------------------------------------------
 
-describe("sub-processors server page origin", () => {
-  it("reads the resolved API base, not a relative path Node cannot parse", async () => {
+describe("sub-processors server page source", () => {
+  it("renders the bundled list and never fetches a remote one", async () => {
     const captured: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal("fetch", captureFetch(captured, { version: "9.9.9", items: [] }));
 
     const mod = await import("@/app/[locale]/privacy/sub-processors/page");
+    const { loadSubProcessors } = await import("@/content/load");
+    let element: { props: { version: string; items: unknown[] } } | undefined;
     await withApiUrlEnv(API, async () => {
-      await mod.default({ params: Promise.resolve({ locale: "en" as never }) });
+      element = (await mod.default({ params: Promise.resolve({ locale: "en" as never }) })) as never;
     });
 
-    expect(captured[0]?.url).toBe(`${API}/v1/subprocessors`);
+    expect(captured).toHaveLength(0);
+    const bundled = loadSubProcessors();
+    expect(element?.props.version).toBe(bundled.version);
+    expect(element?.props.items).toEqual(bundled.items);
+    expect(bundled.items.length).toBe(8);
   });
 });
 

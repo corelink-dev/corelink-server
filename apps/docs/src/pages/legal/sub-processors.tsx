@@ -2,7 +2,11 @@
  * Public sub-processors page — Phase 0 §A `LEGAL-FOOTER-WIRE` deliverable,
  * reconciled 2026-05-27 against actual first-party wiring evidence.
  *
- * Source of truth: `apps/admin-ui/src/content/sub-processors.json`
+ * Source of truth: `apps/admin-ui/src/content/sub-processors.json` — the
+ * table below is rendered from it, so this page, the admin-ui page and the
+ * trust register cannot list different vendors or links. Each vendor is
+ * engaged on its own standard terms and DPA (B-316 owner re-charter, #2593);
+ * no acceptance dates are shown because none were recorded.
  * Audit cross-reference: `specs/_audits/2026-05-27-sub-processors-finalization.md`
  *
  * Vendor inventory verified by grep against:
@@ -25,8 +29,6 @@ import subProcessorsData from "../../../../admin-ui/src/content/sub-processors.j
 
 import styles from "./legal.module.css";
 
-const NEWSLETTER_SUBSCRIBE_URL =
-  "https://humangr.com/corelink/newsletter";
 const PRIVACY_EMAIL = "privacy@humangr.com";
 
 interface SubProcessor {
@@ -35,8 +37,8 @@ interface SubProcessor {
   role: string;
   region: string;
   certifications: string[];
+  terms_url: string;
   dpa_url: string;
-  last_audit: string;
 }
 
 interface SubProcessorList {
@@ -47,13 +49,30 @@ interface SubProcessorList {
 const subProcessors: SubProcessorList =
   subProcessorsData as SubProcessorList;
 
+// A vendor page that could not be confirmed is published as the literal
+// "link pending" (never a guessed URL); render it as text, not a link.
+function VendorLink({
+  href,
+  label,
+}: {
+  readonly href: string;
+  readonly label: string;
+}): ReactElement {
+  if (!href.startsWith("https://")) return <span>{href}</span>;
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer">
+      {label}
+    </a>
+  );
+}
+
 export default function SubProcessorsPage(): ReactElement {
   const { version, items } = subProcessors;
 
   return (
     <Layout
       title="Sub-processors"
-      description="CoreLink sub-processors: third-party service providers that process customer personal data on behalf of HuGR Labs, with regions, certifications, and DPA source URLs."
+      description="CoreLink sub-processors: third-party service providers that process customer personal data on behalf of HuGR Labs, with regions, certifications, and links to each vendor's terms and DPA."
     >
       <main className={styles.page}>
         <header className={styles.header}>
@@ -72,24 +91,18 @@ export default function SubProcessorsPage(): ReactElement {
             <strong>30 days before any new sub-processor</strong> begins
             processing customer personal data, and before any existing
             sub-processor materially changes its processing role, region, or
-            own sub-processor list. To subscribe an additional address
-            (security team, DPO, procurement) to these notices, email{" "}
+            own sub-processor list. Notices are sent by email to the account
+            owner of record. To have them sent to an additional address
+            (security team, DPO, procurement), email{" "}
             <a href={`mailto:${PRIVACY_EMAIL}`}>{PRIVACY_EMAIL}</a> with
             subject &ldquo;Sub-processor notice subscription&rdquo; and include
-            your tenant identifier, or sign up at{" "}
-            <a
-              href={NEWSLETTER_SUBSCRIBE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {NEWSLETTER_SUBSCRIBE_URL}
-            </a>
-            .
+            your tenant identifier. There is no notice setting in the product
+            and no automated notice delivery yet; each notice is sent
+            individually.
           </p>
           <p>
-            Any enterprise customer may request a counter-signed DPA. The
-            default Common Paper DPA template applies otherwise. Executed DPAs
-            are not published on this site; request a copy at{" "}
+            CoreLink&rsquo;s own data processing agreement with its customers
+            is a separate document; request a copy at{" "}
             <a href="mailto:legal@humangr.com">legal@humangr.com</a>.
           </p>
         </section>
@@ -99,199 +112,39 @@ export default function SubProcessorsPage(): ReactElement {
           <h2>Active sub-processors</h2>
           <p>
             These providers are currently wired and may process customer
-            personal data on behalf of HuGR Labs. Each row carries a
-            verifiable DPA or certification source URL.
+            personal data on behalf of HuGR Labs. Each is engaged on its own
+            standard terms and data processing agreement (DPA), linked in the
+            table; HuGR Labs accepted them online when it created each account.
+            The acceptance dates were not recorded, so none are shown.
           </p>
           <table className={styles.table}>
             <thead>
               <tr>
                 <th scope="col">Sub-processor</th>
                 <th scope="col">Service</th>
-                <th scope="col">Data processed</th>
                 <th scope="col">Region</th>
-                <th scope="col">DPA / Cert</th>
-                <th scope="col">Effective</th>
+                <th scope="col">Certifications</th>
+                <th scope="col">Terms</th>
+                <th scope="col">DPA</th>
               </tr>
             </thead>
             <tbody>
-              <tr>
-                <td>
-                  <strong>Cloudflare, Inc.</strong>
-                </td>
-                <td>CDN, edge compute, R2, KV, Durable Objects, D1, Pages, Email Routing</td>
-                <td>App traffic + customer artifacts (encrypted at rest)</td>
-                <td>Global with regional pinning</td>
-                <td>
-                  <a
-                    href="https://www.cloudflare.com/cloudflare-customer-dpa/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    DPA
-                  </a>{" "}
-                  &middot; ISO 27001 &middot; SOC 2 Type II &middot; ISO 27018
-                  &middot; PCI DSS L1 &middot; EU–US DPF
-                </td>
-                <td>
-                  <time dateTime="2026-04-01">2026-04-01</time>
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <strong>Clerk, Inc.</strong>
-                </td>
-                <td>Authentication + user identity (SSO, MFA)</td>
-                <td>Email, name, password hash, session tokens</td>
-                <td>United States (us-east-1)</td>
-                <td>
-                  <a
-                    href="https://clerk.com/legal/dpa"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    DPA
-                  </a>{" "}
-                  &middot; SOC 2 Type II &middot; GDPR &middot; CCPA &middot;
-                  EU–US DPF
-                </td>
-                <td>
-                  <time dateTime="2026-04-01">2026-04-01</time>
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <strong>Stripe, Inc.</strong>
-                </td>
-                <td>Payment processing + subscription billing</td>
-                <td>Billing email + payment-method tokens (PCI-DSS L1)</td>
-                <td>US; EU via Stripe Payments Europe Ltd. (Ireland)</td>
-                <td>
-                  <a
-                    href="https://stripe.com/legal/dpa"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    DPA
-                  </a>{" "}
-                  &middot; PCI DSS L1 &middot; SOC 2 Type II &middot; ISO 27001
-                  &middot; EU–US DPF
-                </td>
-                <td>
-                  <time dateTime="2026-04-01">2026-04-01</time>
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <strong>Resend</strong>
-                </td>
-                <td>Transactional email + newsletter Audience</td>
-                <td>Recipient email + delivery status</td>
-                <td>United States</td>
-                <td>
-                  <a
-                    href="https://resend.com/legal/dpa"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    DPA
-                  </a>{" "}
-                  &middot; SOC 2 Type II (in progress per Resend docs)
-                </td>
-                <td>
-                  <time dateTime="2026-05-27">2026-05-27</time>
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <strong>Sentry (Functional Software, Inc.)</strong>
-                </td>
-                <td>Application error monitoring (SaaS Cloud)</td>
-                <td>
-                  Error events — PII scrubbed by config (Authorization, Cookie,
-                  X-Api-Key, Proxy-Authorization, svix-* headers stripped)
-                </td>
-                <td>United States (Sentry SaaS Cloud)</td>
-                <td>
-                  <a
-                    href="https://sentry.io/legal/dpa/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    DPA
-                  </a>{" "}
-                  &middot; SOC 2 Type II &middot; GDPR
-                </td>
-                <td>
-                  <time dateTime="2026-05-27">2026-05-27</time>
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <strong>Plausible Analytics</strong>
-                </td>
-                <td>Privacy-first web analytics (EU cloud)</td>
-                <td>
-                  Anonymised event payloads — cookieless, no PII, no
-                  fingerprinting
-                </td>
-                <td>European Union (Germany)</td>
-                <td>
-                  <a
-                    href="https://plausible.io/data-policy"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Data Policy
-                  </a>{" "}
-                  &middot; GDPR (cookieless by design)
-                </td>
-                <td>
-                  <time dateTime="2026-05-27">2026-05-27</time>
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <strong>Better Stack, Inc. (Better Uptime)</strong>
-                </td>
-                <td>Public status page</td>
-                <td>Public status board only — no customer personal data</td>
-                <td>European Union</td>
-                <td>
-                  <a
-                    href="https://betterstack.com/privacy"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Privacy Policy
-                  </a>{" "}
-                  &middot; GDPR
-                </td>
-                <td>
-                  <time dateTime="2026-05-27">2026-05-27</time>
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <strong>GitHub, Inc. (Microsoft)</strong>
-                </td>
-                <td>Source code hosting + CI for releases</td>
-                <td>Code + issues + CI artifact logs</td>
-                <td>United States</td>
-                <td>
-                  <a
-                    href="https://docs.github.com/en/site-policy/privacy-policies/github-data-protection-agreement"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    DPA
-                  </a>{" "}
-                  &middot; SOC 2 Type II &middot; ISO 27001 &middot; GDPR
-                  &middot; EU–US DPF
-                </td>
-                <td>
-                  <time dateTime="2026-04-01">2026-04-01</time>
-                </td>
-              </tr>
+              {items.map((item) => (
+                <tr key={item.id}>
+                  <td>
+                    <strong>{item.name}</strong>
+                  </td>
+                  <td>{item.role}</td>
+                  <td>{item.region}</td>
+                  <td>{item.certifications.join(" · ")}</td>
+                  <td>
+                    <VendorLink href={item.terms_url} label="Terms" />
+                  </td>
+                  <td>
+                    <VendorLink href={item.dpa_url} label="DPA" />
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </section>
@@ -315,8 +168,9 @@ export default function SubProcessorsPage(): ReactElement {
             <li>
               <strong>Standard Contractual Clauses (SCC):</strong> EU
               Commission Implementing Decision 2021/914, Modules 2 and 3,
-              backstops every US-bound transfer. Each SCC is paired with a
-              Schrems II Transfer Impact Assessment on file.
+              backstops every US-bound transfer, as incorporated in each
+              vendor&rsquo;s DPA linked above. HuGR Labs has not recorded a
+              separate Schrems II Transfer Impact Assessment per vendor.
             </li>
             <li>
               <strong>UK International Data Transfer Addendum:</strong> ICO
@@ -339,9 +193,9 @@ export default function SubProcessorsPage(): ReactElement {
             any new sub-processor begins processing customer personal data, and
             before a sub-processor materially changes its processing role,
             region, or sub-sub-processor list (GDPR Art. 28(2) compliant, per
-            DPA §16). Notices are DKIM-signed and delivered to (a) the account
-            owner of record, (b) every address subscribed to sub-processor
-            notices, and (c) the DPO contact of each Enterprise tenant.
+            DPA §16). Notices are sent by email to the account owner of record
+            and to any additional address registered by writing to{" "}
+            <a href={`mailto:${PRIVACY_EMAIL}`}>{PRIVACY_EMAIL}</a>.
           </p>
           <p>
             You have the right to object to a new sub-processor on reasonable
@@ -356,11 +210,11 @@ export default function SubProcessorsPage(): ReactElement {
           <h2>Audit, assistance, and documentation rights</h2>
           <p>
             On reasonable written notice and subject to confidentiality
-            commitments, CoreLink will make available (a) third-party audit
-            reports of every active sub-processor, (b) executed DPA between
-            CoreLink and each sub-processor, (c) Schrems II Transfer Impact
-            Assessments, (d) relevant ROPA sections, and (e) annual pen-test
-            executive summaries. CoreLink also provides assistance with
+            commitments, CoreLink will make available (a) the third-party
+            audit reports each active sub-processor publishes or shares with
+            its customers, (b) the vendor DPA that applies to each
+            sub-processor (linked above), (c) relevant ROPA sections, and (d)
+            annual pen-test executive summaries. CoreLink also provides assistance with
             controller-side DPIA (GDPR Art. 35) and ANPD Relatório de Impacto
             (LGPD Art. 38) obligations.
           </p>

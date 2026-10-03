@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { formatDate } from "@/i18n/format";
 import type { Locale } from "@/i18n/LocaleContext";
 import type { SubProcessor } from "@/content/load";
 
@@ -12,19 +11,31 @@ import type { SubProcessor } from "@/content/load";
  * dark-on-dark on the public shell, so this surface-specific table applies the
  * frozen kit table styles with token colours. Semantics preserved: `role=table`
  * with an accessible name from `<caption>`, and per-column sort `<button>`s for
- * the sortable columns (name / region / last audit).
+ * the sortable columns (name / region).
+ *
+ * Each row links the vendor's own standard terms and DPA — the contract basis
+ * for every listed sub-processor (B-316 owner re-charter, #2593). No dates are
+ * shown: online acceptance dates were not recorded.
  */
 export interface SubProcessorsTableProps {
   locale: Locale;
   caption: string;
-  headers: { name: string; role: string; region: string; certs: string; audit: string };
+  headers: {
+    name: string;
+    role: string;
+    region: string;
+    certs: string;
+    terms: string;
+    dpa: string;
+    termsLink: string;
+    dpaLink: string;
+  };
   items: SubProcessor[];
 }
 
-type SortKey = "name" | "region" | "last_audit";
+type SortKey = "name" | "region";
 
 export function SubProcessorsTable({
-  locale,
   caption,
   headers,
   items,
@@ -71,6 +82,26 @@ export function SubProcessorsTable({
     );
   }
 
+  const linkClass =
+    "text-[var(--t1)] underline underline-offset-2 hover:text-[var(--t2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--line-2)]";
+
+  // A vendor page that could not be confirmed is published as the literal
+  // "link pending" (never a guessed URL); render it as text, not a link.
+  function VendorLink({ href, label, vendor }: { href: string; label: string; vendor: string }) {
+    if (!href.startsWith("https://")) return <span>{href}</span>;
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={linkClass}
+        aria-label={`${label} — ${vendor}`}
+      >
+        {label}
+      </a>
+    );
+  }
+
   return (
     <table className="lin-table">
       <caption className="sr-only">{caption}</caption>
@@ -84,9 +115,8 @@ export function SubProcessorsTable({
             <SortButton label={headers.region} sortKey="region" />
           </th>
           <th scope="col">{headers.certs}</th>
-          <th scope="col" aria-sort={ariaSort("last_audit")}>
-            <SortButton label={headers.audit} sortKey="last_audit" />
-          </th>
+          <th scope="col">{headers.terms}</th>
+          <th scope="col">{headers.dpa}</th>
         </tr>
       </thead>
       <tbody>
@@ -96,7 +126,12 @@ export function SubProcessorsTable({
             <td>{row.role}</td>
             <td>{row.region}</td>
             <td>{row.certifications.join(", ")}</td>
-            <td>{formatDate(row.last_audit, locale)}</td>
+            <td>
+              <VendorLink href={row.terms_url} label={headers.termsLink} vendor={row.name} />
+            </td>
+            <td>
+              <VendorLink href={row.dpa_url} label={headers.dpaLink} vendor={row.name} />
+            </td>
           </tr>
         ))}
       </tbody>

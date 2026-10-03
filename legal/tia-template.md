@@ -257,7 +257,7 @@ contractual transfer mechanism for this prelaunch D1 posture.
 
 #### 4.3.2 Sub-processor Agreement — Cloudflare
 
-**Measure**: Cloudflare Customer DPA (`https://www.cloudflare.com/cloudflare-customer-dpa/`) in force. Incorporates SCCs. Cloudflare commits to GDPR-compliant processing. Signed 2026-04-23 (see `legal/sub-processors.md`).
+**Measure**: Cloudflare Customer DPA (`https://www.cloudflare.com/cloudflare-customer-dpa/`) in force. Incorporates SCCs. Cloudflare commits to GDPR-compliant processing. Accepted online with Cloudflare's standard terms; the acceptance date is not recorded (see `legal/sub-processors.md`).
 
 **EDPB §89 alignment**: Sub-processor contractual obligations flow down.
 

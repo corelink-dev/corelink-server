@@ -1,24 +1,27 @@
-# Vendor Legal-Review Record — Better Stack, Inc. (BetterStack / Statuspage)
+# Vendor Contract-Basis Record — Better Stack, Inc. (BetterStack / Statuspage)
 
-> STATUS: TEMPLATE — pending the actual legal review record (owner/counsel to complete).
+> STATUS: RECORDED — owner re-charter of B-316, 2026-10-01 ([#2593](https://github.com/HuGR-dev/corelink-server/issues/2593#issuecomment-5941195884)).
+> Better Stack is engaged on its own standard online terms and DPA, accepted online
+> at account signup. No countersigned copy exists and no acceptance date is
+> recorded.
 
 | Field | Value |
 |---|---|
 | Vendor | Better Stack, Inc. (BetterStack / Statuspage) |
 | Sub-processor id | `betterstack` |
-| Review date | `TBD (YYYY-MM-DD)` |
-| Reviewer | `TBD (named Legal Counsel / Privacy Officer)` |
-| DPA reference | <https://betterstack.com/privacy> |
-| DPA status | `TBD (signed copy pending — VR-9)` |
-| SCC / transfer mechanism | `TBD` |
-| Schrems II TIA | `TBD` |
+| Contract basis | Better Stack's standard online terms and data processing agreement, accepted online by the owner when the account was created (owner statement, #2593 re-charter). No countersigned copy. |
+| Terms reference | <https://betterstack.com/terms> |
+| DPA reference | <https://betterstack.com/dpa> |
+| Online acceptance date | Not recorded. |
+| Reviewer | The owner. CoreLink is a single-owner company with no separate Legal/Privacy reviewer (#2593 re-charter). |
+| Owner disposition | In the launch sub-processor set the owner chose; see the re-charter comment on #2593. |
+| SCC / transfer mechanism | As set out in Better Stack's DPA (linked above). |
+| Schrems II TIA | None recorded. |
 | Data categories processed | telemetry |
 | Data residency / region | European Union |
-| Sub-processor flow-down | `TBD (confirm flow-down per GDPR Art. 28(4))` |
-| Certifications verified | `TBD (SOC 2 / attestation posture pending — VR-9)` |
-| Review outcome | `TBD (approved / approved-with-conditions / rejected)` |
-| Conditions / follow-ups | `VR-9 — Legal must obtain and record the signed-copy DPA and attestation disposition.` |
-| Next review due | `TBD (YYYY-MM-DD)` |
+| Certifications verified | None verified for CoreLink; only Better Stack's own public statements exist. |
+| Conditions / follow-ups | Record the acceptance date only if an acceptance record (vendor dashboard or acceptance email) is found. Re-read the linked terms and DPA when Better Stack announces a change. |
+| Next review due | Not scheduled. |
 
 ## Repository-verified technical and data-flow scope
 
@@ -39,11 +42,16 @@
 
 ## Notes
 
-No signature, named review, transfer assessment, certification, or approval is
-claimed. Legal owns VR-9 in `specs/_compliance/VENDOR-RISK-REGISTER.md` §5,
-due 2026-09-24.
+This record replaces the earlier `TEMPLATE` packet. VR-9 originally asked for a
+dated Legal review and a signed-copy DPA; the owner's re-charter (#2593)
+closes it on the public sub-processor list, which names Better Stack and links its
+standard online terms and DPA. This record claims no signature or other
+execution evidence, no named Legal reviewer, no transfer impact assessment, no
+certification and no acceptance date. VR-9 is Closed in
+`specs/_compliance/VENDOR-RISK-REGISTER.md` §5.
 
 ---
 
-*Referenced by `legal/sub-processors.md`. Existence and pending-state integrity
-are enforced by the B-316 verifier.*
+*Referenced by `legal/sub-processors.md`. Its contract basis and its agreement
+with every public sub-processor list are enforced by the B-316 verifier
+(`scripts/verify_b316_pending_vendor_reviews.py`).*

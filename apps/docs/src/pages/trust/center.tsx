@@ -173,11 +173,11 @@ const QUADRANTS: readonly TrustQuadrant[] = [
       "Who we share data with, where it lives, and how data-subject rights are honoured.",
     cards: [
       {
-        title: "Sub-processor register (11 active)",
+        title: "Sub-processor register",
         href: "/trust/sub-processor-register",
         status: "LIVE",
         summary:
-          "Public list refreshed monthly; 30-day advance-notice mechanism per DPA §6 / LGPD Art. 27 §4º / GDPR Art. 28 §2.",
+          "Public list with links to each vendor's terms and DPA; 30-day advance-notice mechanism per DPA §6 / LGPD Art. 27 §4º / GDPR Art. 28 §2.",
       },
       {
         title: "Data residency — BR / US / EU",
@@ -191,7 +191,7 @@ const QUADRANTS: readonly TrustQuadrant[] = [
         href: "/trust/compliance#gdpr",
         status: "LIVE",
         summary:
-          "SCC 2021/914 modules 2 + 3 executed; DPA v1.0.0 signed at sign-up; transfer impact assessment library available on request.",
+          "Customer DPA v1.0.0 offered at sign-up; each sub-processor is engaged on its own DPA, linked from the sub-processor list. No separate transfer impact assessment is recorded.",
       },
       {
         title: "DPO appointment + contact",

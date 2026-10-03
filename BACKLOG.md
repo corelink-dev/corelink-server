@@ -1801,8 +1801,8 @@ source-document: "PR containment audit #1490/#1506 addendum"
 source-locator: "apps/docs/docs/explanation/privacy/gdpr.mdx:191-200; four published locale copies"
 finding-title: "GDPR international-transfer table has an unowned Sigstore recipient row"
 problem: "The four draft GDPR locale tables had a combined PagerDuty / GitHub / Sigstore US recipient cell despite no evidenced customer-data path to Sigstore; the exact table disposition required Legal/DPO authorization."
-evidence: "Four-locale census plus posture markers in apps/docs/docs/trust/subprocessors.mdx and scripts/gen-public-subprocessors.py; no transfer or legal approval is inferred."
-acceptance: "A signed Legal/DPO disposition covers all four locale copies; the approved remove_sigstore_row outcome is applied without changing other recipients, fields, flows, or legal decisions."
+evidence: "Four-locale census plus posture markers in apps/docs/docs/trust/subprocessors.mdx and scripts/gen-public-subprocessors.py; no transfer or legal approval is inferred. Re-pinned 2026-10-02 by an unsigned owner-chat decision (evidence/owner-actions/B-314/gdpr-recipient-pagerduty-removal-2026-10-02.json) that removes the PagerDuty recipient the owner deferred on #1648."
+acceptance: "A signed Legal/DPO disposition covers all four locale copies; the approved remove_sigstore_row outcome is applied without changing other fields, flows, or legal decisions. The 2026-10-02 owner decision additionally removes PagerDuty, leaving the GitHub-only row; it supersedes only that half of the signed record, which is not edited."
 action-packet: docs/handoff/2026-09-06-b314-gdpr-sigstore-transfer.json
 verify: python3 -S scripts/verify_b314_gdpr_sigstore.py
 verify-means: |
@@ -1810,15 +1810,20 @@ verify-means: |
   https://github.com/HuGR-dev/corelink-server/issues/2601#issuecomment-5854794010,
   effective 2026-09-27T09:48:32Z, notice B-314-prelaunch-2026-09-27, and the same gmhelmold
   identity exercising Counsel and DPO functions (not two independent signers).
-  All four draft tables remove only “ / Sigstore” from the Recipient cell; preserve
-  PagerDuty and GitHub, country, mechanism, transfer description, and all other rows.
+  All four draft tables remove only “ / Sigstore” from the Recipient cell. The
+  owner's unsigned 2026-10-02 chat decision, recorded at
+  evidence/owner-actions/B-314/gdpr-recipient-pagerduty-removal-2026-10-02.json
+  without editing the signed record, then remove PagerDuty (deferred on #1648) and
+  preserve GitHub, country, mechanism and transfer description: the row is
+  “| GitHub | US | DPF + SCC + sub-processor-specific posture | Operational metadata;
+  no end-user PII |”, and the Sigstore and PagerDuty / GitHub rows both fail.
   no individual notice or re-consent is required for this prelaunch correction. This
   does not assert Sigstore has no operational metadata/personal data or that release-signing flows ceased,
   and it invents no Sigstore transfer basis. Evidence is recorded
   at evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json. The verifier
   rejects a missing locale, restored Sigstore row, changed mechanism, decision/reference
   drift, or posture/wiring drift; B-005/B-112/B-118 and cosign-sign.yml remain out of scope.
-last-verified: 2026-09-27
+last-verified: 2026-10-02
 ```
 
 ### B-315 — concurrent merges can allocate the same dense BACKLOG id from one stale snapshot
@@ -1850,30 +1855,34 @@ verify-means: |
 last-verified: 2026-09-06
 ```
 
-### B-316 — four live sub-processors still lack completed Legal reviews, and effective commitments text is stale
+### B-316 — the public sub-processor list named a deferred vendor, unlinked or broken DPAs, and invented contract dates
 ```backlog
 id: B-316
 repo: corelink-server
-owner: owner
-status: open
-source-document: "D03 bundled validators-only CI and sub-processor authority audit"
-source-locator: "legal/sub-processors.md frontmatter; legal/dpa/SUB-PROCESSOR-COMMITMENTS.md §1; specs/_compliance/VENDOR-RISK-REGISTER.md §5"
-finding-title: "four canonical vendor-review packets remain templates, and effective Legal commitments disagree with the recorded nine-vendor target"
-problem: "Canonical TEMPLATE packets now exist for Resend, Sentry, Plausible and Better Stack, closing the prior structural validator gap. The packets remain pending: they do not establish executed DPAs, completed reviews, attestations, or Legal approval. Separately, the effective commitments text still names Neon and omits Resend, GitHub, PagerDuty, Sentry, Plausible and Better Stack from the nine-vendor target recorded in the Legal action packet."
-evidence: "Four canonical TEMPLATE packets and open VR-6..VR-9 are recorded in docs/compliance/vendor-reviews/{resend,sentry,plausible,betterstack}-dpa-review-2026-09.md and specs/_compliance/VENDOR-RISK-REGISTER.md; the current/required commitment populations and Legal approval boundary are recorded in docs/handoff/2026-09-06-b316-vendor-legal-review.json"
-acceptance: "Legal completes the four dated and attributed vendor-review artifacts with genuine signed-copy/attestation evidence, closes VR-6..VR-9, records contract dates, and approves/versions SUB-PROCESSOR-COMMITMENTS.md to the exact nine-vendor active population with Neon removed. Packet existence or validator green alone is never completion. B-032 retains vendor-cadence/Drata ownership and B-314 retains the GDPR Sigstore-table decision."
+owner: tl
+status: done
+source-document: "D03 bundled validators-only CI and sub-processor authority audit; owner re-charter 2026-10-01 (#2593)"
+source-locator: "legal/sub-processors.md; legal/dpa/SUB-PROCESSOR-COMMITMENTS.md §1; specs/_compliance/VENDOR-RISK-REGISTER.md §2/§4c/§5; every published file that lists sub-processors (discovered by content; exceptions in docs/handoff/2026-10-02-b316-surface-ledger.json)"
+finding-title: "the sub-processor surfaces disagreed on the vendor set, linked no terms, linked broken or non-DPA pages, and stated contract dates no record supports"
+problem: "Four vendor packets (Resend, Sentry, Plausible, Better Stack) were TEMPLATE placeholders awaiting a Legal review CoreLink, a single-owner company with no legal department, cannot perform. Published lists named PagerDuty, which the owner deferred on 2026-10-01 (#1648), and Neon, which the product never used (the privacy policy, data-handling, GDPR/LGPD and FedRAMP pages, DPIAs and questionnaires repeated them); Clerk's DPA was 'on request'; GitHub's link was a trust portal and the old docs.github.com DPA URL now redirects to a generic index; Better Stack and Plausible linked privacy/data policies; no surface linked any vendor's terms; the registers and vendor DD files carried a 2026-04-23 contract date (the repository's spec-creation date) and the admin/docs pages invented audit and effective dates; and the pages promised notice channels (tenant setting, digest, reminders, objection API) that do not exist."
+evidence: "Owner re-charter https://github.com/HuGR-dev/corelink-server/issues/2593#issuecomment-5941195884 (2026-10-01T21:39:30Z). The approved eight and their links (each confirmed by a read-only HTTPS GET on 2026-10-02) are in docs/handoff/2026-09-06-b316-vendor-legal-review.json; every declared exception is in docs/handoff/2026-10-02-b316-surface-ledger.json. The last blocker, the four GDPR transfer-table rows '| PagerDuty / GitHub | US | ... |' held by the signed B-314 decision, was removed by the owner's unsigned 2026-10-02 chat decision (evidence/owner-actions/B-314/gdpr-recipient-pagerduty-removal-2026-10-02.json): the row is now GitHub-only."
+acceptance: "Every surface that lists sub-processors names exactly cloudflare, clerk, resend, stripe, github, sentry, plausible and betterstack, each with that vendor's own terms and DPA link, identically everywhere; no published line names PagerDuty or Neon except a declared non-disclosure mention (negative status, historical, superseded-design, paging tooling, not-a-vendor); no surface states an acceptance, contract, audit or effective date or an approval for a vendor; no surface promises an unshipped notice channel; the generated trust page matches the register; VR-6..VR-9 are closed under the re-charter. The GDPR transfer table is part of this: its recipient row is the GitHub-only row that B-314 now pins. B-032 retains vendor-cadence/Drata ownership and B-314 retains the GDPR Sigstore-table decision."
 action-packet: docs/handoff/2026-09-06-b316-vendor-legal-review.json
-verify: python3 scripts/verify_b316_pending_vendor_reviews.py --expect open --self-test
+verify: python3 scripts/verify_b316_pending_vendor_reviews.py --expect done --self-test
 verify-means: |
-  open — exits 0 only while all four canonical artifacts remain explicit TEMPLATE/TBD
-  packets, contract_signed_at remains null, VR-6..VR-9 remain Legal/Open, and the
-  owner packet exactly records the effective-commitments residue (Neon extra; six
-  active vendors missing) plus its nine-vendor approved target. Missing/extra vendors,
-  a fabricated signature, a prematurely closed risk action, partial/mixed state, path
-  drift, or loss of the B-032/B-314 ownership boundaries fails closed. `done` requires
-  all four genuine completed reviews and the Legal-approved effective-text population;
-  validator path/existence success never implies Legal completion.
-last-verified: 2026-09-25
+  done — exits 0 only with no blocker at all. The verifier compares 28 parsed
+  surfaces (legal register and table, commitments, the register's own Terms/DPA
+  columns through the generator, the generated trust page and its locale copies via
+  a declared delta, explanation pages, admin JSON/TS, eight vendor records, and the
+  pinned render contracts of the React pages) with the action packet (status
+  complete); reads every published file (docs, admin-ui source, legal, marketing,
+  README) and fails on any undeclared PagerDuty/Neon line — including the old
+  '| PagerDuty / GitHub |' GDPR row — or undeclared file that lists sub-processors;
+  and fails on any dated contract/approval line, approval claim, count other than
+  eight or unshipped notice channel not declared in the ledger. A consistent "link
+  pending" derives open (exit 1). The self-test applies 57 named mutations, each of
+  which must be rejected, plus a link-pending positive control.
+last-verified: 2026-10-02
 ```
 
 ### B-317 — strict release workflow contract test failed repository-wide clippy

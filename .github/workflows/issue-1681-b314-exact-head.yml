@@ -19,6 +19,8 @@ on:
       - 'apps/docs/i18n/pt-BR/docusaurus-plugin-content-docs/current/trust/subprocessors.mdx'
       - 'docs/handoff/2026-09-06-b314-gdpr-sigstore-transfer.json'
       - 'docs/handoff/2026-09-22-1681-legal-dpo-decision-draft.md'
+      - 'evidence/owner-actions/B-314/gdpr-sigstore-transfer-decision.json'
+      - 'evidence/owner-actions/B-314/gdpr-recipient-pagerduty-removal-2026-10-02.json'
       - 'legal/sub-processors.md'
       - 'scripts/gen-public-subprocessors.py'
       - 'scripts/verify_b314_gdpr_sigstore.py'

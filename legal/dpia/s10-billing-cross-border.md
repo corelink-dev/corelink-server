@@ -18,6 +18,13 @@ evidence_path: "evidence-legal/dpia-s10-billing-cross-border.md"
 
 # DPIA: S-10 Billing Data Cross-Border Transfer — Stripe US-Based Processing
 
+> **Superseded data-store assumption (B-316, 2026-10-02).** This draft was
+> written when a Neon Postgres control plane was planned. Neon was never used
+> by the product: account, billing and metadata state live in Stripe and the
+> Cloudflare D1 control-plane database. Every Neon-specific statement below
+> describes that abandoned design; none of its Neon measures are in place.
+> The current sub-processors are listed in `legal/sub-processors.md`.
+
 > **GDPR Art. 35 / LGPD Art. 38 (RIPD) Data Protection Impact Assessment**
 > Template: `specs/_templates/dpia.md` v1.0.0 — WI-S11-008
 > **Schrems II (CJEU C-311/18) analysis: SCC + TIA documented here.**

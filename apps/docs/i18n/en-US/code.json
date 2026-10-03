@@ -88,7 +88,7 @@
     "description": "Source-of-truth pointer"
   },
   "trust.subprocessor.source.full": {
-    "message": "(full 19-vendor register; only the 11 vendors that process customer personal data on CoreLink's behalf appear below).",
+    "message": "(the full vendor register is internal; only the vendors that process customer personal data on CoreLink's behalf appear below, each with links to its own terms and DPA). Available on request from trust@humangr.com.",
     "description": "Source of truth size context"
   },
   "trust.subprocessor.notice.title": {
@@ -96,8 +96,16 @@
     "description": "Notice section title"
   },
   "trust.subprocessor.notice.body": {
-    "message": "Per our DPA §6 and LGPD Art. 27 §4º + GDPR Art. 28 §2, we will give at least 30 calendar days' written notice before adding or replacing a sub-processor that processes customer personal data. Subscribe via tenant email digest, the status page, or the post-GA RSS feed.",
+    "message": "Per our DPA §6 and LGPD Art. 27 §4º + GDPR Art. 28 §2, we will give at least 30 calendar days' written notice before adding or replacing a sub-processor that processes customer personal data.",
     "description": "Notice section body"
+  },
+  "trust.subprocessor.contract_basis": {
+    "message": "Each sub-processor below is engaged on its own standard terms and data processing agreement (DPA), linked in the table. CoreLink accepted them online when it created each account; the acceptance dates were not recorded, so none are shown.",
+    "description": "How each sub-processor is engaged; no acceptance dates are recorded"
+  },
+  "trust.subprocessor.notice.email": {
+    "message": "notices are sent by email to the account owner of record; to add another recipient, write to privacy@humangr.com. There is no notice setting in the product and no automatic digest.",
+    "description": "How change notices are delivered today"
   },
   "trust.subprocessor.active.title": {
     "message": "Active sub-processors ({count})",

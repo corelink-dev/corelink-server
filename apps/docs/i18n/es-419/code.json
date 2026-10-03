@@ -88,7 +88,7 @@
     "description": "Source-of-truth pointer"
   },
   "trust.subprocessor.source.full": {
-    "message": "(registro completo de 19 proveedores; solo los 11 que procesan datos personales de clientes en nombre de CoreLink aparecen abajo).",
+    "message": "(el registro completo de proveedores es interno; abajo aparecen solo los proveedores que procesan datos personales de clientes en nombre de CoreLink, cada uno con enlaces a sus propios términos y DPA). Disponible a solicitud en trust@humangr.com.",
     "description": "Source of truth size context"
   },
   "trust.subprocessor.notice.title": {
@@ -96,8 +96,16 @@
     "description": "Notice section title"
   },
   "trust.subprocessor.notice.body": {
-    "message": "Conforme a nuestro DPA §6 y LGPD Art. 27 §4º + GDPR Art. 28 §2, daremos aviso por escrito con al menos 30 días calendario antes de añadir o reemplazar un subprocesador que procese datos personales de clientes. Suscríbete por digest de correo en el tenant, status page o feed RSS post-GA.",
+    "message": "Conforme a nuestro DPA §6 y LGPD Art. 27 §4º + GDPR Art. 28 §2, daremos aviso por escrito con al menos 30 días calendario antes de añadir o reemplazar un subprocesador que procese datos personales de clientes.",
     "description": "Notice section body"
+  },
+  "trust.subprocessor.contract_basis": {
+    "message": "Cada subprocesador a continuación se contrata según los términos estándar y el acuerdo de procesamiento de datos (DPA) del propio proveedor, enlazados en la tabla. CoreLink los aceptó en línea al crear cada cuenta; las fechas de aceptación no se registraron, por eso no se muestra ninguna.",
+    "description": "How each sub-processor is engaged; no acceptance dates are recorded"
+  },
+  "trust.subprocessor.notice.email": {
+    "message": "los avisos se envían por correo electrónico al titular de la cuenta; para agregar otro destinatario, escribe a privacy@humangr.com. No hay ajuste de avisos en el producto ni resumen automático.",
+    "description": "How change notices are delivered today"
   },
   "trust.subprocessor.active.title": {
     "message": "Subprocesadores activos ({count})",
