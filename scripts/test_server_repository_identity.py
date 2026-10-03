@@ -26,7 +26,6 @@ ROOT = Path(__file__).resolve().parents[1]
 # These references bind retained records, not a live API destination. Their
 # owner/repository fields and signed/hashed payloads must remain unchanged.
 ACTIVE_IDENTITY_LITERAL_ALLOWLIST = {
-    ".github/ISSUE_TEMPLATE/config.yml": "Current security-advisory and discussion destinations use the post-transfer server owner.",
     ".github/workflows/bot-pr-has-checks.yml": "This live workflow allows exactly source/destination repo names only after checking stable repository ID.",
      ".github/workflows/ci-clone-bundle.yml": "Clone-only guard accepts the destination only with its exact numeric repository ID.",
      ".github/workflows/sbom-clone-bundle.yml": "Bounded SBOM clone job accepts the destination only with its exact numeric repository ID.",
@@ -57,6 +56,7 @@ ACTIVE_IDENTITY_LITERAL_ALLOWLIST = {
     "tests/test_b142_codeql_selfhost.py": "Behavioral test passes the exact source repo explicitly; it is not a fallback default.",
     "tests/test_cli_release_b112_behavior.py": "Release tests exercise the exact pre-transfer server source identity.",
     "tests/test_verify_b155_batch_g.py": "Adversarial workflow tests inject the old owner-name guard to prove it is rejected.",
+    "tests/test_b251_provenance_contract.py": "Adversarial tests inject old-owner checkout repositories to prove the B-251 verifier rejects them.",
     "tools/sbom-publish/src/purl.rs": "Current SBOM workspace PURLs use the post-transfer repository URL.",
     "tools/sbom-publish/tests/adversarial.rs": "Adversarial SBOM test asserts the current emitted workspace VCS URL.",
     "scripts/collect_b102_b108_context.py": "Evidence capture accepts only exact server source/destination identities.",
@@ -377,8 +377,15 @@ class ServerRepositoryIdentityTests(unittest.TestCase):
 
     def test_current_user_facing_projections_name_the_destination_or_stable_resolver(self) -> None:
         destination = "HuGR-dev/corelink-server"
+        # The issue picker's security-advisory and Discussions links already
+        # point at the recreated repository (org-migration WP I2b); HuGR-dev
+        # can no longer receive a report, so it must not come back there.
+        recreated = "corelink-dev/corelink-server"
         projections = {
-            ".github/ISSUE_TEMPLATE/config.yml": (destination,),
+            ".github/ISSUE_TEMPLATE/config.yml": (
+                f"https://github.com/{recreated}/security/advisories/new",
+                f"https://github.com/{recreated}/discussions",
+            ),
             "README.md": (destination,),
             "CONTRIBUTING.md": (destination,),
             "apps/get-corelink-worker/README.md": (destination,),
@@ -424,6 +431,8 @@ class ServerRepositoryIdentityTests(unittest.TestCase):
                 for marker in markers:
                     self.assertIn(marker, contents)
                 assert_current_projection_owner_is_not_stale(relative, contents)
+        issue_picker = (ROOT / ".github/ISSUE_TEMPLATE/config.yml").read_text(encoding="utf-8")
+        self.assertNotRegex(issue_picker, IDENTITY_LITERAL_PATTERN)
         runner_doc = (ROOT / "docs/internal/ci-runner-fabric-box.md").read_text(encoding="utf-8")
         live_commands = runner_doc.split("## 11. Re-measuring", maxsplit=1)[1].split(
             "## Provenance note", maxsplit=1

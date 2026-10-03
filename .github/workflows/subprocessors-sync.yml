@@ -97,7 +97,7 @@ jobs:
         with:
           app-id: ${{ secrets.CORELINK_BOT_APP_ID }}
           private-key: ${{ secrets.CORELINK_BOT_APP_PRIVATE_KEY }}
-          owner: HuGR-dev
+          owner: corelink-dev
           repositories: corelink-server
           permission-metadata: read
           permission-contents: write
@@ -234,9 +234,12 @@ jobs:
             --title "chore(trust): auto-regen public sub-processors page (drift from VENDOR-RISK-REGISTER.md)" \
             --label "legal-review-required" \
             --body-file "$BODY_FILE"
-          # Best-effort assign to legal team; ignore failure when the team
-          # slug is unavailable in fork-context runs.
-          gh pr edit "$BRANCH" --add-reviewer "HumanGuardrail/legal" || true
+          # Best-effort review request; ignore failure in fork-context runs.
+          # The former `HumanGuardrail/legal` team never existed (B-099) and a
+          # team of another organisation cannot review here, so the request
+          # goes to the single owner account that .github/CODEOWNERS routes
+          # legal paths to.
+          gh pr edit "$BRANCH" --add-reviewer "gusmhs" || true
 
       - name: Summary
         run: |

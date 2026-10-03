@@ -186,6 +186,51 @@ class B012BotPrAuthTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         self.assertTrue(any("count-only verdict" in e for e in verify(candidate)))
 
+    def _mutate_owner(self, name, old, new):
+        """Apply one owner mutation to a candidate copy and prove it happened."""
+        tmp, candidate = self._candidate()
+        self.addCleanup(tmp.cleanup)
+        path = candidate / ".github/workflows" / name
+        text = path.read_text(encoding="utf-8")
+        self.assertEqual(text.count(old), 1, f"{name}: mutation anchor must occur exactly once")
+        mutated = text.replace(old, new, 1)
+        self.assertNotEqual(mutated, text)
+        path.write_text(mutated, encoding="utf-8")
+        return [e for e in verify(candidate) if name in e and "App-token owner" in e]
+
+    def test_every_creator_mints_for_the_current_owner_only(self):
+        current = "          owner: corelink-dev\n"
+        for name in CREATOR_WORKFLOWS:
+            for label, replacement in (
+                # The suspended organisation and the two before it.
+                ("HuGR-dev", "          owner: HuGR-dev\n"),
+                ("HuGR-Labs", "          owner: HuGR-Labs\n"),
+                ("HumanGuardrail", "          owner: HumanGuardrail\n"),
+                # A commented current owner must not mask a stale live owner;
+                # the substring check this replaced accepted exactly this.
+                ("comment-masked", "          # owner: corelink-dev\n          owner: HuGR-dev\n"),
+                ("inline-comment-masked", "          owner: HuGR-dev # owner: corelink-dev\n"),
+                ("missing", ""),
+                ("duplicated", current + current),
+                ("lookalike", "          owner: corelink-dev-evil\n"),
+                # No space before "#": YAML reads the whole token as the value.
+                ("hash-glued", "          owner: corelink-dev#x\n"),
+            ):
+                with self.subTest(workflow=name, mutation=label):
+                    self.assertTrue(self._mutate_owner(name, current, replacement))
+
+    def test_current_owner_with_inline_comment_is_accepted(self):
+        for name in CREATOR_WORKFLOWS:
+            with self.subTest(workflow=name):
+                self.assertEqual(
+                    self._mutate_owner(
+                        name,
+                        "          owner: corelink-dev\n",
+                        "          owner: corelink-dev # current organisation\n",
+                    ),
+                    [],
+                )
+
     def test_missing_approval_diagnostic_is_rejected(self):
         tmp, candidate = self._candidate()
         self.addCleanup(tmp.cleanup)

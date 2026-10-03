@@ -26,6 +26,15 @@
 # 2. The sole owner is also the usual author, and GitHub does not request
 #    review from the PR author. On most PRs this file requests nothing.
 #
+# 2026-10-02, org migration: the gmhelmold account was suspended and the
+# repository was recreated in the corelink-dev organisation, so every rule now
+# routes to @gusmhs, the account that operates corelink-dev. The 2026-08-31
+# measurements above describe the old HuGR-Labs repository and stay as history.
+# The recreated repository is public, so branch protection is available, but
+# this file still only REQUESTS review unless main's protection requires
+# code-owner review. Read that setting before citing this file as a control.
+# Consequence 2 is unchanged.
+#
 # It is kept because the PATHS still record which specialism each area needs
 # when there is someone to route it to — see the section comments. If teams are
 # ever provisioned, restore the per-domain handles; do NOT restore the two
@@ -44,90 +53,90 @@
 
 # ============================================================================
 # Default owner. NOT a merge gate — see the header: CODEOWNERS only REQUESTS
-# review, branch protection is unavailable on this plan, and the sole owner is
-# usually the author, from whom GitHub does not request review.
+# review unless branch protection requires code-owner review, and the sole
+# owner is usually the author, from whom GitHub does not request review.
 # ============================================================================
-*                                 @gmhelmold
+*                                 @gusmhs
 
 # ============================================================================
 # Core Rust crates — engineering owns; domain leads listed where applicable.
 # ============================================================================
 
 # Workspace manifest / lock — Architect must review (dep + version policy).
-/Cargo.toml                       @gmhelmold
-/Cargo.lock                       @gmhelmold
+/Cargo.toml                       @gusmhs
+/Cargo.lock                       @gusmhs
 
 # Tooling crates and shared test utils — engineering + architects.
-/crates/corelink-test-utils/      @gmhelmold
+/crates/corelink-test-utils/      @gusmhs
 
 # BYOK / crypto family — AppSec + Architect mandatory.
-/crates/corelink-byok/            @gmhelmold
-/crates/corelink-byok-aws/        @gmhelmold
-/crates/corelink-byok-azure/      @gmhelmold
-/crates/corelink-byok-gcp/        @gmhelmold
-/crates/corelink-byok-matrix-test/ @gmhelmold
-/crates/corelink-crypto-*/        @gmhelmold
+/crates/corelink-byok/            @gusmhs
+/crates/corelink-byok-aws/        @gusmhs
+/crates/corelink-byok-azure/      @gusmhs
+/crates/corelink-byok-gcp/        @gusmhs
+/crates/corelink-byok-matrix-test/ @gusmhs
+/crates/corelink-crypto-*/        @gusmhs
 
 # Audit chain — Privacy + AppSec sign-off (RFC 6962 / RFC 8785 invariants).
-/crates/corelink-audit/           @gmhelmold
-/crates/corelink-audit-chain/     @gmhelmold
+/crates/corelink-audit/           @gusmhs
+/crates/corelink-audit-chain/     @gusmhs
 
 # Auth / Clerk integration — AppSec required.
-/crates/corelink-auth-schema/     @gmhelmold
-/crates/corelink-clerk*/          @gmhelmold
+/crates/corelink-auth-schema/     @gusmhs
+/crates/corelink-clerk*/          @gusmhs
 
 # Billing / Stripe — Architect + Finance liaison (replace with team handle).
-/crates/corelink-billing-*/       @gmhelmold
+/crates/corelink-billing-*/       @gusmhs
 
 # Admin plane — Architect + AppSec (privileged surface).
-/crates/corelink-admin-*/         @gmhelmold
+/crates/corelink-admin-*/         @gusmhs
 
 # Privacy / DSR — Privacy + Legal.
-/crates/corelink-privacy*/        @gmhelmold
-/crates/corelink-dsr*/            @gmhelmold
+/crates/corelink-privacy*/        @gusmhs
+/crates/corelink-dsr*/            @gusmhs
 
 # Rate-limit / abuse — AppSec.
-/crates/corelink-abuse/           @gmhelmold
-/crates/corelink-rate-limit*/     @gmhelmold
+/crates/corelink-abuse/           @gusmhs
+/crates/corelink-rate-limit*/     @gusmhs
 
 # Server / gRPC entrypoint — Architect (cross-cutting).
-/apps/server/                     @gmhelmold
+/apps/server/                     @gusmhs
 
 # ============================================================================
 # Infra / Terraform / IaC — Architect + AppSec (WI-S13-004 §6.1).
 # ============================================================================
 
 # Terraform IaC — requires Architect + AppSec review
-/infra/terraform/                 @gmhelmold
+/infra/terraform/                 @gusmhs
 
 # Drift detection workflow — AppSec must review (auto-apply forbidden enforcement)
-/.github/workflows/terraform-drift.yml  @gmhelmold
+/.github/workflows/terraform-drift.yml  @gusmhs
 
 # CI lint gate — AppSec owns the no-apply lint
-/scripts/lint_no_terraform_apply.py  @gmhelmold
+/scripts/lint_no_terraform_apply.py  @gusmhs
 
 # D1 schema migrations — Architect required (additive-only invariant)
-/migrations/d1/                   @gmhelmold
+/migrations/d1/                   @gusmhs
 
 # RB-FM-206 runbook — SRE Lead owns
-/specs/05_quality/runbooks/RB-FM-206-terraform-drift.md  @gmhelmold
+/specs/05_quality/runbooks/RB-FM-206-terraform-drift.md  @gusmhs
 
 # Slack alert templates — SRE Lead + AppSec
-/infra/slack/                     @gmhelmold
+/infra/slack/                     @gusmhs
 
 # DPA templates (WI-S19-002) — Legal Counsel sign-off mandatory per
 # locale; see specs/_runbooks/RB-DPA-CHANGE.md.
-/legal/dpa/                       @gmhelmold
-/.github/workflows/dpa-legal-review.yml  @gmhelmold
+/legal/dpa/                       @gusmhs
+/.github/workflows/dpa-legal-review.yml  @gusmhs
 
 # All other legal/** artifacts (WI-S20-005) — SLA, sub-processor commitments,
 # SCC reference, breach-notification, DPIA, LIA, residency amendments, etc.
 # Legal Counsel + DPO (privacy) sign-off required.
-/legal/                           @gmhelmold
-/.github/workflows/legal-changes-review.yml  @gmhelmold
+/legal/                           @gusmhs
+/.github/workflows/legal-changes-review.yml  @gusmhs
 
 # Lighthouse legal review tracker — Legal Counsel + DPO own
-/specs/_legal/                    @gmhelmold
+/specs/_legal/                    @gusmhs
 
 # ============================================================================
 # Specs corpus — Architect for architecture; SRE for runbooks; specialists
@@ -135,68 +144,68 @@
 # ============================================================================
 
 # Architecture canon — Architects.
-/specs/03_architecture/           @gmhelmold
+/specs/03_architecture/           @gusmhs
 
 # ADRs — Architects (cross-functional; expand reviewers as needed).
-/specs/03_architecture/adrs/      @gmhelmold
+/specs/03_architecture/adrs/      @gusmhs
 
 # Runbooks — SRE Leads own; AppSec for security-class FMs.
-/specs/_runbooks/                 @gmhelmold
-/specs/05_quality/runbooks/       @gmhelmold
+/specs/_runbooks/                 @gusmhs
+/specs/05_quality/runbooks/       @gusmhs
 
 # Sprint contracts — Architects + Engineering.
-/specs/04_sprints/                @gmhelmold
+/specs/04_sprints/                @gusmhs
 
 # TLA+ specifications — Architects (formal-methods rotation).
-/specs/tla/                       @gmhelmold
+/specs/tla/                       @gusmhs
 
 # ============================================================================
 # .github / CI / workflows — AppSec must review (supply-chain surface).
 # ============================================================================
 
-/.github/                         @gmhelmold
-/.github/workflows/               @gmhelmold
-/.github/CODEOWNERS               @gmhelmold
-/.github/PULL_REQUEST_TEMPLATE.md @gmhelmold
-/.github/dependabot.yml           @gmhelmold
-/.github/SECURITY                 @gmhelmold
+/.github/                         @gusmhs
+/.github/workflows/               @gusmhs
+/.github/CODEOWNERS               @gusmhs
+/.github/PULL_REQUEST_TEMPLATE.md @gusmhs
+/.github/dependabot.yml           @gusmhs
+/.github/SECURITY                 @gusmhs
 
 # ============================================================================
 # Validation scripts — AppSec + Architects (these gates protect the codebase).
 # ============================================================================
 
-/scripts/                         @gmhelmold
-/scripts/validate_specs.py        @gmhelmold
-/scripts/validate_references.py   @gmhelmold
-/scripts/check_migrations_additive.py @gmhelmold
+/scripts/                         @gusmhs
+/scripts/validate_specs.py        @gusmhs
+/scripts/validate_references.py   @gusmhs
+/scripts/check_migrations_additive.py @gusmhs
 
 # ============================================================================
 # Internal engineering docs — process owners.
 # ============================================================================
 
-/docs/internal/                   @gmhelmold
-/docs/internal/TECHLEAD-CHECKLIST.md          @gmhelmold
-/docs/internal/CODE-REVIEW-CHECKLIST.md       @gmhelmold
-/docs/internal/AUTHOR-PRE-PR-CHECKLIST.md     @gmhelmold
-/docs/internal/ENGINEERING-ONBOARDING.md      @gmhelmold
-/docs/internal/PERFORMANCE-PLAYBOOK.md        @gmhelmold
-/docs/internal/dep-policy.md                  @gmhelmold
-/docs/internal/secrets-*.md                   @gmhelmold
-/docs/internal/side-channel-defense.md        @gmhelmold
-/docs/internal/slsa-l3-pipeline.md            @gmhelmold
-/docs/internal/legal-review-process.md        @gmhelmold
-/docs/internal/dt-dr-runbook.md               @gmhelmold
-/docs/internal/admin-plane.md                 @gmhelmold
-/docs/internal/onboarding/                    @gmhelmold
+/docs/internal/                   @gusmhs
+/docs/internal/TECHLEAD-CHECKLIST.md          @gusmhs
+/docs/internal/CODE-REVIEW-CHECKLIST.md       @gusmhs
+/docs/internal/AUTHOR-PRE-PR-CHECKLIST.md     @gusmhs
+/docs/internal/ENGINEERING-ONBOARDING.md      @gusmhs
+/docs/internal/PERFORMANCE-PLAYBOOK.md        @gusmhs
+/docs/internal/dep-policy.md                  @gusmhs
+/docs/internal/secrets-*.md                   @gusmhs
+/docs/internal/side-channel-defense.md        @gusmhs
+/docs/internal/slsa-l3-pipeline.md            @gusmhs
+/docs/internal/legal-review-process.md        @gusmhs
+/docs/internal/dt-dr-runbook.md               @gusmhs
+/docs/internal/admin-plane.md                 @gusmhs
+/docs/internal/onboarding/                    @gusmhs
 
 # Customer-facing docs — DocOps + Architects.
-/docs/customer/                   @gmhelmold
+/docs/customer/                   @gusmhs
 
 # Marketing — Marketing + Legal.
-/marketing/                       @gmhelmold
+/marketing/                       @gusmhs
 
 # Roadmap — final approver only.
-/ROADMAP-TO-GA.md                 @gmhelmold
+/ROADMAP-TO-GA.md                 @gusmhs
 
 # README / repo-root — Architects.
-/README.md                        @gmhelmold
+/README.md                        @gusmhs

@@ -4,6 +4,11 @@ version: 2
 #
 # Read this before setting any limit back above 0.
 #
+# 2026-10-02, org migration (repository recreated in corelink-dev): all 12
+# ecosystems are still at 0, the lowest value, so this file cannot lower the PR
+# load any further. Security-update PRs are not limited by this file; whether
+# they open is the repository's Dependabot security-updates setting.
+#
 # WHY. Measured 2026-08-03: routine dep PRs burned 194 of the repo's ~300 workflow
 # runs that day and helped exhaust the Actions spending limit — which reds EVERY PR
 # in the repo, including unrelated ones. Cost per PR is ~30 workflow runs: #999
@@ -96,7 +101,10 @@ version: 2
 #   Non-security updates of any size, and security minor/major, require manual
 #   review per §7 anti-scope + §9.8 design decision.
 #
-# Reviewers: HumanGuardrail/security team (INV-SUPPLY-LICENSE-ALLOWLIST enforcement).
+# Reviewers: none set here. Each ecosystem used to request `HumanGuardrail/security`,
+# a team that never existed (B-099) in an organisation this repository no longer
+# belongs to; the key was dropped in the 2026-10-02 org migration. Review requests
+# for dependency PRs come from .github/CODEOWNERS.
 # Labels: ["dependencies", "<ecosystem>"] — consumed by dependabot-auto-merge.yml
 # and dependabot-policy.yml gates.
 
@@ -174,8 +182,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled
 
   # ---------------------------------------------------------------------------
@@ -203,8 +209,6 @@ updates:
     commit-message:
       prefix: "ci"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled
 
   # ---------------------------------------------------------------------------
@@ -232,8 +236,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled
     versioning-strategy: increase
 
@@ -262,8 +264,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled
     versioning-strategy: increase
 
@@ -313,8 +313,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled
     versioning-strategy: increase
 
@@ -351,8 +349,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled
     versioning-strategy: increase
 
@@ -388,8 +384,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled
     versioning-strategy: increase
 
@@ -424,8 +418,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled
     versioning-strategy: increase
 
@@ -459,8 +451,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled
     versioning-strategy: increase
 
@@ -491,8 +481,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled
     versioning-strategy: increase
 
@@ -521,8 +509,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled
 
   # ---------------------------------------------------------------------------
@@ -550,6 +536,4 @@ updates:
     commit-message:
       prefix: "deps"
       include: scope
-    reviewers:
-      - "HumanGuardrail/security"
     rebase-strategy: disabled

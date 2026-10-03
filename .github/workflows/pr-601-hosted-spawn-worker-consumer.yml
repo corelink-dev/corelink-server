@@ -1,9 +1,15 @@
 name: "PR #601 hosted spawn-worker consumer validation"
 
-# Bounded operator lane for HuGR-dev/corelink-runners PR #601.  The source
+# Bounded operator lane for corelink-runners PR #601.  The source
 # repository is private, so the read-only canary PAT is used only to resolve
 # and fetch the requested PR head.  The token is never placed in a remote URL,
 # is not persisted in git config, and is unset before any source tests run.
+#
+# PR #601 was opened on HuGR-dev/corelink-runners.  That organisation is no
+# longer reachable, so the source is now corelink-dev/corelink-runners.  A recreated
+# repository does not carry pull-request refs, so `refs/pull/601/head` only
+# resolves there if a PR with that number exists and its head equals the
+# requested SHA; anything else fails closed as pr_601_head_sha_mismatch.
 on:
   workflow_dispatch:
     inputs:
@@ -21,8 +27,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RUNNERS_REPOSITORY: HuGR-dev/corelink-runners
-  RUNNERS_URL: https://github.com/HuGR-dev/corelink-runners.git
+  RUNNERS_REPOSITORY: corelink-dev/corelink-runners
+  RUNNERS_URL: https://github.com/corelink-dev/corelink-runners.git
   RUNNERS_PR: "601"
 
 jobs:
@@ -47,6 +53,7 @@ jobs:
           receipt="artifacts/pr-601-hosted-spawn-worker-receipt.json"
           python3 - "$receipt" "$TARGET_SHA" <<'PY'
           import json
+          import os
           import re
           import sys
 
@@ -55,7 +62,7 @@ jobs:
           payload = {
               "schema_version": 1,
               "lane": "pr-601-hosted-spawn-worker-consumer",
-              "source_repository": "HuGR-dev/corelink-runners",
+              "source_repository": os.environ["RUNNERS_REPOSITORY"],
               "source_pr": 601,
               "requested_sha": target_sha,
               "runner": "GitHub-hosted ubuntu-24.04",
@@ -114,6 +121,9 @@ jobs:
             exit 1
           }
 
+          # The URL and the recorded source repository must name the same repo.
+          [[ "${repo_url}" == "https://github.com/${RUNNERS_REPOSITORY}.git" ]] || \
+            fail_closed "runners_url_repository_mismatch"
           [[ -n "${CORELINK_CANARY_PAT:-}" ]] || fail_closed "CORELINK_CANARY_PAT_missing"
           echo "::add-mask::${CORELINK_CANARY_PAT}"
           askpass="$RUNNER_TEMP/corelink-runners-git-askpass"

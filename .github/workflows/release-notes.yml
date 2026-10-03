@@ -71,7 +71,7 @@ jobs:
         with:
           app-id: ${{ secrets.CORELINK_BOT_APP_ID }}
           private-key: ${{ secrets.CORELINK_BOT_APP_PRIVATE_KEY }}
-          owner: HuGR-dev
+          owner: corelink-dev
           repositories: corelink-server
           permission-metadata: read
           permission-contents: write

@@ -49,6 +49,16 @@ APP_ID_SECRET = "CORELINK_BOT_APP_ID"
 APP_KEY_SECRET = "CORELINK_BOT_APP_PRIVATE_KEY"
 APP_TOKEN_OUTPUT = "steps.app-token.outputs.token"
 
+# The App mints only for the organisation that owns this repository. The
+# server moved from HuGR-dev (and before it HuGR-Labs) to corelink-dev; a mint
+# step still naming an old owner fails at run time, so every mint step must
+# name exactly the current owner.
+APP_OWNER = "corelink-dev"
+_APP_MINT_STEP = re.compile(
+    r"(?m)^[ \t]*(?:-[ \t]+)?uses:[ \t]*actions/create-github-app-token@.*?(?=\n[ \t]*- (?:name|uses):|\Z)",
+    re.S,
+)
+
 B012_BACKLOG_REQUIRED = (
     "approval-required",
     "Dependabot PRs can trigger workflows",
@@ -81,6 +91,30 @@ def discover_creator_workflows(root: Path = ROOT) -> tuple[str, ...]:
             if _active_pr_creator(path.read_text(encoding="utf-8"))
         )
     )
+
+
+def _app_token_owners(text: str) -> list[list[str]]:
+    """Return the executable ``owner:`` values of each App-token mint step.
+
+    One inner list per non-comment ``create-github-app-token`` step, bounded
+    by the next peer step. Comment lines are skipped and an inline comment
+    after the value is dropped, so a commented owner can neither satisfy nor
+    fail the check.
+    """
+
+    owners: list[list[str]] = []
+    for block in _APP_MINT_STEP.findall(text):
+        values = []
+        for line in block.splitlines()[1:]:
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            # YAML starts an inline comment only at whitespace + "#".
+            match = re.fullmatch(r"owner:\s*(.*?)(?:\s+#.*)?", stripped)
+            if match:
+                values.append(match.group(1).strip("'\""))
+        owners.append(values)
+    return owners
 
 
 def _pr_step(text: str) -> str:
@@ -147,8 +181,15 @@ def verify(root: Path = ROOT) -> list[str]:
         for secret in (APP_ID_SECRET, APP_KEY_SECRET):
             if f"secrets.{secret}" not in text:
                 errors.append(f"{name}: missing App secret {secret}")
+        mint_owners = _app_token_owners(text)
+        if not mint_owners:
+            errors.append(f"{name}: no executable App-token mint step found")
+        for values in mint_owners:
+            if values != [APP_OWNER]:
+                errors.append(
+                    f"{name}: App-token owner must be exactly {APP_OWNER!r}, found {values!r}"
+                )
         for setting in (
-            "owner: HuGR-dev",
             "repositories: corelink-server",
             "permission-metadata: read",
             "permission-contents: write",

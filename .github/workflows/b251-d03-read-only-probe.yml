@@ -56,7 +56,10 @@ jobs:
       - name: Checkout the immutable D02 producer revision
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: HuGR-dev/corelink-server
+          # The commit SHA is the integrity pin; the repository is only where
+          # it is fetched from. Fetch it from the repository running this
+          # workflow, never from an owner name that could be re-registered.
+          repository: ${{ github.repository }}
           ref: f88c6ca41868f6a02e78ba9f4357d3abf67da4be
           persist-credentials: false
           path: d02
@@ -91,7 +94,8 @@ jobs:
       - name: Checkout immutable D02 producer revision
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: HuGR-dev/corelink-server
+          # Same-repository fetch of the SHA-pinned producer (see the PR job).
+          repository: ${{ github.repository }}
           ref: f88c6ca41868f6a02e78ba9f4357d3abf67da4be
           fetch-depth: 0
           persist-credentials: false

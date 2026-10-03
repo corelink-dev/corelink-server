@@ -72,12 +72,20 @@ exists, stop and revoke it before enabling this App path.
 
 The five creators invoke the pinned
 `actions/create-github-app-token@def152b8a737443d7af6c5722c6389146fe90c90`
-action with `owner: HuGR-dev`, `repositories: corelink-server`,
+action with `owner: corelink-dev`, `repositories: corelink-server`,
   `permission-metadata: read`, `permission-contents: write`, and
   `permission-pull-requests: write`. The
 checkout, branch push, PR creation, comment, and draft-release steps consume
 only `steps.app-token.outputs.token`; a missing App secret fails the job before
-any mutation. `scripts/verify_bot_pr_auth.py` is the fail-closed static guard.
+any mutation. `scripts/verify_bot_pr_auth.py` is the fail-closed static guard;
+it requires every mint step to name exactly `owner: corelink-dev` and ignores
+commented-out owners.
+
+The owner was `HuGR-dev` until the 2026-10-02 migration: that organisation
+became unreachable and the repository was recreated in `corelink-dev`. The App setup
+procedure and the installation record above describe the HuGR-dev install. The
+App must be created and installed again on `corelink-dev` before these
+creators can mint a token.
 
 The App cannot merge a PR through repository automation: generated PRs still
 require the normal human review and branch protection rules. App installation
