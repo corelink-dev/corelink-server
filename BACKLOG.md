@@ -16156,7 +16156,7 @@ verify-means: |
 last-verified: 2026-09-05
 ```
 
-### B-154 — prelaunch Object Lock and BYOK claims narrowed; provider capability parents remain open
+### B-154 — prelaunch Object Lock and BYOK claims match proven capability (done 2026-10-02)
 
 CoreLink has not launched, has no confirmed customers, and has no executed customer instruments.
 The enterprise BYOK case study has not circulated; #2594/#2595 are not applicable to customer
@@ -16166,31 +16166,55 @@ is claimed.
 The linked prelaunch DPA, SLA, privacy, customer-copy, and BYOK docs sources state that seven-year
 Object Lock COMPLIANCE retention and BYOK customer-managed-key operation/kill-switch p99 are
 unproven and unavailable/not promised. The docs provider-module matrix does not establish a
-CoreLink service capability. #1877 closed with one-day synthetic nonproduction AWS Object Lock
-proof for one exact object/version; this does not enable production Compliance mode or prove
-seven-year retention. Repository implementation, mocks, configuration, and provider-only
-experiments do not establish a shipped customer capability. The B-154 prelaunch resolution JSON
-retains exact limitations, synthetic-proof scope, and source hashes. Object Lock runtime/launch
-evidence remains owned by #1646; KMS lifecycle and measured p99 remain owned by #1653/#2165.
-B-154 claim accuracy can complete on these limits while those capability parents stay open. This
-record does not create legal approval or close either capability parent.
+CoreLink service capability. Repository implementation, mocks, configuration, and provider-only
+experiments do not establish a shipped customer capability.
+
+**Done 2026-10-02. Both provider rows reached a terminal outcome, and both outcomes are a
+narrowed claim.**
+
+- **Object Lock.** #1646 closed on 2026-09-30 through #2808 (`896ac790…`) with one accepted
+  nonproduction synthetic AWS S3 version, and #1877 closed with the same one-day proof. The receipt
+  is `evidence/owner-actions/B-046/accepted-aws-target.json`, sha256 `0bec97b7…`. That proof
+  enables no production route and no Compliance mode, and proves no seven-year retention. The
+  DPA keeps the limitation.
+- **BYOK kill-switch.** On 2026-10-01 the owner accepted the fail-closed limitation that #2807
+  shipped as the terminal launch outcome
+  ([#1676 decision](https://github.com/HuGR-dev/corelink-server/issues/1676#issuecomment-5941052514)).
+  #1653/#2165 continue as product hardening and no longer hold B-154 or #1676 open. No lifecycle
+  or p99 result is claimed.
+
+The B-154 resolution JSON records `DONE_PRELAUNCH_CLAIMS_MATCH_PROVEN_CAPABILITY` and pins both
+outcomes. It keeps `provider_chains_closed: false` (the BYOK runtime chain is still open), and it
+retains the exact limitations, synthetic-proof scope, and source hashes. Its D1 row binds the
+exact B-086 receipt by hash; B-086's own gate checks that receipt's freshness. This record does not
+create legal approval: the prelaunch drafts still carry `legal_review_status: "pending"`.
 
 ```backlog
 id: B-154
 repo: corelink-server
-owner: owner
-status: open
+owner: tl
+status: done
 action-packet: docs/handoff/2026-09-05-owner-action-packets-b008-b154.json
 verify: |
-  python3 -S scripts/verify_owner_action_packets.py --id B-154
+  python3 -S scripts/verify_owner_action_packets.py --id B-154 &&
   python3 -S scripts/verify_b154_instrument_claims.py --self-test
 verify-means: |
-  The prelaunch receipt, source hashes, active claims, and limitation language must agree.
-  The verifier rejects a positive Object Lock/BYOK availability or p99 claim without proof,
-  including a claim hidden behind the BYOK docs draft banner or provider-module certification.
-  The packet retains no-customer/no-circulation status and distinct open provider dependencies.
-  The #1877 receipt proves only one synthetic AWS version; #1646 and #1653/#2165 remain open.
-last-verified: 2026-09-30
+  done — regression guard: exits 0 only while the closed outcome still holds.
+  The packet check has five conditions:
+  - BACKLOG, the packet and the resolution all say done/tl.
+  - The terminal record is pinned: #1646 closed by #2808, with the accepted synthetic AWS
+    receipt bytes, and the BYOK fail-closed limitation accepted on 2026-10-01 (narrowed by
+    #2807).
+  - Both capability rows stay UNPROVEN and NOT_AVAILABLE_OR_PROMISED.
+  - provider_chains_closed stays false.
+  - Every linked source still matches its pinned hash.
+  The claims check rejects any active Object Lock retention, BYOK availability or
+  kill-switch p99 claim in the DPA, SLA, privacy, customer or BYOK-docs copies. That includes a
+  claim hidden behind the docs draft banner or behind a provider-module certification. It
+  binds the exact B-086 D1 receipt by hash; freshness is B-086's own gate.
+  `&&` stops the claims check's exit status from masking a packet failure. A re-broadened
+  claim, a promoted capability, an edited outcome or a reverted status exits non-zero.
+last-verified: 2026-10-02
 ```
 
 ### B-155 — 93 de 134 `verify` fazem `grep` de padrão não-ancorado: o comentário do arquivo alvo satisfaz o portão
