@@ -707,6 +707,7 @@ class ReviewedBaselineLedgerTests(unittest.TestCase):
         forms = {
             "Credential flow.": (("Source:", "Destination:", "Scope:", "Guards:"), {
                 ".github/workflows/issue-1700-container-staging-deploy.yml",
+                ".github/workflows/issue-2568-sla-credit-real.yml",
                 ".github/workflows/staging-quarantine-apply.yml",
                 "crates/corelink-container/src/storage.rs",
                 "scripts/staging_bootstrap_provider.py",
