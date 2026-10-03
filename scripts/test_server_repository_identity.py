@@ -292,17 +292,19 @@ class ServerRepositoryIdentityTests(unittest.TestCase):
         match = re.search(r"--certificate-identity-regexp '([^']+)'", script)
         self.assertIsNotNone(match)
         pattern = match.group(1)
+        # cosign compiles this with Go RE2, which rejects \Z ("invalid escape
+        # sequence"); Python 3.12, which runs this suite, rejects \z. ^ and $
+        # mean start and end of text in RE2 without the m flag.
+        self.assertNotRegex(pattern, r"\\[zZ]")
+        # cosign matches the SAN unanchored (regexp.MatchString), so this test
+        # uses re.search: the pattern's own anchors must do the rejecting.
+        workflow = "/corelink-server/.github/workflows/sign.yml"
         # corelink-dev is the current owner. The earlier owners stay so packs
         # they signed still verify; their names are never released.
         owners = ("HumanGuardrail", "HuGR-Labs", "HuGR-dev", "corelink-dev")
         for owner in owners:
             with self.subTest(owner=owner):
-                self.assertIsNotNone(
-                    re.fullmatch(
-                        pattern,
-                        f"https://github.com/{owner}/corelink-server/.github/workflows/sign.yml",
-                    )
-                )
+                self.assertIsNotNone(re.search(pattern, f"https://github.com/{owner}{workflow}"))
         for unauthorized in (
             "attacker",
             "HuGR-Labs-fork",
@@ -311,21 +313,23 @@ class ServerRepositoryIdentityTests(unittest.TestCase):
             "attacker/corelink-dev",
         ):
             with self.subTest(unauthorized=unauthorized):
-                self.assertIsNone(
-                    re.fullmatch(
-                        pattern,
-                        f"https://github.com/{unauthorized}/corelink-server/.github/workflows/sign.yml",
-                    )
-                )
+                self.assertIsNone(re.search(pattern, f"https://github.com/{unauthorized}{workflow}"))
         for owner in owners:
             for repository in ("corelink-server-evil", "corelink-runners", "corelink-workspaces"):
                 with self.subTest(owner=owner, repository=repository):
                     self.assertIsNone(
-                        re.fullmatch(
+                        re.search(
                             pattern,
                             f"https://github.com/{owner}/{repository}/.github/workflows/sign.yml",
                         )
                     )
+        current = f"https://github.com/corelink-dev{workflow}"
+        for embedded in (
+            f"https://evil.example/?next={current}",
+            f"{current}\nhttps://evil.example/",
+        ):
+            with self.subTest(embedded=embedded):
+                self.assertIsNone(re.search(pattern, embedded))
 
     def test_evidence_pack_and_release_cosign_identity_accept_the_same_owners(self) -> None:
         owner_group = re.compile(r"github\\\.com/\(\?:([^()]+)\)/corelink-server/")
