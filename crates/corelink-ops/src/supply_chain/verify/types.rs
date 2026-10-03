@@ -168,9 +168,9 @@ impl MerkleInclusionProof {
 ///
 /// The `id` must be the full Fulcio certificate SAN URI matching the expected GitHub Actions
 /// workflow ref, e.g.:
-/// `https://github.com/HuGR-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.X.Y`
+/// `https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.X.Y`
 ///
-/// The `org_pattern` is an org/repo path prefix (e.g., `HuGR-dev/corelink-server`)
+/// The `org_pattern` is an org/repo path prefix (e.g., `corelink-dev/corelink-server`)
 /// used when the caller does not know the exact release tag at verify time.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -179,7 +179,7 @@ pub struct BuilderIdentity {
     pub id: Option<String>,
 
     /// Org/repo prefix matched at the GitHub SAN URI path boundary.
-    /// Must include org + repo, e.g., `HuGR-dev/corelink-server`.
+    /// Must include org + repo, e.g., `corelink-dev/corelink-server`.
     pub org_pattern: String,
 }
 
@@ -227,14 +227,21 @@ mod builder_identity_tests {
 
     const HISTORICAL_SAN: &str = "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0";
     const SOURCE_SAN: &str = "https://github.com/HuGR-Labs/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0";
-    const DESTINATION_SAN: &str = "https://github.com/HuGR-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0";
+    // The owner before the corelink-dev rebuild. Artifacts it signed must keep
+    // verifying, so the fixture stays alongside the new destination.
+    const PREVIOUS_DESTINATION_SAN: &str = "https://github.com/HuGR-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0";
+    const DESTINATION_SAN: &str = "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0";
 
     #[test]
     fn exact_builder_identity_preserves_historical_and_destination_verification() {
         assert!(BuilderIdentity::from_exact(HISTORICAL_SAN).matches_san(HISTORICAL_SAN));
         assert!(BuilderIdentity::from_exact(SOURCE_SAN).matches_san(SOURCE_SAN));
+        assert!(BuilderIdentity::from_exact(PREVIOUS_DESTINATION_SAN)
+            .matches_san(PREVIOUS_DESTINATION_SAN));
         assert!(BuilderIdentity::from_exact(DESTINATION_SAN).matches_san(DESTINATION_SAN));
         assert!(!BuilderIdentity::from_exact(DESTINATION_SAN).matches_san(SOURCE_SAN));
+        assert!(!BuilderIdentity::from_exact(DESTINATION_SAN).matches_san(PREVIOUS_DESTINATION_SAN));
+        assert!(!BuilderIdentity::from_exact(PREVIOUS_DESTINATION_SAN).matches_san(DESTINATION_SAN));
     }
 
     #[test]
@@ -246,14 +253,29 @@ mod builder_identity_tests {
         assert!(source.matches_san(SOURCE_SAN));
         assert!(!source.matches_san(DESTINATION_SAN));
 
-        let destination = BuilderIdentity::from_org_pattern("HuGR-dev/corelink-server");
-        assert!(destination.matches_san(DESTINATION_SAN));
-        assert!(!destination.matches_san(SOURCE_SAN));
-        assert!(!destination.matches_san(
+        let previous = BuilderIdentity::from_org_pattern("HuGR-dev/corelink-server");
+        assert!(previous.matches_san(PREVIOUS_DESTINATION_SAN));
+        assert!(!previous.matches_san(SOURCE_SAN));
+        assert!(!previous.matches_san(DESTINATION_SAN));
+        assert!(!previous.matches_san(
             "https://github.com/attacker/HuGR-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
         ));
-        assert!(!destination.matches_san(
+        assert!(!previous.matches_san(
             "https://github.com/HuGR-dev/corelink-server-evil/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+
+        let destination = BuilderIdentity::from_org_pattern("corelink-dev/corelink-server");
+        assert!(destination.matches_san(DESTINATION_SAN));
+        assert!(!destination.matches_san(SOURCE_SAN));
+        assert!(!destination.matches_san(PREVIOUS_DESTINATION_SAN));
+        assert!(!destination.matches_san(
+            "https://github.com/attacker/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!destination.matches_san(
+            "https://github.com/corelink-dev/corelink-server-evil/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!destination.matches_san(
+            "https://github.com/corelink-dev-evil/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
         ));
     }
 }

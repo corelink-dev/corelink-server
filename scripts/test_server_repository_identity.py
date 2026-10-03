@@ -292,7 +292,10 @@ class ServerRepositoryIdentityTests(unittest.TestCase):
         match = re.search(r"--certificate-identity-regexp '([^']+)'", script)
         self.assertIsNotNone(match)
         pattern = match.group(1)
-        for owner in ("HumanGuardrail", "HuGR-Labs", "HuGR-dev"):
+        # corelink-dev is the current owner. The earlier owners stay so packs
+        # they signed still verify; their names are never released.
+        owners = ("HumanGuardrail", "HuGR-Labs", "HuGR-dev", "corelink-dev")
+        for owner in owners:
             with self.subTest(owner=owner):
                 self.assertIsNotNone(
                     re.fullmatch(
@@ -304,6 +307,8 @@ class ServerRepositoryIdentityTests(unittest.TestCase):
             "attacker",
             "HuGR-Labs-fork",
             "HuGR-dev-evil",
+            "corelink-dev-evil",
+            "attacker/corelink-dev",
         ):
             with self.subTest(unauthorized=unauthorized):
                 self.assertIsNone(
@@ -312,6 +317,34 @@ class ServerRepositoryIdentityTests(unittest.TestCase):
                         f"https://github.com/{unauthorized}/corelink-server/.github/workflows/sign.yml",
                     )
                 )
+        for owner in owners:
+            for repository in ("corelink-server-evil", "corelink-runners", "corelink-workspaces"):
+                with self.subTest(owner=owner, repository=repository):
+                    self.assertIsNone(
+                        re.fullmatch(
+                            pattern,
+                            f"https://github.com/{owner}/{repository}/.github/workflows/sign.yml",
+                        )
+                    )
+
+    def test_evidence_pack_and_release_cosign_identity_accept_the_same_owners(self) -> None:
+        owner_group = re.compile(r"github\\\.com/\(\?:([^()]+)\)/corelink-server/")
+        script = (ROOT / "scripts/build-pentest-evidence-pack.sh").read_text(encoding="utf-8")
+        pack = re.search(r"--certificate-identity-regexp '([^']+)'", script)
+        self.assertIsNotNone(pack, "evidence-pack cosign identity regexp not found")
+        deploy_types = (ROOT / "crates/corelink-ops/src/deploy/types.rs").read_text(encoding="utf-8")
+        release = re.search(
+            r'fn corelink_release\(\) -> Self \{\s*Self \{\s*pattern: r"([^"]+)"', deploy_types
+        )
+        self.assertIsNotNone(release, "CosignIdentityPattern::corelink_release pattern not found")
+        # The rustdoc block quotes the pattern; it must not drift from the code.
+        self.assertIn(f"/// {release.group(1)}\n", deploy_types)
+        expected = ["HumanGuardrail", "HuGR-Labs", "HuGR-dev", "corelink-dev"]
+        for label, regexp in (("evidence-pack", pack.group(1)), ("release", release.group(1))):
+            with self.subTest(pattern=label):
+                group = owner_group.search(regexp)
+                self.assertIsNotNone(group, f"{label}: owner alternation not found")
+                self.assertEqual(group.group(1).split("|"), expected)
 
     def test_reintroduced_source_owner_fails_current_projection_guard(self) -> None:
         current_readme = (ROOT / "README.md").read_text(encoding="utf-8")

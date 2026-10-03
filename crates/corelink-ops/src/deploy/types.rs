@@ -155,8 +155,13 @@ impl OciImageRef {
 ///
 /// The canonical pattern for CoreLink is:
 /// ```text
-/// ^https://github\.com/(?:HumanGuardrail|HuGR-Labs|HuGR-dev)/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$
+/// ^https://github\.com/(?:HumanGuardrail|HuGR-Labs|HuGR-dev|corelink-dev)/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$
 /// ```
+///
+/// `corelink-dev` is the current owner. `HumanGuardrail`, `HuGR-Labs` and
+/// `HuGR-dev` owned the server repository before it was recreated under
+/// `corelink-dev`; they stay in the alternation so artifacts they signed still
+/// verify, and those names are never released.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct CosignIdentityPattern {
@@ -169,7 +174,7 @@ impl CosignIdentityPattern {
     /// Canonical identity pattern for CoreLink release pipeline.
     pub fn corelink_release() -> Self {
         Self {
-            pattern: r"^https://github\.com/(?:HumanGuardrail|HuGR-Labs|HuGR-dev)/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$".to_string(),
+            pattern: r"^https://github\.com/(?:HumanGuardrail|HuGR-Labs|HuGR-dev|corelink-dev)/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$".to_string(),
         }
     }
 
@@ -376,7 +381,13 @@ mod tests {
             "https://github.com/HuGR-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
         ));
         assert!(p.matches_simple(
+            "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(p.matches_simple(
             "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v1.23.456"
+        ));
+        assert!(p.matches_simple(
+            "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v1.23.456"
         ));
     }
 
@@ -399,6 +410,26 @@ mod tests {
         ));
         assert!(!p.matches_simple(
             "https://github.com/HuGR-Labs/corelink-cli/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        // The current owner is accepted only as the exact owner of the server
+        // repository's release workflow at a release tag.
+        assert!(!p.matches_simple(
+            "https://github.com/attacker/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!p.matches_simple(
+            "https://github.com/corelink-dev-evil/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!p.matches_simple(
+            "https://github.com/corelink-dev/corelink-server-evil/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!p.matches_simple(
+            "https://github.com/corelink-dev/corelink-runners/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!p.matches_simple(
+            "https://github.com/corelink-dev/corelink-server/.github/workflows/build.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!p.matches_simple(
+            "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/heads/main"
         ));
     }
 
