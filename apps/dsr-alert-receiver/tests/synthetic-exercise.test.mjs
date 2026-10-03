@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { TARGET } from "../scripts/deploy-route.mjs";
 import { disableWorkersDev, runSyntheticReceiverExercise, safeWorkersDevUrl } from "../scripts/synthetic-exercise.mjs";
+import { ReadbackError } from "../scripts/readback-route.mjs";
+import { d1SchemaRows } from "./fixtures/d1-schema.mjs";
 
 // The UUID the provider reports for the receiver D1; routes adopt it by exact name.
 const DATABASE_ID = "c0ffee00-0b16-4000-8000-0000000006a1";
@@ -18,7 +20,7 @@ const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql"
 const activeDeployment = { id: "223e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: versionId, percentage: 100 }] };
 const activeVersion = {
   id: versionId,
-  metadata: { annotations: { "workers/tag": `b216-${sha}` } },
+  annotations: { "workers/tag": `b216-${sha}` },
   resources: { bindings: [
     { type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID },
     { type: "secret_text", name: TARGET.workerSecret },
@@ -33,13 +35,10 @@ const inventory = {
 
 const ZONE_ID = "f".repeat(32);
 
-function exerciseHarness({ receiverStatus = 202, readbackRows, version = activeVersion, ingress = {} } = {}) {
+function exerciseHarness({ receiverStatus = 202, readbackRows, version = activeVersion, ingress = {}, schemaExtraSql = "" } = {}) {
   const { domains = [], zoneRoutes = [], serviceRoutes = [], zonesStatus = 200, serviceRoutesStatus = 200 } = ingress;
   const state = { workersDev: true, preview: false, receiverCalls: [], providerCalls: [], receiptRow: null };
-  const tables = [
-    { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)" },
-    { name: "dsr_alert_receipts", sql: migration.replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE") },
-  ];
+  const tables = d1SchemaRows({ migration, extraSql: schemaExtraSql });
   const fetchProvider = async (url, options = {}) => {
     const parsed = new URL(url);
     const path = parsed.pathname.replace(/^\/client\/v4(?=\/)/, "");
@@ -186,7 +185,7 @@ describe("B-216 receiver-only synthetic operator", () => {
     ["b216-release", "worker_revision_tag_invalid"],
     [`b216-${"E".repeat(40)}`, "worker_revision_not_route_owned"],
   ])("sends nothing to an active revision tagged %s", async (tag, code) => {
-    const harness = exerciseHarness({ version: { ...activeVersion, metadata: { annotations: { "workers/tag": tag } } } });
+    const harness = exerciseHarness({ version: { ...activeVersion, annotations: { "workers/tag": tag } } });
     const foreignInventory = { ...inventory, versions: { ...inventory.versions, items: [{ id: versionId, tag }] } };
     const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => foreignInventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
     expect(receipt.failure_code).toBe(code);
@@ -223,6 +222,27 @@ describe("B-216 receiver-only synthetic operator", () => {
     const harness = exerciseHarness({ ingress });
     const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
     expect(receipt).toMatchObject({ status: "failed_closed", failure_code: code, workers_dev_cleanup: "disabled", read_failure: readFailure, cleanup_failures: [] });
+    expect(harness.state.receiverCalls).toHaveLength(0);
+  });
+
+  it("sends nothing when the receipt table has a trigger the migration does not create", async () => {
+    const harness = exerciseHarness({ schemaExtraSql: "CREATE TRIGGER drop_receipts BEFORE INSERT ON dsr_alert_receipts BEGIN SELECT RAISE(IGNORE); END;" });
+    const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => inventory, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
+    expect(receipt).toMatchObject({ status: "failed_closed", failure_code: "database_schema_unknown" });
+    expect(harness.state.receiverCalls).toHaveLength(0);
+  });
+
+  it("names a readback refusal by its own code and read, not a generic one", async () => {
+    const harness = exerciseHarness();
+    const refusal = Object.assign(new ReadbackError("worker_routes_ambiguous"), {
+      readFailure: { endpoint: "scripts_list", http_status: 200, cf_error_codes: [], message_class: "unexpected_shape" },
+    });
+    const receipt = await runSyntheticReceiverExercise({ context, config, migration, readInventory: async () => { throw refusal; }, fetchProvider: harness.fetchProvider, fetchReceiver: harness.fetchReceiver });
+    expect(receipt).toMatchObject({
+      status: "failed_closed",
+      failure_code: "worker_routes_ambiguous",
+      read_failure: { endpoint: "scripts_list", http_status: 200, cf_error_codes: [], message_class: "unexpected_shape" },
+    });
     expect(harness.state.receiverCalls).toHaveLength(0);
   });
 

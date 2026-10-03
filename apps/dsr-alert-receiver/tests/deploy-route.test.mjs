@@ -39,14 +39,24 @@ import {
   validateInitialPrivateVersion,
   prepareInitialPrivateReceiverConfig,
   prepareFinalReceiverConfig,
+  SECRET_VERSION_LINE,
+  UPLOADED_VERSION_LINE,
+  capturedVersionId,
+  failureCodeOf,
   recordCleanupFailure,
+  sqlTokens,
+  validateRunVersion,
   summarizeCustomRoutes,
   queryReadOnlyDatabase,
 } from "../scripts/deploy-route.mjs";
 import { PROTECTED_RESOURCE_NAMES, RECEIVER_TARGET, assertReceiverResourceName } from "../scripts/receiver-target.mjs";
+import { ReadbackError, versionTag } from "../scripts/readback-route.mjs";
+import { d1SchemaRows } from "./fixtures/d1-schema.mjs";
 
 // The UUID the provider reports for the receiver D1; routes adopt it by exact name.
 const DATABASE_ID = "c0ffee00-0b16-4000-8000-0000000006a1";
+// The script etag of this run's uploaded code; the secret version keeps it.
+const SOURCE_ETAG = "5f0c0de00000000000000000000000000000000000000000000000000000b216";
 const goodContext = {
   repository: TARGET.repository,
   ref: "refs/heads/main",
@@ -115,7 +125,10 @@ const routeOwnedBindings = () => [
   { type: "secret_text", name: TARGET.workerSecret },
 ];
 
-function routeHarness({ migration, sha, existing = false, foreignPreimage = null, wrongInitialDatabase = false, failInitialDeploy = false, malformedRoutes = false, failFinalDeploymentReadback = false, failFinalSubdomainReadback = false, ingress = {} } = {}) {
+// routesField: what the Workers script list says about a script without routes.
+// "null" is what Cloudflare returns (126 of 139 scripts on account 6a, read
+// 2026-10-02); "missing" is the field left out.
+function routeHarness({ migration, sha, existing = false, foreignPreimage = null, wrongInitialDatabase = false, failInitialDeploy = false, malformedRoutes = false, failFinalDeploymentReadback = false, failFinalSubdomainReadback = false, ingress = {}, routesField = "null", schemaExtraSql = "" } = {}) {
   const {
     domains = [], zoneRoutes = [], serviceRoutes = [], routesAfterDeploy = null,
     domainsStatus = 200, zonesStatus = 200, zoneRoutesStatus = 200, serviceRoutesStatus = 200,
@@ -136,7 +149,7 @@ function routeHarness({ migration, sha, existing = false, foreignPreimage = null
     deleted: false,
     workersDev: false,
     previewsEnabled: false,
-    versions: existing ? [{ id: originalId, metadata: { annotations: { "workers/tag": preimageTag } } }] : [],
+    versions: existing ? [{ id: originalId, annotations: { "workers/tag": preimageTag } }] : [],
     details: new Map(),
     deployments: existing ? [{ id: "823e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: originalId, percentage: 100 }] }] : [],
     commands: [],
@@ -150,15 +163,11 @@ function routeHarness({ migration, sha, existing = false, foreignPreimage = null
     failFinalDeploymentReadback,
     failFinalSubdomainReadback,
   };
-  if (existing) state.details.set(originalId, { id: originalId, metadata: { annotations: { "workers/tag": preimageTag } }, resources: { bindings: preimageBindings } });
-  const receiptSql = migration.trim().replace("CREATE TABLE IF NOT EXISTS", "CREATE TABLE");
-  const tables = [
-    { name: "_cf_KV", sql: "CREATE TABLE _cf_KV (key TEXT PRIMARY KEY, value BLOB)" },
-    { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)" },
-    { name: "dsr_alert_receipts", sql: receiptSql },
-  ];
+  if (existing) state.details.set(originalId, { id: originalId, annotations: { "workers/tag": preimageTag }, resources: { bindings: preimageBindings } });
+  // The receiver D1 as real SQLite stores it: migration applied, ledger written.
+  const tables = d1SchemaRows({ migration, extraSql: schemaExtraSql });
   const scriptRows = () => state.script
-    ? [{ id: TARGET.workerName, ...(state.routeFixture ? { routes: state.routeFixture } : {}) }]
+    ? [{ id: TARGET.workerName, ...(state.routeFixture ? { routes: state.routeFixture } : routesField === "null" ? { routes: null } : {}) }]
     : [];
   const json = (result, status = 200) => Response.json({ success: status < 400, result }, { status });
   const fetchImpl = async (url, options = {}) => {
@@ -235,34 +244,42 @@ function routeHarness({ migration, sha, existing = false, foreignPreimage = null
       const config = readFileSync(args[args.indexOf("--config") + 1], "utf8");
       if (!config.includes("workers_dev = false\npreview_urls = false") || /^\s*(?:\[\[?routes\]\]?|routes\s*=|route\s*=)/m.test(config)) throw new Error("initial deployment config was not private");
       state.script = true;
-      state.versions = [{ id: initialId, metadata: { annotations: {} } }];
+      state.versions = [{ id: initialId, annotations: {} }];
       state.details.set(initialId, { id: initialId, resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: targetDb }] } });
       state.deployments = [{ id: "923e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: initialId, percentage: 100 }] }];
       state.workersDev = false;
       state.previewsEnabled = false;
       return "";
     }
+    // Wrangler 4.141 stdout, with the ID of the version each command created.
     if (args[0] === "versions" && args[1] === "upload") {
-      state.versions.push({ id: sourceId, metadata: { annotations: { "workers/tag": sourceTag } } });
-      state.details.set(sourceId, { id: sourceId, metadata: { annotations: { "workers/tag": sourceTag } }, resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID }] } });
-      return "";
+      expect(args[6]).toBe(sourceTag);
+      const annotations = { "workers/tag": args[6], "workers/message": args[8] };
+      state.versions.push({ id: sourceId, annotations });
+      state.details.set(sourceId, { id: sourceId, annotations, resources: { script: { etag: SOURCE_ETAG }, bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID }] } });
+      return `Total Upload: 4.10 KiB / gzip: 1.50 KiB\nWorker Startup Time: 2 ms\nUploaded ${TARGET.workerName} (1.20 sec)\nWorker Version ID: ${sourceId}\n`;
     }
     if (args[0] === "versions" && args[1] === "secret" && args[2] === "put") {
       expect(options.input).toBe(goodContext.receiverToken);
+      expect(args[7]).toBe(finalTag);
       state.secretPut = true;
-      state.versions.push({ id: finalId, metadata: { annotations: { "workers/tag": finalTag } } });
-      state.details.set(finalId, { id: finalId, metadata: { annotations: { "workers/tag": finalTag } }, resources: { bindings: [
+      const annotations = { "workers/tag": args[7], "workers/message": args[9] };
+      state.versions.push({ id: finalId, annotations });
+      state.details.set(finalId, { id: finalId, annotations, resources: { script: { etag: SOURCE_ETAG }, bindings: [
         { type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID },
         { type: "secret_text", name: TARGET.workerSecret },
         ...extraCandidateBindings,
       ] } });
-      return "";
+      return `\u{1F300} Creating the secret for the Worker "${TARGET.workerName}" \n\u2728 Success! Created version ${finalId} with secret ${TARGET.workerSecret}.\n\u27A1\uFE0F  To deploy this version with secret ${TARGET.workerSecret} to production traffic use the command "wrangler versions deploy".\n`;
     }
     if (args[0] === "versions" && args[1] === "deploy") {
+      // Activates exactly the version the route named.
+      const deployedId = args[2].replace(/@100%$/, "");
+      state.deployedVersions = [...(state.deployedVersions ?? []), deployedId];
       state.finalDeployed = true;
-      state.deployedCandidate = true;
+      state.deployedCandidate = deployedId === finalId;
       if (extraBindingsAfterDeploy.length > 0) state.details.get(finalId).resources.bindings.push(...extraBindingsAfterDeploy);
-      state.deployments = [{ id: "a23e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: finalId, percentage: 100 }] }];
+      state.deployments = [{ id: "a23e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: deployedId, percentage: 100 }] }];
       return "";
     }
     if (args[0] === "rollback") {
@@ -275,17 +292,22 @@ function routeHarness({ migration, sha, existing = false, foreignPreimage = null
 }
 
 describe("B-216 protected receiver route admission", () => {
-  it.each([false, true])("runs the complete receiver route protocol with worker preimage existing=%s", async (existing) => {
+  it.each([
+    [false, "null", "absent"],
+    [true, "null", "absent"],
+    [false, "missing", "unknown"],
+    [true, "missing", "unknown"],
+  ])("runs the complete receiver route protocol with worker preimage existing=%s, script routes field %s", async (existing, routesField, customRoutesStatus) => {
     const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
-    const harness = routeHarness({ migration, sha: goodContext.sha, existing });
+    const harness = routeHarness({ migration, sha: goodContext.sha, existing, routesField });
     const receipt = await runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" });
     expect(receipt.status).toBe("deployed");
     expect(receipt.issue).toBe(1678);
     expect(receipt.database_id).toBe(DATABASE_ID);
     expect(receipt.final_workers_dev).toBe(existing ? "preexisting_state_unchanged" : "enabled_verified");
     expect(receipt.final_preview_urls).toBe(existing ? "preexisting_state_unchanged" : "disabled_verified");
-    expect(receipt.custom_routes_status).toBe("unknown");
+    expect(receipt.custom_routes_status).toBe(customRoutesStatus);
     if (existing) {
       expect(receipt.worker_preimage).toBe("623e4567-e89b-42d3-a456-426614174000");
       expect(harness.state.commands.some(({ args }) => args[0] === "deploy")).toBe(false);
@@ -430,6 +452,7 @@ describe("B-216 protected receiver route admission", () => {
     errorCode(() => validateInitialPrivateVersion({ id: revision, resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: "323e4567-e89b-42d3-a456-426614174000" }] } }, DATABASE_ID), "worker_database_binding_mismatch");
     errorCode(() => validateInitialPrivateVersion({ id: revision, resources: { bindings: [{ type: "d1", name: TARGET.databaseBinding, database_id: DATABASE_ID }, { type: "secret_text", name: TARGET.workerSecret }] } }, DATABASE_ID), "worker_initial_secret_present");
     expect(summarizeCustomRoutes(undefined)).toBe("unknown");
+    expect(summarizeCustomRoutes({ id: TARGET.workerName })).toBe("unknown");
     expect(summarizeCustomRoutes({ id: TARGET.workerName, routes: [] })).toBe("absent");
     errorCode(() => summarizeCustomRoutes({ id: TARGET.workerName, routes: [{ id: "bad" }] }), "worker_routes_ambiguous");
     errorCode(() => summarizeCustomRoutes({ id: TARGET.workerName, routes: [{ id: "r1", pattern: "*.example/*", script: TARGET.workerName }] }), "worker_custom_route_present");
@@ -1148,31 +1171,114 @@ describe("B-216 protected receiver route admission", () => {
     expect(creates).toBe(0);
   });
 
+  // PR #2890 review, reproduced: the old normalizer lowercased the whole SQL and
+  // stripped brackets everywhere, so a CHECK whose GLOB lost its brackets (and
+  // accepts non-hex event IDs) or an uppercased case-sensitive literal compared
+  // equal, and a retry adopted that schema as exact_migration_applied.
+  it("accepts the exact text SQLite stores for the migration, and refuses any byte change inside a literal", async () => {
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const stored = (sql) => d1SchemaRows({ migration: sql });
+    expect(validateReceiptSchema(stored(migration), migration)).toBe("applied");
+    // Whitespace and keyword case outside literals are not schema changes.
+    const relaxed = migration
+      .replace("CREATE TABLE IF NOT EXISTS dsr_alert_receipts (", "create table if not exists dsr_alert_receipts(\n")
+      .replace("TEXT PRIMARY KEY NOT NULL", "text  primary\tkey not null")
+      .replace("CHECK (requeue_count IN (0, 1))", "check(requeue_count in(0,1))");
+    expect(relaxed).not.toBe(migration);
+    expect(validateReceiptSchema(stored(relaxed), migration)).toBe("applied");
+    for (const [from, to] of [
+      ["'*[^0-9a-f]*'", "'*^0-9a-f*'"],
+      ["'dsr.erasure.dead_letter'", "'DSR.ERASURE.DEAD_LETTER'"],
+      ["'dsr-erasure-dlq:'", "'DSR-ERASURE-DLQ:'"],
+      ["'critical'", "'critical '"],
+      ["'*[^0-9a-f]*'", "'*[^0-9A-F]*'"],
+    ]) {
+      const altered = migration.replace(from, to);
+      expect(altered, from).not.toBe(migration);
+      errorCode(() => validateReceiptSchema(stored(altered), migration), "database_schema_drift");
+    }
+  });
+
+  // PR #2890 review round 2, reproduced: an exact receipt table and ledger plus a
+  // BEFORE INSERT trigger that discards every receipt (RAISE(IGNORE)) was adopted
+  // as exact_migration_applied, and the route deployed and enabled workers.dev.
+  it("refuses a trigger on the receipt table before any Worker mutation", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const trigger = "CREATE TRIGGER drop_receipts BEFORE INSERT ON dsr_alert_receipts BEGIN SELECT RAISE(IGNORE); END;";
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: trigger }), migration), "database_schema_unknown");
+    const harness = routeHarness({ migration, sha: goodContext.sha, schemaExtraSql: trigger });
+    const receiptDir = await mkdtemp(join(tmpdir(), "b216-route-trigger-"));
+    const receiptPath = join(receiptDir, "receipt.json");
+    let receipt;
+    try {
+      await expect(runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, receiptPath, worktree: "/runner/work/corelink-server" })).rejects.toMatchObject({ code: "database_schema_unknown" });
+      receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+    } finally {
+      await rm(receiptDir, { recursive: true, force: true });
+    }
+    expect(receipt.failed_stage).toBe("database_schema_preimage");
+    expect(harness.state.commands).toEqual([]);
+    expect(harness.state.requests.filter(({ method, path }) => method !== "GET" && !path.endsWith("/query"))).toEqual([]);
+  });
+
+  it("refuses an index the migration does not create", async () => {
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE INDEX receipts_by_time ON dsr_alert_receipts(received_at_ms);" }), migration), "database_schema_unknown");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE UNIQUE INDEX migrations_by_time ON d1_migrations(applied_at);" }), migration), "database_schema_unknown");
+  });
+
+  it("refuses a view the migration does not create", async () => {
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE VIEW receipts_view AS SELECT event_id FROM dsr_alert_receipts;" }), migration), "database_schema_unknown");
+    // A view in place of the ledger table is not the ledger table.
+    const viewLedger = d1SchemaRows({ migration }).map((row) => (row.name === "d1_migrations" ? { ...row, type: "view" } : row));
+    errorCode(() => validateReceiptSchema(viewLedger, migration), "database_schema_unknown");
+  });
+
+  it("refuses a trigger whose name only looks internal or reserved", async () => {
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    // `LIKE 'sqlite_%'` reads `_` as any character, so it hid this one.
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE TRIGGER sqliteX_hidden BEFORE INSERT ON dsr_alert_receipts BEGIN SELECT RAISE(IGNORE); END;" }), migration), "database_schema_unknown");
+    // Only the reserved D1 table named _cf_KV is skipped, not a trigger with that name.
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE TRIGGER _cf_KV BEFORE INSERT ON dsr_alert_receipts BEGIN SELECT RAISE(IGNORE); END;" }), migration), "database_schema_unknown");
+    // Before the migration too: an empty D1 with a trigger is not empty.
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ extraSql: "CREATE TRIGGER kv_watch AFTER INSERT ON _cf_KV BEGIN SELECT 1; END;" }), migration), "database_schema_unknown");
+  });
+
+  it("refuses a schema row it cannot read, and a migration that would create more than its table", async () => {
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const rows = d1SchemaRows({ migration });
+    for (const broken of [{ ...rows[0], type: "trigger " }, { ...rows[0], tbl_name: undefined }, { ...rows[0], name: null }]) {
+      errorCode(() => validateReceiptSchema([broken, ...rows.slice(1)], migration), "database_schema_ambiguous");
+    }
+    errorCode(() => validateReceiptSchema(rows, `${migration}\nCREATE INDEX extra ON dsr_alert_receipts(received_at_ms);`), "migration_shape_unexpected");
+  });
+
+  it("splits schema SQL into tokens where whitespace or quotes separate them", () => {
+    expect(sqlTokens("CHECK (a = 'it''s')")).toEqual(["check", "(", "a", "=", "'it''s'", ")"]);
+    expect(sqlTokens('"Mixed Case" [Br]acket')).toEqual(['"Mixed Case"', "[Br]", "acket"]);
+    expect(sqlTokens("a -- note\n>= 10 /* x */ ;")).toEqual(["a", ">=", "10", ";"]);
+    expect(sqlTokens("a >= 10")).not.toEqual(sqlTokens("a > = 10"));
+    expect(sqlTokens("IN (10)")).not.toEqual(sqlTokens("IN (1 0)"));
+    for (const unterminated of ["'open", '"open', "[open", "/* open"]) {
+      errorCode(() => sqlTokens(unterminated), "database_schema_ambiguous");
+    }
+  });
+
   it("accepts only the exact empty or migrated schema and rejects unknown/partial state", async () => {
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
     expect(validateReceiptSchema([], migration)).toBe("empty");
-    const reservedD1Table = { name: "_cf_KV", sql: "CREATE TABLE _cf_KV (key TEXT PRIMARY KEY, value BLOB)" };
-    expect(validateReceiptSchema([reservedD1Table], migration)).toBe("empty");
-    expect(validateReceiptSchema([
-      reservedD1Table,
-      { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" },
-      { name: "dsr_alert_receipts", sql: migration.trim().replace(/;$/, "") },
-    ], migration)).toBe("applied");
-    errorCode(() => validateReceiptSchema([
-      reservedD1Table,
-      { name: "unexpected_internal_table", sql: "CREATE TABLE unexpected_internal_table (id TEXT)" },
-    ], migration), "database_schema_unknown");
-    errorCode(() => validateReceiptSchema([
-      reservedD1Table,
-      { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" },
-      { name: "dsr_alert_receipts", sql: migration.replace("schema_version INTEGER", "schema_version TEXT").trim().replace(/;$/, "") },
-    ], migration), "database_schema_drift");
-    errorCode(() => validateReceiptSchema([{ name: "unknown_table", sql: "CREATE TABLE unknown_table (id TEXT)" }], migration), "database_schema_unknown");
-    errorCode(() => validateReceiptSchema([{ name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" }], migration), "database_migration_state_unknown");
-    errorCode(() => validateReceiptSchema([
-      { name: "d1_migrations", sql: "CREATE TABLE d1_migrations (id INTEGER)" },
-      { name: "dsr_alert_receipts", sql: "CREATE TABLE dsr_alert_receipts (event_id TEXT)" },
-    ], migration), "database_schema_drift");
+    expect(validateReceiptSchema(d1SchemaRows(), migration)).toBe("empty");
+    expect(validateReceiptSchema(d1SchemaRows({ migration }), migration)).toBe("applied");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ extraSql: "CREATE TABLE unexpected_internal_table (id TEXT);" }), migration), "database_schema_unknown");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration: migration.replace("schema_version INTEGER", "schema_version TEXT") }), migration), "database_schema_drift");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration, extraSql: "CREATE TABLE unknown_table (id TEXT);" }), migration), "database_schema_unknown");
+    const ledgerOnly = d1SchemaRows({ migration }).filter((row) => row.tbl_name !== "dsr_alert_receipts");
+    errorCode(() => validateReceiptSchema(ledgerOnly, migration), "database_migration_state_unknown");
+    const noLedger = d1SchemaRows({ migration }).filter((row) => row.name !== "d1_migrations");
+    errorCode(() => validateReceiptSchema(noLedger, migration), "database_schema_drift");
+    errorCode(() => validateReceiptSchema(d1SchemaRows({ migration: "CREATE TABLE dsr_alert_receipts (event_id TEXT);" }), migration), "database_schema_drift");
     expect(validateMigrationLedger([{ name: TARGET.migration }])).toBe(true);
     errorCode(() => validateMigrationLedger([{ name: TARGET.migration }, { name: "0002_extra.sql" }]), "database_migration_ledger_drift");
     errorCode(() => validateMigrationLedger([{ name: "0002_extra.sql" }]), "database_migration_ledger_drift");
@@ -1197,7 +1303,7 @@ describe("B-216 protected receiver route admission", () => {
     const bindings = [{ type: "d1", name: TARGET.databaseBinding, id: "123e4567-e89b-42d3-a456-426614174000" }];
     const candidate = {
       id: version,
-      metadata: { annotations: { "workers/tag": tag } },
+      annotations: { "workers/tag": tag },
       resources: { bindings: [
         { type: "d1", name: TARGET.databaseBinding, database_id: bindings[0].id },
         { type: "secret_text", name: TARGET.workerSecret },
@@ -1413,7 +1519,7 @@ describe("B-216 receiver on the shared main account", () => {
     for (const [path, method] of [
       [account, "GET"], [`${account}/workers/scripts`, "GET"], [`${account}/workers/subdomain`, "GET"], [`${account}/workers/domains`, "GET"],
       [`${worker}/deployments`, "GET"], [`${worker}/secrets`, "GET"], [`${worker}/subdomain`, "GET"], [`${worker}/subdomain`, "POST"],
-      [`${worker}/versions?per_page=100&deployable=true`, "GET"], [`${worker}/versions/123e4567-e89b-42d3-a456-426614174000`, "GET"],
+      [`${worker}/versions/123e4567-e89b-42d3-a456-426614174000`, "GET"],
       [d1List, "GET"], [`${account}/d1/database/${DATABASE_ID}/query`, "POST"],
       [`/zones?account.id=${TARGET.accountId}&page=1&per_page=50`, "GET"], [`/zones/${ZONE_ID}/workers/routes`, "GET"],
       [`${account}/workers/services/${TARGET.workerName}/environments/production/routes`, "GET"],
@@ -1428,6 +1534,7 @@ describe("B-216 receiver on the shared main account", () => {
       [`${account}/workers/scripts/corelink-staging/deployments`, "GET", adopted],
       [`${account}/workers/scripts/${TARGET.workerName}`, "PUT", adopted],
       [`${account}/workers/scripts/${TARGET.workerName}`, "GET", adopted],
+      [`${worker}/versions?per_page=100&deployable=true`, "GET", adopted],
       [worker, "DELETE", adopted],
       [`${account}/workers/scripts/corelink-api`, "DELETE", { ...adopted, deletion: true }],
       [`${worker}/subdomain`, "DELETE", { ...adopted, deletion: true }],
@@ -1675,6 +1782,83 @@ describe("B-216 receiver on the shared main account", () => {
     expect(JSON.stringify(writeReceipt)).not.toContain("private failure");
   });
 
+  // Deploy run 37045137543, reproduced: after the private create, the live script
+  // list gave the new Worker `routes: null`; the readback refused it, and the
+  // receipt said only route_failed_closed, with cleanup_failures naming
+  // worker_routes_ambiguous.
+  it("passes the initial private readback on the live null routes field", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const live = routeHarness({ migration, sha: goodContext.sha });
+    const deployed = await runRoute({ context: goodContext, config, migration, fetchImpl: live.fetchImpl, command: live.command, worktree: "/runner/work/corelink-server" });
+    expect(deployed).toMatchObject({ status: "deployed", initial_private_custom_routes: "absent", custom_routes_status: "absent" });
+  });
+
+  it("reads an existing Worker's live null routes field as no custom routes", () => {
+    expect(summarizeCustomRoutes({ id: TARGET.workerName, routes: null })).toBe("absent");
+  });
+
+  it("refuses a script routes field that is neither null nor a list", () => {
+    for (const routes of ["none", {}, 0, false]) errorCode(() => summarizeCustomRoutes({ id: TARGET.workerName, routes }), "worker_routes_ambiguous");
+  });
+
+  it("names a shape the initial private readback still refuses, by its code and read", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const odd = routeHarness({ migration, sha: goodContext.sha });
+    const oddWrapped = { ...odd, fetchImpl: async (url, options = {}) => {
+      if (odd.state.script && new URL(url).pathname.endsWith("/workers/scripts")) {
+        return Response.json({ success: true, result: [{ id: TARGET.workerName, routes: "none" }] });
+      }
+      return odd.fetchImpl(url, options);
+    } };
+    const receipt = await runForReceipt(oddWrapped, config, migration, "worker_routes_ambiguous");
+    const shape = { endpoint: "scripts_list", http_status: 200, cf_error_codes: [], message_class: "unexpected_shape" };
+    expect(receipt).toMatchObject({
+      failed_stage: "worker_initial_private_readback",
+      failure_code: "worker_routes_ambiguous",
+      read_failure: shape,
+      rollback_status: "created_worker_deleted",
+      cleanup_failures: [{ failure_code: "worker_routes_ambiguous", read_failure: shape }],
+    });
+  });
+
+  // The D1 that run 37045137543 left: the exact migration applied and in the
+  // ledger. The same two queries and validators that wrote
+  // database_schema_postflight=exact_migration_applied in that run are the
+  // preimage checks of the next one.
+  it("retries on the D1 left with the exact migration: adopts it as applied and never re-applies or writes it", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha });
+    const statements = [];
+    const fetchImpl = async (url, options = {}) => {
+      if (new URL(url).pathname.endsWith(`/d1/database/${DATABASE_ID}/query`)) statements.push(JSON.parse(options.body).sql);
+      return harness.fetchImpl(url, options);
+    };
+    const receipt = await runRoute({ context: goodContext, config, migration, fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" });
+    expect(receipt).toMatchObject({
+      status: "deployed",
+      database_preimage: "existing_exact_target",
+      database_schema_preimage: "applied",
+      database_schema_postflight: "exact_migration_applied",
+      database_migration_ledger: [TARGET.migration],
+      worker_preimage: "absent",
+    });
+    expect(harness.state.commands.filter(({ args }) => args[0] === "d1")).toEqual([]);
+    expect(statements.length).toBeGreaterThan(0);
+    expect(statements.every((sql) => /^SELECT /.test(sql))).toBe(true);
+    expect(statements.filter((sql) => sql.includes("FROM d1_migrations"))).toHaveLength(2);
+  });
+
+  it("names readback refusals by their own code, and nothing else", () => {
+    expect(failureCodeOf(new ReadbackError("worker_routes_ambiguous"), "route_failed_closed")).toBe("worker_routes_ambiguous");
+    expect(failureCodeOf(new RouteError("worker_custom_route_present"), "route_failed_closed")).toBe("worker_custom_route_present");
+    expect(failureCodeOf(Object.assign(new Error("x"), { code: "looks_fine" }), "route_failed_closed")).toBe("route_failed_closed");
+    expect(failureCodeOf(new ReadbackError(`private ${TARGET.accountId}`), "route_failed_closed")).toBe("route_failed_closed");
+    expect(failureCodeOf(undefined, "synthetic_exercise_failed_closed")).toBe("synthetic_exercise_failed_closed");
+  });
+
   it("records every failed cleanup request beside the primary failure, in the same redacted shape", async () => {
     const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
     const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
@@ -1788,8 +1972,162 @@ describe("B-216 receiver on the shared main account", () => {
       expect(harness.state.requests.filter(({ method, path }) => method !== "GET" && !path.endsWith("/query"))).toHaveLength(0);
       expect(harness.state.deleted).toBe(false);
     }
-    errorCode(() => validateRouteOwnedRevision({ id: "not-a-uuid", metadata: { annotations: { "workers/tag": ROUTE_OWNED_TAG } }, resources: { bindings: routeOwnedBindings() } }, DATABASE_ID), "worker_revision_not_route_owned");
-    expect(validateRouteOwnedRevision({ id: "623e4567-e89b-42d3-a456-426614174000", metadata: { annotations: { "workers/tag": ROUTE_OWNED_TAG } }, resources: { bindings: routeOwnedBindings() } }, DATABASE_ID)).toBe("623e4567-e89b-42d3-a456-426614174000");
+    errorCode(() => validateRouteOwnedRevision({ id: "not-a-uuid", annotations: { "workers/tag": ROUTE_OWNED_TAG }, resources: { bindings: routeOwnedBindings() } }, DATABASE_ID), "worker_revision_not_route_owned");
+    expect(validateRouteOwnedRevision({ id: "623e4567-e89b-42d3-a456-426614174000", annotations: { "workers/tag": ROUTE_OWNED_TAG }, resources: { bindings: routeOwnedBindings() } }, DATABASE_ID)).toBe("623e4567-e89b-42d3-a456-426614174000");
+  });
+
+  // The live versions API puts `workers/tag` in the top-level `annotations` (14 of
+  // 14 tagged versions on account 6a, 2026-10-02); the route used to read
+  // `metadata.annotations`, so after the null-routes fix the next run would have
+  // found no tag on its own upload.
+  it("reads the version tag only from the top-level annotations the API returns", () => {
+    const id = "623e4567-e89b-42d3-a456-426614174000";
+    const bindings = routeOwnedBindings();
+    expect(versionTag({ id, annotations: { "workers/tag": ROUTE_OWNED_TAG, "workers/message": "m" } })).toBe(ROUTE_OWNED_TAG);
+    expect(versionTag({ id, metadata: { annotations: { "workers/tag": ROUTE_OWNED_TAG } } })).toBeNull();
+    expect(versionTag({ id, annotations: { "workers/tag": 7 } })).toBeNull();
+    errorCode(() => validateRouteOwnedRevision({ id, metadata: { annotations: { "workers/tag": ROUTE_OWNED_TAG } }, resources: { bindings } }, DATABASE_ID), "worker_revision_not_route_owned");
+    errorCode(() => validateCandidateVersion({ id, metadata: { annotations: { "workers/tag": ROUTE_OWNED_TAG } }, resources: { bindings } }, DATABASE_ID, ROUTE_OWNED_TAG), "worker_revision_tag_mismatch");
+    expect(validateCandidateVersion({ id, annotations: { "workers/tag": ROUTE_OWNED_TAG }, resources: { bindings } }, DATABASE_ID, ROUTE_OWNED_TAG)).toBe(true);
+  });
+
+  it("refuses this run's own upload when the API returns its tag only under metadata", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha });
+    const nested = { ...harness, fetchImpl: async (url, options = {}) => {
+      const response = await harness.fetchImpl(url, options);
+      if (!new URL(url).pathname.endsWith(`/versions/${harness.sourceId}`)) return response;
+      const payload = await response.json();
+      const { annotations, ...rest } = payload.result;
+      const { "workers/tag": tag, ...others } = annotations;
+      return Response.json({ ...payload, result: { ...rest, annotations: others, metadata: { annotations: { "workers/tag": tag } } } }, { status: response.status });
+    } };
+    const receipt = await runForReceipt(nested, config, migration, "worker_revision_not_this_run");
+    expect(receipt).toMatchObject({ failed_stage: "worker_version_upload", rollback_status: "created_worker_deleted" });
+    expect(harness.state.commands.some(({ args }) => args[1] === "deploy")).toBe(false);
+  });
+
+  // PR #2890 review, reproduced: a same-SHA retry on a Worker whose live version
+  // already carries this SHA's tag. A stale version list held only that older
+  // version; the route picked it from the list, deployed it, and returned
+  // deployed (possibly with an old secret).
+  it("deploys exactly the version this run created on a same-SHA retry, whatever a version list says", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const sameShaTag = `b216-${goodContext.sha}`;
+    const harness = routeHarness({ migration, sha: goodContext.sha, existing: true, foreignPreimage: { tag: sameShaTag } });
+    // Same SHA, same code: the older version has this run's etag too.
+    harness.state.details.get("623e4567-e89b-42d3-a456-426614174000").resources.script = { etag: SOURCE_ETAG };
+    const staleList = async (url, options = {}) => {
+      if (new URL(url).searchParams.get("deployable") === "true") {
+        return Response.json({ success: true, result: { items: [{ id: "623e4567-e89b-42d3-a456-426614174000", annotations: { "workers/tag": sameShaTag } }] } });
+      }
+      return harness.fetchImpl(url, options);
+    };
+    const receipt = await runRoute({ context: goodContext, config, migration, fetchImpl: staleList, command: harness.command, worktree: "/runner/work/corelink-server" });
+    expect(receipt).toMatchObject({ status: "deployed", worker_revision: harness.finalId });
+    expect(harness.state.deployedVersions).toEqual([harness.finalId]);
+  });
+
+  it("refuses before activation when Wrangler's output does not bind exactly one version this run created", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const otherId = "723e4567-e89b-42d3-a456-426614174000";
+    const staleId = "623e4567-e89b-42d3-a456-426614174000";
+    for (const [label, which, rewrite, code, options] of [
+      ["no upload line", "upload", (out) => out.replace(/^Worker Version ID: .*$/m, ""), "worker_upload_version_unbound"],
+      ["two upload IDs", "upload", (out) => `${out}Worker Version ID: ${otherId}\n`, "worker_upload_version_unbound"],
+      ["no secret line", "put", (out) => out.replace(/Created version \S+ with secret/, "Created a version with secret"), "worker_secret_version_unbound"],
+      ["secret names the upload", "put", (out, harness) => out.replace(harness.finalId, harness.sourceId), "worker_secret_version_unbound"],
+      ["secret names an older same-SHA version", "put", (out, harness) => out.replace(harness.finalId, staleId), "worker_revision_not_this_run", { existing: true, foreignPreimage: { tag: `b216-${goodContext.sha}` } }],
+    ]) {
+      const harness = routeHarness({ migration, sha: goodContext.sha, ...options });
+      // An older same-SHA version has the same code, so this run's etag.
+      if (options?.existing) harness.state.details.get(staleId).resources.script = { etag: SOURCE_ETAG };
+      const rewritten = { ...harness, command: (args, commandOptions) => {
+        const out = harness.command(args, commandOptions);
+        return args[0] === "versions" && args[1] === which || args[2] === which ? rewrite(out, harness) : out;
+      } };
+      const receipt = await runForReceipt(rewritten, config, migration, code);
+      expect(receipt.failure_code, label).toBe(code);
+      expect(harness.state.deployedVersions, label).toBeUndefined();
+    }
+  });
+
+  it("binds a run version by exact ID, top-level tag, run message and script etag", () => {
+    const id = "523e4567-e89b-42d3-a456-426614174000";
+    const message = `B-216 reviewed main ${goodContext.sha} run 0d6c1a8e-0000-4000-8000-000000000001`;
+    const tag = `b216-${goodContext.sha}`;
+    const good = { id, annotations: { "workers/tag": tag, "workers/message": message }, resources: { script: { etag: SOURCE_ETAG } } };
+    expect(validateRunVersion(good, { id, tag, message })).toBe(SOURCE_ETAG);
+    expect(validateRunVersion(good, { id, tag, message, etag: SOURCE_ETAG })).toBe(SOURCE_ETAG);
+    for (const [label, version, expected] of [
+      ["other id", good, { id: "723e4567-e89b-42d3-a456-426614174000", tag, message }],
+      ["other tag", good, { id, tag: `b216-source-${goodContext.sha}`, message }],
+      ["other message", good, { id, tag, message: `B-216 reviewed main ${goodContext.sha}` }],
+      ["message under metadata", { ...good, annotations: { "workers/tag": tag }, metadata: { annotations: { "workers/message": message } } }, { id, tag, message }],
+      ["no etag", { ...good, resources: { script: {} } }, { id, tag, message }],
+      ["empty etag", { ...good, resources: { script: { etag: "" } } }, { id, tag, message }],
+      ["other etag", good, { id, tag, message, etag: "0".repeat(64) }],
+      ["not a uuid", { ...good, id: "not-a-uuid" }, { id: "not-a-uuid", tag, message }],
+    ]) {
+      errorCode(() => validateRunVersion(version, expected), "worker_revision_not_this_run");
+    }
+    const upload = `Uploaded ${TARGET.workerName} (1.20 sec)\nWorker Version ID: ${id}\nVersion Preview URL: none\n`;
+    expect(capturedVersionId(upload, UPLOADED_VERSION_LINE, "unbound")).toBe(id);
+    expect(capturedVersionId(`${upload}Worker Version ID: ${id}\n`, UPLOADED_VERSION_LINE, "unbound")).toBe(id);
+    errorCode(() => capturedVersionId(`${upload}Worker Version ID: 723e4567-e89b-42d3-a456-426614174000\n`, UPLOADED_VERSION_LINE, "unbound"), "unbound");
+    for (const output of ["", undefined, `Worker Version ID: ${id.toUpperCase()}\n`, `x Worker Version ID: ${id}\n`, `Worker Version ID: ${id} trailing\n`]) {
+      errorCode(() => capturedVersionId(output, UPLOADED_VERSION_LINE, "unbound"), "unbound");
+    }
+    expect(capturedVersionId(`\u2728 Success! Created version ${id} with secret ${TARGET.workerSecret}.\n`, SECRET_VERSION_LINE, "unbound")).toBe(id);
+    errorCode(() => capturedVersionId(`\u2728 Success! Created version ${id} with secret OTHER_SECRET.\n`, SECRET_VERSION_LINE, "unbound"), "unbound");
+  });
+
+  it("refuses and rolls back when the provider activates any version other than this run's", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha });
+    const otherActive = { ...harness, command: (args, commandOptions) => {
+      const out = harness.command(args, commandOptions);
+      if (args[1] === "deploy" && args[0] === "versions") {
+        harness.state.deployments = [{ id: "c23e4567-e89b-42d3-a456-426614174000", versions: [{ version_id: harness.sourceId, percentage: 100 }] }];
+      }
+      return out;
+    } };
+    const receipt = await runForReceipt(otherActive, config, migration, "worker_revision_readback_mismatch");
+    expect(receipt).toMatchObject({ failed_stage: "worker_readback", rollback_status: "created_worker_deleted" });
+  });
+
+  it("refuses a secret version whose code is not this run's upload", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const harness = routeHarness({ migration, sha: goodContext.sha });
+    const otherCode = { ...harness, command: (args, commandOptions) => {
+      const out = harness.command(args, commandOptions);
+      if (args[2] === "put") harness.state.details.get(harness.finalId).resources.script.etag = "0".repeat(64);
+      return out;
+    } };
+    const receipt = await runForReceipt(otherCode, config, migration, "worker_revision_not_this_run");
+    expect(receipt.failed_stage).toBe("worker_secret_provision");
+    expect(harness.state.deployedVersions).toBeUndefined();
+  });
+
+  it("stamps both versions with one message that is unique to the run", async () => {
+    const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../migrations/0001_alert_receipts.sql", import.meta.url), "utf8");
+    const messages = [];
+    for (let run = 0; run < 2; run += 1) {
+      const harness = routeHarness({ migration, sha: goodContext.sha });
+      await runRoute({ context: goodContext, config, migration, fetchImpl: harness.fetchImpl, command: harness.command, worktree: "/runner/work/corelink-server" });
+      const upload = harness.state.commands.find(({ args }) => args[1] === "upload").args;
+      const put = harness.state.commands.find(({ args }) => args[2] === "put").args;
+      expect(upload[8]).toBe(put[9]);
+      expect(upload[8]).toMatch(new RegExp(`^B-216 reviewed main ${goodContext.sha} run [0-9a-f-]{36}$`));
+      messages.push(upload[8]);
+    }
+    expect(messages[0]).not.toBe(messages[1]);
   });
 
   it("rolls back only to the proven route-owned revision and re-proves ingress after it", async () => {

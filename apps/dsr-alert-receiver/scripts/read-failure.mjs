@@ -38,6 +38,7 @@ export const READ_FAILURE_MESSAGE_CLASSES = Object.freeze([
   "rate_limited",
   "server_error",
   "malformed_response",
+  "unexpected_shape",
   "transport",
   "rejected_without_detail",
   "other",
@@ -91,9 +92,10 @@ function errorCodes(payload) {
   return codes;
 }
 
-function messageClass({ status, payload, transport, malformed }) {
+function messageClass({ status, payload, transport, malformed, unexpectedShape }) {
   if (transport) return "transport";
   if (malformed) return "malformed_response";
+  if (unexpectedShape) return "unexpected_shape";
   const codes = errorCodes(payload);
   const messages = (Array.isArray(payload?.errors) ? payload.errors : [])
     .slice(0, MAX_CF_ERROR_CODES)
@@ -110,12 +112,14 @@ function messageClass({ status, payload, transport, malformed }) {
 }
 
 // payload is the parsed JSON body, or undefined when there was none to parse.
-export function classifyReadFailure({ path, status = null, payload, transport = false, malformed = false }) {
+// unexpectedShape: the request succeeded, but a field of its result failed the
+// receiver's own shape check (the failure code names the field).
+export function classifyReadFailure({ path, status = null, payload, transport = false, malformed = false, unexpectedShape = false }) {
   return Object.freeze({
     endpoint: labelReadEndpoint(path),
     http_status: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
-    cf_error_codes: Object.freeze(transport || malformed ? [] : errorCodes(payload)),
-    message_class: messageClass({ status, payload, transport, malformed }),
+    cf_error_codes: Object.freeze(transport || malformed || unexpectedShape ? [] : errorCodes(payload)),
+    message_class: messageClass({ status, payload, transport, malformed, unexpectedShape }),
   });
 }
 

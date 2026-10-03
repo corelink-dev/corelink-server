@@ -45,7 +45,7 @@ function apiFixture(overrides = {}) {
     const path = new URL(url).pathname.replace(/^\/client\/v4(?=\/)/, "");
     let result;
     if (path.endsWith("/workers/scripts")) result = [{ id: READBACK_TARGET.workerName, routes: [] }];
-    else if (path.endsWith("/versions")) result = { items: [{ id: versionId, metadata: { annotations: { "workers/tag": `b216-${"a".repeat(40)}` } } }] };
+    else if (path.endsWith("/versions")) result = { items: [{ id: versionId, annotations: { "workers/tag": `b216-${"a".repeat(40)}` } }] };
     else if (path.endsWith("/deployments")) result = { deployments: [{ id: deploymentId, versions: [{ version_id: versionId, percentage: 100 }] }] };
     else if (path.endsWith("/subdomain")) result = { enabled: true, previews_enabled: false };
     else throw new Error("unexpected path");
@@ -858,6 +858,54 @@ describe("B-216 read-only Worker inventory", () => {
     await expect(readWorkerInventory({ context, fetchImpl: malformed.fetchImpl })).rejects.toMatchObject({ code: "worker_routes_ambiguous" });
   });
 
+  // Deploy run 37045137543, reproduced: Cloudflare lists a script without routes
+  // as `routes: null`, and the initial private readback refused it as ambiguous.
+  it("reads the live `routes: null` as zero known routes", async () => {
+    const live = apiFixture({
+      [`/accounts/${READBACK_TARGET.accountId}/workers/scripts`]: { success: true, result: [{ id: READBACK_TARGET.workerName, routes: null }] },
+    });
+    expect((await readWorkerInventory({ context, fetchImpl: live.fetchImpl })).routes).toEqual({ status: "known", count: 0, pattern_sha256: [] });
+  });
+
+  it("names the script-list read when it refuses a routes value that is neither null nor a list", async () => {
+    for (const routes of ["none", {}, 0, false]) {
+      const odd = apiFixture({
+        [`/accounts/${READBACK_TARGET.accountId}/workers/scripts`]: { success: true, result: [{ id: READBACK_TARGET.workerName, routes }] },
+      });
+      await expect(readWorkerInventory({ context, fetchImpl: odd.fetchImpl })).rejects.toMatchObject({
+        code: "worker_routes_ambiguous",
+        readFailure: { endpoint: "scripts_list", http_status: 200, cf_error_codes: [], message_class: "unexpected_shape" },
+      });
+    }
+  });
+
+  it("names the read a shape check refused, not the first or the last one", async () => {
+    const subdomain = apiFixture({
+      [`/accounts/${READBACK_TARGET.accountId}/workers/scripts/${READBACK_TARGET.workerName}/subdomain`]: { success: true, result: { enabled: "yes", previews_enabled: false } },
+    });
+    await expect(readWorkerInventory({ context, fetchImpl: subdomain.fetchImpl })).rejects.toMatchObject({
+      code: "worker_subdomain_ambiguous",
+      readFailure: { endpoint: "worker_subdomain", http_status: 200, cf_error_codes: [], message_class: "unexpected_shape" },
+    });
+    const versions = apiFixture({
+      [`/accounts/${READBACK_TARGET.accountId}/workers/scripts/${READBACK_TARGET.workerName}/versions`]: { success: true, result: { items: [{ id: "not-a-uuid" }] } },
+    });
+    await expect(readWorkerInventory({ context, fetchImpl: versions.fetchImpl })).rejects.toMatchObject({
+      code: "worker_versions_ambiguous",
+      readFailure: { endpoint: "worker_versions", http_status: 200, cf_error_codes: [], message_class: "unexpected_shape" },
+    });
+  });
+
+  it("keeps a refused request's own classification instead of a shape one", async () => {
+    const refused = apiFixture({
+      [`/accounts/${READBACK_TARGET.accountId}/workers/scripts/${READBACK_TARGET.workerName}/deployments`]: { success: false, errors: [{ code: 10000 }], statusCode: 403 },
+    });
+    await expect(readWorkerInventory({ context, fetchImpl: refused.fetchImpl })).rejects.toMatchObject({
+      code: "provider_response_rejected",
+      readFailure: { endpoint: "worker_deployments", http_status: 403, cf_error_codes: [10000], message_class: "authentication" },
+    });
+  });
+
   it("distinguishes exact absent worker 404 from provider errors", async () => {
     const calls = [];
     const fetchImpl = async (url, init) => {
@@ -895,7 +943,7 @@ describe("B-216 read-only Worker inventory", () => {
       if (path.endsWith("/versions")) return Response.json({
         success: true,
         result: {
-          items: [{ id: versionId, metadata: { annotations: { "workers/tag": `b216-source-${"a".repeat(40)}` } } }],
+          items: [{ id: versionId, annotations: { "workers/tag": `b216-source-${"a".repeat(40)}` } }],
         },
       });
       if (path.endsWith("/deployments") || path.endsWith("/subdomain")) return new Response("", { status: 404 });
@@ -927,7 +975,7 @@ describe("B-216 read-only Worker inventory", () => {
     const badVersion = apiFixture({
       [`/accounts/${READBACK_TARGET.accountId}/workers/scripts/${READBACK_TARGET.workerName}/versions`]: {
         success: true,
-        result: { items: [{ id: "not-a-uuid", metadata: { annotations: { "workers/tag": "private" } } }] },
+        result: { items: [{ id: "not-a-uuid", annotations: { "workers/tag": "private" } }] },
       },
     });
     await expect(readWorkerInventory({ context, fetchImpl: badVersion.fetchImpl })).rejects.toMatchObject({ code: "worker_versions_ambiguous" });

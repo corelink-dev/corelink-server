@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import {
   TARGET,
   RouteError,
+  SCHEMA_OBJECTS_SQL,
+  failureCodeOf,
   isExternalIngressError,
   listNamedD1Databases,
   makeCloudflareApi,
@@ -108,7 +110,7 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
     const database = selectNamedResource(await listNamedD1Databases(api), TARGET.databaseName, "database");
     const databaseId = api.adoptDatabase(validateDatabaseIdentity(database));
     receipt.database_id = databaseId;
-    const tables = await queryReadOnlyDatabase(api, databaseId, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+    const tables = await queryReadOnlyDatabase(api, databaseId, SCHEMA_OBJECTS_SQL);
     if (validateReceiptSchema(tables, migration) !== "applied") fail("database_schema_not_applied");
     validateMigrationLedger(await queryReadOnlyDatabase(api, databaseId, "SELECT name FROM d1_migrations ORDER BY name"));
 
@@ -176,7 +178,7 @@ export async function runSyntheticReceiverExercise({ context, config, migration,
     receipt.durable_receipt = "exact_row_read_back";
     receipt.received_at_ms = rows[0].received_at_ms;
   } catch (error) {
-    exerciseError = error instanceof RouteError ? error.code : "synthetic_exercise_failed_closed";
+    exerciseError = failureCodeOf(error, "synthetic_exercise_failed_closed");
     receipt.failure_code = exerciseError;
     Object.assign(receipt, providerFailureFields(error));
     externalIngress = isExternalIngressError(error);

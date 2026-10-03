@@ -40,6 +40,16 @@ export function validateReadbackContext(context) {
 
 function safeId(value) { return typeof value === "string" && UUID.test(value) ? value : null; }
 
+// The Workers versions API carries `workers/tag` in the version's top-level
+// `annotations` (beside `workers/message` and `workers/triggered_by`), not in
+// `metadata`: on account 6a, 14 tagged versions had it there and none under
+// `metadata.annotations` (read 2026-10-02). Only that field is read, so a tag
+// anywhere else is no tag.
+export function versionTag(version) {
+  const tag = version?.annotations?.["workers/tag"];
+  return typeof tag === "string" ? tag : null;
+}
+
 function checkedPage(result, info, page, kind) {
   if (!Array.isArray(result) || result.length > PAGE_SIZE) fail(`${kind}_inventory_ambiguous`);
   if (info !== undefined) {
@@ -94,14 +104,14 @@ function makeReadOnlyApi(token, fetchImpl) {
         headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       });
     } catch { readFailed("provider_transport_ambiguous", classifyReadFailure({ path, transport: true })); }
-    if (response.status === 404 && absent404) return { absent: true };
+    if (response.status === 404 && absent404) return { absent: true, status: response.status };
     let payload;
     let malformed = false;
     try { payload = await response.json(); } catch { malformed = true; }
     if (!response.ok) readFailed(response.status === 404 ? "provider_target_not_found" : "provider_response_rejected", classifyReadFailure({ path, status: response.status, payload, malformed }));
     if (malformed) readFailed("provider_response_ambiguous", classifyReadFailure({ path, status: response.status, malformed: true }));
     if (payload?.success !== true) readFailed("provider_response_rejected", classifyReadFailure({ path, status: response.status, payload }));
-    return { result: payload.result, resultInfo: payload.result_info };
+    return { result: payload.result, resultInfo: payload.result_info, status: response.status };
   };
 }
 
@@ -120,7 +130,47 @@ async function collectPages(api, endpoint, kind, responseKey, firstResponse = un
 
 export async function readWorkerInventory({ context, fetchImpl = fetch, now = () => new Date().toISOString() }) {
   const sha = validateReadbackContext(context);
-  const api = makeReadOnlyApi(context.apiToken, fetchImpl);
+  const readOnly = makeReadOnlyApi(context.apiToken, fetchImpl);
+  // Each shape check below runs right after the one read it checks, with no
+  // read in between, so a refusal that names no request is about the last one.
+  let lastRead = null;
+  const api = async (path, options) => {
+    const response = await readOnly(path, options);
+    lastRead = { path, status: response.status };
+    return response;
+  };
+  try {
+    return await collectWorkerInventory(api, sha, now);
+  } catch (error) {
+    if (error instanceof ReadbackError && !error.readFailure && lastRead) {
+      error.readFailure = classifyReadFailure({ path: lastRead.path, status: lastRead.status, unexpectedShape: true });
+    }
+    throw error;
+  }
+}
+
+// Cloudflare's Workers script list gives `routes: null` for a script without
+// routes: on account 6a, 126 of 139 scripts (read 2026-10-02), and no script
+// had an empty array. Null is therefore read as zero routes. A missing field
+// stays unknown, and any other non-array is refused. Zero-ingress proofs
+// (deploy-route.mjs) read zone routes, custom domains and service routes
+// directly and do not rely on this field.
+function summarizeScriptRoutes(script) {
+  if (!script || !Object.hasOwn(script, "routes")) return { status: "unknown" };
+  const routes = script.routes === null ? [] : script.routes;
+  if (!Array.isArray(routes) || !routes.every((route) => route && typeof route === "object" && typeof route.id === "string" && typeof route.pattern === "string" && route.script === READBACK_TARGET.workerName)) {
+    fail("worker_routes_ambiguous");
+  }
+  return {
+    status: "known",
+    count: routes.length,
+    pattern_sha256: routes
+      .map((route) => createHash("sha256").update(route.pattern, "utf8").digest("hex"))
+      .sort(),
+  };
+}
+
+async function collectWorkerInventory(api, sha, now) {
   const receipt = {
     schema_version: 1,
     repository: READBACK_TARGET.repository,
@@ -142,17 +192,7 @@ export async function readWorkerInventory({ context, fetchImpl = fetch, now = ()
   if (matches.length > 1) fail("worker_duplicate_name");
   const script = matches[0];
   receipt.worker = { exists: Boolean(script), inventory_count: scripts.length };
-  receipt.routes = !script || !Object.hasOwn(script, "routes")
-    ? { status: "unknown" }
-    : Array.isArray(script.routes) && script.routes.every((route) => route && typeof route === "object" && typeof route.id === "string" && typeof route.pattern === "string" && route.script === READBACK_TARGET.workerName)
-      ? {
-        status: "known",
-        count: script.routes.length,
-        pattern_sha256: script.routes
-          .map((route) => createHash("sha256").update(route.pattern, "utf8").digest("hex"))
-          .sort(),
-      }
-      : fail("worker_routes_ambiguous");
+  receipt.routes = summarizeScriptRoutes(script);
 
   const workerPath = `/accounts/${READBACK_TARGET.accountId}/workers/scripts/${READBACK_TARGET.workerName}`;
   const versionResponse = await api(`${workerPath}/versions?page=1&per_page=${PAGE_SIZE}`, { absent404: true });
@@ -167,7 +207,7 @@ export async function readWorkerInventory({ context, fetchImpl = fetch, now = ()
     items: versions.map((version) => {
       const id = safeId(version?.id);
       if (!id) fail("worker_versions_ambiguous");
-      const rawTag = version?.metadata?.annotations?.["workers/tag"];
+      const rawTag = versionTag(version);
       return { id, tag: typeof rawTag === "string" && TAG.test(rawTag) ? rawTag : null };
     }),
     }),
