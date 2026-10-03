@@ -37,7 +37,7 @@ jobs:
   exact-head:
     name: B-314 verifier and mutation evidence at PR head
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' &&
+      github.repository_id == vars.CORELINK_SERVER_REPO_ID &&
       github.event.pull_request.number == 2149 &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
@@ -52,13 +52,14 @@ jobs:
 
       - name: Prove exact head and run B-314 verifier plus mutations
         env:
+          SERVER_REPOSITORY_MATCH: ${{ github.repository_id == vars.CORELINK_SERVER_REPO_ID }}
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = pull_request
-          test "$GITHUB_REPOSITORY" = HuGR-dev/corelink-server
+          test "$SERVER_REPOSITORY_MATCH" = true
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           python3 -S scripts/verify_b314_gdpr_sigstore.py --self-test
           {

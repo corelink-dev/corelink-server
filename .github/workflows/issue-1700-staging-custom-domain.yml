@@ -87,7 +87,7 @@ jobs:
   provider:
     name: protected staging Custom Domain preview/publish
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' &&
+      github.repository_id == '0' &&
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' && github.ref_protected &&
       (inputs.mode == 'preview' || inputs.mode == 'publish')

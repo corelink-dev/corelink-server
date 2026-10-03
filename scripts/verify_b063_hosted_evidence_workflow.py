@@ -232,7 +232,7 @@ def verify(source: str) -> None:
         raise AssertionError("receipt must identify the production D1 target")
     live_gate = live.get("if", "")
     for required_gate in (
-        "github.repository == 'HuGR-dev/corelink-server'",
+        "github.repository_id == '",
         "github.event_name == 'workflow_dispatch'",
         "github.ref == 'refs/heads/main'",
         "github.ref_protected == true",

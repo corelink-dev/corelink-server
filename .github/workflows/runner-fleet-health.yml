@@ -40,7 +40,7 @@ jobs:
   fleet:
     name: every expected Mac slot is online and nothing is stuck
     runs-on: ubuntu-24.04
-    if: github.repository_id == '1232040291' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.id == github.repository_id)
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.id == github.repository_id)
     timeout-minutes: 10
     steps:
       - name: Checkout

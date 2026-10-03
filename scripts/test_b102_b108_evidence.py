@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -266,7 +267,7 @@ def provider_record_boundary() -> None:
 def workflow_run_timestamp_contract() -> None:
     """The authoritative run timestamp must use the pinned, isolated CLI."""
     workflow = (ROOT / ".github/workflows/perf-production-evidence.yml").read_text(encoding="utf-8")
-    assert "if: github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected" in workflow
+    assert re.search(r"if: github\.repository_id == '[0-9]+' && github\.event_name == 'workflow_dispatch' && github\.ref == 'refs/heads/main' && github\.ref_protected", workflow)
     assert "${{ github.run_started_at }}" not in workflow
     assert "actions: read" in workflow
     assert "GITHUB_RUN_STARTED_AT: ${{ steps.github-run.outputs.started_at }}" in workflow

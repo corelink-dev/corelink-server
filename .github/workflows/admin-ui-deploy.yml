@@ -61,6 +61,11 @@ concurrency:
 jobs:
   build-and-deploy:
     name: build + deploy to CF Worker
+    # Production deploy: only the server repository (privileged literal ID,
+    # rendered by scripts/sync_workflow_repository_guards.py --write), only
+    # protected main, and only behind the production environment's reviewers.
+    if: github.repository_id == '0' && github.ref == 'refs/heads/main' && github.ref_protected
+    environment: production
     # Use a GitHub-hosted Ubuntu runner for the wrangler-only deploy (no docker).
     runs-on: ubuntu-24.04
     # 40m allows for OpenNext build variance (next build + worker packaging).

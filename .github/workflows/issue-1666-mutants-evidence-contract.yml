@@ -24,7 +24,7 @@ permissions:
 jobs:
   contract:
     name: verify hosted B-113 and issue 1687 lane evidence
-    if: github.repository == 'HuGR-dev/corelink-server'
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

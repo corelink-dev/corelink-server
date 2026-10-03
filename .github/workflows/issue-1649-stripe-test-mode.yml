@@ -66,7 +66,7 @@ jobs:
   test-mode-evidence:
     name: Stripe test-mode idempotency and cleanup
     needs: contract
-    if: github.repository == 'HuGR-dev/corelink-server' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true
+    if: github.repository_id == '0' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected == true
     runs-on: ubuntu-latest
     environment: stripe-test
     timeout-minutes: 10

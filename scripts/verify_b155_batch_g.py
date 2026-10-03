@@ -598,8 +598,13 @@ def assert_trusted_write_boundary(block: list[str], label: str) -> None:
     assert_true(len(job_conditions) == 1, f"{label} does not have one job-level trust guard")
     source = job_conditions[0]
     assert_true("||" not in source, f"{label} trust guard contains an OR bypass")
+    # Either canonical repository-ID guard; which one a workflow must use (and
+    # the rendered literal value) is owned by sync_workflow_repository_guards.py.
+    assert_true(
+        re.search(r"github\.repository_id == (?:'[0-9]+'|vars\.CORELINK_SERVER_REPO_ID)(?![\w.])", source) is not None,
+        f"{label} is missing trusted-source guard: github.repository_id",
+    )
     required = (
-        "github.repository_id == '1232040291'",
         "github.ref == 'refs/heads/main'",
         "github.ref_protected",
     )
@@ -718,7 +723,7 @@ def verify_b110() -> None:
     mutation_block = workflow_job_block(".github/workflows/mutation-nightly.yml", "aggregate")
     assert_trusted_write_guard(mutation_block, "workflow_dispatch", "mutation aggregate")
     assert_true(
-        "if: github.event_name == 'workflow_dispatch' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected"
+        "if: github.event_name == 'workflow_dispatch' && github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.ref == 'refs/heads/main' && github.ref_protected"
         in "\n".join(mutation_block),
         "mutation commit step is missing the trusted-source guard",
     )

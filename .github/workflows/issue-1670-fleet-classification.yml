@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   classify-bounded-disk-failures:
-    if: github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected && inputs.confirm == 'run-1670-fleet-enospc-linker'
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected && inputs.confirm == 'run-1670-fleet-enospc-linker'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:

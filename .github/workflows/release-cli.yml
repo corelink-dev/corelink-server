@@ -65,7 +65,7 @@ jobs:
   # -------------------------------------------------------------------
   build:
     name: build (${{ matrix.target.name }})
-    if: github.repository_id == '1232040291' && github.ref == format('refs/tags/{0}', inputs.release_tag)
+    if: github.repository_id == '0' && github.ref == format('refs/tags/{0}', inputs.release_tag)
     # Each target has its own ephemeral GitHub-hosted VM.
     runs-on: ${{ matrix.target.runner }}
     timeout-minutes: 45
@@ -345,7 +345,7 @@ jobs:
   release:
     name: create release (HuGR-Labs/corelink-cli)
     needs: [build, release-readiness]
-    if: github.repository_id == '1232040291' && github.ref == format('refs/tags/{0}', inputs.release_tag)
+    if: github.repository_id == '0' && github.ref == format('refs/tags/{0}', inputs.release_tag)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:

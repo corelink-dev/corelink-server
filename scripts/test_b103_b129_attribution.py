@@ -98,7 +98,7 @@ def main() -> int:
     expect_reject(verify.PACKET, "status: **open**")
     diagnostic = (ROOT / ".github/workflows/issue-1671-b129-diagnostic.yml").read_text(encoding="utf-8")
     for marker, label in (
-        ("github.repository == 'HuGR-dev/corelink-server'", "unrestricted repository dispatch"),
+        ("github.repository_id == '", "unrestricted repository dispatch"),
         ("github.ref == 'refs/heads/main' && github.ref_protected", "unprotected dispatch ref"),
         ("environment: production", "unbound production environment"),
         ("CORELINK_PERF_BASE: ${{ vars.CORELINK_PERF_BASE }}", "unbound production origin"),

@@ -73,7 +73,7 @@ jobs:
   probe:
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      github.repository == 'HuGR-dev/corelink-server' &&
+      github.repository_id == vars.CORELINK_SERVER_REPO_ID &&
       github.ref == 'refs/heads/main' &&
       github.ref_protected == true
     name: B-251 bounded checker replay and 1000-sample probe

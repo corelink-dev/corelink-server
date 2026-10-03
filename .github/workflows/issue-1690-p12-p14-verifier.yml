@@ -16,7 +16,7 @@ concurrency:
 jobs:
   verify:
     name: Verify P12-P14 current-main provenance
-    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' }}
+    if: ${{ github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

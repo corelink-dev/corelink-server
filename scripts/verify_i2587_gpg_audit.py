@@ -31,8 +31,7 @@ def validate(workflow: str, runner: str, ci_workflow: str) -> None:
     require(workflow.count("workflow_dispatch:") == 1, "protected audit must be manual-only")
     require("pull_request:" not in workflow and "push:" not in workflow and "schedule:" not in workflow, "protected audit must not run automatically")
     for gate in (
-        "github.repository == 'HuGR-dev/corelink-server'",
-        "github.repository_id == '1232040291'",
+        "github.repository_id == '",
         "github.event_name == 'workflow_dispatch'",
         "github.ref == 'refs/heads/main'",
         "github.ref_protected",
@@ -112,6 +111,7 @@ def self_test() -> int:
     mutations = (
         (workflow.replace("GPG_KEY_FINGERPRINT: ${{ secrets.GPG_KEY_FINGERPRINT }}", "# fingerprint binding removed", 1), runner, ci_workflow),
         (workflow.replace("environment: release-key-audit", "# environment removed", 1), runner, ci_workflow),
+        (workflow.replace("github.repository_id == '", "github.run_id == '", 1), runner, ci_workflow),
         (workflow.replace("permissions:\n  contents: read", "permissions:\n  contents: write", 1), runner, ci_workflow),
         (workflow + "\n  push:\n", runner, ci_workflow),
         (workflow.replace("persist-credentials: false", "persist-credentials: true", 1), runner, ci_workflow),

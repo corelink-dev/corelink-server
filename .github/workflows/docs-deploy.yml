@@ -48,6 +48,11 @@ env:
 jobs:
   build-and-deploy:
     name: build + deploy to CF Pages
+    # Production deploy: only the server repository (privileged literal ID,
+    # rendered by scripts/sync_workflow_repository_guards.py --write), only
+    # protected main, and only behind the production environment's reviewers.
+    if: github.repository_id == '0' && github.ref == 'refs/heads/main' && github.ref_protected
+    environment: production
     # Use GitHub-hosted Ubuntu for this wrangler-only deploy (no docker).
     runs-on: ubuntu-24.04
     timeout-minutes: 25

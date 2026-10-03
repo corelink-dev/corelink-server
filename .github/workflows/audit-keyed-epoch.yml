@@ -102,7 +102,7 @@ jobs:
 
   historical-query-invalid-request:
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' &&
+      github.repository_id == '0' &&
       github.event_name == 'workflow_dispatch' &&
       ((inputs.operation != 'contract' && inputs.operation != 'historical_query') ||
        (inputs.operation == 'historical_query' &&
@@ -121,7 +121,7 @@ jobs:
     needs: historical-query-invalid-request
     if: >-
       always() &&
-      github.repository == 'HuGR-dev/corelink-server' &&
+      github.repository_id == '0' &&
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' && github.ref_protected &&
       inputs.operation == 'historical_query' &&

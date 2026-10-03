@@ -238,7 +238,7 @@ def validate_candidate(root: Path) -> None:
     )
     aggregate = "\n".join(mutation_jobs["aggregate"])
     for token in (
-        "github.repository_id == '1232040291'",
+        "github.repository_id == vars.CORELINK_SERVER_REPO_ID",
         "github.event_name == 'workflow_dispatch'",
         "github.ref == 'refs/heads/main'",
         "github.ref_protected",
@@ -347,7 +347,7 @@ def fixture(root: Path, hosted: bool) -> None:
             lines.extend((f"  {job}:", f"    runs-on: {runner}"))
             if job == "aggregate":
                 lines.extend((
-                    "    if: always() && github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected",
+                    "    if: always() && github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected",
                     "    permissions:",
                     "      contents: write",
                     "      issues: write",

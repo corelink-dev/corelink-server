@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   compile-fixture:
-    if: github.repository == 'HuGR-dev/corelink-server'
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -63,7 +63,7 @@ jobs:
           sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
           receipt = {
               "issue": 605,
-              "repository": "HuGR-dev/corelink-server",
+              "repository": os.environ["GITHUB_REPOSITORY"],
               "server_sha": sha,
               "result": "PASS",
               "command": "cargo build --locked -p corelink-server --bin issue-605-billing-ingest-fixture",

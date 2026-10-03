@@ -33,7 +33,7 @@ jobs:
     timeout-minutes: 15
     # Production credentials and attestation permissions are restricted to
     # the stable repository identity, protected main, and an explicit dispatch.
-    if: github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.repository_id == '0' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected
     environment: production
     steps:
       - name: Confirm intent (fail closed)

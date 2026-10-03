@@ -41,7 +41,7 @@ required_proof = (
 )
 required_workflow = (
     "pull_request:",
-    "github.repository == 'HuGR-dev/corelink-server'",
+    "github.repository_id == vars.CORELINK_SERVER_REPO_ID",
     "github.event.pull_request.head.repo.full_name == github.repository",
     "ref: ${{ github.event.pull_request.head.sha }}",
     "EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}",

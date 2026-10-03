@@ -47,7 +47,7 @@ concurrency:
 
 jobs:
   build:
-    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'build-both-images' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'build-both-images' && github.repository_id == '0' && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     timeout-minutes: 110
     environment: b083-kms-lifecycle
@@ -417,7 +417,7 @@ jobs:
           fi
 
   cleanup-successful-images:
-    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'cleanup-successful-images' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'cleanup-successful-images' && github.repository_id == '0' && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: b083-kms-lifecycle

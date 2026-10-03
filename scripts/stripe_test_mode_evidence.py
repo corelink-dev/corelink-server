@@ -28,7 +28,7 @@ IDENTITY_CONFIRMATION = "run-i2565-stripe-identity-only"
 STARTER_PRICE_CONFIRMATION = "run-i2565-stripe-starter-price-readonly"
 STARTER_MONTHLY_UNIT_AMOUNT = 3500
 REQUIRED_WORKFLOW_MARKERS = (
-    "github.repository == 'HuGR-dev/corelink-server'",
+    "github.repository_id == '",
     "runs-on: ubuntu-latest",
     "STRIPE_SECRET_KEY",
     "rk_test_",

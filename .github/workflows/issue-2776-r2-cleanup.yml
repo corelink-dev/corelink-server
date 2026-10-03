@@ -13,7 +13,7 @@ permissions:
 jobs:
   r2-cleanup:
     name: exact-head R2 cleanup compile and nonignored tests
-    if: github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291'
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

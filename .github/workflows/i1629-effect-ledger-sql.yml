@@ -12,7 +12,7 @@ env:
 
 jobs:
   focused-sql:
-    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1380335483' && github.ref_name == 'codex/i1629-effect-ledger-ci' }}
+    if: ${{ github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.ref_name == 'codex/i1629-effect-ledger-ci' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

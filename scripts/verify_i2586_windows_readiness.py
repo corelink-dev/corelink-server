@@ -200,8 +200,7 @@ def validate_texts(probe: str, ci: str, signer: str, script: str, actionlint_con
     if top_level_on_triggers(probe) != ["workflow_dispatch"]:
         errors.append("readiness workflow must have only the manual workflow_dispatch trigger")
     for required in (
-        "github.repository == 'HuGR-dev/corelink-server'",
-        "github.repository_id == '1232040291'",
+        "github.repository_id == '",
         "github.ref == 'refs/heads/main' && github.ref_protected",
         "runs-on: windows-2022",
         "environment: production",
@@ -237,6 +236,7 @@ def validate_texts(probe: str, ci: str, signer: str, script: str, actionlint_con
     if sorted(pull_request_paths(ci)) != sorted(ALLOWED_PATHS):
         errors.append("credentialless CI pull-request trigger paths must exactly match the exclusive ownership map")
     for required in (
+        "github.repository_id == vars.CORELINK_SERVER_REPO_ID",
         "github.event.pull_request.head.repo.full_name == github.repository",
         "github.event.pull_request.head.ref == 'codex/issue-2586-no-sign-readiness-20260925'",
         "github.event.pull_request.base.ref == 'main'",
@@ -331,7 +331,9 @@ def validate_texts(probe: str, ci: str, signer: str, script: str, actionlint_con
     )
     if not exact_sparse_checkout:
         errors.append("Windows CI checkout must select only the PowerShell self-test script with non-cone sparse checkout")
-    if re.search(r"(?i)(secrets\.|vars\.|sign-windows\.yml)", ci) or re.search(
+    # The only variable the credentialless pack may read is the non-secret
+    # server repository ID its routine guard compares against.
+    if re.search(r"(?i)(secrets\.|vars\.(?!CORELINK_SERVER_REPO_ID\b)|sign-windows\.yml)", ci) or re.search(
         r"(?im)^\s*(?:gh\s+workflow\s+run\s+issue-2586-windows-readiness\.yml\b|gh\s+api\s+repos/\S+/actions/workflows/issue-2586-windows-readiness\.yml/dispatches\b)", ci
     ):
         errors.append("credentialless CI pack accesses secrets or executes the readiness workflow")

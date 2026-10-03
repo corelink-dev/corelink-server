@@ -42,7 +42,7 @@ concurrency:
 jobs:
   contract:
     name: draft verifier and release workflow contract
-    if: github.repository_id == '1232040291' && github.event.pull_request.base.ref == 'main'
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -128,7 +128,7 @@ jobs:
 
   verify-preserved-cli-017-draft:
     name: read-only verification of preserved CLI 0.1.7 draft
-    if: github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -145,10 +145,10 @@ jobs:
         env:
           OPERATOR_SHA: ${{ github.sha }}
           EVENT_REF: ${{ github.ref }}
-          REPOSITORY_ID: ${{ github.repository_id }}
+          SERVER_REPOSITORY_MATCH: ${{ github.repository_id == vars.CORELINK_SERVER_REPO_ID }}
         run: |
           set -euo pipefail
-          test "${REPOSITORY_ID}" = "1232040291"
+          test "${SERVER_REPOSITORY_MATCH}" = true
           test "${EVENT_REF}" = "refs/heads/main"
           test "$(git rev-parse HEAD)" = "${OPERATOR_SHA}"
           test "${OPERATOR_SHA}" = "${GITHUB_SHA}"
@@ -255,7 +255,7 @@ jobs:
 
   package-smoke-linux:
     name: Linux package smoke (${{ matrix.target.name }})
-    if: github.repository_id == '1232040291' && github.event.pull_request.base.ref == 'main'
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
@@ -281,7 +281,7 @@ jobs:
 
   package-smoke-windows:
     name: Windows deterministic package smoke
-    if: github.repository_id == '1232040291' && github.event.pull_request.base.ref == 'main'
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event.pull_request.base.ref == 'main'
     runs-on: windows-2022
     timeout-minutes: 10
     steps:

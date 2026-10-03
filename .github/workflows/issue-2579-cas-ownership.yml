@@ -22,7 +22,7 @@ concurrency:
 jobs:
   cas-ownership:
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' &&
+      github.repository_id == vars.CORELINK_SERVER_REPO_ID &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 35

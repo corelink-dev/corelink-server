@@ -22,7 +22,7 @@ jobs:
     name: validate managed CLI provenance contract
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      github.repository_id == '1232040291'
+      github.repository_id == vars.CORELINK_SERVER_REPO_ID
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:

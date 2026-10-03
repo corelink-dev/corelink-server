@@ -282,6 +282,7 @@ jobs:
             scripts/test_org_migration_audit.py
             scripts/test_org_migration_gate_check.py
             scripts/test_server_repository_identity.py
+            scripts/test_sync_workflow_repository_guards.py
             scripts/test_terraform_drift_auth_contract.py
           )
           for suite in "${REQUIRED_SUITES[@]}"; do

@@ -73,7 +73,7 @@ jobs:
     # write-capable job on the protected canonical main ref and trusted source;
     # workflow_dispatch from forks/unprotected refs is denied before a runner
     # is assigned.
-    if: github.repository_id == '1232040291' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected
 
     steps:
       - name: Checkout

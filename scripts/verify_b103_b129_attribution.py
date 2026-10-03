@@ -402,7 +402,7 @@ def b129_inline_issues(root: Path = ROOT, *, overrides: dict[str, str] | None = 
     origin = _read(root, "crates/corelink-container/src/origin_timing.rs", values)
     result: list[str] = []
     workflow_markers = (
-        "github.repository == 'HuGR-dev/corelink-server'",
+        "github.repository_id == '",
         "github.ref == 'refs/heads/main' && github.ref_protected",
         "environment: production",
         "CORELINK_PERF_BASE: ${{ vars.CORELINK_PERF_BASE }}",

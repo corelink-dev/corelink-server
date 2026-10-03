@@ -28,7 +28,7 @@ concurrency:
 jobs:
   probe:
     name: bounded i1675 staging probe
-    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' }}
+    if: ${{ github.repository_id == '0' }}
     runs-on: ubuntu-24.04
     environment: staging
     timeout-minutes: 10

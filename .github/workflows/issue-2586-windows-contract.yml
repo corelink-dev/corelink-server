@@ -31,8 +31,7 @@ jobs:
   linux-contract:
     name: structural and credentialless contract
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' &&
-      github.repository_id == '1232040291' &&
+      github.repository_id == vars.CORELINK_SERVER_REPO_ID &&
       ((github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref == 'codex/issue-2586-no-sign-readiness-20260925' &&
@@ -120,8 +119,7 @@ jobs:
   windows-powershell-contract:
     name: synthetic PowerShell acceptance and negative fixtures
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' &&
-      github.repository_id == '1232040291' &&
+      github.repository_id == vars.CORELINK_SERVER_REPO_ID &&
       ((github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref == 'codex/issue-2586-no-sign-readiness-20260925' &&

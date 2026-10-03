@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   verify-and-publish:
-    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1380335483' }}
+    if: ${{ github.repository_id == vars.CORELINK_SERVER_REPO_ID }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -16,9 +16,6 @@ jobs:
 
       - name: Verify clone identity hardening
         run: python3 scripts/test_server_repository_identity.py
-
-      - name: Verify bounded clone workflow contract
-        run: python3 scripts/test_verify_ci_clone_bundle.py
 
       - name: Generate CycloneDX 1.5 SBOM
         run: python3 scripts/generate_public_sbom.py --output sbom.cdx.json

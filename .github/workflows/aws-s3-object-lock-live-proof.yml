@@ -32,7 +32,7 @@ concurrency:
 
 jobs:
   proof:
-    if: inputs.operation != 'reconcile' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: inputs.operation != 'reconcile' && github.repository_id == '0' && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     environment: s3-object-lock-live-proof
     timeout-minutes: 30
@@ -560,7 +560,7 @@ jobs:
           if-no-files-found: error
 
   reconcile:
-    if: inputs.operation == 'reconcile' && github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: inputs.operation == 'reconcile' && github.repository_id == '0' && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     environment: s3-object-lock-live-proof
     timeout-minutes: 130

@@ -115,6 +115,12 @@ class WindowsReadinessContractTests(unittest.TestCase):
         self.assert_rejected(ci=self.ci.replace('            [[ "$PR_HEAD_REF" == codex/issue-2586-no-sign-readiness-20260925 ]]', '            # [[ "$PR_HEAD_REF" == codex/issue-2586-no-sign-readiness-20260925 ]]', 1))
         self.assert_rejected(actionlint_config=self.actionlint_config.replace("  - WINDOWS_CODE_SIGNING_ISSUER\n", "  # - WINDOWS_CODE_SIGNING_ISSUER\n", 1))
 
+    def test_credentialless_pack_keeps_the_repository_id_guard_and_no_other_variable(self) -> None:
+        guard = "github.repository_id == vars.CORELINK_SERVER_REPO_ID"
+        self.assertEqual(self.ci.count(guard), 2)
+        self.assert_rejected(ci=self.ci.replace(guard, "github.repository_id != ''", 1))
+        self.assert_rejected(ci=self.ci.replace(guard, f"{guard} && vars.EXTRA == 'x'", 1))
+
     def test_windows_powershell_job_checkout_stays_sparse(self) -> None:
         self.assert_rejected(ci=self.ci.replace("          sparse-checkout: scripts/windows_signing_readiness.ps1\n", "", 1))
         self.assert_rejected(ci=self.ci.replace("          sparse-checkout-cone-mode: false\n", "          sparse-checkout-cone-mode: true\n", 1))

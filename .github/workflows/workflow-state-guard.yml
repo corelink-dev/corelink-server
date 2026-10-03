@@ -44,7 +44,7 @@ name: Workflow-state guard
 #
 # SCOPE LIMITATION — READ THIS BEFORE TRUSTING IT
 #
-# This job gates stable repository ID `1232040291` ONLY. It also ATTEMPTS to report
+# This job gates the server repository ID (`vars.CORELINK_SERVER_REPO_ID`) ONLY. It also ATTEMPTS to report
 # on `HuGR-dev/corelink-runners`, but both repositories are private and the
 # default `GITHUB_TOKEN` is scoped to the repository the workflow runs in, so
 # that call is expected to 404. When it does, the runners repo is recorded in
@@ -77,7 +77,7 @@ jobs:
     # Python stdlib + PyYAML; GitHub API calls via GITHUB_TOKEN; read-only.
     # if: condition restricts to main repo; runners repo not inspected (no cross-repo cred).
     runs-on: ubuntu-latest
-    if: github.repository_id == '1232040291'
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

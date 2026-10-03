@@ -89,7 +89,7 @@ fn assert_issue_1724_ci_pack(workflow: &str) {
         "candidate_sha:",
         "base_sha:",
         "Full 40-character commit SHA to prove",
-        "github.repository_id == '1232040291'",
+        "github.repository_id == vars.CORELINK_SERVER_REPO_ID",
         "ref: ${{ inputs.candidate_sha }}",
         "fetch-depth: 4",
         "BASE_SHA: ${{ inputs.base_sha }}",

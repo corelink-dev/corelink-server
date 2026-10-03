@@ -10,7 +10,7 @@ from pathlib import Path
 WORKFLOW = Path(".github/workflows/audit-archive-lag.yml")
 PAGERDUTY_GATE = "if: steps.measure.outputs.page == '1' && steps.measure.outputs.notify == 'true'"
 ARCHIVE_JOB_GATE = (
-    "github.repository == 'HuGR-dev/corelink-server' && "
+    "github.repository_id == vars.CORELINK_SERVER_REPO_ID && "
     "github.ref == 'refs/heads/main' && github.ref_protected == true && "
     "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
 )

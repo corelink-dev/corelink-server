@@ -44,6 +44,7 @@ jobs:
 
       - name: Require the protected manual read contract
         env:
+          SERVER_REPOSITORY_MATCH: ${{ github.repository_id == vars.CORELINK_SERVER_REPO_ID }}
           CONFIRM: ${{ inputs.confirm }}
           ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
           DATABASE_ID: ${{ inputs.d1_database_id }}
@@ -51,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          test "$GITHUB_REPOSITORY" = HuGR-dev/corelink-server
+          test "$SERVER_REPOSITORY_MATCH" = true
           test "$GITHUB_REF" = refs/heads/main
           test "$CONFIRM" = run-1669-read-only
           test "$NO_BACKFILL_ACK" = no-backfill-no-write

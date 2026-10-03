@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   contract:
-    if: github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291'
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

@@ -20,7 +20,7 @@ env:
 
 jobs:
   focused-accounting:
-    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' && ((github.event_name == 'workflow_dispatch' && github.ref_name == 'codex/issue-1633-byok-cache') || (github.event_name == 'pull_request' && github.head_ref == 'codex/issue-1633-byok-cache')) }}
+    if: ${{ github.repository_id == vars.CORELINK_SERVER_REPO_ID && ((github.event_name == 'workflow_dispatch' && github.ref_name == 'codex/issue-1633-byok-cache') || (github.event_name == 'pull_request' && github.head_ref == 'codex/issue-1633-byok-cache')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

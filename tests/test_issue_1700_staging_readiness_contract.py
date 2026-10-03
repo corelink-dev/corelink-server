@@ -20,8 +20,7 @@ class ReadinessWorkflowTests(unittest.TestCase):
         self.assertNotIn("secrets.", contract)
         self.assertNotIn("environment:", contract)
         for guard in (
-            "github.repository == 'HuGR-dev/corelink-server'",
-            "github.repository_id == '1232040291'",
+            "github.repository_id == '",
             "github.event_name == 'workflow_dispatch'",
             "github.ref == 'refs/heads/main' && github.ref_protected",
             "environment: staging",

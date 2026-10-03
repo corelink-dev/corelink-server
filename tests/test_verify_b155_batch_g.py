@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import re
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,16 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _current_line(target: str, pattern: str) -> str:
+    """Return the live guard line; a rendered literal ID changes with config."""
+    match = re.search(pattern, (ROOT / target).read_text(encoding="utf-8"))
+    if match is None:
+        raise AssertionError(f"guard line not found in {target}: {pattern}")
+    return match.group(0)
+
+
 SCRIPT = ROOT / "scripts/verify_b155_batch_g.py"
 SPEC = importlib.util.spec_from_file_location("b155_batch_g", SCRIPT)
 assert SPEC and SPEC.loader
@@ -48,6 +59,10 @@ class B126BatchVerifierTests(unittest.TestCase):
 class B110WorkflowVerifierTests(unittest.TestCase):
     def _mutated_text(self, target: str, old: str, new: str) -> object:
         original = verifier.text
+        # A mutation whose anchor is absent would leave the file unchanged and
+        # let the assertion pass on an unmutated tree: fail loudly instead.
+        if old not in original(target):
+            raise AssertionError(f"mutation anchor missing from {target}: {old!r}")
 
         def read(candidate: str) -> str:
             source = original(candidate)
@@ -83,8 +98,8 @@ class B110WorkflowVerifierTests(unittest.TestCase):
     def test_or_bypass_in_mutation_guard_is_red(self) -> None:
         mutation = self._mutated_text(
             ".github/workflows/mutation-nightly.yml",
-            " && github.repository == 'HuGR-Labs/corelink-server'",
-            " || github.repository == 'HuGR-Labs/corelink-server'",
+            " && github.repository_id == vars.CORELINK_SERVER_REPO_ID",
+            " || github.repository_id == vars.CORELINK_SERVER_REPO_ID",
         )
         with mutation:
             with self.assertRaises(verifier.CheckError):
@@ -114,15 +129,19 @@ class B110WorkflowVerifierTests(unittest.TestCase):
         mutations = (
             (
                 ".github/workflows/cas_foundation.yml",
-                "if: github.event_name == 'workflow_dispatch' && github.repository == 'HuGR-Labs/corelink-server' && github.ref == 'refs/heads/main' && github.ref_protected",
+                _current_line(
+                    ".github/workflows/cas_foundation.yml",
+                    r"if: github\.event_name == 'workflow_dispatch' && github\.repository_id == '[0-9]+' && "
+                    r"github\.ref == 'refs/heads/main' && github\.ref_protected",
+                ),
             ),
             (
                 ".github/workflows/mutation-nightly.yml",
-                "if: always() && github.repository == 'HuGR-Labs/corelink-server' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected",
+                "if: always() && github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected",
             ),
             (
                 ".github/workflows/semgrep.yml",
-                "if: github.repository == 'HuGR-Labs/corelink-server' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected",
+                "if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected",
             ),
         )
         for target, old in mutations:
@@ -138,10 +157,10 @@ class B110WorkflowVerifierTests(unittest.TestCase):
 
     def test_folded_multiline_or_bypass_is_red(self) -> None:
         target = ".github/workflows/semgrep.yml"
-        old = "if: github.repository == 'HuGR-Labs/corelink-server' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
+        old = "if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
         folded = (
             "if: >-\n"
-            "      github.repository == 'HuGR-Labs/corelink-server' && github.event_name == 'workflow_dispatch' &&\n"
+            "      github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' &&\n"
             "      github.ref == 'refs/heads/main' && github.ref_protected ||\n"
             "      github.event_name == 'workflow_dispatch'"
         )
@@ -152,11 +171,11 @@ class B110WorkflowVerifierTests(unittest.TestCase):
 
     def test_yaml_encoded_or_bypass_variants_are_red(self) -> None:
         target = ".github/workflows/semgrep.yml"
-        old = "if: github.repository == 'HuGR-Labs/corelink-server' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
+        old = "if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
         for encoded_or in (r"\x7c\x7c", r"\u007c\u007c", r"\U0000007c\U0000007c"):
             with self.subTest(encoded_or=encoded_or):
                 new = (
-                    'if: "github.repository == \'HuGR-Labs/corelink-server\' && '
+                    'if: "github.repository_id == vars.CORELINK_SERVER_REPO_ID && '
                     "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && "
                     f"github.ref_protected {encoded_or} github.event_name == 'workflow_dispatch'\""
                 )
@@ -167,9 +186,9 @@ class B110WorkflowVerifierTests(unittest.TestCase):
 
     def test_yaml_backslash_newline_encoded_or_variants_are_red(self) -> None:
         target = ".github/workflows/semgrep.yml"
-        old = "if: github.repository == 'HuGR-Labs/corelink-server' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
+        old = "if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
         head = (
-            'if: "github.repository == \'HuGR-Labs/corelink-server\' && '
+            'if: "github.repository_id == vars.CORELINK_SERVER_REPO_ID && '
             "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && "
             "github.ref_protected "
         )
@@ -215,10 +234,10 @@ class B110WorkflowVerifierTests(unittest.TestCase):
 
     def test_yaml_tag_and_anchor_encoded_or_variants_are_red(self) -> None:
         target = ".github/workflows/semgrep.yml"
-        old = "if: github.repository == 'HuGR-Labs/corelink-server' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
+        old = "if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
         encoded = r"\x7c\x7c"
         expression = (
-            '"github.repository == \'HuGR-Labs/corelink-server\' && '
+            '"github.repository_id == vars.CORELINK_SERVER_REPO_ID && '
             "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && "
             f"github.ref_protected {encoded} github.event_name == 'workflow_dispatch'\""
         )
@@ -234,10 +253,10 @@ class B110WorkflowVerifierTests(unittest.TestCase):
 
     def test_yaml_block_scalar_tag_and_anchor_variants_are_red(self) -> None:
         target = ".github/workflows/semgrep.yml"
-        old = "if: github.repository == 'HuGR-Labs/corelink-server' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
+        old = "if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
         encoded = r"\x7c\x7c"
         expression = (
-            '"github.repository == \'HuGR-Labs/corelink-server\' && '
+            '"github.repository_id == vars.CORELINK_SERVER_REPO_ID && '
             "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && "
             f"github.ref_protected {encoded} github.event_name == 'workflow_dispatch'\""
         )
@@ -251,10 +270,10 @@ class B110WorkflowVerifierTests(unittest.TestCase):
 
     def test_yaml_actionlint_valid_anchor_alias_variants_are_red(self) -> None:
         target = ".github/workflows/semgrep.yml"
-        old = "if: github.repository == 'HuGR-Labs/corelink-server' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
+        old = "if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected"
         encoded = r"\x7c\x7c"
         expression = (
-            '"github.repository == \'HuGR-Labs/corelink-server\' && '
+            '"github.repository_id == vars.CORELINK_SERVER_REPO_ID && '
             "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && "
             f"github.ref_protected {encoded} github.event_name == 'workflow_dispatch'\""
         )

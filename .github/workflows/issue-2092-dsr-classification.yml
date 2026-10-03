@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   classification:
-    if: github.repository == 'HuGR-dev/corelink-server'
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

@@ -33,7 +33,7 @@ concurrency:
 jobs:
   scoped-token-handoff:
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' &&
+      github.repository_id == '0' &&
       github.event_name == 'workflow_dispatch' &&
       (inputs.mode == 'r2-2564-mint' || inputs.mode == 'worker-1700-mint') &&
       github.ref == 'refs/heads/main' && github.ref_protected && github.run_attempt == 1

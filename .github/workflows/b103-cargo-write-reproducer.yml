@@ -45,7 +45,7 @@ jobs:
 
   reproduce:
     name: bounded /cargo write matrix
-    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main' && github.ref_protected }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository_id == '0' && github.ref == 'refs/heads/main' && github.ref_protected }}
     runs-on: ubuntu-24.04
     environment: staging
     timeout-minutes: 20

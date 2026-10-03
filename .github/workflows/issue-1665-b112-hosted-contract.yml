@@ -27,7 +27,7 @@ jobs:
   b112-contract:
     name: B-112 and Linux + Windows release inventory contract
     if: >-
-      github.repository_id == '1232040291' &&
+      github.repository_id == vars.CORELINK_SERVER_REPO_ID &&
       (github.event_name == 'pull_request' ||
       (github.event_name == 'workflow_dispatch' && inputs.expected_head == github.sha))
     runs-on: ubuntu-24.04

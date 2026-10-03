@@ -27,9 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # owner/repository fields and signed/hashed payloads must remain unchanged.
 ACTIVE_IDENTITY_LITERAL_ALLOWLIST = {
     ".github/ISSUE_TEMPLATE/config.yml": "Current security-advisory and discussion destinations use the post-transfer server owner.",
-    ".github/workflows/bot-pr-has-checks.yml": "This live workflow allows exactly source/destination repo names only after checking stable repository ID.",
      ".github/workflows/ci-clone-bundle.yml": "Clone-only guard accepts the destination only with its exact numeric repository ID.",
-     ".github/workflows/sbom-clone-bundle.yml": "Bounded SBOM clone job accepts the destination only with its exact numeric repository ID.",
      "scripts/verify_ci_clone_bundle.py": "The stdlib verifier pins the exact clone destination repository identity.",
     "apps/docs/src/pages/compare/vs-bazel-remote-s3.mdx": "Current product documentation references the post-transfer server security intake.",
     "apps/docs/src/pages/compare/vs-buildbuddy.mdx": "Current product documentation references the post-transfer server security intake.",
@@ -57,6 +55,7 @@ ACTIVE_IDENTITY_LITERAL_ALLOWLIST = {
     "tests/test_b142_codeql_selfhost.py": "Behavioral test passes the exact source repo explicitly; it is not a fallback default.",
     "tests/test_cli_release_b112_behavior.py": "Release tests exercise the exact pre-transfer server source identity.",
     "tests/test_verify_b155_batch_g.py": "Adversarial workflow tests inject the old owner-name guard to prove it is rejected.",
+    "scripts/test_sync_workflow_repository_guards.py": "Teeth test plants the retired owner-name guard in a real workflow to prove the guard checker rejects it.",
     "tools/sbom-publish/src/purl.rs": "Current SBOM workspace PURLs use the post-transfer repository URL.",
     "tools/sbom-publish/tests/adversarial.rs": "Adversarial SBOM test asserts the current emitted workspace VCS URL.",
     "scripts/collect_b102_b108_context.py": "Evidence capture accepts only exact server source/destination identities.",
@@ -441,20 +440,29 @@ class ServerRepositoryIdentityTests(unittest.TestCase):
                 self.assertNotRegex(contents, r"(?i)(?:HuGR-Labs|HumanGuardrail)/corelink-server")
 
     def test_self_repository_workflows_use_numeric_id_guards(self) -> None:
+        # Routine lanes compare the stable numeric ID with the org variable
+        # (an unset variable fails closed); no retired ID or name remains.
         for relative in (
             ".github/workflows/runner-fleet-health.yml",
-            ".github/workflows/real-ignored-harnesses.yml",
             ".github/workflows/workflow-state-guard.yml",
             ".github/workflows/bot-pr-has-checks.yml",
         ):
             with self.subTest(path=relative):
-                self.assertIn("github.repository_id == '1232040291'", (ROOT / relative).read_text())
+                contents = (ROOT / relative).read_text()
+                self.assertIn("github.repository_id == vars.CORELINK_SERVER_REPO_ID", contents)
+                self.assertNotIn("1232040291", contents)
+        # Still pinned to the retired ID: sha256-pinned, it moves with the I3 re-pin.
+        self.assertIn(
+            "github.repository_id == '1232040291'",
+            (ROOT / ".github/workflows/real-ignored-harnesses.yml").read_text(),
+        )
 
-    def test_bot_workflow_accepts_only_exact_source_and_destination_contexts(self) -> None:
+    def test_bot_workflow_accepts_only_the_server_repository_id(self) -> None:
         workflow = (ROOT / ".github/workflows/bot-pr-has-checks.yml").read_text()
-        self.assertIn('"HuGR-Labs/corelink-server", "HuGR-dev/corelink-server"', workflow)
-        self.assertIn('os.environ.get("REPOSITORY_ID") != "1232040291"', workflow)
-        self.assertNotIn('os.environ.get("REPO") or "HuGR-Labs/corelink-server"', workflow)
+        self.assertIn("SERVER_REPOSITORY_MATCH: ${{ github.repository_id == vars.CORELINK_SERVER_REPO_ID }}", workflow)
+        self.assertIn('os.environ.get("SERVER_REPOSITORY_MATCH") != "true" or not REPO', workflow)
+        self.assertNotIn("REPOSITORY_ID: ${{ github.repository_id }}", workflow)
+        self.assertNotRegex(workflow, IDENTITY_LITERAL_PATTERN)
 
     def test_evidence_verifier_has_no_implicit_source_owner(self) -> None:
         verifier = (ROOT / "scripts/verify_b102_b108_evidence.py").read_text()

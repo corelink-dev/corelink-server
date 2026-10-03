@@ -14,8 +14,7 @@ jobs:
   readiness:
     name: protected Windows credential binding readiness
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' &&
-      github.repository_id == '1232040291' &&
+      github.repository_id == '0' &&
       github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: windows-2022
     timeout-minutes: 10

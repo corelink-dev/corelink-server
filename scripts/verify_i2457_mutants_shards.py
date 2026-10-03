@@ -766,7 +766,7 @@ def command_verify_workflow(args: argparse.Namespace) -> None:
         "workflow_dispatch:",
         "contents: read",
         "actions: read",
-        "github.repository == 'HuGR-dev/corelink-server'",
+        "github.repository_id == vars.CORELINK_SERVER_REPO_ID",
         "github.ref == 'refs/heads/main'",
         "github.ref_protected",
         "SHARD_COUNT: 27",

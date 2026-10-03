@@ -20,8 +20,7 @@ concurrency:
 jobs:
   staging-ownership:
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' &&
-      github.repository_id == '1232040291' && github.event_name == 'pull_request'
+      github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

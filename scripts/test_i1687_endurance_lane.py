@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from verify_i1687_endurance_lane import verify_path, verify_scenario, verify_workflow  # noqa: E402
+from verify_i1687_endurance_lane import PROTECTED_DISPATCH, verify_path, verify_scenario, verify_workflow  # noqa: E402
 from validate_load_teardown_receipt import (  # noqa: E402
     SCHEMA as TEARDOWN_SCHEMA,
     TeardownReceiptError,
@@ -110,11 +110,9 @@ def test_schedule_is_rejected() -> None:
 
 def test_unprotected_dispatch_is_rejected() -> None:
     source = workflow_text()
-    guard = (
-        "github.repository == 'HuGR-dev/corelink-server' && "
-        "github.event_name == 'workflow_dispatch' && "
-        "github.ref == 'refs/heads/main' && github.ref_protected"
-    )
+    match = PROTECTED_DISPATCH.search(source)
+    assert match is not None, "the protected dispatch guard is missing from the workflow"
+    guard = match.group(0)
     mutated = source.replace(guard, "github.event_name == 'workflow_dispatch'", 1)
     errors = verify_workflow(mutated)
     assert any("protected canonical dispatch" in error for error in errors)

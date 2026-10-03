@@ -40,7 +40,7 @@ jobs:
     name: build five CLI targets and ephemeral release inventory
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      github.repository_id == '1232040291' &&
+      github.repository_id == '0' &&
       github.ref == 'refs/heads/main' &&
       github.ref_protected &&
       inputs.confirm == 'run-2050-dry-run'
@@ -220,7 +220,7 @@ jobs:
     needs: build
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      github.repository_id == '1232040291' &&
+      github.repository_id == '0' &&
       github.ref == 'refs/heads/main' &&
       github.ref_protected &&
       inputs.confirm == 'run-2050-dry-run'
@@ -281,7 +281,7 @@ jobs:
           EXPECTED_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/issue-2050-cli-release-dry-run.yml@${{ github.ref }}
         run: |
           set -euo pipefail
-          [[ "$EXPECTED_IDENTITY" == "https://github.com/HuGR-dev/corelink-server/.github/workflows/issue-2050-cli-release-dry-run.yml@refs/heads/main" ]]
+          [[ "$EXPECTED_IDENTITY" == "https://github.com/corelink-dev/corelink-server/.github/workflows/issue-2050-cli-release-dry-run.yml@refs/heads/main" ]]
           while IFS= read -r -d '' file; do
             test -s "${file}.bundle"
             cosign verify-blob \

@@ -243,7 +243,7 @@ class B103ArtifactPrivacyTests(unittest.TestCase):
         self.assertLess(workflow.index("validate canonical staging receipt"), workflow.index("capture same-window root Worker tail"))
         self.assertIn("--tenant-env B103_TENANT_ID", workflow)
         self.assertIn("--redact-tenant", workflow)
-        self.assertIn("github.repository == 'HuGR-dev/corelink-server'", workflow)
+        self.assertRegex(workflow, r"github\.repository_id == '[0-9]+'")
         self.assertIn("github.ref == 'refs/heads/main'", workflow)
         self.assertIn("github.ref_protected", workflow)
         self.assertIn("B103_TAIL_WORKER: corelink-staging", workflow)

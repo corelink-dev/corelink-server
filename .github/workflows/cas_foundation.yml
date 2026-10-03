@@ -298,7 +298,7 @@ jobs:
     needs: [sbom-cyclonedx]
     # Release-only manual dispatch from protected main. Forks and
     # unprotected refs never receive the OIDC token.
-    if: github.event_name == 'workflow_dispatch' && github.repository_id == '1232040291' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.event_name == 'workflow_dispatch' && github.repository_id == '0' && github.ref == 'refs/heads/main' && github.ref_protected
     permissions:
       id-token: write   # OIDC token for Fulcio short-lived cert
       contents: read

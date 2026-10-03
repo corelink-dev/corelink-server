@@ -32,7 +32,7 @@ env:
 jobs:
   inventory:
     name: frozen cargo-mutants workspace inventory
-    if: github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -88,7 +88,7 @@ jobs:
   baseline-plan:
     name: freeze complete unmutated workspace test mapping
     needs: inventory
-    if: github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -140,7 +140,7 @@ jobs:
   baseline-shards:
     name: unmutated workspace baseline shard ${{ matrix.shard }}/27
     needs: [inventory, baseline-plan]
-    if: github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -219,7 +219,7 @@ jobs:
   baseline-aggregate:
     name: aggregate complete unmutated workspace baseline
     needs: [inventory, baseline-plan, baseline-shards]
-    if: always() && github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: always() && github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -253,7 +253,7 @@ jobs:
   mutants-workspace:
     name: cargo-mutants shard ${{ matrix.shard }}/27 (fail-on-any-survivor)
     needs: [inventory, baseline-aggregate]
-    if: github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     timeout-minutes: 255
     strategy:
@@ -361,7 +361,7 @@ jobs:
   aggregate:
     name: aggregate exact 27-shard mutation coverage
     needs: [inventory, baseline-aggregate, mutants-workspace]
-    if: always() && github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: always() && github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

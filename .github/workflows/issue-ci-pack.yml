@@ -35,7 +35,7 @@ jobs:
   pack:
     name: ${{ inputs.pack_id }} focused issue pack
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' && github.repository_id == '1232040291' &&
+      github.repository_id == vars.CORELINK_SERVER_REPO_ID &&
       github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     timeout-minutes: 15

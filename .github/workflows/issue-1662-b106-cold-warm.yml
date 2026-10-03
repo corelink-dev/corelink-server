@@ -23,7 +23,7 @@ concurrency:
 jobs:
   evidence:
     name: B-106 cold then same-colo warm auth
-    if: github.repository == 'HuGR-dev/corelink-server' && github.ref == 'refs/heads/main' && github.ref_protected
+    if: github.repository_id == '0' && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 7
@@ -36,6 +36,7 @@ jobs:
 
       - name: Confirm protected manual dispatch
         env:
+          SERVER_REPOSITORY_MATCH: ${{ github.repository_id == '0' }}
           CONFIRM: ${{ inputs.confirm }}
           TARGET: https://corelink-api.humangr.com
           TENANT: ${{ secrets.CORELINK_B106_DOGFOOD_TENANT }}
@@ -43,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          test "$GITHUB_REPOSITORY" = HuGR-dev/corelink-server
+          test "$SERVER_REPOSITORY_MATCH" = true
           test "$GITHUB_REF" = refs/heads/main
           test "$CONFIRM" = run-1662-b106-cold-warm
           test -n "${TENANT:-}"

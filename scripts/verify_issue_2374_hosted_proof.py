@@ -510,7 +510,7 @@ def verify_bot_audit_fixture(root: Path) -> None:
             **os.environ,
             "PATH": str(fakebin) + os.pathsep + os.environ.get("PATH", ""),
             "REPO": "HuGR-dev/corelink-server",
-            "REPOSITORY_ID": "1232040291",
+            "SERVER_REPOSITORY_MATCH": "true",
             "GITHUB_STEP_SUMMARY": str(tmp / "summary.md"),
             "GH_TRACE": str(tmp / "gh-trace.jsonl"),
         }

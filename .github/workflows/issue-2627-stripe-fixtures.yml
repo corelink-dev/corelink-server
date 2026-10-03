@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   stripe-fixtures:
-    if: ${{ github.repository == 'HuGR-dev/corelink-server' && github.event.pull_request.base.ref == 'main' }}
+    if: ${{ github.repository_id == vars.CORELINK_SERVER_REPO_ID && github.event.pull_request.base.ref == 'main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

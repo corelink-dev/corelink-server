@@ -13,8 +13,7 @@ jobs:
   audit:
     name: read and verify the existing release-key identity
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' &&
-      github.repository_id == '1232040291' &&
+      github.repository_id == '0' &&
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' && github.ref_protected
     environment: release-key-audit

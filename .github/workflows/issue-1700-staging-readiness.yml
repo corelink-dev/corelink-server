@@ -72,8 +72,7 @@ jobs:
   readiness:
     name: protected scoped staging readiness
     if: >-
-      github.repository == 'HuGR-dev/corelink-server' &&
-      github.repository_id == '1232040291' &&
+      github.repository_id == '0' &&
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' && github.ref_protected
     needs: contract
@@ -110,7 +109,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          jobs="$(gh api "repos/HuGR-dev/corelink-server/actions/runs/$GITHUB_RUN_ID/jobs" \
+          jobs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs" \
             --jq '[.jobs[] | select(.name == "protected scoped staging readiness") | .id] | if length == 1 then .[0] else error("job cardinality") end')"
           [[ "$jobs" =~ ^[1-9][0-9]*$ ]]
           echo "job_id=$jobs" >> "$GITHUB_OUTPUT"

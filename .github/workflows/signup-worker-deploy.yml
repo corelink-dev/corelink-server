@@ -44,6 +44,11 @@ concurrency:
 jobs:
   deploy:
     name: build + deploy to CF Worker
+    # Production deploy: only the server repository (privileged literal ID,
+    # rendered by scripts/sync_workflow_repository_guards.py --write), only
+    # protected main, and only behind the production environment's reviewers.
+    if: github.repository_id == '0' && github.ref == 'refs/heads/main' && github.ref_protected
+    environment: production
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:

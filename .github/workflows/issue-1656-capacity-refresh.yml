@@ -34,11 +34,12 @@ jobs:
 
       - name: Require protected manual read contract
         env:
+          SERVER_REPOSITORY_MATCH: ${{ github.repository_id == '0' }}
           CONFIRM: ${{ inputs.confirm }}
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          test "$GITHUB_REPOSITORY" = HuGR-dev/corelink-server
+          test "$SERVER_REPOSITORY_MATCH" = true
           test "$GITHUB_REF" = refs/heads/main
           test "$CONFIRM" = run-1656-read-only
           mkdir -p artifacts

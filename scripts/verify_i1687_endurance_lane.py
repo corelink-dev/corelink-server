@@ -10,10 +10,12 @@ from pathlib import Path
 CANONICAL_TARGET = "https://staging.corelink.humangr.com"
 WORKFLOW = Path(".github/workflows/endurance-2h-nightly.yml")
 SCENARIO = Path("tests/load/k6/scenarios/endurance-24h.js")
-PROTECTED_DISPATCH = (
-    "github.repository == 'HuGR-dev/corelink-server' && "
-    "github.event_name == 'workflow_dispatch' && "
-    "github.ref == 'refs/heads/main' && github.ref_protected"
+# The repository-ID literal is rendered from config/github-identity.json by
+# scripts/sync_workflow_repository_guards.py, which owns its value.
+PROTECTED_DISPATCH = re.compile(
+    r"github\.repository_id == '[0-9]+' && "
+    r"github\.event_name == 'workflow_dispatch' && "
+    r"github\.ref == 'refs/heads/main' && github\.ref_protected"
 )
 
 
@@ -25,7 +27,7 @@ def verify_workflow(text: str) -> list[str]:
     errors: list[str] = []
     if "workflow_dispatch:" not in text:
         errors.append("workflow_dispatch trigger is missing")
-    if text.count(PROTECTED_DISPATCH) != 2:
+    if len(PROTECTED_DISPATCH.findall(text)) != 2:
         errors.append("measurement and baseline jobs must require a protected canonical dispatch")
     if "    environment: staging" not in text:
         errors.append("the measurement job must use the protected staging environment")
