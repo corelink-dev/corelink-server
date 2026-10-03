@@ -29,14 +29,15 @@ def receipt_fixture() -> dict:
         "captured_at": "2026-09-22T06:58:04.555886+00:00",
         "account_id_sha256": "a" * 64,
         "database_id_sha256": "b" * 64,
+        # A schema-v1 receipt: the three aggregates only (pre owner attestation).
         "queries": [
             {
                 "name": name,
-                "query_sha256": probe._hash(query),
+                "query_sha256": probe.QUERY_SHA256_V1[name],
                 "response_sha256": "c" * 64,
                 "row_count": 1,
             }
-            for name, query in probe.QUERY_ALLOWLIST.items()
+            for name in probe.AGGREGATE_QUERY_NAMES
         ],
         "counts": {
             "residency": {
@@ -82,20 +83,354 @@ def resign(receipt: dict) -> None:
     receipt["receipt_sha256"] = classifier.PROBE._hash(receipt)
 
 
+def erased_only_fixture(status: str, reason: str) -> dict:
+    """A population whose only non-satisfied customer rows are DSR-erased orphans."""
+    receipt = receipt_fixture()
+    receipt["counts"]["residency"].update(
+        {
+            "satisfied_rows": 3,
+            "violated_rows": 0,
+            "unevaluable_rows": 1,
+            "customer_unevaluable_rows": 1,
+            "orphan_rows": 1,
+            "orphan_tenants": 1,
+            "erased_orphan_rows": 1,
+            "erased_orphan_tenants": 1,
+            "unexplained_orphan_rows": 0,
+            "unexplained_orphan_tenants": 0,
+        }
+    )
+    receipt["counts"]["backfill_completeness"].update(
+        {"orphan_rows": 1, "joinable_rows": 3, "erased_orphan_rows": 1}
+    )
+    receipt["status"] = status
+    receipt["reason"] = reason
+    resign(receipt)
+    return receipt
+
+
+RESIDENCY = classifier.PROBE.RESIDENCY
+AUTHORITY = "https://github.com/HuGR-dev/corelink-server/issues/1669#issuecomment-5959812722"
+
+
+def ledger_of(*row_ids: str, sha: str = "e" * 64):
+    return RESIDENCY.Ledger(refs=frozenset(RESIDENCY.row_ref(i) for i in row_ids), sha256=sha)
+
+
+PRODUCTION_DB_SHA = RESIDENCY.database_id_digest(RESIDENCY.OWNER_ATTESTED_DATABASE_ID)
+STAGING_DB_SHA = RESIDENCY.database_id_digest("00000000-1111-2222-3333-444444444444")
+_UNSET = object()
+
+
+def v2_fixture(
+    residual_ids: tuple[str, ...],
+    ledger,
+    status: str,
+    reason: str,
+    attestation: object = _UNSET,
+    database_sha: str = PRODUCTION_DB_SHA,
+) -> dict:
+    """Schema-v2 receipt: 2 satisfied, 1 erased orphan, len(residual_ids) unexplained, 1 reserved _public."""
+    probe = classifier.PROBE
+    unexplained = len(residual_ids)
+    refs = sorted(RESIDENCY.row_ref(i) for i in residual_ids)
+    customer = 3 + unexplained
+    receipt = receipt_fixture()
+    receipt["schema"] = probe.RECEIPT_SCHEMA_V2
+    receipt["database_id_sha256"] = database_sha
+    receipt["queries"] = [
+        {
+            "name": name,
+            "query_sha256": probe._hash(query),
+            "response_sha256": "c" * 64,
+            "row_count": unexplained if name == "residual_refs" else 1,
+        }
+        for name, query in probe.QUERY_ALLOWLIST.items()
+    ]
+    receipt["counts"]["residency"].update(
+        {
+            "total_rows": customer + 1,
+            "customer_rows": customer,
+            "satisfied_rows": 2,
+            "violated_rows": 0,
+            "unevaluable_rows": 1 + unexplained,
+            "customer_unevaluable_rows": 1 + unexplained,
+            "orphan_rows": 1 + unexplained,
+            "orphan_tenants": 1 + (1 if unexplained else 0),
+            "erased_orphan_rows": 1,
+            "erased_orphan_tenants": 1,
+            "unexplained_orphan_rows": unexplained,
+            "unexplained_orphan_tenants": 1 if unexplained else 0,
+        }
+    )
+    receipt["counts"]["population"].update({"audit_rows": customer + 1, "audit_tenants": 3})
+    receipt["counts"]["backfill_completeness"].update(
+        {"audit_rows": customer + 1, "orphan_rows": 1 + unexplained, "joinable_rows": 2, "erased_orphan_rows": 1}
+    )
+    receipt["counts"]["residual_refs"] = {"residual_rows": unexplained, "row_refs": refs}
+    receipt["attestation"] = (
+        RESIDENCY.attest(refs, ledger).summary() if attestation is _UNSET else attestation
+    )
+    receipt["status"] = status
+    receipt["reason"] = reason
+    resign(receipt)
+    return receipt
+
+
+class OwnerAttestationTests(unittest.TestCase):
+    def test_all_attested_rows_are_their_own_documented_exception_never_compliant(self) -> None:
+        ledger = ledger_of("row-a")
+        receipt = v2_fixture(("row-a",), ledger, "DOCUMENTED_EXCEPTION", RESIDENCY.DOCUMENTED_EXCEPTION_REASON)
+        report = classifier.classify(receipt, ledger=ledger)
+        classes = {item["class"]: item for item in report["classes"]}
+
+        self.assertEqual(report["source_status"], "DOCUMENTED_EXCEPTION")
+        self.assertEqual(report["overall_disposition"], "DOCUMENTED_EXCEPTION")
+        attested = classes["owner_attested_prelaunch_test_traffic"]
+        self.assertEqual(attested["rows"], 1)
+        self.assertEqual(attested["disposition"], "DOCUMENTED_EXCEPTION_OWNER_ATTESTED_NOT_LOG_CONFIRMED")
+        self.assertEqual(classes["unexplained_orphan"]["rows"], 0)
+        self.assertEqual(classes["erased_orphan_retained_audit"]["rows"], 1)
+        self.assertEqual(classes["erased_orphan_retained_audit"]["disposition"], "DOCUMENTED_EXCEPTION_ERASED_LINEAGE")
+        self.assertEqual(report["current_policy_status"], "DOCUMENTED_EXCEPTION")
+        self.assertEqual(report["states"]["owner_attested_prelaunch_test_traffic"], 1)
+        self.assertEqual(report["states"]["violated"], 0)
+        self.assertEqual(report["attestation"]["authority"], AUTHORITY)
+        self.assertIs(report["attestation"]["log_confirmed"], False)
+        self.assertTrue(report["tenant_identity_dispositions_complete"])
+
+    def test_rejects_attested_population_relabelled_compliant(self) -> None:
+        ledger = ledger_of("row-a")
+        receipt = v2_fixture(("row-a",), ledger, "COMPLIANT", RESIDENCY.COMPLIANT_REASON)
+        with self.assertRaisesRegex(classifier.ReceiptError, "verdict does not match"):
+            classifier.classify(receipt, ledger=ledger)
+
+    def test_a_14th_unattested_row_keeps_the_issue_open(self) -> None:
+        ledger = ledger_of("row-a")
+        receipt = v2_fixture(("row-a", "row-b"), ledger, "FAILED", RESIDENCY.FAILED_REASON)
+        report = classifier.classify(receipt, ledger=ledger)
+        classes = {item["class"]: item for item in report["classes"]}
+        self.assertEqual(report["overall_disposition"], "KEEP_OPEN")
+        self.assertEqual(classes["owner_attested_prelaunch_test_traffic"]["rows"], 1)
+        self.assertEqual(classes["unexplained_orphan"]["rows"], 1)
+        self.assertFalse(report["tenant_identity_dispositions_complete"])
+
+    def test_a_missing_attested_reference_is_reported_and_keeps_the_issue_open(self) -> None:
+        ledger = ledger_of("row-a", "row-gone")
+        receipt = v2_fixture(("row-a",), ledger, "FAILED", RESIDENCY.ATTESTED_MISSING_REASON)
+        report = classifier.classify(receipt, ledger=ledger)
+        self.assertEqual(report["overall_disposition"], "KEEP_OPEN")
+        self.assertEqual(report["attestation"]["attested_refs_missing"], 1)
+        self.assertFalse(report["tenant_identity_dispositions_complete"])
+
+    def test_rejects_a_probe_attestation_block_that_does_not_recompute(self) -> None:
+        ledger = ledger_of("row-a")
+        forged = RESIDENCY.attest([RESIDENCY.row_ref("row-a")], ledger).summary()
+        forged["attested_refs_missing"] = 0
+        forged["unattested_rows"] = 0
+        forged["attested_rows"] = 2
+        receipt = v2_fixture(("row-a",), ledger, "DOCUMENTED_EXCEPTION", RESIDENCY.DOCUMENTED_EXCEPTION_REASON, forged)
+        with self.assertRaisesRegex(classifier.ReceiptError, "attestation does not match"):
+            classifier.classify(receipt, ledger=ledger)
+
+    def test_rejects_a_receipt_bound_to_a_different_ledger_version(self) -> None:
+        receipt = v2_fixture(("row-a",), ledger_of("row-a", sha="1" * 64), "DOCUMENTED_EXCEPTION",
+                             RESIDENCY.DOCUMENTED_EXCEPTION_REASON)
+        with self.assertRaisesRegex(classifier.ReceiptError, "attestation does not match"):
+            classifier.classify(receipt, ledger=ledger_of("row-a", sha="2" * 64))
+
+    def test_rejects_raw_row_ids_in_place_of_references(self) -> None:
+        ledger = ledger_of("row-a")
+        receipt = v2_fixture(("row-a",), ledger, "DOCUMENTED_EXCEPTION", RESIDENCY.DOCUMENTED_EXCEPTION_REASON)
+        receipt["counts"]["residual_refs"]["row_refs"] = ["row-a"]
+        resign(receipt)
+        with self.assertRaisesRegex(classifier.ReceiptError, "SHA-256 hex"):
+            classifier.classify(receipt, ledger=ledger)
+
+    def test_rejects_references_that_do_not_reconcile_with_the_unexplained_count(self) -> None:
+        ledger = ledger_of("row-a")
+        receipt = v2_fixture(("row-a",), ledger, "DOCUMENTED_EXCEPTION", RESIDENCY.DOCUMENTED_EXCEPTION_REASON)
+        receipt["counts"]["residency"]["unexplained_orphan_rows"] = 2
+        receipt["counts"]["residency"]["orphan_rows"] = 3
+        receipt["counts"]["residency"]["customer_unevaluable_rows"] = 3
+        receipt["counts"]["residency"]["unevaluable_rows"] = 3
+        receipt["counts"]["residency"]["satisfied_rows"] = 1
+        receipt["counts"]["backfill_completeness"].update({"orphan_rows": 3, "joinable_rows": 1})
+        resign(receipt)
+        with self.assertRaisesRegex(classifier.ReceiptError, "do not reconcile"):
+            classifier.classify(receipt, ledger=ledger)
+
+    # --- review fix 2: the attestation covers the production D1 only ---------
+
+    def test_rejects_an_attestation_block_on_a_non_production_database(self) -> None:
+        ledger = ledger_of("row-a")
+        receipt = v2_fixture(("row-a",), ledger, "DOCUMENTED_EXCEPTION", RESIDENCY.DOCUMENTED_EXCEPTION_REASON,
+                             database_sha=STAGING_DB_SHA)
+        with self.assertRaisesRegex(classifier.ReceiptError, "outside the production D1"):
+            classifier.classify(receipt, ledger=ledger)
+
+    def test_non_production_receipt_keeps_its_residual_unevaluable(self) -> None:
+        ledger = ledger_of("row-a")
+        receipt = v2_fixture(("row-a",), ledger, "FAILED", RESIDENCY.FAILED_REASON, attestation=None,
+                             database_sha=STAGING_DB_SHA)
+        report = classifier.classify(receipt, ledger=ledger)
+        classes = {item["class"]: item for item in report["classes"]}
+        self.assertEqual(report["overall_disposition"], "KEEP_OPEN")
+        self.assertIsNone(report["attestation"])
+        self.assertEqual(classes["owner_attested_prelaunch_test_traffic"]["rows"], 0)
+        self.assertEqual(classes["unexplained_orphan"]["rows"], 1)
+
+    # --- reviewer minors: each fail-closed residual check has its own test ---
+
+    def test_rejects_residual_rows_that_disagree_with_the_references(self) -> None:
+        ledger = ledger_of("row-a")
+        receipt = v2_fixture(("row-a",), ledger, "DOCUMENTED_EXCEPTION", RESIDENCY.DOCUMENTED_EXCEPTION_REASON)
+        receipt["counts"]["residual_refs"]["residual_rows"] = 2
+        resign(receipt)
+        with self.assertRaisesRegex(classifier.ReceiptError, "row count does not match its references"):
+            classifier.classify(receipt, ledger=ledger)
+
+    def test_rejects_unsorted_references(self) -> None:
+        ledger = ledger_of("row-a", "row-b")
+        receipt = v2_fixture(("row-a", "row-b"), ledger, "DOCUMENTED_EXCEPTION", RESIDENCY.DOCUMENTED_EXCEPTION_REASON)
+        receipt["counts"]["residual_refs"]["row_refs"].reverse()
+        resign(receipt)
+        with self.assertRaisesRegex(classifier.ReceiptError, "not sorted unique"):
+            classifier.classify(receipt, ledger=ledger)
+
+    def test_rejects_more_references_than_the_enumeration_bound(self) -> None:
+        ids = tuple(f"row-{n:02d}" for n in range(RESIDENCY.MAX_RESIDUAL_REFS + 1))
+        receipt = v2_fixture(ids, ledger_of(), "FAILED", RESIDENCY.FAILED_REASON)
+        with self.assertRaisesRegex(classifier.ReceiptError, "exceed the enumeration bound"):
+            classifier.classify(receipt, ledger=ledger_of())
+
+    def test_rejects_backfill_erased_rows_that_do_not_reconcile(self) -> None:
+        ledger = ledger_of("row-a")
+        receipt = v2_fixture(("row-a",), ledger, "DOCUMENTED_EXCEPTION", RESIDENCY.DOCUMENTED_EXCEPTION_REASON)
+        receipt["counts"]["backfill_completeness"]["erased_orphan_rows"] = 0
+        resign(receipt)
+        with self.assertRaisesRegex(classifier.ReceiptError, "backfill erased_orphan_rows does not reconcile"):
+            classifier.classify(receipt, ledger=ledger)
+
+    # --- erased-lineage narrowing: query hashes are pinned per schema ---------
+
+    def test_v1_receipt_is_verified_against_the_v1_query_hashes(self) -> None:
+        receipt = receipt_fixture()
+        receipt["queries"][0]["query_sha256"] = classifier.PROBE.QUERY_SHA256_V2["residency"]
+        resign(receipt)
+        with self.assertRaisesRegex(classifier.ReceiptError, "query hash does not match residency"):
+            classifier.classify(receipt)
+
+    def test_v2_receipt_is_verified_against_the_v2_query_hashes(self) -> None:
+        ledger = ledger_of("row-a")
+        receipt = v2_fixture(("row-a",), ledger, "DOCUMENTED_EXCEPTION", RESIDENCY.DOCUMENTED_EXCEPTION_REASON)
+        receipt["queries"][0]["query_sha256"] = classifier.PROBE.QUERY_SHA256_V1["residency"]
+        resign(receipt)
+        with self.assertRaisesRegex(classifier.ReceiptError, "query hash does not match residency"):
+            classifier.classify(receipt, ledger=ledger)
+
+    def test_v1_receipt_never_applies_the_attestation(self) -> None:
+        report = classifier.classify(receipt_fixture(), ledger=ledger_of("anything"))
+        self.assertIsNone(report["attestation"])
+        classes = {item["class"]: item for item in report["classes"]}
+        self.assertEqual(classes["owner_attested_prelaunch_test_traffic"]["rows"], 0)
+        self.assertEqual(classes["unexplained_orphan"]["rows"], 1)
+
+
 class ReceiptClassifierTests(unittest.TestCase):
-    def test_classifies_orphans_with_preserve_or_owner_hold_disposition(self) -> None:
+    def test_classifies_orphans_with_exception_or_owner_hold_disposition(self) -> None:
         report = classifier.classify(receipt_fixture())
         classes = {item["class"]: item for item in report["classes"]}
 
         self.assertEqual(report["overall_disposition"], "KEEP_OPEN")
         self.assertFalse(report["tenant_identity_dispositions_complete"])
+        # v1 measured erased lineage with the pre-narrowing predicate, so its
+        # erased class keeps the pre-policy disposition and gets no policy-B states.
         self.assertEqual(classes["erased_orphan_retained_audit"]["disposition"], "PRESERVE_AUDIT_EVIDENCE")
+        self.assertIsNone(report["states"])
+        self.assertIsNone(report["current_policy_status"])
         self.assertEqual(classes["unexplained_orphan"]["rows"], 1)
         self.assertEqual(
             classes["unexplained_orphan"]["disposition"],
             "PRESERVE_AND_REQUIRE_RESTRICTED_OWNER_RECONCILIATION",
         )
         self.assertEqual(sum(item["rows"] for item in report["classes"]), 5)
+
+    def test_pre_policy_b_v1_receipt_with_only_erased_orphans_verifies_exactly_as_recorded(self) -> None:
+        # Review fix 1: an unchanged v1 receipt written before policy B, whose
+        # only unevaluable rows are erased orphans, recorded FAILED. It must keep
+        # verifying as recorded; the policy-B reading is reported separately.
+        residency = classifier.PROBE.RESIDENCY
+        report = classifier.classify(erased_only_fixture(residency.FAILED, residency.FAILED_REASON))
+
+        self.assertEqual(report["receipt_schema"], "corelink.issue-1669.read-only-residency.v1")
+        self.assertEqual(report["verdict_rule"], "pre_policy_b")
+        self.assertEqual((report["source_status"], report["source_reason"]), ("FAILED", residency.FAILED_REASON))
+        # Not re-judged: v1 counted ANY erasure-log row as erased lineage.
+        self.assertIsNone(report["current_policy_status"])
+        self.assertIsNone(report["states"])
+        self.assertEqual(report["overall_disposition"], "KEEP_OPEN")
+
+    def test_v1_receipt_cannot_claim_a_verdict_its_rule_never_produced(self) -> None:
+        residency = classifier.PROBE.RESIDENCY
+        receipt = erased_only_fixture(residency.DOCUMENTED_EXCEPTION, residency.DOCUMENTED_EXCEPTION_REASON)
+        with self.assertRaisesRegex(classifier.ReceiptError, "verdict does not match"):
+            classifier.classify(receipt)
+
+    def test_erased_only_population_is_documented_exception_not_compliant(self) -> None:
+        residency = classifier.PROBE.RESIDENCY
+        report = classifier.classify(
+            v2_fixture((), ledger_of(), residency.DOCUMENTED_EXCEPTION, residency.DOCUMENTED_EXCEPTION_REASON),
+            ledger=ledger_of(),
+        )
+        classes = {item["class"]: item for item in report["classes"]}
+
+        self.assertEqual(report["source_status"], "DOCUMENTED_EXCEPTION")
+        self.assertEqual(report["overall_disposition"], "DOCUMENTED_EXCEPTION")
+        self.assertNotIn("COMPLIANT", (report["source_status"], report["overall_disposition"]))
+        self.assertEqual(classes["erased_orphan_retained_audit"]["rows"], 1)
+        self.assertEqual(classes["satisfied_customer"]["rows"], 2)
+        self.assertEqual(
+            report["states"],
+            {
+                "satisfied": 2,
+                "violated": 0,
+                "erased_lineage_exception": 1,
+                "owner_attested_prelaunch_test_traffic": 0,
+                "unevaluable": 0,
+                "reserved_public": 1,
+            },
+        )
+        self.assertIn("policy B", report["exception_policy"])
+
+    def test_rejects_erased_lineage_relabelled_compliant(self) -> None:
+        residency = classifier.PROBE.RESIDENCY
+        receipt = erased_only_fixture(residency.COMPLIANT, residency.COMPLIANT_REASON)
+
+        with self.assertRaisesRegex(classifier.ReceiptError, "verdict does not match"):
+            classifier.classify(receipt)
+
+    def test_rejects_documented_exception_claimed_over_an_unexplained_orphan(self) -> None:
+        residency = classifier.PROBE.RESIDENCY
+        receipt = receipt_fixture()
+        receipt["status"] = residency.DOCUMENTED_EXCEPTION
+        receipt["reason"] = residency.DOCUMENTED_EXCEPTION_REASON
+        resign(receipt)
+
+        with self.assertRaisesRegex(classifier.ReceiptError, "verdict does not match"):
+            classifier.classify(receipt)
+
+    def test_pre_policy_b_failed_receipt_with_unexplained_rows_still_classifies(self) -> None:
+        # Receipts written before policy B carry the unchanged FAILED reason; a
+        # population that still has unexplained orphans must keep verifying.
+        receipt = receipt_fixture()
+        self.assertEqual(
+            receipt["reason"],
+            "known violations or unevaluable rows exist; neither may be reported compliant",
+        )
+        report = classifier.classify(receipt)
+        self.assertEqual(report["source_status"], "FAILED")
+        self.assertEqual(report["overall_disposition"], "KEEP_OPEN")
 
     def test_rejects_receipt_with_changed_counts(self) -> None:
         receipt = receipt_fixture()

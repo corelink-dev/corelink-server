@@ -1,5 +1,29 @@
 #!/usr/bin/env python3
-"""Classify a retained, redacted #1669 aggregate receipt without D1 access."""
+"""Classify a retained, redacted #1669 aggregate receipt without D1 access.
+
+Under the #1669 policy B owner decision (2026-10-01) the DSR-erased orphans are
+their own class with the ``DOCUMENTED_EXCEPTION_ERASED_LINEAGE`` disposition:
+preserved, not satisfied, not unevaluable, never compliant. For a v2 receipt,
+the unexplained orphans whose opaque row reference is in the owner-attested
+ledger (owner decision 2026-10-02) are the
+``owner_attested_prelaunch_test_traffic`` class with the
+``DOCUMENTED_EXCEPTION_OWNER_ATTESTED_NOT_LOG_CONFIRMED`` disposition; the
+attestation is recomputed from the receipt's references and the current
+ledger, and applies only when the receipt's database is the production D1 the
+owner decision covers. Every other unexplained orphan remains unevaluable and
+keeps the issue open; v1 receipts carry no references, so all of their
+unexplained orphans do.
+
+A receipt is verified under the contract it was written with. Its query hashes
+are checked against the hashes pinned for its schema (``QUERY_SHA256_V1`` /
+``QUERY_SHA256_V2``). Schema v1 predates policy B, so a v1 verdict is checked
+against ``assess_pre_policy_b`` and kept exactly as recorded
+(``source_status``). v1 counted erased lineage as ANY ``dsr_erasure_log`` row,
+while v2 counts only a completed d1 erasure, so a v1 receipt is not re-judged:
+its ``current_policy_status`` and ``states`` are ``null`` and its erased class
+keeps the pre-policy ``PRESERVE_AUDIT_EVIDENCE`` disposition. For v2,
+``current_policy_status`` equals the recorded verdict.
+"""
 
 from __future__ import annotations
 
@@ -42,7 +66,11 @@ RECEIPT_FIELDS = {
     "reason",
     "receipt_sha256",
 }
+# v2 adds the owner-attestation block; v1 receipts (before 2026-10-02) lack it.
+RECEIPT_FIELDS_V2 = RECEIPT_FIELDS | {"attestation"}
 QUERY_FIELDS = {"name", "query_sha256", "response_sha256", "row_count"}
+RESIDUAL_FIELDS = {"residual_rows", "row_refs"}
+OWNER_ATTESTED_DISPOSITION = "DOCUMENTED_EXCEPTION_OWNER_ATTESTED_NOT_LOG_CONFIRMED"
 
 
 def _canonical(value: object) -> bytes:
@@ -61,10 +89,12 @@ def _nonnegative_fields(value: object, fields: tuple[str, ...], label: str) -> d
     return result
 
 
-def classify(receipt: object) -> dict[str, Any]:
+def classify(receipt: object, ledger: Any = None) -> dict[str, Any]:
     if not isinstance(receipt, dict):
         raise ReceiptError("receipt is not an object")
-    if set(receipt) != RECEIPT_FIELDS:
+    schema = receipt.get("schema")
+    is_v2 = schema == PROBE.RECEIPT_SCHEMA_V2
+    if set(receipt) != (RECEIPT_FIELDS_V2 if is_v2 else RECEIPT_FIELDS):
         raise ReceiptError("receipt fields are missing or unexpected")
     unsigned = dict(receipt)
     digest = unsigned.pop("receipt_sha256", None)
@@ -72,7 +102,7 @@ def classify(receipt: object) -> dict[str, Any]:
     if not isinstance(digest, str) or digest != expected:
         raise ReceiptError("receipt digest does not match its contents")
     if (
-        receipt.get("schema") != "corelink.issue-1669.read-only-residency.v1"
+        schema not in (PROBE.RECEIPT_SCHEMA_V1, PROBE.RECEIPT_SCHEMA_V2)
         or receipt.get("issue") != 1669
         or receipt.get("mode") != "production_read_only"
     ):
@@ -89,7 +119,9 @@ def classify(receipt: object) -> dict[str, Any]:
             raise ReceiptError(f"receipt {name} is malformed")
 
     queries = receipt.get("queries")
-    expected_names = tuple(PROBE.QUERY_ALLOWLIST)
+    expected_names = tuple(PROBE.QUERY_ALLOWLIST) if is_v2 else PROBE.AGGREGATE_QUERY_NAMES
+    # Each schema is verified against the query hashes pinned for it.
+    pinned_hashes = PROBE.QUERY_SHA256_V2 if is_v2 else PROBE.QUERY_SHA256_V1
     if not isinstance(queries, list) or len(queries) != len(expected_names):
         raise ReceiptError("receipt does not contain the complete query allowlist")
     for item, name in zip(queries, expected_names, strict=True):
@@ -97,7 +129,7 @@ def classify(receipt: object) -> dict[str, Any]:
             raise ReceiptError(f"receipt query {name} fields are missing or unexpected")
         if item.get("name") != name:
             raise ReceiptError("receipt query order or name is unexpected")
-        if item.get("query_sha256") != PROBE._hash(PROBE.QUERY_ALLOWLIST[name]):
+        if item.get("query_sha256") != pinned_hashes[name]:
             raise ReceiptError(f"receipt query hash does not match {name}")
         if not isinstance(item.get("query_sha256"), str) or not re.fullmatch(
             r"[0-9a-f]{64}", item["query_sha256"]
@@ -108,12 +140,51 @@ def classify(receipt: object) -> dict[str, Any]:
         ):
             raise ReceiptError(f"receipt response hash is malformed for {name}")
         row_count = item.get("row_count")
-        if isinstance(row_count, bool) or not isinstance(row_count, int) or row_count != 1:
+        if name == "residual_refs":
+            if isinstance(row_count, bool) or not isinstance(row_count, int) or row_count < 0:
+                raise ReceiptError("receipt query residual_refs row count is malformed")
+        elif isinstance(row_count, bool) or not isinstance(row_count, int) or row_count != 1:
             raise ReceiptError(f"receipt query {name} is not a single aggregate row")
 
     counts = receipt.get("counts")
     if not isinstance(counts, dict) or set(counts) != set(expected_names):
         raise ReceiptError("receipt aggregate set is incomplete or unexpected")
+    attestation = None
+    if is_v2:
+        residual = counts["residual_refs"]
+        if not isinstance(residual, dict) or set(residual) != RESIDUAL_FIELDS:
+            raise ReceiptError("receipt residual reference fields are missing or unexpected")
+        refs = residual["row_refs"]
+        if (
+            not isinstance(refs, list)
+            or refs != sorted(refs)
+            or len(set(refs)) != len(refs)
+            or not all(isinstance(ref, str) and re.fullmatch(r"[0-9a-f]{64}", ref) for ref in refs)
+        ):
+            raise ReceiptError("receipt residual references are not sorted unique SHA-256 hex")
+        if len(refs) > PROBE.RESIDENCY.MAX_RESIDUAL_REFS:
+            raise ReceiptError("receipt residual references exceed the enumeration bound")
+        if residual["residual_rows"] != len(refs) or queries[-1]["row_count"] != len(refs):
+            raise ReceiptError("receipt residual row count does not match its references")
+        in_scope = receipt["database_id_sha256"] == PROBE.RESIDENCY.database_id_digest(
+            PROBE.RESIDENCY.OWNER_ATTESTED_DATABASE_ID
+        )
+        if not in_scope:
+            # The owner decision covers the production D1 only.
+            if receipt.get("attestation") is not None:
+                raise ReceiptError("receipt applies the owner attestation outside the production D1 it covers")
+        else:
+            try:
+                # Recomputed from the references and the CURRENT ledger: the
+                # probe's own attestation block is checked against this, never
+                # trusted.
+                attestation = PROBE.RESIDENCY.attest(
+                    refs, ledger if ledger is not None else PROBE.RESIDENCY.load_ledger()
+                )
+            except PROBE.RESIDENCY.Indeterminate as exc:
+                raise ReceiptError(f"owner attestation is indeterminate: {exc}") from exc
+            if receipt.get("attestation") != attestation.summary():
+                raise ReceiptError("receipt attestation does not match its references and the current ledger")
     residency = _nonnegative_fields(counts["residency"], PROBE.RESIDENCY.COUNT_FIELDS, "residency")
     population = _nonnegative_fields(counts["population"], PROBE.POPULATION_FIELDS, "population")
     completeness = _nonnegative_fields(
@@ -127,7 +198,15 @@ def classify(receipt: object) -> dict[str, Any]:
     ):
         raise ReceiptError("tenant counts exceed their orphan row counts")
     try:
-        state, reason = PROBE.RESIDENCY.assess(model, environment="production")
+        # The current policy (B + owner attestation) and, separately, the rule
+        # the receipt was written under: v1 receipts predate policy B and are
+        # verified against the pre-policy-B rule, exactly as recorded.
+        state, reason = PROBE.RESIDENCY.assess(model, environment="production", attestation=attestation)
+        if is_v2:
+            recorded_state, recorded_reason, verdict_rule = state, reason, "policy_b_owner_attestation"
+        else:
+            recorded_state, recorded_reason = PROBE.RESIDENCY.assess_pre_policy_b(model, environment="production")
+            verdict_rule = "pre_policy_b"
     except PROBE.RESIDENCY.Indeterminate as exc:
         raise ReceiptError(f"residency partition is indeterminate: {exc}") from exc
     total = model.total_rows
@@ -148,9 +227,11 @@ def classify(receipt: object) -> dict[str, Any]:
     for key in ("orphan_rows", "reserved_public_rows", "invalid_public_rows", "erased_orphan_rows"):
         if completeness[key] != residency[key]:
             raise ReceiptError(f"backfill {key} does not reconcile with residency")
-    if receipt.get("status") != state or receipt.get("reason") != reason:
+    if receipt.get("status") != recorded_state or receipt.get("reason") != recorded_reason:
         raise ReceiptError("receipt verdict does not match its counts")
 
+    attested_rows = attestation.attested_rows if attestation is not None else 0
+    unattested_rows = model.unexplained_orphan_rows - attested_rows
     classes = [
         {
             "class": "satisfied_customer",
@@ -168,12 +249,21 @@ def classify(receipt: object) -> dict[str, Any]:
             "class": "erased_orphan_retained_audit",
             "rows": model.erased_orphan_rows,
             "tenants": model.erased_orphan_tenants,
-            "disposition": "PRESERVE_AUDIT_EVIDENCE",
+            # v1 counted ANY dsr_erasure_log row as erased; only v2 measures the
+            # completed d1 erasure that policy B's exception requires.
+            "disposition": "DOCUMENTED_EXCEPTION_ERASED_LINEAGE" if is_v2 else "PRESERVE_AUDIT_EVIDENCE",
+        },
+        {
+            "class": PROBE.RESIDENCY.OWNER_ATTESTED_CATEGORY,
+            "rows": attested_rows,
+            "tenants": None,
+            "disposition": OWNER_ATTESTED_DISPOSITION,
         },
         {
             "class": "unexplained_orphan",
-            "rows": model.unexplained_orphan_rows,
-            "tenants": model.unexplained_orphan_tenants,
+            "rows": unattested_rows,
+            # Tenant counts cannot be split by attestation from references.
+            "tenants": model.unexplained_orphan_tenants if attested_rows == 0 else None,
             "disposition": "PRESERVE_AND_REQUIRE_RESTRICTED_OWNER_RECONCILIATION",
         },
         {
@@ -197,18 +287,53 @@ def classify(receipt: object) -> dict[str, Any]:
     ]
     if sum(item["rows"] for item in classes) != total:
         raise ReceiptError("disposition classes do not conserve the full population")
+    by_class = {item["class"]: item["rows"] for item in classes}
+    # v1 counts measured erased lineage with the pre-narrowing predicate (ANY
+    # dsr_erasure_log row), so they cannot be re-judged under policy B: no
+    # policy-B states and no current-policy status for a v1 receipt.
+    states = PROBE.RESIDENCY.partition(model, attestation) if is_v2 else None
+    current_status = state if is_v2 else None
+    category = PROBE.RESIDENCY.OWNER_ATTESTED_CATEGORY
+    if states is not None and (
+        states["erased_lineage_exception"] != by_class["erased_orphan_retained_audit"]
+        or states[category] != by_class[category]
+        or states["unevaluable"]
+        != (
+            by_class["unexplained_orphan"]
+            + by_class["other_unevaluable_customer"]
+            + by_class["invalid_public"]
+        )
+    ):
+        raise ReceiptError("disposition classes do not match the policy-B residency states")
+    # The disposition follows the verdict the receipt RECORDED (verified under
+    # its own rule); the current-policy re-reading is reported separately and
+    # never upgrades a historical receipt.
+    if recorded_state == PROBE.RESIDENCY.COMPLIANT:
+        overall = "COMPLIANT"
+    elif recorded_state == PROBE.RESIDENCY.DOCUMENTED_EXCEPTION:
+        overall = "DOCUMENTED_EXCEPTION"
+    else:
+        overall = "KEEP_OPEN"
     return {
-        "schema": "corelink.issue-1669.aggregate-classification.v1",
+        "schema": "corelink.issue-1669.aggregate-classification.v2",
         "issue": 1669,
         "receipt_sha256": digest,
-        "source_status": state,
-        "source_reason": reason,
+        "receipt_schema": schema,
+        "verdict_rule": verdict_rule,
+        "source_status": recorded_state,
+        "source_reason": recorded_reason,
+        "current_policy_status": current_status,
         "classification_scope": "aggregate_counts_only",
+        "exception_policy": PROBE.RESIDENCY.ERASED_LINEAGE_POLICY,
+        "attestation": attestation.summary() if attestation is not None else None,
         "tenant_identity_dispositions_complete": (
-            model.unexplained_orphan_rows == 0 and model.unexplained_orphan_tenants == 0
+            unattested_rows == 0
+            and (attestation is not None or model.unexplained_orphan_tenants == 0)
+            and (attestation is None or attestation.attested_refs_missing == 0)
         ),
+        "states": states,
         "classes": classes,
-        "overall_disposition": "COMPLIANT" if state == "COMPLIANT" else "KEEP_OPEN",
+        "overall_disposition": overall,
     }
 
 
@@ -245,7 +370,7 @@ def main() -> int:
         return 2
     report["artifact_sha256"] = artifact_sha256
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 0 if report["overall_disposition"] == "COMPLIANT" else 1
+    return 0 if report["overall_disposition"] in ("COMPLIANT", "DOCUMENTED_EXCEPTION") else 1
 
 
 if __name__ == "__main__":

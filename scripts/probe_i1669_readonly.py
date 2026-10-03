@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """Run the bounded, read-only production evidence lane for issue #1669.
 
-The lane has no SQL input.  It sends only the three aggregate statements in
-``QUERY_ALLOWLIST`` to Cloudflare D1, retains no row payload, and emits a
-redacted receipt containing counts and SHA-256 bindings.  It never performs a
+The lane has no SQL input.  It sends only the statements in
+``QUERY_ALLOWLIST`` to Cloudflare D1: three aggregates, plus the bounded
+``residual_refs`` read of the unexplained residual's row ids (at most
+``MAX_RESIDUAL_REFS``). Those ids are hashed in memory into opaque row
+references and discarded; the receipt (schema v2) retains only counts, the
+references and SHA-256 bindings, never a row id, tenant id or payload. The
+references are matched against the owner-attested ledger only when the
+database is the production D1 the owner decision covers; against any other
+database the receipt's ``attestation`` is ``null``. It never performs a
 backfill or changes D1, DSR, or audit data.
 
-Exit status: 0 when the full non-empty population is provably satisfied; 1
-when a known mismatch or unevaluable row is found; 2 when evidence is absent,
-empty, partial, or malformed.
+Exit status: 0 when the full non-empty population is provably satisfied
+(``COMPLIANT``) or its only non-satisfied rows are erased lineage under the
+#1669 policy B documented exception (``DOCUMENTED_EXCEPTION``; the receipt
+status names which); 1 when a known mismatch or unevaluable row is found; 2
+when evidence is absent, empty, partial, or malformed.
 """
 
 from __future__ import annotations
@@ -73,12 +81,14 @@ SELECT
                        OR a.event_type IS NULL
                        OR a.event_type NOT IN ({public_events}))
         THEN 1 ELSE 0 END) AS invalid_public_rows,
-    SUM(CASE WHEN t.tenant_id IS NULL AND a.tenant_id <> '_public' AND EXISTS (
-        SELECT 1 FROM dsr_erasure_log AS d WHERE d.tenant_id = a.tenant_id
-    ) THEN 1 ELSE 0 END) AS erased_orphan_rows
+    SUM(CASE WHEN t.tenant_id IS NULL AND a.tenant_id <> '_public'
+                  AND {completed_erasure}
+        THEN 1 ELSE 0 END) AS erased_orphan_rows
 FROM audit_outbox AS a
 LEFT JOIN tenant AS t ON t.tenant_id = a.tenant_id
-""".format(public_events=RESIDENCY._PUBLIC_EVENTS_SQL).strip()
+""".format(
+    public_events=RESIDENCY._PUBLIC_EVENTS_SQL, completed_erasure=RESIDENCY._COMPLETED_ERASURE_SQL
+).strip()
 
 # Do not accept a caller-provided SQL string.  Every request must be one of
 # these exact aggregate SELECTs; the write verbs are absent by construction.
@@ -86,6 +96,30 @@ QUERY_ALLOWLIST = {
     "residency": RESIDENCY.RESIDENCY_SQL,
     "population": POPULATION_SQL,
     "backfill_completeness": BACKFILL_COMPLETENESS_SQL,
+    "residual_refs": RESIDENCY.RESIDUAL_REFS_SQL,
+}
+# Schema v1 receipts (before the owner attestation) carry only these three.
+AGGREGATE_QUERY_NAMES = ("residency", "population", "backfill_completeness")
+RECEIPT_SCHEMA_V1 = "corelink.issue-1669.read-only-residency.v1"
+RECEIPT_SCHEMA_V2 = "corelink.issue-1669.read-only-residency.v2"
+# Query hashes pinned per receipt schema. A receipt is verified against the
+# queries of ITS schema, so editing the SQL never breaks a historical receipt
+# and never passes silently: the probe refuses to run when the live allowlist
+# drifts from the v2 pin (``_validate_allowlist``).
+# v1: the queries of every receipt up to and including run 35697251287
+# (evidence SHA 58228ac2), where erased lineage was any dsr_erasure_log row.
+QUERY_SHA256_V1 = {
+    "residency": "24c0a9cfb8eda6b0260ef95f05316bbb0549fc42d4a377f0b524fc27a2b8b5c3",
+    "population": "3fbaecd933f27ca1b9dc8491b7956517204c090e580a04d3ae004640652b66f6",
+    "backfill_completeness": "e2f7426c44a430cb3e082c558f5c4480acd3d8ce481178036e8c831e4b90db66",
+}
+# v2: erased lineage narrowed to a completed d1 erasure (backend='d1' AND
+# outcome='erased'), plus the residual_refs read.
+QUERY_SHA256_V2 = {
+    "residency": "e4ace2558c42d051d5df66ccba8cd46f10d720448a66aca6073ee4d6d3738e86",
+    "population": "3fbaecd933f27ca1b9dc8491b7956517204c090e580a04d3ae004640652b66f6",
+    "backfill_completeness": "09cd36fa4be8e20d8117470bdec07ad8b34526fa7155dadfa2f1ab28a1dbb70a",
+    "residual_refs": "96a23ca98187b30088b14ae176a4cfe6eff0de4d501d5ee622fe8214cc223042",
 }
 POPULATION_FIELDS = ("audit_rows", "audit_tenants", "blank_tenant_rows")
 BACKFILL_FIELDS = (
@@ -111,6 +145,8 @@ def _hash(value: object) -> str:
 
 
 def _validate_allowlist() -> None:
+    if {name: _hash(query) for name, query in QUERY_ALLOWLIST.items()} != QUERY_SHA256_V2:
+        raise ProbeError("query allowlist does not match its pinned v2 hashes")
     for name, query in QUERY_ALLOWLIST.items():
         normalized = re.sub(r"\s+", " ", query).strip().lower()
         if query not in QUERY_ALLOWLIST.values() or not (
@@ -190,14 +226,14 @@ def _write(path: Path, receipt: dict[str, object]) -> None:
         raise
 
 
-def run(account_id: str, database_id: str, token: str, output: Path) -> int:
+def run(account_id: str, database_id: str, token: str, output: Path, ledger: Any = None) -> int:
     if not ACCOUNT_ID.fullmatch(account_id) or not DATABASE_ID.fullmatch(database_id):
         raise ProbeError("account ID or D1 UUID is malformed")
     if not token:
         raise ProbeError("Cloudflare API token is missing")
     _validate_allowlist()
     receipt: dict[str, object] = {
-        "schema": "corelink.issue-1669.read-only-residency.v1",
+        "schema": RECEIPT_SCHEMA_V2,
         "issue": 1669,
         "mode": "production_read_only",
         "captured_at": datetime.now(timezone.utc).isoformat(),
@@ -206,17 +242,32 @@ def run(account_id: str, database_id: str, token: str, output: Path) -> int:
         "queries": [],
     }
     try:
-        observations: dict[str, dict[str, int]] = {}
+        observations: dict[str, object] = {}
+        residual_refs: tuple[str, ...] = ()
         for name, query in QUERY_ALLOWLIST.items():
             payload, payload_hash = _request(account_id, token, database_id, query)
-            fields = tuple(RESIDENCY.COUNT_FIELDS) if name == "residency" else POPULATION_FIELDS if name == "population" else BACKFILL_FIELDS
-            observations[name] = _aggregate(payload, fields)
-            receipt["queries"].append({"name": name, "query_sha256": _hash(query), "response_sha256": payload_hash, "row_count": 1})
+            if name == "residual_refs":
+                # Row ids become opaque references here; the payload is dropped.
+                residual_refs = RESIDENCY.parse_residual_refs(payload)
+                del payload
+                observations[name] = {"residual_rows": len(residual_refs), "row_refs": list(residual_refs)}
+                row_count = len(residual_refs)
+            else:
+                fields = tuple(RESIDENCY.COUNT_FIELDS) if name == "residency" else POPULATION_FIELDS if name == "population" else BACKFILL_FIELDS
+                observations[name] = _aggregate(payload, fields)
+                row_count = 1
+            receipt["queries"].append({"name": name, "query_sha256": _hash(query), "response_sha256": payload_hash, "row_count": row_count})
         # Preserve aggregate-only diagnostics even when a reconciliation gate
-        # fails below.  No row payload or tenant identifier is retained.
+        # fails below.  No row id, payload or tenant identifier is retained.
         receipt["counts"] = observations
         counts = RESIDENCY.Counts(**observations["residency"])
-        state, reason = RESIDENCY.assess(counts, environment="production")
+        # The owner decision covers the production D1 only: against any other
+        # database the ledger is never consulted and the block is null.
+        attestation = None
+        if RESIDENCY.attestation_applies("production", database_id):
+            attestation = RESIDENCY.attest(residual_refs, ledger if ledger is not None else RESIDENCY.load_ledger())
+        receipt["attestation"] = attestation.summary() if attestation is not None else None
+        state, reason = RESIDENCY.assess(counts, environment="production", attestation=attestation)
         population = observations["population"]
         completeness = observations["backfill_completeness"]
         if population["audit_rows"] == 0 or population["audit_rows"] != counts.total_rows:
@@ -242,7 +293,7 @@ def run(account_id: str, database_id: str, token: str, output: Path) -> int:
             raise ProbeError("backfill completeness does not reconcile with residency")
         receipt.update({"status": state, "reason": reason})
         _write(output, receipt)
-        return 0 if state == "COMPLIANT" else 1
+        return 0 if state in RESIDENCY.PASSING_STATES else 1
     except (ProbeError, RESIDENCY.Indeterminate) as exc:
         receipt.update({"status": "INDETERMINATE", "reason": str(exc)})
         _write(output, receipt)
