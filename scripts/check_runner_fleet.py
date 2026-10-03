@@ -90,7 +90,7 @@ def census_available(repo: str) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", help="exact authorized repo; default resolves repository ID 1232040291")
+    parser.add_argument("--repo", help="exact authorized repo; default resolves the configured server repository ID")
     parser.add_argument("--expected-slots", type=int, default=EXPECTED_MAC_SLOTS)
     parser.add_argument("--queue-stuck-minutes", type=float,
                         default=QUEUE_STUCK_MINUTES)

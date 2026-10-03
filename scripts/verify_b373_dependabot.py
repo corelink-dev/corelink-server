@@ -312,7 +312,7 @@ def backlog_b373_done(root: Path) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", help="exact authorized repo; default resolves repository ID 1232040291")
+    parser.add_argument("--repo", help="exact authorized repo; default resolves the configured server repository ID")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--alerts-file", type=Path)
     parser.add_argument("--post-merge", action="store_true")

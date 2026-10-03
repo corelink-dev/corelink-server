@@ -1,3 +1,5 @@
+import copy
+import dataclasses
 import hashlib
 import importlib.util
 import json
@@ -7,6 +9,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,11 +37,30 @@ trail_reconcile = importlib.util.module_from_spec(TRAIL_RECONCILE_SPEC)
 sys.modules[TRAIL_RECONCILE_SPEC.name] = trail_reconcile
 TRAIL_RECONCILE_SPEC.loader.exec_module(trail_reconcile)
 
+# The receipt builder resolves the canonical repository through
+# scripts/server_repository.py (config/github-identity.json). The committed
+# config may still hold the unread ID 0, which the loader refuses, so these
+# tests bind a synthetic read-back identity that keeps the configured owner and
+# names and only fills the IDs.
+RESOLVER = sys.modules[live_receipt.require_repository_context.__module__]
+
+
+def _read_back_fixture_identity():
+    document = copy.deepcopy(RESOLVER.read_identity_document())
+    document["current"]["owner_id"] = 987650000
+    for offset, key in enumerate(RESOLVER.REPOSITORY_KEYS, start=1):
+        document["current"]["repos"][key]["id"] = 987650000 + offset
+    return RESOLVER.parse_identity(document).require_read_back()
+
+
+FIXTURE_IDENTITY = _read_back_fixture_identity()
+FIXTURE_SERVER = FIXTURE_IDENTITY.repository("server")
+
 
 def live_receipt_inputs() -> dict[str, str]:
     return {
-        "GITHUB_REPOSITORY": "HuGR-dev/corelink-server",
-        "GITHUB_REPOSITORY_ID": "1232040291",
+        "GITHUB_REPOSITORY": FIXTURE_SERVER.full_name,
+        "GITHUB_REPOSITORY_ID": str(FIXTURE_SERVER.id),
         "GITHUB_SERVER_URL": "https://github.com",
         "GITHUB_RUN_ID": "999999999",
         "GITHUB_RUN_ATTEMPT": "1",
@@ -95,6 +117,11 @@ Log file s3://redacted/CloudTrail/example valid
 
 
 class B046ObjectLockProbeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        identity = patch.object(RESOLVER, "load_identity", return_value=FIXTURE_IDENTITY)
+        identity.start()
+        self.addCleanup(identity.stop)
+
     def test_trail_reconcile_requires_complete_validation_and_exact_log_uris(self) -> None:
         output = DIGEST_VALIDATION_OK.replace("1/1 log files valid", "2/2 log files valid") + "Log file s3://redacted/CloudTrail/example-2 valid\n"
         self.assertEqual(
@@ -265,7 +292,7 @@ class B046ObjectLockProbeTests(unittest.TestCase):
         self.assertEqual(receipt["receipt_sha256"], digest)
         self.assertEqual(
             receipt["workflow_url"],
-            "https://github.com/HuGR-dev/corelink-server/actions/runs/123456789",
+            f"https://github.com/{FIXTURE_SERVER.full_name}/actions/runs/123456789",
         )
         self.assertEqual(
             receipt["target"]["account_id_sha256"],
@@ -330,6 +357,47 @@ class B046ObjectLockProbeTests(unittest.TestCase):
                     inputs, digest_validation_output=DIGEST_VALIDATION_OK,
                     reconciliation=live_reconciliation(),
                     )
+
+    def test_protected_receipt_rejects_retired_or_mismatched_repository_identity(self) -> None:
+        # Positive control: the configured (fixture) identity builds a receipt.
+        live_receipt.build_receipt(
+            live_receipt_inputs(), digest_validation_output=DIGEST_VALIDATION_OK,
+            reconciliation=live_reconciliation(),
+        )
+        retired_id = str(min(FIXTURE_IDENTITY.retired_repository_ids))
+        for label, repository, repository_id in (
+            ("retired destination owner and ID", "HuGR-dev/corelink-server", retired_id),
+            ("retired destination owner, current ID", "HuGR-dev/corelink-server", str(FIXTURE_SERVER.id)),
+            ("retired source owner", "HuGR-Labs/corelink-server", str(FIXTURE_SERVER.id)),
+            ("current name, retired ID", FIXTURE_SERVER.full_name, retired_id),
+            ("current name, peer ID", FIXTURE_SERVER.full_name, str(FIXTURE_IDENTITY.repository("runners").id)),
+            ("peer repository", FIXTURE_IDENTITY.repository("runners").full_name, str(FIXTURE_SERVER.id)),
+            ("current name, unread ID", FIXTURE_SERVER.full_name, "0"),
+            ("current name, padded ID", FIXTURE_SERVER.full_name, "0" + str(FIXTURE_SERVER.id)),
+        ):
+            with self.subTest(label=label):
+                inputs = live_receipt_inputs()
+                inputs["GITHUB_REPOSITORY"] = repository
+                inputs["GITHUB_REPOSITORY_ID"] = repository_id
+                with self.assertRaisesRegex(live_receipt.ReceiptError, "canonical protected repository"):
+                    live_receipt.build_receipt(
+                        inputs, digest_validation_output=DIGEST_VALIDATION_OK,
+                        reconciliation=live_reconciliation(),
+                    )
+
+    def test_protected_receipt_refuses_an_unread_identity_file(self) -> None:
+        unread = dataclasses.replace(
+            FIXTURE_IDENTITY,
+            repositories=tuple(
+                dataclasses.replace(repository, id=0) for repository in FIXTURE_IDENTITY.repositories
+            ),
+        )
+        with patch.object(RESOLVER, "load_identity", side_effect=lambda: unread.require_read_back()):
+            with self.assertRaisesRegex(live_receipt.ReceiptError, "canonical protected repository"):
+                live_receipt.build_receipt(
+                    live_receipt_inputs(), digest_validation_output=DIGEST_VALIDATION_OK,
+                    reconciliation=live_reconciliation(),
+                )
 
     def test_final_receipt_rejects_event_not_bound_to_a_validated_log_uri(self) -> None:
         reconciliation = live_reconciliation()

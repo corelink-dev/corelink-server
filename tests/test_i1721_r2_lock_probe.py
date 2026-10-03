@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -13,6 +14,35 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/issue-1721-r2-lock-proof.yml"
 PROBE = ROOT / "scripts/probe_i1721_r2_lock.sh"
 PREFLIGHT = ROOT / "scripts/validate_i1721_r2_dispatch.sh"
+RESOLVER = ROOT / "scripts/server_repository.py"
+IDENTITY = ROOT / "config/github-identity.json"
+
+
+def _read_back_fixture_document() -> dict:
+    # The committed identity may still hold the unread ID 0, which the resolver
+    # refuses. Keep its owner and names; fill synthetic IDs only.
+    document = json.loads(IDENTITY.read_text(encoding="utf-8"))
+    document["current"]["owner_id"] = 987650000
+    for offset, key in enumerate(("server", "runners", "workspaces"), start=1):
+        document["current"]["repos"][key]["id"] = 987650000 + offset
+    return document
+
+
+FIXTURE_DOCUMENT = _read_back_fixture_document()
+FIXTURE_SERVER = (
+    f'{FIXTURE_DOCUMENT["current"]["owner"]}/{FIXTURE_DOCUMENT["current"]["repos"]["server"]["name"]}'
+)
+FIXTURE_SERVER_ID = str(FIXTURE_DOCUMENT["current"]["repos"]["server"]["id"])
+
+
+def preflight_with_fixture_identity(directory: Path) -> Path:
+    """Copy the preflight and its resolver next to a read-back fixture identity."""
+    (directory / "scripts").mkdir()
+    (directory / "config").mkdir()
+    shutil.copy2(PREFLIGHT, directory / "scripts" / PREFLIGHT.name)
+    shutil.copy2(RESOLVER, directory / "scripts" / RESOLVER.name)
+    (directory / "config" / IDENTITY.name).write_text(json.dumps(FIXTURE_DOCUMENT), encoding="utf-8")
+    return directory / "scripts" / PREFLIGHT.name
 
 FAKE_CLI = r'''
 import json, os, shutil, sys, time
@@ -61,7 +91,8 @@ raise SystemExit("unexpected terraform operation")
 def base_env(**updates: str) -> dict[str, str]:
     env = os.environ.copy()
     env.update(
-        GITHUB_REPOSITORY="HuGR-dev/corelink-server",
+        GITHUB_REPOSITORY=FIXTURE_SERVER,
+        GITHUB_REPOSITORY_ID=FIXTURE_SERVER_ID,
         GITHUB_REF="refs/heads/main",
         REF_PROTECTED="true",
         CONFIRM="i1721-r2-lock-proof",
@@ -150,10 +181,46 @@ class I1721R2LockProbeTests(unittest.TestCase):
         self.assertNotIn("-lock=false", probe)
 
     def test_dispatch_rejects_wrong_branch_and_wrong_sha(self) -> None:
-        for changes in ({"GITHUB_REF": "refs/heads/feature"}, {"EXPECTED_SHA": "b" * 40}):
-            with self.subTest(changes=changes):
-                result = subprocess.run(["bash", str(PREFLIGHT)], env=base_env(**changes), check=False)
-                self.assertNotEqual(result.returncode, 0)
+        with tempfile.TemporaryDirectory() as directory:
+            preflight = preflight_with_fixture_identity(Path(directory))
+            # Positive control: with the configured repository, only the
+            # branch/SHA mutation below can be what rejects.
+            accepted = subprocess.run(["bash", str(preflight)], env=base_env(), check=False)
+            self.assertEqual(accepted.returncode, 0)
+            for changes in ({"GITHUB_REF": "refs/heads/feature"}, {"EXPECTED_SHA": "b" * 40}):
+                with self.subTest(changes=changes):
+                    result = subprocess.run(["bash", str(preflight)], env=base_env(**changes), check=False)
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_dispatch_accepts_only_the_configured_repository_id_and_name(self) -> None:
+        retired_id = "1232040291"
+        runners = FIXTURE_DOCUMENT["current"]["repos"]["runners"]
+        with tempfile.TemporaryDirectory() as directory:
+            preflight = preflight_with_fixture_identity(Path(directory))
+            accepted = subprocess.run(["bash", str(preflight)], env=base_env(), check=False)
+            self.assertEqual(accepted.returncode, 0)
+            for label, changes in (
+                ("retired destination owner and ID", {"GITHUB_REPOSITORY": "HuGR-dev/corelink-server", "GITHUB_REPOSITORY_ID": retired_id}),
+                ("retired destination owner, current ID", {"GITHUB_REPOSITORY": "HuGR-dev/corelink-server"}),
+                ("current name, retired ID", {"GITHUB_REPOSITORY_ID": retired_id}),
+                ("peer repository ID", {"GITHUB_REPOSITORY_ID": str(runners["id"])}),
+                ("missing repository ID", {"GITHUB_REPOSITORY_ID": ""}),
+                ("caller override cannot replace the context", {"GITHUB_REPOSITORY": "HuGR-dev/corelink-server", "CORELINK_SERVER_REPOSITORY": FIXTURE_SERVER}),
+            ):
+                with self.subTest(label=label):
+                    result = subprocess.run(
+                        ["bash", str(preflight)], env=base_env(**changes), check=False, capture_output=True, text=True
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("not the configured CoreLink server repository", result.stderr)
+
+        # The real preflight reads the committed identity as-is: while its IDs
+        # are unread (0) it must refuse even a correct-looking context.
+        committed = json.loads(IDENTITY.read_text(encoding="utf-8"))
+        if committed["current"]["repos"]["server"]["id"] == 0:
+            result = subprocess.run(["bash", str(PREFLIGHT)], env=base_env(), check=False, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not read back yet", result.stderr)
 
     def test_staging_credentials_have_no_production_secret_fallback(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")

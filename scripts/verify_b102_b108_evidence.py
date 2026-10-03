@@ -32,13 +32,15 @@ except ModuleNotFoundError:  # imported as scripts.verify_b102_b108_evidence
     from scripts.install_pinned_gh import install as install_pinned_gh
 try:
     from server_repository import resolve_server_repository
+    from server_repository import validate_server_repository as validate_configured_server_repository
 except ModuleNotFoundError:  # imported as scripts.verify_b102_b108_evidence
     from scripts.server_repository import resolve_server_repository
+    from scripts.server_repository import validate_server_repository as validate_configured_server_repository
 
 SCHEMA = "corelink.performance-evidence.v2"
 ITEMS = tuple(f"B-{n:03d}" for n in range(102, 109))
-SOURCE_REPO = "HuGR-Labs/corelink-server"
-SERVER_REPOSITORIES = frozenset({SOURCE_REPO, "HuGR-dev/corelink-server"})
+# Packets are at most MAX_AGE old, so they always come from the live repo;
+# the authorized identity is the configured server in config/github-identity.json.
 REPO: str | None = None
 SOURCE = "worker/src/lib/quota.ts"
 WORKFLOW = ".github/workflows/perf-production-evidence.yml"
@@ -74,10 +76,11 @@ class EvidenceError(ValueError):
 
 
 def validate_server_repository(repository: str) -> str:
-    """Require the exact source or destination repository identity."""
-    if repository not in SERVER_REPOSITORIES:
-        raise EvidenceError("repository is not an authorized corelink-server identity")
-    return repository
+    """Require the exact configured server repository identity."""
+    try:
+        return validate_configured_server_repository(repository)
+    except ValueError as exc:
+        raise EvidenceError("repository is not an authorized corelink-server identity") from exc
 
 
 def obj(v: Any, label: str) -> dict[str, Any]:
@@ -847,7 +850,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--packet", type=Path, required=True)
     parser.add_argument("--expect", choices=("open", "closed"), default="closed")
-    parser.add_argument("--repo", help="exact authorized repo; default resolves repository ID 1232040291")
+    parser.add_argument("--repo", help="exact authorized repo; default resolves the configured server repository ID")
     args = parser.parse_args(argv)
     global REPO
     try:

@@ -18,13 +18,24 @@ import re
 import sys
 from pathlib import Path
 
+try:
+    from server_repository import require_repository_context
+except ModuleNotFoundError:  # imported as scripts.collect_b102_b108_context
+    from scripts.server_repository import require_repository_context
+
 SHA = re.compile(r"^[0-9a-f]{40}$")
-SERVER_REPOSITORIES = frozenset({"HuGR-Labs/corelink-server", "HuGR-dev/corelink-server"})
 
 
-def is_server_repository(repository: str) -> bool:
-    """Match only the exact authorized source or destination server repository."""
-    return repository in SERVER_REPOSITORIES
+def is_server_repository(repository: str, repository_id: str) -> bool:
+    """Match only the configured server repository: exact name AND numeric ID.
+
+    Both come from config/github-identity.json via scripts/server_repository.py.
+    """
+    try:
+        require_repository_context(repository, repository_id)
+    except ValueError:
+        return False
+    return True
 
 
 def read(path: Path) -> tuple[object, str]:
@@ -71,13 +82,14 @@ def main() -> int:
     args = parser.parse_args()
     try:
         repo = required("GITHUB_REPOSITORY")
+        repo_id = required("GITHUB_REPOSITORY_ID")
         sha = required("GITHUB_SHA").lower()
         event = required("GITHUB_EVENT_NAME")
         run_id = required("GITHUB_RUN_ID")
         run_attempt = required("GITHUB_RUN_ATTEMPT")
         run_started_at = required("GITHUB_RUN_STARTED_AT")
         github_ref = required("GITHUB_REF")
-        if not is_server_repository(repo) or not SHA.fullmatch(sha) or not run_id.isdigit():
+        if not is_server_repository(repo, repo_id) or not SHA.fullmatch(sha) or not run_id.isdigit():
             raise ValueError("invalid canonical GitHub context")
         if not run_attempt.isdigit() or int(run_attempt) < 1:
             raise ValueError("invalid GitHub run attempt")

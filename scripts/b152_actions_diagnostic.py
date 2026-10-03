@@ -653,7 +653,7 @@ def fetch_logs(repo: str, records: Iterable[dict[str, Any]]) -> list[dict[str, A
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", help="exact authorized repo; default resolves repository ID 1232040291")
+    parser.add_argument("--repo", help="exact authorized repo; default resolves the configured server repository ID")
     parser.add_argument("--start", required=True, type=parse_time)
     parser.add_argument("--end", required=True, type=parse_time)
     parser.add_argument("--low", type=int, default=594)

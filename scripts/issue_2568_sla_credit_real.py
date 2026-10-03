@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -28,6 +29,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+
+def _load_identity_resolver():
+    """Load scripts/server_repository.py by path.
+
+    The protected lanes run this operator as ``python3 -I``, which puts neither
+    the script directory nor the working directory on sys.path. The canonical
+    repository (name and numeric ID) comes from config/github-identity.json.
+    """
+    path = Path(__file__).resolve().with_name("server_repository.py")
+    spec = importlib.util.spec_from_file_location("corelink_identity_resolver_i2568", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path.name}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+IDENTITY = _load_identity_resolver()
 ISSUE = 2568
 BRANCH = "refs/heads/main"
 STRIPE_ACCOUNT_SHA256 = "e9678dceccdaa37a7259379096e82875f6ae0c694f9a461a28691c79eceb33ad"
@@ -78,15 +98,17 @@ def assert_checkout(expected_sha: str) -> str:
         raise OperatorError("cannot establish candidate checkout identity") from exc
     if head != expected_sha:
         raise OperatorError("checked out candidate SHA differs from expected_sha")
-    if os.environ.get("GITHUB_REPOSITORY") != "HuGR-dev/corelink-server":
-        raise OperatorError("provider operation is restricted to the canonical repository")
+    try:
+        repository = IDENTITY.require_github_context()
+    except ValueError as exc:
+        raise OperatorError("provider operation is restricted to the canonical repository") from exc
     if os.environ.get("GITHUB_SHA") != expected_sha:
         raise OperatorError("GitHub workflow SHA differs from expected_sha")
     if os.environ.get("GITHUB_REF") != BRANCH:
         raise OperatorError("provider operation is restricted to the protected main ref")
     try:
         remote = subprocess.check_output(
-            ["git", "ls-remote", "--exit-code", "https://github.com/HuGR-dev/corelink-server.git", "refs/heads/main"],
+            ["git", "ls-remote", "--exit-code", f"https://github.com/{repository}.git", "refs/heads/main"],
             text=True, stderr=subprocess.DEVNULL, timeout=15,
         ).strip().split()
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:

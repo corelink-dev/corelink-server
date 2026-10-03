@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "comment": "Single source of truth for CoreLink's GitHub identity, read by scripts/server_repository.py. An id of 0 means 'not read back yet': the loader refuses it, so fill each id only from a readback of the live object (GET repositories/<id> or orgs/<owner>), never from memory. historical_server_owners and retired_repository_ids exist only to verify artifacts and packets made before the 2026-10 recreate; they never authorize a live run.",
+  "current": {
+    "owner": "corelink-dev",
+    "owner_id": 0,
+    "repos": {
+      "server": {"name": "corelink-server", "id": 0},
+      "runners": {"name": "corelink-runners", "id": 0},
+      "workspaces": {"name": "corelink-workspaces", "id": 0}
+    }
+  },
+  "distribution": {
+    "cli": "HuGR-Labs/corelink-cli",
+    "clw_releases": "HuGR-Labs/clw-releases",
+    "homebrew_clw": "HuGR-Labs/homebrew-clw"
+  },
+  "github_app": {"owner": "HuGR-Labs", "slug": "corelink-runners", "id": 4222041},
+  "historical_server_owners": ["HumanGuardrail", "HuGR-Labs", "HuGR-dev"],
+  "retired_repository_ids": [1232040291, 1259579816, 1266754321, 1380335483]
+}
