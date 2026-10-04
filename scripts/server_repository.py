@@ -312,12 +312,14 @@ def resolve_server_repository(
         or os.environ.get("CORELINK_EXPECTED_REPOSITORY")
     )
     if selected:
-        return validate_server_repository(selected, identity=identity)
+        validate_server_repository(selected, identity=identity)
 
     # Actions already knows both values. Validate the stable ID before trusting
     # the context name; a matching name alone is not sufficient.
     if os.environ.get("GITHUB_REPOSITORY_ID") is not None or os.environ.get("GITHUB_REPOSITORY") is not None:
         return require_github_context(identity=identity)
+    if selected:
+        return selected
 
     repository_id = current_repository("server", identity=identity).id
     try:

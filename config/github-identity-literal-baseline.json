@@ -1,0 +1,1227 @@
+{
+  "schema": 1,
+  "comment": "Frozen I1 migration debt after review of 094176da0480489be4ae2e319345a54d44a81348. Hashes count exact stripped retired-literal lines in every classification. Owning work packages remove migrated paths and hashes; do not regenerate to admit new debt. PENDING membership and line counts may only shrink.",
+  "pending_paths": [
+    ".github/ISSUE_TEMPLATE/config.yml",
+    ".github/workflow-state-waivers.yml",
+    ".github/workflows/audit-archive-lag.yml",
+    ".github/workflows/audit-keyed-epoch.yml",
+    ".github/workflows/aws-s3-object-lock-live-proof.yml",
+    ".github/workflows/b029-load-gate.yml",
+    ".github/workflows/b103-cargo-write-reproducer.yml",
+    ".github/workflows/b125-audit-throughput-read-only.yml",
+    ".github/workflows/b216-receiver-deploy-nonprod.yml",
+    ".github/workflows/b251-d03-read-only-probe.yml",
+    ".github/workflows/bot-pr-has-checks.yml",
+    ".github/workflows/campaign-ci.yml",
+    ".github/workflows/cas_foundation.yml",
+    ".github/workflows/cf-deploy-prod.yml",
+    ".github/workflows/cloudflare-scoped-token-handoff.yml",
+    ".github/workflows/container-build-push-prod.yml",
+    ".github/workflows/corelink-server.yml",
+    ".github/workflows/endurance-2h-nightly.yml",
+    ".github/workflows/i1629-effect-ledger-sql.yml",
+    ".github/workflows/i1633-byok-accounting.yml",
+    ".github/workflows/i1664-gpg-release-identity-audit.yml",
+    ".github/workflows/i1675-live-probe.yml",
+    ".github/workflows/i2587-gpg-audit-ci.yml",
+    ".github/workflows/issue-1641-pagerduty-contract.yml",
+    ".github/workflows/issue-1648-b063-read-only-evidence.yml",
+    ".github/workflows/issue-1649-stripe-test-mode.yml",
+    ".github/workflows/issue-1652-b072-evidence.yml",
+    ".github/workflows/issue-1656-capacity-refresh.yml",
+    ".github/workflows/issue-1658-b102-cap-propagation.yml",
+    ".github/workflows/issue-1658-b102-cargo-put.yml",
+    ".github/workflows/issue-1660-b104-authenticated-404.yml",
+    ".github/workflows/issue-1662-b106-cold-warm.yml",
+    ".github/workflows/issue-1665-b112-hosted-contract.yml",
+    ".github/workflows/issue-1666-mutants-evidence-contract.yml",
+    ".github/workflows/issue-1669-read-only-evidence.yml",
+    ".github/workflows/issue-1670-fleet-classification.yml",
+    ".github/workflows/issue-1670-fleet-contract.yml",
+    ".github/workflows/issue-1671-b129-diagnostic.yml",
+    ".github/workflows/issue-1681-b314-exact-head.yml",
+    ".github/workflows/issue-1690-p12-p14-verifier.yml",
+    ".github/workflows/issue-1700-container-staging-deploy.yml",
+    ".github/workflows/issue-1700-staging-custom-domain.yml",
+    ".github/workflows/issue-1700-staging-readiness.yml",
+    ".github/workflows/issue-1724-cli-provenance.yml",
+    ".github/workflows/issue-1863-mutants-hosted.yml",
+    ".github/workflows/issue-1949-verifier-contract.yml",
+    ".github/workflows/issue-1952-openapi-version-contract.yml",
+    ".github/workflows/issue-2050-cli-release-dry-run.yml",
+    ".github/workflows/issue-2092-dsr-classification.yml",
+    ".github/workflows/issue-2152-cyclonedx-diagnostic.yml",
+    ".github/workflows/issue-2161-staging-ownership.yml",
+    ".github/workflows/issue-2165-ecr-image-build.yml",
+    ".github/workflows/issue-2167-b071-owner-packet.yml",
+    ".github/workflows/issue-2176-grpc-deny-gate.yml",
+    ".github/workflows/issue-2568-sla-credit-real.yml",
+    ".github/workflows/issue-2572-draft-contract.yml",
+    ".github/workflows/issue-2574-staging-grpc-diagnostic.yml",
+    ".github/workflows/issue-2575-staging-grpc-probe.yml",
+    ".github/workflows/issue-2576-admission.yml",
+    ".github/workflows/issue-2579-cas-ownership.yml",
+    ".github/workflows/issue-2580-webhook-ownership.yml",
+    ".github/workflows/issue-2581-dsr-audit.yml",
+    ".github/workflows/issue-2582-signup-ownership.yml",
+    ".github/workflows/issue-2583-byok-ownership.yml",
+    ".github/workflows/issue-2586-windows-contract.yml",
+    ".github/workflows/issue-2586-windows-readiness.yml",
+    ".github/workflows/issue-2610-mutants-failure-receipt.yml",
+    ".github/workflows/issue-2612-provider-deferred.yml",
+    ".github/workflows/issue-2623-ownership-contract.yml",
+    ".github/workflows/issue-2627-stripe-fixtures.yml",
+    ".github/workflows/issue-2628-codeql-severity.yml",
+    ".github/workflows/issue-2649-b114-policy.yml",
+    ".github/workflows/issue-2663-teardown-contract.yml",
+    ".github/workflows/issue-2664-worker-synthetic-tenant.yml",
+    ".github/workflows/issue-2665-dsr-teardown.yml",
+    ".github/workflows/issue-2666-byok-teardown.yml",
+    ".github/workflows/issue-2776-r2-cleanup.yml",
+    ".github/workflows/issue-605-billing-fixture.yml",
+    ".github/workflows/issue-ci-pack.yml",
+    ".github/workflows/load-test-nightly.yml",
+    ".github/workflows/mutation-nightly.yml",
+    ".github/workflows/perf-production-evidence.yml",
+    ".github/workflows/pr-601-hosted-spawn-worker-consumer.yml",
+    ".github/workflows/real-ignored-harnesses.yml",
+    ".github/workflows/release-cli.yml",
+    ".github/workflows/runner-fleet-health.yml",
+    ".github/workflows/sbom-clone-bundle.yml",
+    ".github/workflows/semgrep.yml",
+    ".github/workflows/sign-linux.yml",
+    ".github/workflows/staging-load-seal-contract.yml",
+    ".github/workflows/staging-provider-preflight.yml",
+    ".github/workflows/staging-quarantine-apply.yml",
+    ".github/workflows/workflow-state-guard.yml",
+    "apps/docs/docs/explanation/security/byok.mdx",
+    "apps/docs/lychee.toml",
+    "apps/docs/src/pages/compare/vs-bazel-remote-s3.mdx",
+    "apps/docs/src/pages/compare/vs-buildbuddy.mdx",
+    "apps/docs/src/pages/compare/vs-engflow.mdx",
+    "apps/docs/src/pages/compare/vs-nx-cloud.mdx",
+    "apps/docs/src/pages/compare/vs-sccache-s3.mdx",
+    "apps/docs/src/pages/compare/vs-turborepo.mdx",
+    "apps/dsr-alert-receiver/scripts/receiver-target.mjs",
+    "apps/dsr-alert-receiver/tests/deploy-route.test.mjs",
+    "apps/get-corelink-worker/README.md",
+    "crates/corelink-audit/src/link_hash.rs",
+    "crates/corelink-client-verify/Cargo.toml",
+    "crates/corelink-hash/Cargo.toml",
+    "crates/corelink-ops/examples/supply_chain_verify_paranoid_mode.rs",
+    "crates/corelink-ops/examples/supply_chain_verify_verify_basic.rs",
+    "crates/corelink-ops/src/deploy.rs",
+    "crates/corelink-ops/src/deploy/types.rs",
+    "crates/corelink-ops/src/supply_chain/verify.rs",
+    "crates/corelink-ops/src/supply_chain/verify/bin/cli.rs",
+    "crates/corelink-ops/src/supply_chain/verify/types.rs",
+    "crates/corelink-ops/src/supply_chain/verify/verifier.rs",
+    "crates/corelink-rate-headers/Cargo.toml",
+    "crates/corelink-rate-headers/README.md",
+    "crates/corelink-stripe-real/src/client.rs",
+    "crates/corelink-stripe-real/tests/live_integration.rs",
+    "crates/tenant-path/Cargo.toml",
+    "docs/OSS_STRATEGY.md",
+    "docs/internal/ENGINEERING-ONBOARDING.md",
+    "docs/internal/OSS-VS-CLOSED-MATRIX.md",
+    "docs/internal/ci-runner-fabric-box.md",
+    "docs/internal/pentest-engagement-checklist.md",
+    "docs/internal/slsa-l3-pipeline.md",
+    "docs/operator/e2e-ci-2026-05-30.md",
+    "examples/bazel-starter/README.md",
+    "examples/buck2-starter/README.md",
+    "infra/ci-runners/linux/docker-compose.yml",
+    "infra/grafana/dashboards/dash-audit-chain.json",
+    "infra/grafana/dashboards/dash-billing.json",
+    "infra/grafana/dashboards/dash-byok-health.json",
+    "infra/grafana/dashboards/dash-capacity-planning.json",
+    "infra/grafana/dashboards/dash-compliance-health.json",
+    "infra/grafana/dashboards/dash-customer-traffic.json",
+    "infra/grafana/dashboards/dash-dr-status.json",
+    "infra/grafana/dashboards/dash-dsr-pipeline.json",
+    "infra/grafana/dashboards/dash-incident-triage.json",
+    "infra/grafana/dashboards/dash-ratelimit-abuse.json",
+    "infra/grafana/dashboards/dash-reliability.json",
+    "infra/grafana/dashboards/dash-slo-burndown.json",
+    "marketing/og/README.md",
+    "marketing/org-readme.md",
+    "marketing/profile-readme.md",
+    "marketing/retention/customer-health/SURVEY-ANALYSIS-PROTOCOL.md",
+    "marketing/sales/legal-questionnaires/EVIDENCE-PACK-INDEX.md",
+    "marketing/sales/legal-questionnaires/SIG-LITE-2026-pre-filled.md",
+    "marketing/sales/legal-questionnaires/VENDOR-QUESTIONNAIRE-RESPONSE-TEMPLATE.md",
+    "scripts/check_b114_cross_repo.py",
+    "scripts/check_b135_cross_repo.py",
+    "scripts/codeql_reviewed_dispositions.py",
+    "scripts/complete_issue_1700_existing.py",
+    "scripts/cut-v1-0-0-ga-tag.sh",
+    "scripts/issue_1652_b072_operator.py",
+    "scripts/org_migration_audit.py",
+    "scripts/org_migration_gate_check.py",
+    "scripts/run_i2587_gpg_audit.py",
+    "scripts/staging_bootstrap_provider.py",
+    "scripts/stripe_test_mode_evidence.py",
+    "scripts/test_b072_receiver_mutations.py",
+    "scripts/test_b102_b108_evidence.py",
+    "scripts/test_b103_b129_attribution.py",
+    "scripts/test_b103_cargo_write_contract.py",
+    "scripts/test_i1687_endurance_lane.py",
+    "scripts/test_issue_1652_b072_operator.py",
+    "scripts/test_org_migration_gate_check.py",
+    "scripts/test_pinned_gh_consumers.py",
+    "scripts/verify_audit_archive_lag_workflow.py",
+    "scripts/verify_b012_bot_pr_evidence.py",
+    "scripts/verify_b029_load_gate.py",
+    "scripts/verify_b063_hosted_build_workflow.py",
+    "scripts/verify_b063_hosted_evidence_workflow.py",
+    "scripts/verify_b072_receiver.py",
+    "scripts/verify_b103_b129_attribution.py",
+    "scripts/verify_b154_instrument_claims.py",
+    "scripts/verify_b155_batch_g.py",
+    "scripts/verify_b170_owner_actions.py",
+    "scripts/verify_b314_gdpr_sigstore.py",
+    "scripts/verify_i1658_b102_contract.py",
+    "scripts/verify_i1687_endurance_lane.py",
+    "scripts/verify_i2176_grpc_deny_gate.py",
+    "scripts/verify_i2368_hosted_bundle.py",
+    "scripts/verify_i2457_mutants_shards.py",
+    "scripts/verify_i2586_windows_readiness.py",
+    "scripts/verify_i2587_gpg_audit.py",
+    "scripts/verify_issue_2374_hosted_proof.py",
+    "scripts/verify_issue_2666_byok_teardown.py",
+    "scripts/verify_real_ignored_harnesses.py",
+    "scripts/verify_staging_provider_preflight.py",
+    "scripts/windows_signing_readiness.ps1",
+    "tests/load/README.md",
+    "tests/test_b125_readonly_workflow.py",
+    "tests/test_i1664_signing_readiness.py",
+    "tests/test_issue_1700_historical_query.py",
+    "tests/test_issue_1700_staging_readiness_contract.py",
+    "tests/test_pull_request_target_spawn_boundary.py",
+    "tests/test_staging_bootstrap_provider.py",
+    "tests/test_verify_b170_owner_actions.py",
+    "tools/cli/tests/release_workflow_contract.rs",
+    "tools/sbom-publish/src/purl.rs",
+    "tools/sbom-publish/tests/adversarial.rs"
+  ],
+  "retired_lines": {
+    ".github/CODEOWNERS": {
+      "2e6d74a9953bf2418ffc14f8c65b0ab4d2dc5cfa9cab7d0f82f04a0a6220b7fd": 1
+    },
+    ".github/ISSUE_TEMPLATE/config.yml": {
+      "0a888c555984e4fb51428fb9ad09c430dd0975fcd7ceb9836101c0fbf99d6568": 1,
+      "6012965e3c88805db76c83f37415768181334e23e83225c5416311e1446c84ad": 1
+    },
+    ".github/workflow-state-waivers.yml": {
+      "458419ee8fc17ca43ce2645812073574f2da545360b0e6fc9212c48e00c8cfb8": 1
+    },
+    ".github/workflows/audit-archive-lag.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/audit-keyed-epoch.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 2
+    },
+    ".github/workflows/aws-s3-object-lock-live-proof.yml": {
+      "b737f2440519d34b4d20c9527e00189ec73ab5a830e94a4daa7005dcb43b9cec": 1,
+      "57d3b0ed9f27cbc0f036740a4f2c0535cca5309fccecea81e1f89120db54388e": 1
+    },
+    ".github/workflows/b029-load-gate.yml": {
+      "4a9d22fee9a9746150c1e2b98ce0320a3e5dff6b7a61c8b9af7f63e75b156263": 1
+    },
+    ".github/workflows/b103-cargo-write-reproducer.yml": {
+      "3517b9ef506e3bcdaef41090074ac562cb0874e496b406913d5e3ebd3f454329": 1
+    },
+    ".github/workflows/b125-audit-throughput-read-only.yml": {
+      "75de0388538c493228d8f50c980dd3c4af694654e42a54ec77bbbd7e0f1df055": 1,
+      "103bd22fb6526f32e79c34d1d100ce30f6294cd90b4387d10735975e5de59bfe": 1,
+      "92d6d8b433c14499d755145b33eafea38fdec0c669cce9e589427e05c2c4511d": 1
+    },
+    ".github/workflows/b216-receiver-deploy-nonprod.yml": {
+      "ec775ce307067da6f04812d79ac18c766f24989420fc766225e5a6ff806400af": 1,
+      "5e58f1d48a1b64b0fead685c65b5023a212a21fe7fa8b7846383b8d0eaf1cb7f": 1
+    },
+    ".github/workflows/b251-d03-read-only-probe.yml": {
+      "68ea79717093f55a0ad3d3a5c5411b588805d608af38267b9a06784ada170279": 2,
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/bot-pr-has-checks.yml": {
+      "2f0c646f96544cb0f524f3fbad3cf92a457bddcdc30e7009d64bde99c2d5ee1c": 1,
+      "459d5330069bbb0c9aacc1b19b0c50d1dc23c1177eb13ac6408f9ab04705d6ef": 1,
+      "eb9dd69c7f9922dcfc4c15c53d7b1a5ab25b640eaabc9af8a6a476d534e7a01c": 1
+    },
+    ".github/workflows/campaign-ci.yml": {
+      "ab1cc2c9668797d16284848077e89854a314885020a95804a026b448fe8e9f15": 1,
+      "f0c8b3cab5497fb185e9c576b488364bc10638cd9297fb9b5c0afe8746c65791": 1,
+      "b675246bc14a8fe0d943829e831ac996ffa5bc04dbe7fe2d84ef699ea363b728": 1,
+      "6bf7df583eeb93125a0ce2a8d6dd509790c5abd88bcea4e306a94078f2470718": 1
+    },
+    ".github/workflows/cas_foundation.yml": {
+      "ae7d54f357c7e464f6c01494cd20b8dd069b36bafd879cdcaa30ba3b1c04ab44": 1
+    },
+    ".github/workflows/cf-deploy-prod.yml": {
+      "dd0a3d99c3cb69e49b5c78b115c4b81d378428c69a0bda507840f9e7459f89e0": 1
+    },
+    ".github/workflows/cloudflare-scoped-token-handoff.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/container-build-push-prod.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 3
+    },
+    ".github/workflows/corelink-server.yml": {
+      "dc703cc580fb9b5fa55a3f82badb884b685f08eeb77a3da59799c0a2f9534c29": 1
+    },
+    ".github/workflows/endurance-2h-nightly.yml": {
+      "966d1cd829dc36eca0bedb9c09661d4f12e86364ad7a15780f526f616ba71cbf": 1,
+      "a27b501bf7b37588e8eeb30a6cb0b73f72476d44a4aafa794babd0cc15e0d06f": 1
+    },
+    ".github/workflows/i1629-effect-ledger-sql.yml": {
+      "7d189970556f01fc5f6c1eba33d4e4c932dc44543c1b23038594bbe90babc79a": 1
+    },
+    ".github/workflows/i1633-byok-accounting.yml": {
+      "a4645260fffdb089de2fa1ec2e803c96eb902a055f863ae2fcaed53f4007bfc3": 1
+    },
+    ".github/workflows/i1664-gpg-release-identity-audit.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1,
+      "e146720796065bf5fe300e39b53b6ccf4826e7abab19f0b7d5ee4b5a34677581": 1
+    },
+    ".github/workflows/i1675-live-probe.yml": {
+      "dc703cc580fb9b5fa55a3f82badb884b685f08eeb77a3da59799c0a2f9534c29": 1
+    },
+    ".github/workflows/i2587-gpg-audit-ci.yml": {
+      "4a9d22fee9a9746150c1e2b98ce0320a3e5dff6b7a61c8b9af7f63e75b156263": 1
+    },
+    ".github/workflows/issue-1641-pagerduty-contract.yml": {
+      "dc703cc580fb9b5fa55a3f82badb884b685f08eeb77a3da59799c0a2f9534c29": 1
+    },
+    ".github/workflows/issue-1648-b063-read-only-evidence.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/issue-1649-stripe-test-mode.yml": {
+      "821e72d30c76f1b6108da312b323f5ce957cb143e5929e9945440f60caa3af41": 1
+    },
+    ".github/workflows/issue-1652-b072-evidence.yml": {
+      "4661f888b1e342109f4cb45c7f94df87cd2490a984a5504751d23de07ea300f1": 1,
+      "313acec2c765c2b1c4205e18f916768fd3734f12290ac65c8283a84da1ad3d41": 1,
+      "9db444d8f72bd119af6952158b92243909bfc2410618fa2d281cb57f5aec015b": 1
+    },
+    ".github/workflows/issue-1656-capacity-refresh.yml": {
+      "62e3a124bd5f0ae5530d95dcdadddbeebb0fa0008ad864cf39ff0829b7fdc7da": 1
+    },
+    ".github/workflows/issue-1658-b102-cap-propagation.yml": {
+      "dc703cc580fb9b5fa55a3f82badb884b685f08eeb77a3da59799c0a2f9534c29": 1
+    },
+    ".github/workflows/issue-1658-b102-cargo-put.yml": {
+      "a3238b6f8a595a160b60050550aff41a5cdc994af74adc3aa8b920123599950a": 1,
+      "62e3a124bd5f0ae5530d95dcdadddbeebb0fa0008ad864cf39ff0829b7fdc7da": 1
+    },
+    ".github/workflows/issue-1660-b104-authenticated-404.yml": {
+      "a3238b6f8a595a160b60050550aff41a5cdc994af74adc3aa8b920123599950a": 1,
+      "62e3a124bd5f0ae5530d95dcdadddbeebb0fa0008ad864cf39ff0829b7fdc7da": 1
+    },
+    ".github/workflows/issue-1662-b106-cold-warm.yml": {
+      "a3238b6f8a595a160b60050550aff41a5cdc994af74adc3aa8b920123599950a": 1,
+      "62e3a124bd5f0ae5530d95dcdadddbeebb0fa0008ad864cf39ff0829b7fdc7da": 1
+    },
+    ".github/workflows/issue-1665-b112-hosted-contract.yml": {
+      "e146720796065bf5fe300e39b53b6ccf4826e7abab19f0b7d5ee4b5a34677581": 1
+    },
+    ".github/workflows/issue-1666-mutants-evidence-contract.yml": {
+      "8b563145b29ac53fb38c49c4c9db026d66fe8bf81eed9b2f0d63115412f22eea": 1
+    },
+    ".github/workflows/issue-1669-read-only-evidence.yml": {
+      "62e3a124bd5f0ae5530d95dcdadddbeebb0fa0008ad864cf39ff0829b7fdc7da": 1
+    },
+    ".github/workflows/issue-1670-fleet-classification.yml": {
+      "fc7fb2e674b56e5fd4833e32db50dad3062a838e2e2238266cacde0e15bf7a9f": 1
+    },
+    ".github/workflows/issue-1670-fleet-contract.yml": {
+      "2f0c646f96544cb0f524f3fbad3cf92a457bddcdc30e7009d64bde99c2d5ee1c": 1
+    },
+    ".github/workflows/issue-1671-b129-diagnostic.yml": {
+      "3517b9ef506e3bcdaef41090074ac562cb0874e496b406913d5e3ebd3f454329": 1
+    },
+    ".github/workflows/issue-1681-b314-exact-head.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1,
+      "62e3a124bd5f0ae5530d95dcdadddbeebb0fa0008ad864cf39ff0829b7fdc7da": 1
+    },
+    ".github/workflows/issue-1690-p12-p14-verifier.yml": {
+      "994ed030a1706a32185f8a16917f1b975b17b212da619d7c62f97a5d695a381c": 1
+    },
+    ".github/workflows/issue-1700-container-staging-deploy.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 4
+    },
+    ".github/workflows/issue-1700-staging-custom-domain.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/issue-1700-staging-readiness.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1,
+      "e146720796065bf5fe300e39b53b6ccf4826e7abab19f0b7d5ee4b5a34677581": 1,
+      "1b285c9ca0f0b8036efe66c272a9b187bd2240e53740c7767e6e2c9288d4ed11": 1
+    },
+    ".github/workflows/issue-1724-cli-provenance.yml": {
+      "b3997884e417456f30af004d47eb8629e1be349bce109c236aa0672dab42163e": 1
+    },
+    ".github/workflows/issue-1863-mutants-hosted.yml": {
+      "a3238b6f8a595a160b60050550aff41a5cdc994af74adc3aa8b920123599950a": 4,
+      "9b748ba1b9a61d6296a279aa4b5bc8723643285dc604d27eb10fc3fb8b774129": 2
+    },
+    ".github/workflows/issue-1949-verifier-contract.yml": {
+      "dc703cc580fb9b5fa55a3f82badb884b685f08eeb77a3da59799c0a2f9534c29": 1
+    },
+    ".github/workflows/issue-1952-openapi-version-contract.yml": {
+      "2f0c646f96544cb0f524f3fbad3cf92a457bddcdc30e7009d64bde99c2d5ee1c": 1
+    },
+    ".github/workflows/issue-2050-cli-release-dry-run.yml": {
+      "e146720796065bf5fe300e39b53b6ccf4826e7abab19f0b7d5ee4b5a34677581": 2,
+      "e95611885df62c6db2ef16e4962d4f8954c896aa1d5a843db372ea29d41eafca": 1
+    },
+    ".github/workflows/issue-2092-dsr-classification.yml": {
+      "8b563145b29ac53fb38c49c4c9db026d66fe8bf81eed9b2f0d63115412f22eea": 1
+    },
+    ".github/workflows/issue-2152-cyclonedx-diagnostic.yml": {
+      "4a9d22fee9a9746150c1e2b98ce0320a3e5dff6b7a61c8b9af7f63e75b156263": 1
+    },
+    ".github/workflows/issue-2161-staging-ownership.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1,
+      "56c8018a91f2f042f2b42190c3b3b460fd12c9b985dfea1ba64aa54f6a077796": 1
+    },
+    ".github/workflows/issue-2165-ecr-image-build.yml": {
+      "6b5c531705c24eab4419e5b850d43e8a646015dfd76f56e91b99135aeb31aea8": 1,
+      "d031b9d76a1045a22fc2fd88c3ef26bb8bc9deccf8ad5b4d9d9812a1c3e6f9d9": 1
+    },
+    ".github/workflows/issue-2167-b071-owner-packet.yml": {
+      "4a9d22fee9a9746150c1e2b98ce0320a3e5dff6b7a61c8b9af7f63e75b156263": 1
+    },
+    ".github/workflows/issue-2176-grpc-deny-gate.yml": {
+      "dc703cc580fb9b5fa55a3f82badb884b685f08eeb77a3da59799c0a2f9534c29": 1
+    },
+    ".github/workflows/issue-2568-sla-credit-real.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 2,
+      "e146720796065bf5fe300e39b53b6ccf4826e7abab19f0b7d5ee4b5a34677581": 2,
+      "e4aaaa0f41508cf0e0f3343152a32faa0d1093d0cf65f868bdbc5731d9e08011": 3,
+      "68ea79717093f55a0ad3d3a5c5411b588805d608af38267b9a06784ada170279": 2
+    },
+    ".github/workflows/issue-2572-draft-contract.yml": {
+      "f78ebcdfa7f5a29efbb149a011fcc63afb8fe5d66ba8920c7417f0b3a3717abf": 3,
+      "d7a484b3625b89f3c6128f8e1c4be6e325536f1aee393bb2b14c47aef5b151e1": 1,
+      "e9b0d05cff6d1095c9c756b0672d39839f8dcb4fffab745662afdd15af54fb67": 1,
+      "fd2b68a90443c59220c90ee655a4102d722b68b86355525b0c0bfe2398120ea1": 1,
+      "38d22f12fb39e9103ae0f1402bc634c65c635eceb2d5c831407b447f47d7111b": 1,
+      "bcff369ba22acbd0377ceec8a75c6b409961785aa345c3d2269dcf6556303ac1": 1
+    },
+    ".github/workflows/issue-2574-staging-grpc-diagnostic.yml": {
+      "dc703cc580fb9b5fa55a3f82badb884b685f08eeb77a3da59799c0a2f9534c29": 1
+    },
+    ".github/workflows/issue-2575-staging-grpc-probe.yml": {
+      "4a9d22fee9a9746150c1e2b98ce0320a3e5dff6b7a61c8b9af7f63e75b156263": 1,
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1,
+      "e146720796065bf5fe300e39b53b6ccf4826e7abab19f0b7d5ee4b5a34677581": 1,
+      "d46b60bf86e6ba255e7ce90385ad449aef1d7ab411bd17758bcb8628336b774f": 1,
+      "9d25746b2b41f57b31757b62631b3663e143abab0094d076ccd104059e43820d": 1,
+      "cac5e31fe5e8f1081b1ae27a88af7cd082b0ae9c1601fb95578f529ab9add813": 1,
+      "216ade3e9169eecd55fd3aca417ad050004fdd4ef43e9b03bea7ee1055f84514": 1
+    },
+    ".github/workflows/issue-2576-admission.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/issue-2579-cas-ownership.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/issue-2580-webhook-ownership.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/issue-2581-dsr-audit.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/issue-2582-signup-ownership.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/issue-2583-byok-ownership.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1,
+      "e146720796065bf5fe300e39b53b6ccf4826e7abab19f0b7d5ee4b5a34677581": 1
+    },
+    ".github/workflows/issue-2586-windows-contract.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 2,
+      "e146720796065bf5fe300e39b53b6ccf4826e7abab19f0b7d5ee4b5a34677581": 2
+    },
+    ".github/workflows/issue-2586-windows-readiness.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1,
+      "e146720796065bf5fe300e39b53b6ccf4826e7abab19f0b7d5ee4b5a34677581": 1
+    },
+    ".github/workflows/issue-2610-mutants-failure-receipt.yml": {
+      "4a9d22fee9a9746150c1e2b98ce0320a3e5dff6b7a61c8b9af7f63e75b156263": 1
+    },
+    ".github/workflows/issue-2612-provider-deferred.yml": {
+      "dc703cc580fb9b5fa55a3f82badb884b685f08eeb77a3da59799c0a2f9534c29": 1
+    },
+    ".github/workflows/issue-2623-ownership-contract.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/issue-2627-stripe-fixtures.yml": {
+      "ebd25cad547185119213b06e8c064020bcf2c5dd5b7d242a22b6399f28865121": 1
+    },
+    ".github/workflows/issue-2628-codeql-severity.yml": {
+      "e146720796065bf5fe300e39b53b6ccf4826e7abab19f0b7d5ee4b5a34677581": 1
+    },
+    ".github/workflows/issue-2649-b114-policy.yml": {
+      "518568710e4a270c4acd14adc72d5fe2b7de0065e636545dbcd350c5fa68f5a4": 2
+    },
+    ".github/workflows/issue-2663-teardown-contract.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/issue-2664-worker-synthetic-tenant.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/issue-2665-dsr-teardown.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/issue-2666-byok-teardown.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1,
+      "e146720796065bf5fe300e39b53b6ccf4826e7abab19f0b7d5ee4b5a34677581": 1
+    },
+    ".github/workflows/issue-2776-r2-cleanup.yml": {
+      "4a9d22fee9a9746150c1e2b98ce0320a3e5dff6b7a61c8b9af7f63e75b156263": 1
+    },
+    ".github/workflows/issue-605-billing-fixture.yml": {
+      "8b563145b29ac53fb38c49c4c9db026d66fe8bf81eed9b2f0d63115412f22eea": 1,
+      "0b6396ae6038ff59a92bf62c67511abdd0bc48dbe5a150b20522fc848803c12d": 1
+    },
+    ".github/workflows/issue-ci-pack.yml": {
+      "a45158f7cb3ce6afd4704bb86b1b7ab5355772aa0917faae6ca213668a34c9a8": 1
+    },
+    ".github/workflows/load-test-nightly.yml": {
+      "966d1cd829dc36eca0bedb9c09661d4f12e86364ad7a15780f526f616ba71cbf": 1,
+      "e50f7e6376895a716fe060818fefc3b53d238861762a0745f1e0f87cbfe83359": 1
+    },
+    ".github/workflows/mutation-nightly.yml": {
+      "7408137195b984e579d2b95c5fae149773c33c4ec750b1949f38a65a2cf1d677": 1,
+      "ae7d54f357c7e464f6c01494cd20b8dd069b36bafd879cdcaa30ba3b1c04ab44": 1
+    },
+    ".github/workflows/perf-production-evidence.yml": {
+      "160810ae6f574e4adefd7e2ed18fb78e1dba07d582487fa5cb819ae7c872c4c8": 1
+    },
+    ".github/workflows/pr-601-hosted-spawn-worker-consumer.yml": {
+      "f09a7b2e9c2874aa414a79fa6a7bae3b506331a60dc31447bd26d3e5d4c4793d": 1,
+      "1353249efd93dc5a3b36519c099dd3e89be96653f1e921303917f94bb2f581e7": 1,
+      "7dae5aa5e00e868222c06dc82e485a381c5debbda8850fea25585bd3caf126aa": 1,
+      "e4d8e8955400ebee2b49e8b054ce36e9e798cde086d4111626a2a25ba9be52ec": 1
+    },
+    ".github/workflows/real-ignored-harnesses.yml": {
+      "ec9787f879018623fe32e7c8aa1b9305e7b477dd3d0a7947d3fd5748ae71bb61": 1,
+      "ccdb33cbabfb11d0062913fee6bbf1a5d8b0b602c0e22a1cb51b47ceeea673a7": 1,
+      "bf460e2eceb8acdd4eeca7c0855470d8cd38bb2588a2b5e0cf4450e8c23ebdc4": 1,
+      "6b6132f00e28e1f5b01be74b32c6e1c17ae07d2e317d37488aac60e51b122562": 1
+    },
+    ".github/workflows/release-cli.yml": {
+      "983109b714e3621aab84bdf3b1e62cbada7305fa1715413c89a61ac0e5088c73": 2
+    },
+    ".github/workflows/runner-fleet-health.yml": {
+      "f6064329ab02460dcd1ec2cbcc58f581173c92529762d056c145202e2a2ac13a": 1
+    },
+    ".github/workflows/sbom-clone-bundle.yml": {
+      "6487986d6e06183c41f0a5a55a993cae9b8eadd652d2cb56a784634aab9ca54d": 1
+    },
+    ".github/workflows/semgrep.yml": {
+      "160810ae6f574e4adefd7e2ed18fb78e1dba07d582487fa5cb819ae7c872c4c8": 1
+    },
+    ".github/workflows/sign-linux.yml": {
+      "8d9a81745ccc3b9b59dbdf136d360a73667c022ee58faa81603e4244fa3656f1": 1,
+      "5588212e9be70a3c405516db7b9cf4922e1f32658dca16ed2d20c2c93ad28942": 1,
+      "352d37896d218326f7400c9347b0d0fe2ead1fd9115937991856fa724371406c": 1
+    },
+    ".github/workflows/staging-load-seal-contract.yml": {
+      "a457fc940ecf875a19fa7b790f6f2aededa3a06103c5aae0546a95fb3b4073c2": 1
+    },
+    ".github/workflows/staging-provider-preflight.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 1
+    },
+    ".github/workflows/staging-quarantine-apply.yml": {
+      "fb077e18dc05378b02b3c6e6fbdf183a9dcce9556b54abdd16c99971cef71977": 3,
+      "340f807559ae3b9b875dc8533f1e8ac0d510edd8bc54a855deeac1b4c3530c39": 1,
+      "2f8e3af245815aa69d9843b0c7034712731f2c2f61ac291bb19e25bafc2c464d": 1,
+      "59e0c6723e447ad1615e85f594378e5ebac945cffa674f66e8c7480cbaefbbde": 1,
+      "2d2cd896530521a5cee5eb734bd84358d230a1ade4b5fd2a123a33b7f1b43bb4": 1
+    },
+    ".github/workflows/workflow-state-guard.yml": {
+      "485eb11d43ecbfdc0bedf6b1347b04cdf65a8a37712d4363eed1dada6f415d96": 1,
+      "d9b6e75dfb24153ef25a4991614c3e190805a745a7dd4c9e081756dca8c22f65": 1,
+      "2f0c646f96544cb0f524f3fbad3cf92a457bddcdc30e7009d64bde99c2d5ee1c": 1,
+      "187a1cbfb8d995eb5d029e1a2690191e4a8bf6712b9ac2063cc381ae2d3a1974": 1
+    },
+    "apps/docs/docs/explanation/security/byok.mdx": {
+      "06c3b6de70295be3f293f182c6355c151e614746e607c9d520af37a541f58c47": 1,
+      "fdb4549d0ed9bb480ec9c83285d198c95da1a0615acaef1c65e9b544b9949a9e": 1
+    },
+    "apps/docs/lychee.toml": {
+      "530ce577ecf57cdfca2315b81995a7af80c31bf1f809375861beac0d0f55ff7d": 1
+    },
+    "apps/docs/src/pages/compare/vs-bazel-remote-s3.mdx": {
+      "9316014f3dfefb414c014e67db888419fbee6dd8818aa6a7e2d3631d5bf9243f": 1
+    },
+    "apps/docs/src/pages/compare/vs-buildbuddy.mdx": {
+      "9316014f3dfefb414c014e67db888419fbee6dd8818aa6a7e2d3631d5bf9243f": 1
+    },
+    "apps/docs/src/pages/compare/vs-engflow.mdx": {
+      "9316014f3dfefb414c014e67db888419fbee6dd8818aa6a7e2d3631d5bf9243f": 1
+    },
+    "apps/docs/src/pages/compare/vs-nx-cloud.mdx": {
+      "9316014f3dfefb414c014e67db888419fbee6dd8818aa6a7e2d3631d5bf9243f": 1
+    },
+    "apps/docs/src/pages/compare/vs-sccache-s3.mdx": {
+      "9316014f3dfefb414c014e67db888419fbee6dd8818aa6a7e2d3631d5bf9243f": 1
+    },
+    "apps/docs/src/pages/compare/vs-turborepo.mdx": {
+      "9316014f3dfefb414c014e67db888419fbee6dd8818aa6a7e2d3631d5bf9243f": 1
+    },
+    "apps/dsr-alert-receiver/scripts/receiver-target.mjs": {
+      "fe7d1bfdbc30779a937d44fc8323d49edc6e580b2f331ab6f43c6bfd741b7a3c": 1
+    },
+    "apps/dsr-alert-receiver/tests/deploy-route.test.mjs": {
+      "13fb7569383c6c9e4efffd403ba91c1a08494136c3bc035f66e04fe505f07274": 1
+    },
+    "apps/get-corelink-worker/README.md": {
+      "5f3503f58fee26f595acacf4b23a967207ccb034da71addf6e8e24523dd3085a": 1,
+      "bf753945c3f13d69bbe6ec8422fa8bc4ca820137e10ac0ff8e6d68ee124246ba": 1,
+      "e10e68ebd63567e99b47701d3f455dced8d216552f186c2c3ada4cb420853057": 1
+    },
+    "config/github-identity.json": {
+      "771c603f6f2f08e6fa16be4530be9759b9d7d1639c60c61dba920e872448e25a": 1,
+      "78d4ab65d5291c4ef3a22817ec1a8a157080b186ffbbdce5b2e41a1565ad149a": 1,
+      "af791c097c9303c47746436680797b1ff9282fb867354ec37325e6cf13b8bba8": 1,
+      "372695f17a0055c2226328b7868a487a9e1aff9ff2a638ba72fc965e13be56bb": 1
+    },
+    "crates/corelink-audit/src/link_hash.rs": {
+      "5e22260af4cf36b36532903394d06f73a8a105e400c566fc46961bae6e172730": 1
+    },
+    "crates/corelink-client-verify/Cargo.toml": {
+      "09656417e15d75a40dd6656f105d83869f8f1dbf2d8a4bb24d631c9b3fdb1506": 1
+    },
+    "crates/corelink-hash/Cargo.toml": {
+      "09656417e15d75a40dd6656f105d83869f8f1dbf2d8a4bb24d631c9b3fdb1506": 1
+    },
+    "crates/corelink-ops/examples/deploy_audit_fail_closed.rs": {
+      "85cbd6c717fc9a1e60da5fec86ceaf9638456ca954ab35b57cf05898070b15ae": 1,
+      "54c5a49c4aaefb50519bc48f8ec966a2171b1e87c340c62e4ed10b4405dd29d5": 1
+    },
+    "crates/corelink-ops/examples/deploy_verify_signed_deploy.rs": {
+      "54c5a49c4aaefb50519bc48f8ec966a2171b1e87c340c62e4ed10b4405dd29d5": 2
+    },
+    "crates/corelink-ops/examples/supply_chain_verify_paranoid_mode.rs": {
+      "7e6f2727e78caded747b4fe0bffdc4ec5d4896cc7da9b24d33d55a469367766d": 1,
+      "aeb52f6d9fde126bdbe59c761f4e02230a0010f0b29ca55acd776d2b1b5b5bb5": 1
+    },
+    "crates/corelink-ops/examples/supply_chain_verify_verify_basic.rs": {
+      "b334d1e189cc3e7e18e82823deefb720674b451a7f16d601d2e824176d47b996": 1,
+      "0ef8c03874b0af4af52847c4ad3394f7ad180c248331d3646c72bfe5620e4952": 1
+    },
+    "crates/corelink-ops/src/deploy.rs": {
+      "83920b08246522f649b17170419470228de00343c3a3dd020b3cc35fc385dfeb": 1
+    },
+    "crates/corelink-ops/src/deploy/types.rs": {
+      "f6f9032c74e88b942a2b974f01662e755a32f8b1d84a45205ca7b17a3d335a05": 1,
+      "a0cea2b640f9bed6bcbc58cbf7704a6739ed3eba0c438194d7979d7490fe7e16": 1,
+      "5cc5dc21401fbdb9cc6f5f52043ce7f95d56ef2d0e74e2929a7a9d073b7bd309": 1,
+      "d5c4ec548391a6b8c0036cbfbd502105fad25b3abcc0839d2570b1b017e5d88a": 1,
+      "92ef7ed2da03e15ef2fcb31261174f0e97a3d25203f56fa2bc63914fdb1b6123": 1,
+      "4903fc02b6e1d70ccba798621fba625382f5317d614c39251ebf68f0b6aa46c2": 1,
+      "1a2e3dee169865adf07a423ed690d9be161abc913868772fb2d66b7d7fcc8405": 1,
+      "cc02595830375bfefd5153af23429fae9799d2b511c7f700a2eef9e0c013283d": 1,
+      "397bb695e12ba08195e43ae8aa6fb43ca3065a9f1c3bf370fb5198fb28077504": 1
+    },
+    "crates/corelink-ops/src/deploy/verifier.rs": {
+      "2217d589393960072a3df1603b798897a4fab0cca068da765f42530648019652": 1,
+      "85cbd6c717fc9a1e60da5fec86ceaf9638456ca954ab35b57cf05898070b15ae": 1,
+      "a6baf9e25d708a868da06e258e82f2883467cbe830e3e0f75bd436a7c83fc8c9": 1
+    },
+    "crates/corelink-ops/src/supply_chain/verify.rs": {
+      "82665a058ad833d58334b75aebac9abdf7464b75a491eee62238bbded0801169": 1
+    },
+    "crates/corelink-ops/src/supply_chain/verify/bin/cli.rs": {
+      "138b0ac6b7c859b06fbfff0d0adbcd0678da9dda041aee83338662895f3e2232": 1,
+      "fba817bac1001e6386b8154fe272e4c8509420ea2b43af0135fb96c7e44a4986": 1,
+      "0fb97b78f12c023ba5d0ed8bde1f93eb6d0babf399774976ce764c3d86673554": 1
+    },
+    "crates/corelink-ops/src/supply_chain/verify/types.rs": {
+      "4f306fcd0e54158124afff8c1424e3f580128202f3d2ca3ee8245d0b2893c837": 1,
+      "ad098e4a6e7062f8a936da87d1057f77af7aac8e61da5bc905a9b9267bae32cb": 1,
+      "960321f33f667afadef8ba666e4e0395a75b0c12b6f6db452f6167823d2875b2": 1,
+      "979f8883ef4b96082fc4143c0493303456094000479a04001535e34ae99b99db": 1,
+      "6e605bc7980c7f0c8b044a8ae0fd5cf26bb2742e9f96f57430389108a0574ee5": 1,
+      "3add8b3249362f68ffcdde1177d8fc24a69ce03b5b238e2c36b58a58b8cbe005": 1,
+      "c11a3fca70966a8ddf97dad15fd3d6d5008f97ea93f6cedd6dcff645d406f181": 1,
+      "78a5a1906d68b49a3a06a00290361e1459548488bb79ba37a0d8afbafc45e176": 1,
+      "f50eb0350902657f814fb2327ab9cb3d1a6e3e50d6b2497b9c46db67309b7664": 1,
+      "f53391db814cac4689f64340a78dbdb640348dc06ad8e9397494e7fe09287dac": 1,
+      "2eab35a8589bc76beb5f318929c8f406843c4431a950b626126f283caf893983": 1
+    },
+    "crates/corelink-ops/src/supply_chain/verify/verifier.rs": {
+      "0c5df8e422e733567429bf55a7b343c856ed0b5c6718018d27a4abc51761f8ec": 1
+    },
+    "crates/corelink-ops/tests/deploy_adversarial.rs": {
+      "e09970e2f55608421426eb82d84e66a0d3d0dd394fea81896f3af2dd387152db": 1,
+      "85cbd6c717fc9a1e60da5fec86ceaf9638456ca954ab35b57cf05898070b15ae": 1
+    },
+    "crates/corelink-ops/tests/deploy_chaos.rs": {
+      "e09970e2f55608421426eb82d84e66a0d3d0dd394fea81896f3af2dd387152db": 1,
+      "85cbd6c717fc9a1e60da5fec86ceaf9638456ca954ab35b57cf05898070b15ae": 1
+    },
+    "crates/corelink-ops/tests/deploy_prop_verify.rs": {
+      "e09970e2f55608421426eb82d84e66a0d3d0dd394fea81896f3af2dd387152db": 1,
+      "85cbd6c717fc9a1e60da5fec86ceaf9638456ca954ab35b57cf05898070b15ae": 1
+    },
+    "crates/corelink-ops/tests/supply_chain_verify_adversarial.rs": {
+      "7c20332435316c995eb79cb7c06ce202a9915562a7bb7b1a770a21aeba6de451": 1,
+      "8b74b6759d3bec96298618167b704a7ddb6f6c0a849fa61292c51c1a7a40fa87": 1,
+      "84d0c990108e78671583cf259d564016d96f933b1eb9fd315bf6f3fa8d2ad26d": 1,
+      "2c9c49c4e940c3b127e499176f5021aa076db652eeb046fec9cfc2f9aaefdc6e": 1,
+      "6b884e1d667404e33047c460f76c9e2139c935214b6f6552d9a263b4d11d7842": 1,
+      "23634deb6d088ad62fd8319e4f01c5bf6649e517094223c9b5fa947d2ca676a5": 1,
+      "4e31ee54e1986bc76dfabf3801b5cb34bef44ed6e2ee2e8dcb454e842bb1da75": 1
+    },
+    "crates/corelink-ops/tests/supply_chain_verify_prop_verify.rs": {
+      "23634deb6d088ad62fd8319e4f01c5bf6649e517094223c9b5fa947d2ca676a5": 2,
+      "8b74b6759d3bec96298618167b704a7ddb6f6c0a849fa61292c51c1a7a40fa87": 1,
+      "2c9c49c4e940c3b127e499176f5021aa076db652eeb046fec9cfc2f9aaefdc6e": 1,
+      "c90b5b32aaa2f05d2776bd20d1fb263ba1e4eeb6f563f960963bdc035d378c20": 1,
+      "ff83a0bf81054bce62dd828e6e5d5f00d1ffd49b042c2aa0a845d91088bb8b8e": 1
+    },
+    "crates/corelink-rate-headers/Cargo.toml": {
+      "09656417e15d75a40dd6656f105d83869f8f1dbf2d8a4bb24d631c9b3fdb1506": 1
+    },
+    "crates/corelink-rate-headers/README.md": {
+      "b498800b98c32ecb3a604581bbaf49e246c1ec1c89408a7ff637d6dce2f7388e": 1
+    },
+    "crates/corelink-stripe-real/src/client.rs": {
+      "fe75a75ee7cc93b7044411951187238456696a98fd2e456dd7ac502164bf5024": 1
+    },
+    "crates/corelink-stripe-real/tests/live_integration.rs": {
+      "fe75a75ee7cc93b7044411951187238456696a98fd2e456dd7ac502164bf5024": 1,
+      "a12dde3596f318482f663cb04683c2586f714c878104efaaf62a97b4602cca20": 1
+    },
+    "crates/tenant-path/Cargo.toml": {
+      "09656417e15d75a40dd6656f105d83869f8f1dbf2d8a4bb24d631c9b3fdb1506": 1
+    },
+    "docs/OSS_STRATEGY.md": {
+      "1a8308baa0901ae91c4cd097b10584e6594923b7d6e24ddff7be9c07793f9e46": 1,
+      "c86e17defcd227939ace19f936afacce2c9dccf1d571cd7b506a601a9b43d9b6": 1,
+      "b97fa2f18ac253c16139d4d6805e1cce94f13bbf8e840629e22ac769cf3e9107": 1,
+      "a552e8a495d505051cac6e111eba238ec17b00f5c9ca1524afa3ee24603176d0": 1
+    },
+    "docs/campaigns/HANDOFF-go-live-validation.md": {
+      "5bf4305e188062eab08d869d2428fd0b2ee715119d1ecedc6943a39960a1e1d2": 1,
+      "e6401f568c71e144f684881d9bf8457d4a14f71ed5f393ebe371a834e0446bd3": 1,
+      "4d3994c19653ad2d07001518626341e11153b29f9687aad8be59eae10bb60498": 1
+    },
+    "docs/campaigns/remediation/ROADMAP.md": {
+      "1e28d35c0317040db8e3ccd72ad9fc7a1d44da26ff17cb50933ba3dabb1a8d73": 1,
+      "251fd11c8e04f594df3e581cb1f0c639478a11082db395b2e90f3dfc9d3eff42": 1,
+      "5b0906131ee5390bab5cc89e567c1aa2755b6318fee1c2d6a6348b55f1486983": 1
+    },
+    "docs/handoff/2026-09-05-b142-codeql-selfhost-action-packet.md": {
+      "7f183e2b94dcb5398bc82ff4dc130255d4e9542446a1f7434c59e317995e5a4c": 1
+    },
+    "docs/handoff/2026-09-05-owner-action-packets-b008-b154.json": {
+      "87df975c3bdd54089a8dd25a57f009f2b65a5a09369d89705b8749b3386ecf9f": 1,
+      "3c03eec46d77467c7a1880f89305b6bb1112e0ef5b17a6808a52581c42a283d7": 1,
+      "3596f144fa6113110bb074db7b760c247c97af9e83514cf8b6f4d1b793774f77": 1,
+      "8728fe61333021268616dbb19990fb93808f34acb9c7b0590769d01a5169213c": 1,
+      "3330bc37ca909336737731274019c510084593856a1935be2ece94b3eb590e53": 1,
+      "ee919888e752fcd1c9f61281b279709904f9899af2a950d818588a67445b0af7": 1,
+      "d4f2d739c8e561529808b0503c218a1f59df08aaf1ec139edd5dbe6a80ed9bad": 1,
+      "d7c412d0c94597c9f927096b8e66f239c7293312675ad740f49dd06fb8f7f64b": 1
+    },
+    "docs/handoff/2026-09-06-d03-graduation-packets.json": {
+      "69c26ccc5aa360fda091a06b0bfe8cec9909e23eae7981d5ed3c0c54ac1226aa": 1,
+      "39cf5474d9a74101eb8e502540e4b9da451bc5dc18b4461d3eda418704b4ab62": 1,
+      "dff8a61987dc799e0ffa364110c250dcfbb2a4f60480c41ab7e7b69947eaf7e1": 1,
+      "8d7938cc81505b1173d70075cf4ef4cd60307b1f2fe8cc799b0575e16b2f2758": 1
+    },
+    "docs/internal/ENGINEERING-ONBOARDING.md": {
+      "95297d1f2196f1b27ab39f3d6a43093e427882faeb7ae4b23c30762455276d81": 1
+    },
+    "docs/internal/OSS-VS-CLOSED-MATRIX.md": {
+      "86150a1c2de88a7d9bbe626cbeb13d80baf3efc64f099064759c0e1795c546da": 1,
+      "3b32e6987ec56aed419adbcec3818503e40bb527d4d0e37cc23c3e8e68f678ea": 1
+    },
+    "docs/internal/b250-deleted-workflow-control-plane-evidence-20260908.md": {
+      "a81e0ab73d537867d3c06ecb1dcdd56fa1aa7cb3eb0b255f377299644cc5b7e0": 1,
+      "3afec91b2685b7ea42e83995db339a2c2c5e5a9546b34d530750ef7944b6de4b": 1,
+      "7ab9f15926f33e84d39992b1c8994a084e56a1674776a63f22f7c50ab8aa3434": 1,
+      "2fd76ff7d08dee99bffa11831edddbf4a4011abe06cd702e4de3b5bcc42c91df": 1
+    },
+    "docs/internal/ci-runner-fabric-box.md": {
+      "1e571138bafd6d6a30c13e82d3f167c4b8aeac8a7d2d459544ee6d9a4b24765a": 1,
+      "5d5d9e0d87237eb6ec34bc5f9f1e4940a2efcc9622b80647d70c1ed34f172317": 1
+    },
+    "docs/internal/pentest-engagement-checklist.md": {
+      "dbbc0c77b2510b8f69455bc886e1063042f8b51a6be7bc3883f1f417603eb3de": 1
+    },
+    "docs/internal/slsa-l3-pipeline.md": {
+      "8bac8e31e497c7297a00f1f9f1663952f1c94f94f992e0bcf309c9646e60e8c8": 1,
+      "fef68a1f151bd55af94a17aee6e126a2c5f1455daf8979798c8ba11f38aed6d7": 1,
+      "73aefabcae08d0bf2843b9d6248072de5d9ed513a75375d021d317a49077e134": 1,
+      "1a39cc15255b23fd1427c5c68968e1d004c3e17f54654fc59e6c9a9814f4bf9a": 1,
+      "ab79cdb956af20215392a7e07673bb7126f786a76dc5788211bc6e3513f3ceee": 1
+    },
+    "docs/knowledge/adr/adr-0025-deploy-gate-hard-cosign-keyless.md": {
+      "23699b250814589e86d45c649f399dfe24f7e0df482a50c183a7337be347590b": 1
+    },
+    "docs/knowledge/adr/adr-s12-001-sbom-cyclonedx-ntia-tsa-dt.md": {
+      "4e19b876bae2fd9ed67282dff00ecfcc0d2917a397e956bfee1262491d6095f0": 1
+    },
+    "docs/operator/audit-archive-partition-remediation.md": {
+      "03da1b38fc889cff02267505e2b5ade1653db6d09624e474415b283fb387e769": 1,
+      "0b2735bf819fef5e794b368c5afba8e12e486903a9d65daac603916b5342678a": 1,
+      "922691436ace530021dbfa941241c9f84c3a0a9942b12b9f1d8c5715930b4f06": 1
+    },
+    "docs/operator/e2e-ci-2026-05-30.md": {
+      "c86d6597a433421bac98cb7ff15f61705ed190632a71ed781083571d886cab2b": 1
+    },
+    "docs/perf/2026-09-09-wp-b152-historical-annotations.md": {
+      "8fb08c9e871d43259914b897b17cb906b145fd245545e44b8c7c2493c6ac5215": 1,
+      "3df02a5160100eb33f66caae48d006b458aead95acfea2474b6ec9a96b08c43b": 1,
+      "cc6fa069efa919247021913bb264587a4d3aac14f65e9aa3e64e4989bf5747d3": 1,
+      "fe1930729f72161753887eb329b719d117935b662bebf12ddab5e0c286519676": 1,
+      "ea08f4601bbd8e8811f71dafea9b108b3843ad21ef1f439ce027b1ab3704c317": 1,
+      "26a5f470009a21dc40fa952f742842a96686faa4122c49bfea55029b66b7bf25": 1
+    },
+    "docs/security/b028-dependabot-census-2026-09-06.json": {
+      "87df975c3bdd54089a8dd25a57f009f2b65a5a09369d89705b8749b3386ecf9f": 1,
+      "3ea6183807d15e4051a0a3777e6f3297e2690dc0c5af3806f1292912ef087edf": 1
+    },
+    "docs/security/b373-dependabot-census-2026-09-09.json": {
+      "87df975c3bdd54089a8dd25a57f009f2b65a5a09369d89705b8749b3386ecf9f": 1,
+      "6877f75a22af70ace4d12b154d25064948e07d3cd738f4e5bf45ec828762a9a2": 1
+    },
+    "docs/security/report-security.md": {
+      "a3de31a9aaf661e0337976634d30ad3aa17319ea7dbfcf586471f4dbebc2c599": 1
+    },
+    "examples/bazel-starter/README.md": {
+      "33d233dabc5eb73d4c949852fb769ba68f68169e0211841989bcc8d89d99b557": 1
+    },
+    "examples/buck2-starter/README.md": {
+      "7d0682e1c143e03a6e31d614f052e27825e72ab1787f511f58534ef6fcf30b88": 1
+    },
+    "infra/ci-runners/linux/docker-compose.yml": {
+      "9fe5b8506e55bb443c2544f5c9f8e572774e433c6006593be6246294b2704b21": 1
+    },
+    "infra/grafana/dashboards/dash-audit-chain.json": {
+      "a0fc079bc81871a9c5a089b6583f5c11c3cef5320bfcb3db7a33da783507f309": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "infra/grafana/dashboards/dash-billing.json": {
+      "7240c38ba8e7053ff7938d8e74e7e254af193577b6bf832b8a82a87a80288382": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "infra/grafana/dashboards/dash-byok-health.json": {
+      "c2f3184fe45e44deab4a29c92b3a04b2cbc240b200c0390947b728fc524c4e14": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "infra/grafana/dashboards/dash-capacity-planning.json": {
+      "a60860e797cf1cab227b2b6ed2d45a929815d5430a7a489e0ca6a09f590f6a47": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "infra/grafana/dashboards/dash-compliance-health.json": {
+      "4ec7f311122d2b871998daf88a6f3d6d1f261f3ddcd3352917721fc562d1954f": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "infra/grafana/dashboards/dash-customer-traffic.json": {
+      "6ab7c17c241005e8ef6f635986588dcfbc6fd96991f37a5367c98c19e6f0dfcf": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "infra/grafana/dashboards/dash-dr-status.json": {
+      "5b2b8723c035f9e650e348ff9b9f2b62b18033d6d8cafa7ade3f1da2104426fd": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "infra/grafana/dashboards/dash-dsr-pipeline.json": {
+      "393cf82b1551b58fd905a7c70833af6abc0969aba5de719280bdf28007e03b11": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "infra/grafana/dashboards/dash-incident-triage.json": {
+      "3ca9fc12bc9426c503c4206cc6ed435170ba5714bb6366ace8067588e7be4d6b": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "infra/grafana/dashboards/dash-ratelimit-abuse.json": {
+      "4b829ce75aecc1cc74d4fb5da70f0198edfab1ac9fafbf4f764f46831e54b76f": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "infra/grafana/dashboards/dash-reliability.json": {
+      "463dba04ecf3f815d95a63f3c1685624cc12d69e0a2d38562444f4a9f573ba4e": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "infra/grafana/dashboards/dash-slo-burndown.json": {
+      "65aa457885c47011f9dd5a95f8e1acdd52d8a80d2c0df1e14f021c214751988c": 1,
+      "d9a9de28bc62acf6ef52c3a0340fb7255c4c93810a9bff99aeab7d9ebd67a246": 1
+    },
+    "marketing/og/README.md": {
+      "3d4460d2bab097c8b54570966bdd44293805cbee18b5151c6e52109efb60efb0": 1,
+      "70005ac34a5e03e2a69c4d776ab870d499883d659d23a3e395fec4443f2315fa": 1
+    },
+    "marketing/org-readme.md": {
+      "b3df4f19ae01abfb1bce411e77b9e5a3e93be392a709774e6648204f3f5cb96c": 1,
+      "b40b33a2e33bf0586fb1cc1605d533e37ab879f1618772b07f415ebd84899673": 1
+    },
+    "marketing/profile-readme.md": {
+      "167299084fe77ec0bc45065d33154f161b1bc8980ccbcf167a1d1bf4ae4be8c0": 1
+    },
+    "marketing/retention/customer-health/SURVEY-ANALYSIS-PROTOCOL.md": {
+      "ec8a7057cb3e57fd47466ef4b0b38796883ef4313efa72dfb2c16225c1df242f": 1
+    },
+    "marketing/sales/legal-questionnaires/EVIDENCE-PACK-INDEX.md": {
+      "37cfddc7de409f6b36928fa172b08c68c5c2bfb7b1f12fb15e0f5c3d31fbce2b": 1,
+      "e78822ab5b7876e8b75340bc8bd4c00f75baf4a97848326046d2884aa608f862": 1
+    },
+    "marketing/sales/legal-questionnaires/SIG-LITE-2026-pre-filled.md": {
+      "1587a46ace632fbdee1b6ec655df6dd541c189317fd87c6203ecae6e18f9e14d": 1
+    },
+    "marketing/sales/legal-questionnaires/VENDOR-QUESTIONNAIRE-RESPONSE-TEMPLATE.md": {
+      "d587140aacb09ac4ae6cacf60cd98f29200a5f45d3e1ffdd61f755c1bdb9315e": 1,
+      "c0b5fb13b350e12f21c93e369c8073d3bbb48217e779d098e10bb4d1d3ca58ca": 1
+    },
+    "scripts/b250_deleted_workflow_startup_failure.py": {
+      "8142c0e822125af2087658efc853114f85466956a5522d3638bea4875206a9d2": 1
+    },
+    "scripts/check_b114_cross_repo.py": {
+      "39a2d39c5c325081caaf6180302afd0ac611eed3e38e8685ef96b7cf0d9ba893": 1
+    },
+    "scripts/check_b135_cross_repo.py": {
+      "4184bded8705a57f593fabab49372213cec26406a06283cb355e844b5cb397aa": 1
+    },
+    "scripts/codeql_reviewed_dispositions.py": {
+      "b1b3ff403fc750d4b629ef08cefb4356307edda5a23471eb296912cbd86563b4": 1,
+      "b185dfec5df815541635b051f6b07a3dcc6a442be786c662c2f3eda8236ee10e": 1
+    },
+    "scripts/complete_issue_1700_existing.py": {
+      "23f0dfee3dcf786e131691152b79068e6a2da5b9184dd19f87783330966ad3b8": 1,
+      "186bb3ec928909925f75e8968e2a9dffe0ebd986f90f767b2e859b469ee6d7e5": 1,
+      "28a26d73ae7f4559570ccc4bda790dfcb5483928cf254dca1e97d026608c426d": 1
+    },
+    "scripts/cut-v1-0-0-ga-tag.sh": {
+      "58b39188498f9291413f056f4c946b170b9fbef07821064bd134436c63a30e92": 1
+    },
+    "scripts/issue_1652_b072_operator.py": {
+      "b1b3ff403fc750d4b629ef08cefb4356307edda5a23471eb296912cbd86563b4": 1,
+      "15240255b813ecc3bf1ebabe86a0a854a273d511cacc83ba2d84eb7a1a5d2060": 1,
+      "7002d3dcc0347cab0175481afb774a97768d732b5a398bf536bea4e1550b1386": 1
+    },
+    "scripts/org_migration_audit.py": {
+      "a837ea3a8efa18bd10ee285242cd1c33d73f034f5c46d3dd3c26396a7f30ad76": 1,
+      "c4c0b2066409eb494ef4c09794d8c5a8f456b5b2d7a8d641532e1c73e2d3d965": 1,
+      "d3eba851f3fad977132552100f7d7103b8b5c7b3eded09a7552b281391316e86": 1,
+      "88e4d924feccf47a223ddc90df71956d0402d400d84c0fe2af18b0dae115d0bc": 1
+    },
+    "scripts/org_migration_gate_check.py": {
+      "f36f5d3f4cd0211cd513a40aedf30d898197e0d5101c3e94c3464ce36241c58d": 1,
+      "38a60fbed2628008d718e8f5ab4ccad744e5680b9484dd71f229dcfe806faf79": 1,
+      "c0cd139d2b8618f07255170e84ee6740c3e772e4242ccfe96c7906c9f9b8d2a0": 1,
+      "86ca90aa8f7eebf482351c42bb01753162e8358528957096022ce82e7ef7f477": 1
+    },
+    "scripts/published_claims_inventory.json": {
+      "4f7c7ab52b7e3d742eeb38fcbdfc290d714af614ee452de6807f24cd0b396cb5": 1
+    },
+    "scripts/run_i2587_gpg_audit.py": {
+      "5f2b19ec72c3e2b7512d57b8418f69d74c3bc564f05cc24d72acf9bb8d787138": 1
+    },
+    "scripts/staging_bootstrap_provider.py": {
+      "ec664caabc946d91c59dab878b5a4388bca2743f7cfa802ade3579f49a332e23": 1,
+      "0b6396ae6038ff59a92bf62c67511abdd0bc48dbe5a150b20522fc848803c12d": 1
+    },
+    "scripts/stripe_test_mode_evidence.py": {
+      "98f65834a6fb65ab87710b457b30be2b11d3829dcb60b1eaf2212cdcf7d206e7": 1
+    },
+    "scripts/test_b072_receiver_mutations.py": {
+      "0df6fa5fa1a38844269b0982babb671fab61029cc133b01c93dd3649641fb859": 1,
+      "bae2e1a4f679c8e4e9610a7efb98e425c455ed7014b0daeab6eeb0edd7c643ae": 1,
+      "87426145f7f5e9444e1fea62afd66f3adf9ffb816649fca4b6df2955049113e3": 1
+    },
+    "scripts/test_b102_b108_evidence.py": {
+      "93402de928511c3864e8df986dc8902c574f7c6b8a984624094230336681a7b4": 1,
+      "d0579a9b619d1090927ac9f03963f7ddc1883286ce813b4b900104d044c17574": 1,
+      "945d62aec9723154bf8a3898e861853f01b7f025548e6c290c7a3bd1791b6a62": 1,
+      "765dc6f954fe2546454ce64def4878a1425f852ef20f8c068aa98149a8453c6c": 1,
+      "6ea67cc5cd1155f3f670525b494691970804e10cfbf83259d9e2c95c427c92e8": 1,
+      "e28f657da3b3ec325392ad0b79f5d4f5144e93b8029dadbc4c4c05671733ed66": 1
+    },
+    "scripts/test_b103_b129_attribution.py": {
+      "d4fb7dc29bf819839025e3bba9b29199525ff6487ecefe9b170d070d638a2388": 1
+    },
+    "scripts/test_b103_cargo_write_contract.py": {
+      "935ff372e06b33bdc31886b48f154065d044a1adff90e51b07447d9903667e69": 1
+    },
+    "scripts/test_b152_actions_diagnostic.py": {
+      "bc9594158d099a81060cde436b72aa66c7e20012e4d404046ddf034b790eaa21": 1
+    },
+    "scripts/test_i1687_endurance_lane.py": {
+      "34d5ecd73eee69751f0451497e34efc06dd547deb7d265a9d7705917c56052ca": 1
+    },
+    "scripts/test_issue_1652_b072_operator.py": {
+      "17369503969f58f4da8b07d8b6d41fc230a27d2d09979a81c68e0bdcd918bbde": 1,
+      "0962ae92fb2bcb90da1368f9ab3e0dbf50fdafe66a893a6b1a83e1b8805fffa4": 1
+    },
+    "scripts/test_org_migration_audit.py": {
+      "cde662c5628ccf18973473783f2177e8075d43ade546e9ed43c736ea79ed4c83": 1,
+      "844553d60319664c461e6904aa8b55e2957036ef4c9d47a02f270c4b8df5d291": 1,
+      "9758200f29828c219f39e6f98819cd4d8f4c46bf9c34d3dca330847c8c768d5f": 1,
+      "69c4cef1e5b978e81e130c95abd34c76b23b5f515c4990c28e5be8ac21972f2f": 1,
+      "2676b4f7c02bcc366d128bf73f809cc7f97f1858afdf1b4aa8f76fc86853f394": 1,
+      "4b47ce622553ef1dd42ca071929f9a20e40da388bff9bd2c52fe87fd7dfef8c0": 1,
+      "2d820484b2dec44fb5d1cc9479a1e17589f3fb4d47460cd3eff85664969671c2": 1,
+      "70331dccf65af79bae9ea9a340ccf9c2b48e92e46eebf905acef7c5526fbc7f6": 1
+    },
+    "scripts/test_org_migration_gate_check.py": {
+      "ad5adc171f7679303ccf2a2bb45d6606137bf9a8ea5ea82a892ebde43131e9c4": 1,
+      "f3b026c6142000532025de34c18e2138b630e026f25fb6a6504596a650336152": 1
+    },
+    "scripts/test_pinned_gh_consumers.py": {
+      "a9e837d507fa34587a1532228063b872174290360d9330ff044e0f36e26a2d0d": 1
+    },
+    "scripts/test_server_repository_identity.py": {
+      "f407a7c3d05d3e6785658b057212b2822fa21109955784eb43bdfafb54e0f30a": 1,
+      "fbd06845a4026d4509d3746c05c13ccf850d44bbef8a6d102541b78548106078": 1,
+      "bb608716c12a68efe546bbfefa634a75ca79d00bc80ed981f67808ae59ff0639": 1,
+      "a9438cbd028417697ad1903b45ef9d8f587de02bdf3580e5f9e94ad592cee664": 1,
+      "8e46deaaac6030d526dba8ff70105f4ebcd70413115408ea99cd48417f1d6b8f": 1,
+      "27144cfc0203482064fc822e0b492543d17a49c1bf376ecba21c8854a81c28c2": 1,
+      "5fef72a005b846c7ad978ab22fcdebacf398398fe2fb5b3e5c1f3e17b52cc4b3": 1,
+      "eaee84f630fa9720924f3d079c97fa12e59d5217ac64c8592142d0fa27d6a5a4": 1,
+      "ff88fb39eb7c7332c0322f18091dbdc129afad65da25492e665cfb35a8a523aa": 2,
+      "eb9c6e64a3caa02a0869d0dda6b60f80c12e6c1ec705a53520582839dac454bc": 1,
+      "5cb44292f901fc3e8a6993012b8f5ae3884d1d99f0a3bdae5e062ec37fbadc17": 1,
+      "ca7fee5f9b82af74f65f4c3bf1e15b805a595ab1b072b78a0c5ba2455ed3009d": 1,
+      "a6adca3d7bd184144079b605b5e488b7c6ef4fcbc6bb54b5df059494c627bf84": 1,
+      "c6902c5d97f320e41c29cc71fcd6e42658f63aa898461b9ab2bad9ea49649f82": 1,
+      "97aaa9a16ad0e004dd4c807c7c1fa4b44ab56afa74ce2168e1dd53188496f120": 1,
+      "f768003b6d857f2eae48da51f8a010cd2a34bf72c9f00714f124aba97d26f1a2": 1,
+      "d1a429e66a624d5cc5d333e344a20c6b575f1f1c3fa4e00a3d4e430410f7b725": 1,
+      "b5e76198ae0f1569ce525c8baa9f4e98e36565b8e5ee414e056dc8aedd833b4b": 2,
+      "79a23acd800c88fb83fc54a3c4a22d4b99f624f1227767d55bdef43af1f77b72": 1,
+      "e876bca268ce7d6c64271ea36103a61b0657c2dca4c48e1ad5288574ec10e7f3": 1,
+      "ce31233f7b76e9b9101bc694457f0a062ce68dc743d34a97eba4b999f9a161a5": 1,
+      "9463fc5e407311c0ab8f6e93591430d51955d038f0b162ff6d98f26ff432ce8e": 1,
+      "f57a5a1fbcfc2477dd4186be5b49e59e378604bd7a046bbe0b16ba37754f7803": 1,
+      "91c1126a707ce702babbf30e8646856611481baabbb5330907c5f3366043c508": 1,
+      "4b60d84eab6e7e40ba9507ecf3922e970d1bccd5d7058bf00d9bcf80ff9bb603": 1,
+      "6d2bc74d187ca01b87309c241d084bb18a1d3744567ee85dda1c6271e6d384f5": 1,
+      "daaa4ad29d29a0f77aa2faf8f93079a93dfe1eaec9650c62e3447921e1cf5eb0": 1,
+      "5b5a2a42e9ef76384da90b1209837ca85343976fa1100c5c2c8c0ca1a2009b41": 1,
+      "7ac30d6390ef83308b8797fd23c3b5238bb909ea8ff81e6f245e37c6433a1dcf": 1,
+      "a56d60f00d9b369e4006317e838f3d3a4aeb4c87aa6b15eeabdf076f08b1c37f": 1,
+      "ef8cf97b7e38fee1240b78f20c93c49660be9b89bec65dd9ca5c44e727793b7a": 1,
+      "5d13fa102568bc215ed0358c0ae5d93179af7456997b849ac63f39c2ab61c0e6": 1,
+      "0ff037e54be91e575d260ec4cb4aa0590ed02d2a6a7b13e6a4e8715578f1abaf": 1,
+      "ad59a8899c7e823123c278219ad22dde9ffe40622985be8bb3ef0798ce7ec423": 1,
+      "237ad4e060ca671721b9518055e6b0b01d72e88f34cf8065e12b73a413b00458": 1,
+      "f6b2052a993dc02232b49fa6b43a0abb5ed16aaa304f0a661bd4c4439ead9dfa": 1,
+      "e997326f7ef69db8c21da40466796ba19f7bd13380f315b61cc1a88aea5ed2a2": 1,
+      "d9652a2b75ea6fb48295085582796bfdb96ed3b3dbd773700da3a6155646b81b": 1,
+      "f873ef87678853c226b0be1a06352bc90ce3a7c99e8debc0ba56c39fe5d4e946": 1,
+      "ad9baecc92afbed717e1bb246ec8345d168d72abeea13f7a3fd51d758cad0764": 1,
+      "cd2380b2c6fa9314f2a642183528acc54740840b3b6d6b8f48c8a04869430de9": 1,
+      "f3185f2b2b8e0fced57edce1665ec2ddf09f798bd092490d5d5955a7cf3c6280": 1,
+      "8d6e37a1cbc13314d7c24d131208eb3fbd14151b8d239a53376f01fb9742aebc": 1
+    },
+    "scripts/verify_audit_archive_lag_workflow.py": {
+      "34d5ecd73eee69751f0451497e34efc06dd547deb7d265a9d7705917c56052ca": 1
+    },
+    "scripts/verify_b012_bot_pr_evidence.py": {
+      "06ff08879bd5fb061255f18be99047e3da8d96deb24931b69aaf27c37f732013": 1,
+      "68acf068f87bbc3606c8b0092be50013c026c84641b3063336c1be6bba973b69": 1,
+      "244848dd756461e4692f1da80d6d93014d5b8cca88961f669f1ce34cd5e5c883": 1,
+      "2a907177ecb2a9e64690f670a810834d6b6470e7d2a597310168a55ca2119612": 1,
+      "34013185631c47452d2881dea1e3fe1be97d901b471e515491ab6fb125eafa16": 1,
+      "5a6558ece7c1eafdf991c4e92623b8e49cd2e8f6850c2d4800a1211ff9e09c4b": 1
+    },
+    "scripts/verify_b029_load_gate.py": {
+      "34d5ecd73eee69751f0451497e34efc06dd547deb7d265a9d7705917c56052ca": 1
+    },
+    "scripts/verify_b063_hosted_build_workflow.py": {
+      "4d8901178760afc71379fb1e0539bccec5d22321bb5c29e4a953565877891157": 1,
+      "385f648a3b492b75d484a69ebe2e5b419428b5a89585a6ab82526fa40724f4d5": 1,
+      "9d3703db982034ce601b2ea6e7f0d4cb39710125d5828432b02ae80206ebc9d3": 1
+    },
+    "scripts/verify_b063_hosted_evidence_workflow.py": {
+      "98f65834a6fb65ab87710b457b30be2b11d3829dcb60b1eaf2212cdcf7d206e7": 1
+    },
+    "scripts/verify_b072_receiver.py": {
+      "4ef9610402c8214270c017cb32d4f0f6b8f3eb0bbd821c7a71f3c340d95e342c": 1
+    },
+    "scripts/verify_b103_b129_attribution.py": {
+      "98f65834a6fb65ab87710b457b30be2b11d3829dcb60b1eaf2212cdcf7d206e7": 1
+    },
+    "scripts/verify_b152_check_annotations.py": {
+      "40775a91e805bfe8be98d362e769412a0354cae76c404d148e856b3cf2403c24": 1
+    },
+    "scripts/verify_b154_instrument_claims.py": {
+      "fd2ff2d7a27814b567f5dff58e7b96344e0bf51fbaf546d5d3fedb792103429a": 1
+    },
+    "scripts/verify_b155_batch_g.py": {
+      "0ff037e54be91e575d260ec4cb4aa0590ed02d2a6a7b13e6a4e8715578f1abaf": 1,
+      "0d053187773a7969ba95f6525461380b0cbac56dde7335f8cf898cf35923c725": 1
+    },
+    "scripts/verify_b170_owner_actions.py": {
+      "634c0b4b62e9818e03a899343b84a6fa9f679ee0da4fac2ca10ba0eb2659cdc0": 1,
+      "88b30722ce7eeae3254eca62ca8d69b7a01af236ba55a250b14ddc0351aae2e9": 1,
+      "873d485ddcdfe75657e036c8cddaa858b142139aa5b974221e4f18107c4c01b3": 1,
+      "ab1b1d2133d8139fb565912f05a5b3862ff813bd971f8339958454a7b918a0f8": 1,
+      "c77f8b60126a366181d95c4cc162d079a5cdebabacb4a21509df1b78c095d3a6": 1
+    },
+    "scripts/verify_b314_gdpr_sigstore.py": {
+      "7a34911933cb71bb4b7710287bbd7cfb39ade5fe38c8506b4a50d8794e2bff73": 1
+    },
+    "scripts/verify_d03_graduation.py": {
+      "c4e99a4687477168283c3b98b918369d83120698418bd4d34542a7d2b5318ed8": 1,
+      "ea479d457942a0794f65da698b3ef6bc3560c1b822e691c19511458fd9a96f5d": 1,
+      "010a546f34a34691030f1c36ee19d5bd48fe2073195aa4632021ac81d563cd8f": 1
+    },
+    "scripts/verify_i1658_b102_contract.py": {
+      "98f65834a6fb65ab87710b457b30be2b11d3829dcb60b1eaf2212cdcf7d206e7": 1
+    },
+    "scripts/verify_i1687_endurance_lane.py": {
+      "34d5ecd73eee69751f0451497e34efc06dd547deb7d265a9d7705917c56052ca": 1
+    },
+    "scripts/verify_i2176_grpc_deny_gate.py": {
+      "dc703cc580fb9b5fa55a3f82badb884b685f08eeb77a3da59799c0a2f9534c29": 1
+    },
+    "scripts/verify_i2368_hosted_bundle.py": {
+      "0ff037e54be91e575d260ec4cb4aa0590ed02d2a6a7b13e6a4e8715578f1abaf": 1,
+      "96420c40f7d941145934e98b43e90f8b9cc4bf1e9c1d10f8dee6cafb00c0b69f": 1
+    },
+    "scripts/verify_i2457_mutants_shards.py": {
+      "98f65834a6fb65ab87710b457b30be2b11d3829dcb60b1eaf2212cdcf7d206e7": 1
+    },
+    "scripts/verify_i2586_windows_readiness.py": {
+      "98f65834a6fb65ab87710b457b30be2b11d3829dcb60b1eaf2212cdcf7d206e7": 1,
+      "0ff037e54be91e575d260ec4cb4aa0590ed02d2a6a7b13e6a4e8715578f1abaf": 1
+    },
+    "scripts/verify_i2587_gpg_audit.py": {
+      "98f65834a6fb65ab87710b457b30be2b11d3829dcb60b1eaf2212cdcf7d206e7": 1,
+      "0ff037e54be91e575d260ec4cb4aa0590ed02d2a6a7b13e6a4e8715578f1abaf": 1
+    },
+    "scripts/verify_issue_2374_hosted_proof.py": {
+      "f5db8c3da5d755fcafd61e0cecdae2614ae54db1773427b5b59a5a85e1987d05": 1,
+      "ff654520ef6656dc0bc2fa1059abf95e7d033cb495fa03e5b85d93040cced747": 1,
+      "2fb9f7faa2650a7471711c68bb43553b3f189aba1b2da1ed9b1bcf36f3ce7412": 1,
+      "93cacebf013e5639a0b585e7657374821927cb0f8205850763a5f63b970e2b69": 1,
+      "5639ca2d450aba580cf151b7e2694dbc6a615cbabdadd33bb399b6c80b11aa24": 1,
+      "e1c415b2e1f4896d260b780ea41f4a21852c138a5dcfc59ee6260c1f8a6667f8": 1,
+      "e5ce95f7e5d4f7f744917e6084f4efaecf66602146f6faf3cdea22f9ce2e4854": 1,
+      "9c166f4ade208d3a461a4c6b8aed51d76f4fb9b263680c2e0ed2bc6da7bcd400": 1,
+      "3fd4564af86f0b97d3bfb6b6b915d1f93987d8b8543fe4f92c5d214acdbdea25": 1,
+      "fcb14d1fe0681c1463db1fce2232df79729f68656232930221303bd0fa1dd78f": 1
+    },
+    "scripts/verify_issue_2666_byok_teardown.py": {
+      "98f65834a6fb65ab87710b457b30be2b11d3829dcb60b1eaf2212cdcf7d206e7": 1
+    },
+    "scripts/verify_owner_action_packets.py": {
+      "727104eb869c78dd76bdf88346f1fe15e9998ceb2adeae67e04c9ac71e276f9b": 1,
+      "204ba210d8eb1df386f0be0dbc0c5f80284a7127bde855ec37731e781bbce415": 1,
+      "377727608547d027b90d81ff1b411a3e4a6576eb0e5fa5d068c9c6f441c0cbf2": 1,
+      "11e14fb0475caa343a0acf9a14a62d6758ee1a242927a52a85c48067ea818073": 1
+    },
+    "scripts/verify_real_ignored_harnesses.py": {
+      "9396bdfc68905b0346b498974e162c0a07d66a5338e35aa248952ef631313f6c": 1,
+      "853b356d1c39e19acf64a800e329318772f40e9b2a85346761a0e4a33adc78d3": 1,
+      "678199ef9f726d16db79d399b3f3cf3e30ff5beb3e7a236c46ba33b43ed4efb6": 1,
+      "f499c454c0d838aa7cb41979437ec3870481debefa6623bb929dba7416d5442a": 1
+    },
+    "scripts/verify_staging_provider_preflight.py": {
+      "98f65834a6fb65ab87710b457b30be2b11d3829dcb60b1eaf2212cdcf7d206e7": 1
+    },
+    "scripts/windows_signing_readiness.ps1": {
+      "b505b830764838a9637d9550db8758238355ec4d8699d3192cac3e938f52acde": 1,
+      "d0ee4e116d5126f279cdbd9402d1935370fb66dc99906181ad92b21989252960": 1,
+      "2496cb3c61d863845d59ddcadf330729a1cb4813bd47af6f375ad5063eb4bd42": 1
+    },
+    "tests/fixtures/i2574_old_base_bytes/.github/workflows/issue-2176-grpc-deny-gate.yml": {
+      "dc703cc580fb9b5fa55a3f82badb884b685f08eeb77a3da59799c0a2f9534c29": 1
+    },
+    "tests/fixtures/i2574_old_base_bytes/scripts/verify_i2176_grpc_deny_gate.py": {
+      "dc703cc580fb9b5fa55a3f82badb884b685f08eeb77a3da59799c0a2f9534c29": 1
+    },
+    "tests/load/README.md": {
+      "e400cb22ae620e2ac77e49621e8b8d30cd3d78381deb0fdafd04303b87158f7d": 1
+    },
+    "tests/test_b125_readonly_workflow.py": {
+      "6b3a8304768b5affec184de96a02357270fc7f0992cad98e6daf94a039ade279": 1,
+      "75fb7e13b7bbd8337fc4f3bc0a5f68dc60c4dcb9d3d753cb2f98f0078b96d04b": 1,
+      "56f902073621919625a7ed27ab25281e89496498463d7539b03ad858b07fe97c": 1,
+      "b2389ac58adbae614186b5fd71149e9d798f4a6a3ae9b16bca91925f3d24800c": 1,
+      "867a471678fb130895f91b5231e4a7152f7a638002954e8eb6be3fb7a2f7d98d": 1
+    },
+    "tests/test_b132_secrets_evidence.py": {
+      "bbf1b50ae1f57805f460a09e9a7c4dd70ff7570031b00f4815a914b5ea127770": 1
+    },
+    "tests/test_b142_codeql_selfhost.py": {
+      "bbf1b50ae1f57805f460a09e9a7c4dd70ff7570031b00f4815a914b5ea127770": 1
+    },
+    "tests/test_cli_release_b112_behavior.py": {
+      "34a127969e7c16de16386c3654c44f2da9e76f75d3f133d888deb6324cc1762d": 1
+    },
+    "tests/test_i1664_signing_readiness.py": {
+      "0d5aea167da3fae80886e6c6d613e3fc6b7603ad37c33a47093059378cb5d900": 1
+    },
+    "tests/test_i1721_r2_lock_probe.py": {
+      "11c93414957c7f5b34e60c9a708bb7c22a6a9cd88b731e6055bd26e84a6cac5c": 1,
+      "f5d313e312da0aecc108e10232e592e26bce13def9be3d96d66ddef7ca6578e8": 1,
+      "63ca93cbc62c43a43f6c86fc81eadca9a092f282cfc44cd36818953057df5efc": 1,
+      "3b72e03bda7b057537cbec42972e67a663f0dee9a70252af805a07579d295fc9": 1
+    },
+    "tests/test_issue_1700_historical_query.py": {
+      "17c39b17f4545d5ef3583df6b922690a30e9c1d1a075c95da60ae8e483d50fc6": 1
+    },
+    "tests/test_issue_1700_staging_readiness_contract.py": {
+      "98f65834a6fb65ab87710b457b30be2b11d3829dcb60b1eaf2212cdcf7d206e7": 1,
+      "0ff037e54be91e575d260ec4cb4aa0590ed02d2a6a7b13e6a4e8715578f1abaf": 1
+    },
+    "tests/test_issue_2568_sla_credit_real.py": {
+      "f5d313e312da0aecc108e10232e592e26bce13def9be3d96d66ddef7ca6578e8": 1,
+      "63ca93cbc62c43a43f6c86fc81eadca9a092f282cfc44cd36818953057df5efc": 1,
+      "742ab90c937509092799ef1d6edea8316ef9110c6bec1c8a6b7eaa7ac170246b": 1
+    },
+    "tests/test_pull_request_target_spawn_boundary.py": {
+      "f8053cbeb04e46271e36e4d718abd71720843f44953abb268461dfa1d5c7ea2d": 1
+    },
+    "tests/test_staging_bootstrap_provider.py": {
+      "0b6396ae6038ff59a92bf62c67511abdd0bc48dbe5a150b20522fc848803c12d": 1,
+      "8ed38ea3d56a4284af1d40b26396e3ba412fdeeac2834e29284409099ca2171d": 1
+    },
+    "tests/test_verify_b028_dependabot.py": {
+      "00bffa48f2ce3b2532277f581b3fcb722d54f6210ce7589ffdb95192ec3cb897": 1
+    },
+    "tests/test_verify_b046_object_lock_probe.py": {
+      "81c20949cfbecc62485542d0219b99b65575fed0eef1c8d50a77653439f3bf33": 1,
+      "7bd403ec603706861a51e4e51586d641aba49674a402f3db1481d0032e9ff712": 1,
+      "4b0b9075feae1d5965b0f5219624965c069577939f44666185f1f896a4da8377": 1
+    },
+    "tests/test_verify_b155_batch_g.py": {
+      "5ba02f873f072949ce3d792872d13d0904873ee48889fee698319d44446bc926": 1,
+      "ecd97831d89fb868ae34ef196538b06799da7aac8b1248e7dcab3997619b2114": 1,
+      "f14db7b7c6c3ae1ad29d61e8926a745485e425dc835955fb36cc6a9d184fdeda": 1,
+      "1cd42c3b1467f74a6abed659a396efe3888c26304b4fb546cc53dd704e3acaa3": 1,
+      "656440d2d2292b0c9dbdd6639cbde4fe5c52f84f0cec5d47a51d6c7c517c0ddd": 1,
+      "b8475b4b616176124e289575449538ce863284d209a8fe5dc435163631a7e9c4": 6,
+      "c1d54a305a957275b73a3093f134053136c3d4af289931436b6d59d0744f0f93": 1,
+      "768c09e6adfd5a98d5b98f6fd18ede50199e42614653b52d21462569e0b2e6c8": 2,
+      "df79329fca608ce4b317480d036a11164c44434be5cd565f95140a17a6266e7e": 3
+    },
+    "tests/test_verify_b170_owner_actions.py": {
+      "78e6c2f0ef937b1283df1a8f7aeb7960d6aee543095cb1f33d3377195c13824b": 2,
+      "a038859acf25f65e759e1a9d4088265638ef73b84d7ffad0688f92d31be88c3d": 2,
+      "65ccf0fd203e90b601c65d7c3fcb981581b99bced5820291206c9f0c9a0ea2c2": 1
+    },
+    "tests/test_verify_d03_graduation.py": {
+      "cffef09897f952d0cb1319b5e6531b425b4fe3f0a3f7faf73d020bc6537d91cf": 1
+    },
+    "tools/cli/tests/release_workflow_contract.rs": {
+      "0ff037e54be91e575d260ec4cb4aa0590ed02d2a6a7b13e6a4e8715578f1abaf": 1
+    },
+    "tools/sbom-publish/src/purl.rs": {
+      "0af511af5d65d35b115b3d0722d8c36222fcb0584ef4470a8b35e280c3dc798a": 1,
+      "e80fe9f934bd6fe17cc180da6631b81e47c6bf1ed2b72fc7325b5eb379b9a421": 1
+    },
+    "tools/sbom-publish/tests/adversarial.rs": {
+      "a41e713f0b50bc236950788af553671c059522033cd17ed787be462b48c7f01a": 1
+    }
+  }
+}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import subprocess
 import unittest
 import sys
 from hashlib import sha256
@@ -111,6 +112,18 @@ def context_env(**overrides: str) -> dict[str, str]:
     return env
 
 
+# These validators intentionally bind the delivered #2568 historical bytes,
+# which later work packages changed in the live checkout. Read the immutable
+# object rather than changing its pins or using the current tree as a fixture.
+FROZEN_DELIVERY = "7c7e119c9d3210a20367b8e3120b8c4e834eda75"
+
+
+def frozen_delivery_bytes(path: str) -> bytes:
+    return subprocess.check_output(
+        ["git", "show", f"{FROZEN_DELIVERY}:{path}"], cwd=Path(__file__).resolve().parents[1]
+    )
+
+
 class Issue2568OperatorTests(unittest.TestCase):
     def setUp(self) -> None:
         identity = patch.object(RESOLVER, "load_identity", return_value=FIXTURE_IDENTITY)
@@ -119,12 +132,19 @@ class Issue2568OperatorTests(unittest.TestCase):
 
     def test_canonical_source_requires_exact_candidate_sha_and_file_digests(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        self.assertEqual(verify_source_checkout(root, SOURCE_SHA), SOURCE_DIGESTS)
-        with self.assertRaisesRegex(OperatorError, "exact protected-main candidate"):
-            verify_source_checkout(root, "0" * 40)
-        with patch("scripts.issue_2568_sla_credit_real.subprocess.check_output", return_value="0" * 40):
+        # SOURCE_SHA is a dispatch input, empty outside the protected lane.
+        # Supply a candidate here while exercising the real digest checks.
+        candidate = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        with patch("scripts.issue_2568_sla_credit_real.SOURCE_SHA", candidate):
+            self.assertEqual(verify_source_checkout(root, candidate), SOURCE_DIGESTS)
             with self.assertRaisesRegex(OperatorError, "exact protected-main candidate"):
-                verify_source_checkout(root, SOURCE_SHA)
+                verify_source_checkout(root, "0" * 40)
+            with patch("scripts.issue_2568_sla_credit_real.subprocess.check_output", return_value="0" * 40):
+                with self.assertRaisesRegex(OperatorError, "exact protected-main candidate"):
+                    verify_source_checkout(root, candidate)
+            with patch("scripts.issue_2568_sla_credit_real.SOURCE_DIGESTS", {**SOURCE_DIGESTS, next(iter(SOURCE_DIGESTS)): "0" * 64}):
+                with self.assertRaisesRegex(OperatorError, "digest drift"):
+                    verify_source_checkout(root, candidate)
 
     def test_wrong_account_rejected_before_provider_request(self) -> None:
         with self.assertRaisesRegex(OperatorError, "does not match"):
@@ -311,7 +331,7 @@ class Issue2568OperatorTests(unittest.TestCase):
                 validate_candidate_paths(set(LEAF_PATHS), correction_branch)
 
     def test_wp150_manifest_gate_rejects_arbitrary_content_or_mode(self) -> None:
-        valid = (Path(__file__).resolve().parents[1] / WP150_PATH).read_bytes()
+        valid = frozen_delivery_bytes(WP150_PATH)
         self.assertEqual(sha256(valid).hexdigest(), WP150_SHA256)
         validate_wp150_manifest(valid, 0o100644)
         arbitrary_content = valid + b"\nforeign append\n"
@@ -323,7 +343,7 @@ class Issue2568OperatorTests(unittest.TestCase):
             validate_wp150_manifest(valid, 0o100755)
 
     def test_secret_registry_registers_i2568_and_denies_unknown_credential(self) -> None:
-        registry = (Path(__file__).resolve().parents[1] / SECRET_REGISTRY_PATH).read_bytes()
+        registry = frozen_delivery_bytes(SECRET_REGISTRY_PATH)
         self.assertEqual(sha256(registry).hexdigest(), SECRET_REGISTRY_SHA256)
         validate_secret_registry(registry, 0o100644)
         with self.assertRaisesRegex(VerificationError, "root-authorized"):

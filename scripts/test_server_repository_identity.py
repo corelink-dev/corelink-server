@@ -14,13 +14,15 @@ suite pins:
   carries a retired owner/repository name, a retired numeric repository ID or
   a current-owner repository literal must be ACTIVE, HISTORICAL or
   PENDING-migration, and every numeric repository ID on a ``.github/`` guard
-  line must be a read-back current ID. Each defect class has a planted-defect
+  expression must be a read-back current ID, unless it is frozen debt in a
+  PENDING/HISTORICAL row. Frozen paths and exact retired-line counts forbid growth. Each defect class has a planted-defect
   test that must fail and name the file.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import dataclasses
 import io
 import json
@@ -29,6 +31,7 @@ import re
 import subprocess
 import tempfile
 import unittest
+from collections import Counter
 from collections.abc import Callable, Mapping
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -67,78 +70,17 @@ SCAN_DIRECTORIES = (
     "tools",
 )
 
-# These references bind retained records, not a live API destination. Their
-# owner/repository fields and signed/hashed payloads must remain unchanged.
-# Entries whose reason calls HuGR-dev the "post-transfer"/"destination" owner
-# are the pre-recreate projection: I2a/I2b/I4/I9 (PLAN §4.2) move each file to
-# the current owner and rewrite its row in the same PR.
+# ACTIVE rows are the identity source and explicit positive/negative test fixtures.
+# Current surfaces still carrying retired destinations belong in PENDING;
+# retired lines in every classification are bounded by the frozen baseline.
 ACTIVE_IDENTITY_LITERAL_ALLOWLIST = {
-    ".github/ISSUE_TEMPLATE/config.yml": "Current security-advisory and discussion destinations use the post-transfer server owner.",
-    ".github/workflows/bot-pr-has-checks.yml": "This live workflow allows exactly source/destination repo names only after checking stable repository ID.",
-    ".github/workflows/sbom-clone-bundle.yml": "Bounded SBOM clone job accepts the destination only with its exact numeric repository ID.",
-    "apps/docs/src/pages/compare/vs-bazel-remote-s3.mdx": "Current product documentation references the post-transfer server security intake.",
-    "apps/docs/src/pages/compare/vs-buildbuddy.mdx": "Current product documentation references the post-transfer server security intake.",
-    "apps/docs/src/pages/compare/vs-engflow.mdx": "Current product documentation references the post-transfer server security intake.",
-    "apps/docs/src/pages/compare/vs-nx-cloud.mdx": "Current product documentation references the post-transfer server security intake.",
-    "apps/docs/src/pages/compare/vs-sccache-s3.mdx": "Current product documentation references the post-transfer server security intake.",
-    "apps/docs/src/pages/compare/vs-turborepo.mdx": "Current product documentation references the post-transfer server security intake.",
-    "apps/docs/lychee.toml": "Current link-check exception uses the destination server edit URL pattern.",
-    "apps/get-corelink-worker/README.md": "Current server deployment documentation names the post-transfer owner and keeps CLI identity separate.",
-    "crates/corelink-audit/src/link_hash.rs": "The source-code documentation link resolves to the current server specification location.",
-    "crates/corelink-client-verify/Cargo.toml": "Published crate metadata advertises the post-transfer server repository.",
-    "crates/corelink-hash/Cargo.toml": "Published crate metadata advertises the post-transfer server repository.",
-    "crates/corelink-rate-headers/Cargo.toml": "Published crate metadata advertises the post-transfer server repository.",
-    "crates/tenant-path/Cargo.toml": "Published crate metadata advertises the post-transfer server repository.",
-    "crates/corelink-rate-headers/README.md": "Current source documentation link targets the post-transfer server repository.",
-    "crates/corelink-ops/src/deploy/types.rs": "Current API docs use the destination; Cosign tests retain the historic signer and test exact source/destination and whole-SAN matching.",
-    "crates/corelink-ops/src/deploy.rs": "Current deploy API example uses the destination; immutable signed test fixtures remain in dedicated tests.",
-    "crates/corelink-ops/src/supply_chain/verify.rs": "Current public quick-start example selects the destination builder identity.",
-    "crates/corelink-ops/src/supply_chain/verify/verifier.rs": "Current public verifier example selects the destination builder identity.",
-    "crates/corelink-ops/src/supply_chain/verify/bin/cli.rs": "Current CLI examples/reporting use destination; historical SAN examples remain explicit fixtures.",
-    "crates/corelink-ops/src/supply_chain/verify/types.rs": "Current BuilderIdentity docs use destination while explicit historical/source/destination tests preserve verification behavior.",
-    "crates/corelink-ops/examples/supply_chain_verify_verify_basic.rs": "Current runnable SLSA example selects the destination builder identity.",
-    "crates/corelink-ops/examples/supply_chain_verify_paranoid_mode.rs": "Example reports to current security intake while preserving a historical provenance SAN fixture.",
     "tests/test_b132_secrets_evidence.py": "Behavioral test passes the exact source repo explicitly; it is not a fallback default.",
     "tests/test_b142_codeql_selfhost.py": "Behavioral test passes the exact source repo explicitly; it is not a fallback default.",
     "tests/test_cli_release_b112_behavior.py": "Release tests exercise the exact pre-transfer server source identity.",
     "tests/test_verify_b155_batch_g.py": "Adversarial workflow tests inject the old owner-name guard to prove it is rejected.",
-    "tools/sbom-publish/src/purl.rs": "Current SBOM workspace PURLs use the post-transfer repository URL.",
-    "tools/sbom-publish/tests/adversarial.rs": "Adversarial SBOM test asserts the current emitted workspace VCS URL.",
-    "scripts/cut-v1-0-0-ga-tag.sh": "Transfer cutover remote check accepts exactly the source and destination remotes.",
     "tests/test_verify_b028_dependabot.py": "Negative fixture: proves the resolver refuses the retired destination server name.",
     "scripts/test_server_repository_identity.py": "This regression suite contains positive and negative identity examples and scan rules.",
-    "infra/ci-runners/linux/docker-compose.yml": "Self-hosted runner checkout URL is a required exact source/destination setting, not an old-owner default; runner labels remain unchanged.",
-    "infra/grafana/dashboards/dash-audit-chain.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "infra/grafana/dashboards/dash-billing.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "infra/grafana/dashboards/dash-byok-health.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "infra/grafana/dashboards/dash-capacity-planning.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "infra/grafana/dashboards/dash-compliance-health.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "infra/grafana/dashboards/dash-customer-traffic.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "infra/grafana/dashboards/dash-dr-status.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "infra/grafana/dashboards/dash-dsr-pipeline.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "infra/grafana/dashboards/dash-incident-triage.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "infra/grafana/dashboards/dash-ratelimit-abuse.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "infra/grafana/dashboards/dash-reliability.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "infra/grafana/dashboards/dash-slo-burndown.json": "Generated current dashboard source/catalog links use the post-transfer server location.",
-    "docs/operator/e2e-ci-2026-05-30.md": "Current operator setup instructions target the destination server repo.",
-    "docs/internal/OSS-VS-CLOSED-MATRIX.md": "Current repository ownership projection names the destination server repo.",
-    "docs/OSS_STRATEGY.md": "Current strategy ownership and source-location references name the destination server repo.",
-    "examples/bazel-starter/README.md": "Current starter example clone instructions target the destination server repo.",
-    "examples/buck2-starter/README.md": "Current starter example clone instructions target the destination server repo.",
-    "marketing/profile-readme.md": "Current profile README links to the destination server repo; CLI stays independent.",
-    "marketing/org-readme.md": "Current org README links to the destination server repo; CLI stays independent.",
-    "marketing/og/README.md": "Current Open Graph image setup points to the destination server settings.",
-    "marketing/retention/customer-health/SURVEY-ANALYSIS-PROTOCOL.md": "Current engineering-issue routing points to the destination server repo.",
-    "marketing/sales/legal-questionnaires/EVIDENCE-PACK-INDEX.md": "Current evidence packet source-of-truth location is the destination server repo.",
-    "marketing/sales/legal-questionnaires/SIG-LITE-2026-pre-filled.md": "Current security-evidence response identifies the destination server repo.",
-    "marketing/sales/legal-questionnaires/VENDOR-QUESTIONNAIRE-RESPONSE-TEMPLATE.md": "Current response template identifies the destination server repo.",
-    "docs/internal/ENGINEERING-ONBOARDING.md": "Current onboarding links point to the destination server repository.",
-    "docs/internal/pentest-engagement-checklist.md": "Current pentest workflow points to the destination server repository.",
-    "docs/internal/ci-runner-fabric-box.md": "Current commands resolve the live repository while dated run links retain the source identity.",
-    "docs/internal/slsa-l3-pipeline.md": "Current builder guidance names the destination while retaining pre-transfer verification examples.",
     "scripts/test_org_migration_audit.py": "Reusable migration-auditor fixtures deliberately exercise historical and current server identities.",
-    # Added by I1 (org recreate): the identity source of truth and negative
-    # fixtures that prove each consumer refuses the retired server identity.
     "config/github-identity.json": "Identity source of truth: lists the retired repository IDs so the loader refuses them as current values.",
     "scripts/test_b152_actions_diagnostic.py": "Negative fixture: proves the B-152 diagnostic refuses the retired server names before any API call.",
     "tests/test_i1721_r2_lock_probe.py": "Negative fixture: proves the #1721 preflight refuses the retired server name and ID.",
@@ -186,21 +128,23 @@ HISTORICAL_IDENTITY_LITERAL_ALLOWLIST = {
 PENDING_WORK_PACKAGES = {
     "I2a": "PLAN §4.2 I2a: unpinned workflow guard, or the verifier/test asserting it (lockstep).",
     "I2b": "PLAN §4.2 I2b: cross-repo routing (checkouts, URLs, peer-repository API targets).",
-    "I3": "PLAN §4.2 I3: sha256-pinned identity file, edited only with the coupled root-reviewed re-pin.",
+    "I3": "Also rebind verify_real_ignored_harnesses.py in CodeQL source_file_blobs. PLAN §4.2 I3: sha256-pinned identity file, edited only with the coupled root-reviewed re-pin.",
+    "I4": "PLAN §4.2 I4: signing identities and their current examples, preserving historical SANs.",
     "I6": "PLAN §4.2 I6: CodeQL reviewed-dispositions binding, regenerated after the first scan in the new repo.",
     "I9": "PLAN §4.2 I9: customer-facing documentation.",
+    "I9/B154": "I9 with coupled B-154 PUBLIC_COPY_PATHS sha256 re-pin; frozen prelaunch claim-resolution bytes enforce this file.",
     "P3": "PLAN §4.2 P3: internal prose and the transfer-era migration kit.",
     "b216": "PLAN critic K1.4: dedicated receiver-identity PR (receiver path boundary).",
     "R6": "02 §R.6: verifier bound to a receipt on an old GitHub object; keep as history or re-receipt (owner decision).",
 }
 
 # Files that still carry a retired identity literal and are owned by a later
-# migration work package. Shrink-only: a row whose file no longer carries a
-# retired literal fails as stale, so the PR that migrates a file must delete
-# its row (or move the file to ACTIVE/HISTORICAL with a written reason). New
-# files never belong here. Labels were assigned by rule from the 02 report's
-# classes and the PLAN §4.2 tables; the owning PR verifies membership.
+# migration work package. The baseline freezes both the path set and exact
+# retired lines (including duplicate counts). A migrated file must lose its
+# row, or be reclassified with a written fixture/history reason. Owning WPs
+# remove the corresponding baseline paths/hashes; no new debt is admitted.
 PENDING_IDENTITY_MIGRATION = {
+    ".github/ISSUE_TEMPLATE/config.yml": "I2b",
     ".github/workflow-state-waivers.yml": "P3",
     ".github/workflows/audit-archive-lag.yml": "I2a",
     ".github/workflows/audit-keyed-epoch.yml": "I2a",
@@ -210,6 +154,7 @@ PENDING_IDENTITY_MIGRATION = {
     ".github/workflows/b125-audit-throughput-read-only.yml": "I2a",
     ".github/workflows/b216-receiver-deploy-nonprod.yml": "b216",
     ".github/workflows/b251-d03-read-only-probe.yml": "I2b",
+    ".github/workflows/bot-pr-has-checks.yml": "I2a",
     ".github/workflows/campaign-ci.yml": "I3",
     ".github/workflows/cas_foundation.yml": "I2a",
     ".github/workflows/cf-deploy-prod.yml": "I3",
@@ -285,21 +230,74 @@ PENDING_IDENTITY_MIGRATION = {
     ".github/workflows/real-ignored-harnesses.yml": "I3",
     ".github/workflows/release-cli.yml": "I2a",
     ".github/workflows/runner-fleet-health.yml": "I2a",
+    ".github/workflows/sbom-clone-bundle.yml": "I2a",
     ".github/workflows/semgrep.yml": "I2a",
     ".github/workflows/sign-linux.yml": "I2a",
     ".github/workflows/staging-load-seal-contract.yml": "I2a",
     ".github/workflows/staging-provider-preflight.yml": "I2a",
     ".github/workflows/staging-quarantine-apply.yml": "I3",
     ".github/workflows/workflow-state-guard.yml": "I2a",
-    "apps/docs/docs/explanation/security/byok.mdx": "I9",
+    "apps/docs/docs/explanation/security/byok.mdx": "I9/B154",
+    "apps/docs/lychee.toml": "I9",
+    "apps/docs/src/pages/compare/vs-bazel-remote-s3.mdx": "I9",
+    "apps/docs/src/pages/compare/vs-buildbuddy.mdx": "I9",
+    "apps/docs/src/pages/compare/vs-engflow.mdx": "I9",
+    "apps/docs/src/pages/compare/vs-nx-cloud.mdx": "I9",
+    "apps/docs/src/pages/compare/vs-sccache-s3.mdx": "I9",
+    "apps/docs/src/pages/compare/vs-turborepo.mdx": "I9",
     "apps/dsr-alert-receiver/scripts/receiver-target.mjs": "b216",
     "apps/dsr-alert-receiver/tests/deploy-route.test.mjs": "b216",
+    "apps/get-corelink-worker/README.md": "I9",
+    "crates/corelink-audit/src/link_hash.rs": "I9",
+    "crates/corelink-client-verify/Cargo.toml": "I9",
+    "crates/corelink-hash/Cargo.toml": "I9",
+    "crates/corelink-ops/examples/supply_chain_verify_paranoid_mode.rs": "I4",
+    "crates/corelink-ops/examples/supply_chain_verify_verify_basic.rs": "I4",
+    "crates/corelink-ops/src/deploy.rs": "I4",
+    "crates/corelink-ops/src/deploy/types.rs": "I4",
+    "crates/corelink-ops/src/supply_chain/verify.rs": "I4",
+    "crates/corelink-ops/src/supply_chain/verify/bin/cli.rs": "I4",
+    "crates/corelink-ops/src/supply_chain/verify/types.rs": "I4",
+    "crates/corelink-ops/src/supply_chain/verify/verifier.rs": "I4",
+    "crates/corelink-rate-headers/Cargo.toml": "I9",
+    "crates/corelink-rate-headers/README.md": "I9",
     "crates/corelink-stripe-real/src/client.rs": "I3",
     "crates/corelink-stripe-real/tests/live_integration.rs": "I3",
+    "crates/tenant-path/Cargo.toml": "I9",
+    "docs/OSS_STRATEGY.md": "I9",
+    "docs/internal/ENGINEERING-ONBOARDING.md": "P3",
+    "docs/internal/OSS-VS-CLOSED-MATRIX.md": "P3",
+    "docs/internal/ci-runner-fabric-box.md": "P3",
+    "docs/internal/pentest-engagement-checklist.md": "P3",
+    "docs/internal/slsa-l3-pipeline.md": "P3",
+    "docs/operator/e2e-ci-2026-05-30.md": "P3",
+    "examples/bazel-starter/README.md": "I9",
+    "examples/buck2-starter/README.md": "I9",
+    "infra/ci-runners/linux/docker-compose.yml": "P3",
+    "infra/grafana/dashboards/dash-audit-chain.json": "I9",
+    "infra/grafana/dashboards/dash-billing.json": "I9",
+    "infra/grafana/dashboards/dash-byok-health.json": "I9",
+    "infra/grafana/dashboards/dash-capacity-planning.json": "I9",
+    "infra/grafana/dashboards/dash-compliance-health.json": "I9",
+    "infra/grafana/dashboards/dash-customer-traffic.json": "I9",
+    "infra/grafana/dashboards/dash-dr-status.json": "I9",
+    "infra/grafana/dashboards/dash-dsr-pipeline.json": "I9",
+    "infra/grafana/dashboards/dash-incident-triage.json": "I9",
+    "infra/grafana/dashboards/dash-ratelimit-abuse.json": "I9",
+    "infra/grafana/dashboards/dash-reliability.json": "I9",
+    "infra/grafana/dashboards/dash-slo-burndown.json": "I9",
+    "marketing/og/README.md": "I9",
+    "marketing/org-readme.md": "I9",
+    "marketing/profile-readme.md": "I9",
+    "marketing/retention/customer-health/SURVEY-ANALYSIS-PROTOCOL.md": "I9",
+    "marketing/sales/legal-questionnaires/EVIDENCE-PACK-INDEX.md": "I9",
+    "marketing/sales/legal-questionnaires/SIG-LITE-2026-pre-filled.md": "I9",
+    "marketing/sales/legal-questionnaires/VENDOR-QUESTIONNAIRE-RESPONSE-TEMPLATE.md": "I9",
     "scripts/check_b114_cross_repo.py": "I2b",
     "scripts/check_b135_cross_repo.py": "I2b",
     "scripts/codeql_reviewed_dispositions.py": "I6",
     "scripts/complete_issue_1700_existing.py": "I2b",
+    "scripts/cut-v1-0-0-ga-tag.sh": "P3",
     "scripts/issue_1652_b072_operator.py": "I3",
     "scripts/org_migration_audit.py": "P3",
     "scripts/org_migration_gate_check.py": "P3",
@@ -325,7 +323,7 @@ PENDING_IDENTITY_MIGRATION = {
     "scripts/verify_b155_batch_g.py": "I2a",
     "scripts/verify_b170_owner_actions.py": "R6",
     "scripts/verify_b314_gdpr_sigstore.py": "R6",
-    "scripts/verify_i1658_b102_contract.py": "I2a",
+    "scripts/verify_i1658_b102_contract.py": "I6",
     "scripts/verify_i1687_endurance_lane.py": "I2a",
     "scripts/verify_i2176_grpc_deny_gate.py": "I3",
     "scripts/verify_i2368_hosted_bundle.py": "I2a",
@@ -346,6 +344,8 @@ PENDING_IDENTITY_MIGRATION = {
     "tests/test_staging_bootstrap_provider.py": "I3",
     "tests/test_verify_b170_owner_actions.py": "R6",
     "tools/cli/tests/release_workflow_contract.rs": "I2a",
+    "tools/sbom-publish/src/purl.rs": "I9",
+    "tools/sbom-publish/tests/adversarial.rs": "I9",
 }
 
 # These verifier/docs surfaces intentionally mention the source owner: the
@@ -422,13 +422,54 @@ def identity_literal_patterns(identity: GitHubIdentity) -> IdentityLiteralPatter
 IDENTITY_LITERAL_PATTERN = identity_literal_patterns(read_identity()).any
 
 REPOSITORY_ID_CONTEXT = re.compile(r"(?i)repository[_.]?id|repo[_.]?id")
-NUMERIC_TOKEN = re.compile(r"(?<![0-9A-Za-z_])[0-9]{6,}(?![0-9A-Za-z_])")
+LITERAL_BASELINE_PATH = ROOT / "config/github-identity-literal-baseline.json"
+
+
+def retired_line_fingerprints(text: str, identity: GitHubIdentity) -> dict[str, int]:
+    """Count exact stripped retired-literal lines; deletion is allowed, growth is not."""
+    pattern = identity_literal_patterns(identity).retired
+    return dict(Counter(
+        hashlib.sha256(line.strip().encode("utf-8")).hexdigest()
+        for line in text.splitlines() if pattern.search(line)
+    ))
+
+
+def read_literal_baseline() -> dict:
+    # This initial migration debt is reviewed data, never regenerated by tests.
+    # Owning WPs remove migrated rows/line hashes; they must not add exceptions.
+    return json.loads(LITERAL_BASELINE_PATH.read_text(encoding="utf-8"))
+
+
+def repository_id_tokens(text: str):
+    """Read decimal operands tied to ID comparisons/assignments, across newlines.
+
+    Numbers in event names, tag format placeholders and other guard operands
+    are not repository IDs. Match the ID operand rather than every number in
+    the surrounding expression. Whitespace includes folded/literal YAML lines.
+    """
+    context = r"(?:repository[_.]?id|repo[_.]?id)"
+    operator = r"(?:==|!=|>=|<=|=|:|>|<|-eq|-ne)"
+    number = r"['\"]?(?P<id>[+-]?[0-9][A-Za-z0-9_]*)['\"]?"
+    forward = re.compile(
+        context + r"[\w$}\"')\]]*\s*" + operator + r"\s*" + number,
+        re.IGNORECASE,
+    )
+    reverse = re.compile(
+        number + r"\s*" + operator + r"\s*[\"'$\w.{]*" + context,
+        re.IGNORECASE,
+    )
+    return sorted({
+        (text.count("\n", 0, match.start("id")) + 1, match.group("id"))
+        for pattern in (forward, reverse) for match in pattern.finditer(text)
+    })
 
 
 def tracked_text_population(root: Path = ROOT) -> dict[str, str]:
-    """Every tracked UTF-8 text file under SCAN_DIRECTORIES, by repo path."""
+    """Tracked UTF-8 text in the scan directories and explicit ledger paths."""
     result = subprocess.run(
-        ["git", "ls-files", "-z", "--", *SCAN_DIRECTORIES],
+        ["git", "ls-files", "-z", "--", *SCAN_DIRECTORIES,
+         *ACTIVE_IDENTITY_LITERAL_ALLOWLIST, *HISTORICAL_IDENTITY_LITERAL_ALLOWLIST,
+         *PENDING_IDENTITY_MIGRATION],
         cwd=root,
         capture_output=True,
         check=False,
@@ -465,6 +506,7 @@ def classify_identity_literals(
     historical: Mapping[str, str],
     pending: Mapping[str, str],
     read_outside: Callable[[str], str | None] = lambda _relative: None,
+    baseline: Mapping | None = None,
 ) -> list[str]:
     """Return every classification defect, each naming its file."""
     if not population:
@@ -485,6 +527,8 @@ def classify_identity_literals(
     for relative, label in pending.items():
         if label not in PENDING_WORK_PACKAGES:
             errors.append(f"PENDING row names unknown work package {label!r}: {relative}")
+        if baseline is not None and relative not in baseline["pending_paths"]:
+            errors.append(f"PENDING ledger grew beyond its frozen paths: {relative}")
         if relative not in population:
             errors.append(f"PENDING row is outside the tracked scan population: {relative}")
 
@@ -496,6 +540,12 @@ def classify_identity_literals(
             errors.append(f"stale {name} row (no retired identity literal left; delete the row): {relative}")
         elif name == "ACTIVE" and not patterns.any.search(text):
             errors.append(f"stale ACTIVE row (no identity literal left; delete the row): {relative}")
+        if text is not None and baseline is not None:
+            allowed = baseline["retired_lines"].get(relative, {})
+            for fingerprint, count in retired_line_fingerprints(text, identity).items():
+                if count > allowed.get(fingerprint, 0):
+                    errors.append(f"retired identity lines grew beyond frozen baseline: {relative}")
+                    break
 
     for relative, text in sorted(population.items()):
         if relative not in classes and patterns.any.search(text):
@@ -505,16 +555,13 @@ def classify_identity_literals(
     for relative, text in sorted(population.items()):
         if not relative.startswith(".github/"):
             continue
-        for number, line in enumerate(text.splitlines(), start=1):
-            if not REPOSITORY_ID_CONTEXT.search(line):
+        for number, token in repository_id_tokens(text):
+            value = int(token) if re.fullmatch(r"[1-9][0-9]*", token) else None
+            if value in read_back:
                 continue
-            for token in NUMERIC_TOKEN.findall(line):
-                value = int(token)
-                if value in read_back:
-                    continue
-                if value in identity.retired_repository_ids and relative in classes:
-                    continue
-                errors.append(f"numeric repository ID is not a read-back current ID: {relative}:{number}")
+            if value in identity.retired_repository_ids and classes.get(relative) in {"PENDING", "HISTORICAL"}:
+                continue
+            errors.append(f"numeric repository ID is not a read-back current ID: {relative}:{number}")
     return errors
 
 
@@ -555,13 +602,10 @@ class CommittedIdentityTests(unittest.TestCase):
         self.assertTrue({"HumanGuardrail", "HuGR-Labs", "HuGR-dev"} <= set(identity.historical_server_owners))
         self.assertTrue({1232040291, 1259579816, 1266754321, 1380335483} <= identity.retired_repository_ids)
 
-    def test_committed_ids_are_either_unread_zero_or_read_back(self) -> None:
+    def test_committed_ids_are_filled_read_back_and_not_retired(self) -> None:
         identity = read_identity()
-        if identity.unread():
-            with self.assertRaisesRegex(IdentityError, "not read back yet"):
-                load_identity()
-        else:
-            self.assertEqual(load_identity(), identity)
+        self.assertEqual(identity.unread(), ())
+        self.assertEqual(load_identity(), identity)
         for repository in identity.repositories:
             with self.subTest(repository=repository.key):
                 self.assertNotIn(repository.id, identity.retired_repository_ids)
@@ -735,6 +779,22 @@ class ServerRepositoryResolverTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), self.assertRaises(ValueError):
             require_github_context(identity=FIXTURE)
 
+    def test_caller_overrides_cannot_bypass_an_actions_context(self) -> None:
+        good = {"GITHUB_REPOSITORY": SERVER.full_name, "GITHUB_REPOSITORY_ID": str(SERVER.id)}
+        for selected in ("explicit", "CORELINK_SERVER_REPOSITORY", "CORELINK_EXPECTED_REPOSITORY"):
+            for changes in ({}, {"GITHUB_REPOSITORY_ID": str(RETIRED_SERVER_ID)},
+                            {"GITHUB_REPOSITORY_ID": ""}, {"GITHUB_REPOSITORY": "HuGR-dev/corelink-server"}):
+                env = {**good, **changes}
+                explicit = SERVER.full_name if selected == "explicit" else None
+                if explicit is None:
+                    env[selected] = SERVER.full_name
+                with self.subTest(selected=selected, changes=changes), patch.dict(os.environ, env, clear=True):
+                    if changes:
+                        with self.assertRaises(ValueError):
+                            resolve_server_repository(explicit, identity=FIXTURE)
+                    else:
+                        self.assertEqual(resolve_server_repository(explicit, identity=FIXTURE), SERVER.full_name)
+
     def test_local_default_queries_the_configured_id_and_never_accepts_a_redirect_owner(self) -> None:
         completed = subprocess.CompletedProcess(["gh"], 0, stdout=SERVER.full_name + "\n", stderr="")
         with patch.dict(os.environ, {}, clear=True), patch(
@@ -816,9 +876,25 @@ class IdentityClassificationGateTests(unittest.TestCase):
         "pending": {"scripts/pending.py": "I2a"},
     }
 
-    def classify(self, population: Mapping[str, str], **ledgers: Mapping[str, str]) -> list[str]:
+    @classmethod
+    def setUpClass(cls) -> None:
+        # The real tree is read once per suite; planted defects mutate copies.
+        cls.real_population = tracked_text_population()
+
+    def fixture_baseline(self) -> dict:
+        return {
+            "pending_paths": list(self.LEDGERS["pending"]),
+            "retired_lines": {
+                path: retired_line_fingerprints(text, FIXTURE)
+                for path, text in self.CLEAN.items()
+            },
+        }
+
+    def classify(self, population: Mapping[str, str], *, baseline=None, **ledgers: Mapping[str, str]) -> list[str]:
         merged = {**self.LEDGERS, **ledgers}
-        return classify_identity_literals(population, FIXTURE, **merged)
+        return classify_identity_literals(
+            population, FIXTURE, baseline=baseline or self.fixture_baseline(), **merged
+        )
 
     def assert_fails_naming(self, errors: list[str], fragment: str, path: str) -> None:
         self.assertTrue(errors, "the planted defect passed the identity gate")
@@ -845,7 +921,7 @@ class IdentityClassificationGateTests(unittest.TestCase):
                 )
 
     def test_teeth_injected_into_the_real_tree_fails(self) -> None:
-        population = tracked_text_population()
+        population = dict(self.real_population)
         population["scripts/server_repository.py"] += '\nLEGACY = "HuGR-dev/corelink-server"\n'
         errors = classify_identity_literals(
             population,
@@ -854,6 +930,7 @@ class IdentityClassificationGateTests(unittest.TestCase):
             historical=HISTORICAL_IDENTITY_LITERAL_ALLOWLIST,
             pending=PENDING_IDENTITY_MIGRATION,
             read_outside=read_repository_file,
+            baseline=read_literal_baseline(),
         )
         self.assertEqual(errors, ["unclassified identity literal: scripts/server_repository.py"])
 
@@ -898,6 +975,11 @@ class IdentityClassificationGateTests(unittest.TestCase):
         self.assert_fails_naming(
             self.classify(self.CLEAN, active={"scripts/active.py": " "}), "has no reason", "scripts/active.py"
         )
+        for classification in ("active", "historical"):
+            path = "scripts/missing.py"
+            ledger = {**self.LEDGERS[classification], path: "dated fixture"}
+            self.assert_fails_naming(self.classify(self.CLEAN, **{classification: ledger}), "does not exist", path)
+
 
     def test_github_numeric_repository_ids_must_be_read_back(self) -> None:
         for label, line, ok in (
@@ -905,6 +987,20 @@ class IdentityClassificationGateTests(unittest.TestCase):
             ("read-back current ID", f"if: github.repository_id == '{SERVER.id}'", True),
             ("read-back peer ID", f"RUNNERS_REPOSITORY_ID: '{FIXTURE.repository('runners').id}'", True),
             ("guessed ID", "if: github.repository_id == '123456789'", False),
+            ("zero placeholder", "if: github.repository_id == '0'", False),
+            ("one-digit guess", "if: github.repository_id == '1'", False),
+            ("five-digit guess", "if: github.repository_id == '12345'", False),
+            ("folded multiline zero", "if: >-\n      github.repository_id ==\n      '0'", False),
+            ("literal multiline guess", "if: |\n      github.repository_id ==\n      '123456789'", False),
+            ("bare multiline guess", "github.repository_id ==\n      '123456789'", False),
+            ("reverse zero", "if: '0' == github.repository_id", False),
+            ("multiline reverse zero", "if: >-\n      '0' ==\n      github.repository_id", False),
+            ("signed ID", "if: github.repository_id == '+987650001'", False),
+            ("padded ID", "if: github.repository_id == '0987650001'", False),
+            ("hex ID", "if: github.repository_id == '0x1234'", False),
+            ("non-ID numeric strings", f"if: github.repository_id == '{SERVER.id}' && inputs.confirm == 'run-1670-lane' && startsWith(github.ref, format('refs/tags/{{0}}', inputs.tag))", True),
+            ("multiline read-back", f"if: >-\n      github.repository_id ==\n      '{SERVER.id}'", True),
+            ("multiline vars", "if: >-\n      github.repository_id ==\n      vars.CORELINK_SERVER_REPO_ID", True),
             ("guessed ID in shell", 'test "$GITHUB_REPOSITORY_ID" = "4815162342"', False),
             ("retired ID in an unclassified file", f"if: github.repository_id == '{RETIRED_SERVER_ID}'", False),
         ):
@@ -917,7 +1013,64 @@ class IdentityClassificationGateTests(unittest.TestCase):
                     self.assertTrue(any(".github/workflows/new.yml" in error for error in errors), errors)
         # A retired ID in a PENDING workflow is the declared migration debt.
         population = {**self.CLEAN, ".github/workflows/old.yml": f"if: github.repository_id == '{RETIRED_SERVER_ID}'\n"}
-        self.assertEqual(self.classify(population, pending={"scripts/pending.py": "I2a", ".github/workflows/old.yml": "I2a"}), [])
+        baseline = self.fixture_baseline()
+        baseline["pending_paths"].append(".github/workflows/old.yml")
+        baseline["retired_lines"][".github/workflows/old.yml"] = retired_line_fingerprints(population[".github/workflows/old.yml"], FIXTURE)
+        self.assertEqual(self.classify(population, baseline=baseline, pending={"scripts/pending.py": "I2a", ".github/workflows/old.yml": "I2a"}), [])
+        # ACTIVE cannot grant the numeric-ID exemption, even with frozen lines.
+        self.assert_fails_naming(
+            self.classify(population, baseline=baseline, active={"scripts/active.py": "negative fixture", ".github/workflows/old.yml": "live"}),
+            "numeric repository ID", ".github/workflows/old.yml",
+        )
+        self.assertEqual(self.classify(population, baseline=baseline, historical={"scripts/history.py": "dated record", ".github/workflows/old.yml": "dated workflow"}), [])
+
+    def test_pending_path_set_cannot_grow_even_with_a_new_classification(self) -> None:
+        path = "scripts/new.py"
+        population = {**self.CLEAN, path: "DEFAULT = 'HuGR-dev/corelink-server'\n"}
+        # Give the planted file a line budget too: path membership has its own teeth.
+        baseline = self.fixture_baseline()
+        baseline["retired_lines"][path] = retired_line_fingerprints(population[path], FIXTURE)
+        self.assert_fails_naming(
+            self.classify(population, baseline=baseline, pending={**self.LEDGERS["pending"], path: "I2a"}),
+            "PENDING ledger grew", path,
+        )
+
+    def test_classified_files_cannot_gain_new_or_duplicate_retired_lines(self) -> None:
+        for path in ("scripts/active.py", "scripts/history.py", "scripts/pending.py"):
+            for addition in ("DEFAULT = 'HuGR-dev/corelink-server'\n", self.CLEAN[path]):
+                with self.subTest(path=path, addition=addition):
+                    population = dict(self.CLEAN)
+                    population[path] += addition
+                    self.assert_fails_naming(self.classify(population), "retired identity lines grew", path)
+        population = dict(self.CLEAN)
+        population["scripts/pending.py"] = population["scripts/pending.py"].replace("HuGR-dev", "HumanGuardrail")
+        self.assert_fails_naming(self.classify(population), "retired identity lines grew", "scripts/pending.py")
+        # Removing migration debt is permitted once its stale classification is removed.
+        population = dict(self.CLEAN)
+        population["scripts/pending.py"] = "migrated = True\n"
+        self.assertEqual(self.classify(population, pending={}), [])
+
+    def test_new_retired_lines_fail_in_every_real_classification(self) -> None:
+        population = dict(self.real_population)
+        cases = (
+            "scripts/stripe_test_mode_evidence.py",
+            ".github/workflows/corelink-server.yml",
+            ".github/workflows/bot-pr-has-checks.yml",
+            "scripts/test_b152_actions_diagnostic.py",
+            "scripts/b250_deleted_workflow_startup_failure.py",
+        )
+        for path in cases:
+            with self.subTest(path=path):
+                candidate = dict(population)
+                candidate[path] += "\nDEFAULT = 'HuGR-dev/corelink-server'\n"
+                errors = classify_identity_literals(
+                    {path: candidate[path]}, read_identity(),
+                    active={path: ACTIVE_IDENTITY_LITERAL_ALLOWLIST[path]} if path in ACTIVE_IDENTITY_LITERAL_ALLOWLIST else {},
+                    historical={path: HISTORICAL_IDENTITY_LITERAL_ALLOWLIST[path]} if path in HISTORICAL_IDENTITY_LITERAL_ALLOWLIST else {},
+                    pending={path: PENDING_IDENTITY_MIGRATION[path]} if path in PENDING_IDENTITY_MIGRATION else {},
+                    baseline=read_literal_baseline(),
+                )
+                self.assert_fails_naming(errors, "retired identity lines grew", path)
 
     def test_empty_population_is_a_failure_not_a_pass(self) -> None:
         errors = self.classify({})
@@ -925,9 +1078,10 @@ class IdentityClassificationGateTests(unittest.TestCase):
         self.assertIn("EMPTY", errors[0])
 
     def test_scan_reaches_the_files_it_must_see(self) -> None:
-        population = tracked_text_population()
+        population = dict(self.real_population)
         for relative in (
             "config/github-identity.json",
+            "config/github-identity-literal-baseline.json",
             "scripts/server_repository.py",
             "scripts/test_server_repository_identity.py",
             ".github/workflows/python-tests.yml",
@@ -935,17 +1089,18 @@ class IdentityClassificationGateTests(unittest.TestCase):
             "apps/dsr-alert-receiver/scripts/receiver-target.mjs",
         ):
             with self.subTest(path=relative):
-                self.assertIn(relative, population)
+                self.assertTrue(relative in population, f"scan missed tracked file: {relative}")
         self.assertGreater(len(population), 1000)
 
     def test_all_identity_literals_in_the_tree_are_classified(self) -> None:
         errors = classify_identity_literals(
-            tracked_text_population(),
+            self.real_population,
             read_identity(),
             active=ACTIVE_IDENTITY_LITERAL_ALLOWLIST,
             historical=HISTORICAL_IDENTITY_LITERAL_ALLOWLIST,
             pending=PENDING_IDENTITY_MIGRATION,
             read_outside=read_repository_file,
+            baseline=read_literal_baseline(),
         )
         self.assertEqual(errors, [], "\n".join(errors))
 
@@ -996,9 +1151,10 @@ class ExistingIdentityContractTests(unittest.TestCase):
 
     def test_reintroduced_source_owner_fails_current_projection_guard(self) -> None:
         current_readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        mutated = current_readme + "\nhttps://github.com/HuGR-Labs/corelink-server/issues\n"
-        with self.assertRaisesRegex(AssertionError, "stale source owner"):
-            assert_current_projection_owner_is_not_stale("README.md", mutated)
+        for owner, error in (("HuGR-Labs", "stale source owner"), ("HumanGuardrail", "historical owner")):
+            mutated = current_readme + f"\nhttps://github.com/{owner}/corelink-server/issues\n"
+            with self.subTest(owner=owner), self.assertRaisesRegex(AssertionError, error):
+                assert_current_projection_owner_is_not_stale("README.md", mutated)
 
     def test_active_consumers_have_no_silent_retired_default(self) -> None:
         identity = read_identity()
@@ -1025,6 +1181,25 @@ class ExistingIdentityContractTests(unittest.TestCase):
             with self.subTest(path=relative):
                 for owner in owners:
                     self.assertNotIn(f"{owner}/{server}", executable)
+
+    def test_silent_defaults_and_duplicate_declared_negative_fixtures_have_teeth(self) -> None:
+        original_read = Path.read_text
+        server = read_identity().repository("server").name
+        cases = [
+            ("scripts/server_repository.py", f"\nDEFAULT = '{owner}/{server}'\n")
+            for owner in read_identity().historical_server_owners
+        ]
+        pinned = "scripts/verify_real_ignored_harnesses.py"
+        cases.append((pinned, "\n" + NEGATIVE_FIXTURE_LINES[pinned][0] + "\n"))
+        for relative, addition in cases:
+            target = ROOT / relative
+            def planted_read(path, *args, **kwargs):
+                text = original_read(path, *args, **kwargs)
+                return text + addition if path == target else text
+            with self.subTest(path=relative, addition=addition), patch.object(Path, "read_text", planted_read):
+                result = unittest.TestResult()
+                type(self)("test_active_consumers_have_no_silent_retired_default").run(result)
+                self.assertTrue(result.failures, "planted default/duplicated fixture passed its consumer gate")
 
     def test_history_allowlist_is_explicit_and_remains_byte_identity_bound(self) -> None:
         self.assertEqual(
@@ -1142,8 +1317,42 @@ class ExistingIdentityContractTests(unittest.TestCase):
         self.assertIn("HuGR-Labs/corelink-cli", workflow)
         self.assertIn("actions.runner.HuGR-Labs-corelink-server", watchdog)
 
+    def assert_identity_path_coverage(self, workflows: Mapping[str, str]) -> None:
+        for name in ("python-tests.yml", "b046-object-lock-receipt-contract.yml", "issue-1721-r2-lock-proof.yml"):
+            workflow = workflows[name]
+            count = 2 if name == "python-tests.yml" else 1
+            for path in ("config/github-identity.json", "scripts/server_repository.py"):
+                covered = workflow.count(f"- '{path}'") + workflow.count(f"- {path}\n")
+                if path == "scripts/server_repository.py" and name == "python-tests.yml":
+                    covered += workflow.count("- 'scripts/**'")
+                self.assertGreaterEqual(covered, count, f"{name} does not trigger on {path}")
+        self.assertGreaterEqual(workflows["python-tests.yml"].count("- 'config/github-identity-literal-baseline.json'"), 2)
+
+    def test_ci_path_coverage_rejects_each_removed_identity_dependency(self) -> None:
+        workflows = {name: (ROOT / ".github/workflows" / name).read_text() for name in (
+            "python-tests.yml", "b046-object-lock-receipt-contract.yml", "issue-1721-r2-lock-proof.yml",
+        )}
+        self.assert_identity_path_coverage(workflows)
+        for name, workflow in workflows.items():
+            paths = ("config/github-identity.json", "scripts/server_repository.py")
+            if name == "python-tests.yml":
+                paths = (*paths, "config/github-identity-literal-baseline.json")
+            for path in paths:
+                with self.subTest(workflow=name, path=path):
+                    candidate = dict(workflows)
+                    candidate[name] = "\n".join(line for line in workflow.splitlines() if not (
+                        line.strip() in {f"- '{path}'", f"- {path}"} or
+                        (path == "scripts/server_repository.py" and line.strip() == "- 'scripts/**'")
+                    ))
+                    with self.assertRaises(AssertionError):
+                        self.assert_identity_path_coverage(candidate)
+
     def test_identity_suite_is_registered_with_matching_path_coverage(self) -> None:
-        workflow = (ROOT / ".github/workflows/python-tests.yml").read_text()
+        workflows = {name: (ROOT / ".github/workflows" / name).read_text() for name in (
+            "python-tests.yml", "b046-object-lock-receipt-contract.yml", "issue-1721-r2-lock-proof.yml",
+        )}
+        self.assert_identity_path_coverage(workflows)
+        workflow = workflows["python-tests.yml"]
         self.assertIn("scripts/test_server_repository_identity.py", workflow)
         self.assertIn('python3 -m pytest "${FILES[@]}" "${REQUIRED_SUITES[@]}" -q', workflow)
         self.assertGreaterEqual(workflow.count("- 'scripts/**'"), 2)

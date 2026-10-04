@@ -110,6 +110,8 @@ class I1721R2LockProbeTests(unittest.TestCase):
         self.assertEqual(workflow["on"]["pull_request"]["paths"], [
             ".github/workflows/issue-1721-r2-lock-proof.yml",
             "scripts/probe_i1721_r2_lock.sh",
+            "config/github-identity.json",
+            "scripts/server_repository.py",
             "scripts/validate_i1721_r2_dispatch.sh",
             "tests/test_i1721_r2_lock_probe.py",
         ])
