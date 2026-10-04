@@ -27,10 +27,85 @@ def _sources() -> tuple[str, str]:
     )
 
 
-def test_backlog_b154_remains_open_until_root_reconciles_the_owner_row() -> None:
+def _b154_backlog_record() -> dict:
+    import yaml
+
     backlog = (ROOT / "BACKLOG.md").read_text(encoding="utf-8")
     section = backlog.split("### B-154 —", 1)[1].split("### B-155 —", 1)[0]
-    assert "status: open" in section
+    block = section.split("```backlog\n", 1)[1].split("```", 1)[0]
+    record = yaml.safe_load(block)
+    assert record["id"] == "B-154"
+    return record
+
+
+def test_backlog_b154_is_done_with_a_conjunctive_regression_guard() -> None:
+    record = _b154_backlog_record()
+    assert record["status"] == "done"
+    assert record["owner"] == "tl"
+    # The policy-pinned conjunction: a packet failure cannot be masked by the
+    # exit status of the claims check that follows it.
+    assert record["verify"] == (
+        "python3 -S scripts/verify_owner_action_packets.py --id B-154 &&\n"
+        "python3 -S scripts/verify_b154_instrument_claims.py --self-test\n"
+    )
+    assert record["verify-means"].lstrip().lower().startswith("done")
+
+
+def _resolution() -> dict:
+    return json.loads((ROOT / MODULE.RESOLUTION).read_text(encoding="utf-8"))
+
+
+def _resolution_with(tmp_path: Path, record: dict) -> Path:
+    """Copy every input verify_prelaunch_resolution reads, with a mutated resolution."""
+    for relative in (
+        MODULE.RESOLUTION, MODULE.B086_RESOLUTION, MODULE.WRANGLER, MODULE.B046_ACCEPTED_TARGET,
+        *MODULE.PUBLIC_COPY_PATHS,
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / relative).read_bytes())
+    (tmp_path / MODULE.RESOLUTION).write_text(json.dumps(record), encoding="utf-8")
+    return tmp_path
+
+
+def test_terminal_resolution_copy_is_accepted(tmp_path: Path) -> None:
+    MODULE.verify_prelaunch_resolution(_resolution_with(tmp_path, _resolution()))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda r: r.update(status="OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW"),
+        lambda r: r.update(provider_chains_closed=True),
+        lambda r: r.pop("terminal_outcomes"),
+        lambda r: r["terminal_outcomes"]["object_lock"].update(launch_claim="AVAILABLE"),
+        lambda r: r["terminal_outcomes"]["object_lock"].update(merge_commit="0" * 40),
+        lambda r: r["terminal_outcomes"]["byok_kill_switch"].update(outcome="CAPABILITY_PROVEN"),
+        lambda r: r["terminal_outcomes"]["byok_kill_switch"].update(
+            owner_decision="https://github.com/HuGR-dev/corelink-server/issues/1676#issuecomment-1"
+        ),
+        lambda r: r["terminal_outcomes"].update(nonclaims="Seven-year retention is established."),
+        lambda r: r["claims"]["byok_kill_switch"].update(capability_status="PROVEN"),
+    ],
+    ids=[
+        "status-reverted-open", "chains-claimed-closed", "outcomes-removed", "object-lock-promoted",
+        "merge-commit-swapped", "byok-promoted", "owner-decision-swapped", "nonclaims-weakened",
+        "byok-capability-promoted",
+    ],
+)
+def test_terminal_resolution_mutations_fail_closed(tmp_path: Path, mutate) -> None:
+    record = _resolution()
+    mutate(record)
+    with pytest.raises(MODULE.VerificationError):
+        MODULE.verify_prelaunch_resolution(_resolution_with(tmp_path, record))
+
+
+def test_terminal_outcome_rejects_changed_accepted_target_bytes(tmp_path: Path) -> None:
+    root = _resolution_with(tmp_path, _resolution())
+    accepted = root / MODULE.B046_ACCEPTED_TARGET
+    accepted.write_bytes(accepted.read_bytes() + b"\n")
+    with pytest.raises(MODULE.VerificationError, match="accepted target bytes"):
+        MODULE.verify_prelaunch_resolution(root)
 
 
 def test_current_instruments_publish_only_explicit_prelaunch_limits() -> None:
@@ -172,3 +247,75 @@ def test_sentence_scope_does_not_borrow_an_unrelated_prior_negation() -> None:
     dpa += "\nNo unrelated retention feature is guaranteed. Immutable R2 with Object Lock is active.\n"
     with pytest.raises(MODULE.VerificationError):
         MODULE.verify_texts(dpa, sla)
+
+
+def _b086_inputs() -> tuple[dict, str]:
+    b086 = json.loads((ROOT / MODULE.B086_RESOLUTION).read_text(encoding="utf-8"))
+    wrangler = (ROOT / MODULE.WRANGLER).read_text(encoding="utf-8")
+    return b086, wrangler
+
+
+def test_b154_binding_does_not_decay_on_the_wall_clock_but_b086_still_does() -> None:
+    b086, wrangler = _b086_inputs()
+    aged = copy.deepcopy(b086)
+    aged["provider_readback"]["captured_at"] = "2000-01-01T00:00:00Z"
+    aged["deployed_active_readback"]["captured_at"] = "2000-01-01T00:00:00Z"
+    # The binding call B-154 uses has no wall-clock window...
+    MODULE.verify_readback_record(aged, wrangler, max_age=None)
+    # ...while B-086's default gate keeps its 24-hour freshness window.
+    with pytest.raises(MODULE.B086VerificationError, match="24-hour limit"):
+        MODULE.verify_readback_record(aged, wrangler)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value["provider_readback"].update(captured_at="2999-01-01T00:00:00Z"),
+        lambda value: value["deployed_active_readback"].update(captured_at="2026-09-30T14:37:23"),
+        lambda value: value["provider_readback"].update(physical_location_conclusion="PHYSICAL_LOCATION_GUARANTEED"),
+        lambda value: value["deployed_active_readback"]["active_workers"][0].update(
+            CONFIG_DB_database_id="00000000-0000-4000-8000-000000000000"
+        ),
+    ],
+    ids=["future-dated", "timezone-naive", "physical-location-inferred", "wrong-active-binding"],
+)
+def test_b154_binding_still_rejects_b086_content_drift(mutate) -> None:
+    b086, wrangler = _b086_inputs()
+    mutated = copy.deepcopy(b086)
+    mutate(mutated)
+    with pytest.raises(MODULE.B086VerificationError):
+        MODULE.verify_readback_record(mutated, wrangler, max_age=None)
+
+
+def test_b154_resolution_uses_the_hash_bound_no_window_call(monkeypatch) -> None:
+    seen: list[object] = []
+    real = MODULE.verify_readback_record
+
+    def spy(record, wrangler_text, **kwargs):
+        seen.append(kwargs.get("max_age", "default"))
+        return real(record, wrangler_text, **kwargs)
+
+    monkeypatch.setattr(MODULE, "verify_readback_record", spy)
+    MODULE.verify_prelaunch_resolution(ROOT)
+    assert seen == [None]
+
+
+def test_b154_resolution_rejects_a_b086_receipt_that_is_not_hash_pinned(tmp_path, monkeypatch) -> None:
+    b086, _ = _b086_inputs()
+    rebound = copy.deepcopy(b086)
+    rebound["provider_readback"]["captured_at"] = "2000-01-01T00:00:00Z"
+    original_read_text = Path.read_text
+    original_read_bytes = Path.read_bytes
+    target = (ROOT / MODULE.B086_RESOLUTION).resolve()
+    replacement = json.dumps(rebound)
+
+    def read_text(self, *args, **kwargs):
+        return replacement if self.resolve() == target else original_read_text(self, *args, **kwargs)
+
+    def read_bytes(self):
+        return replacement.encode("utf-8") if self.resolve() == target else original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    with pytest.raises(MODULE.VerificationError):
+        MODULE.verify_prelaunch_resolution(ROOT)

@@ -150,8 +150,25 @@ def _production_d1(doc: dict[str, object]) -> list[tuple[str, str]]:
     return rows
 
 
-def verify_readback_record(record: dict[str, object], wrangler_text: str) -> None:
-    """Fail closed unless fresh provider and exact active-version reads match source."""
+READBACK_MAX_AGE = dt.timedelta(hours=24)
+
+
+def verify_readback_record(
+    record: dict[str, object],
+    wrangler_text: str,
+    *,
+    max_age: dt.timedelta | None = READBACK_MAX_AGE,
+) -> None:
+    """Fail closed unless fresh provider and exact active-version reads match source.
+
+    ``max_age`` defaults to the B-086 24-hour freshness window, and every
+    B-086 caller uses that default. Only a consumer that binds this exact
+    receipt by content hash may pass ``None``. B-154 (done) is the one such
+    consumer: its regression guard must not decay on the wall clock, and
+    B-086 itself still enforces freshness. With ``None`` the checks still
+    reject a timezone-naive or future-dated timestamp, and every content
+    check below still runs.
+    """
     if not isinstance(record, dict):
         raise VerificationError("B-086 D1 readback receipt is missing or malformed")
     provider = record.get("provider_readback")
@@ -166,7 +183,9 @@ def verify_readback_record(record: dict[str, object], wrangler_text: str) -> Non
     except (KeyError, TypeError, ValueError):
         raise VerificationError("B-086 readback timestamps are missing or invalid") from None
     now = dt.datetime.now(dt.timezone.utc)
-    if any(value.tzinfo is None or value > now or now - value > dt.timedelta(hours=24) for value in (captured, active_captured)):
+    if any(value.tzinfo is None or value > now for value in (captured, active_captured)):
+        raise VerificationError("B-086 readback timestamps must be timezone-aware and not future-dated")
+    if max_age is not None and any(now - value > max_age for value in (captured, active_captured)):
         raise VerificationError("B-086 exact-target or active-version readback is stale (24-hour limit)")
     if provider.get("method") != "npx wrangler@latest d1 info corelink-prod-d1 (read-only)" or provider.get("wrangler_version") != "4.145.0":
         raise VerificationError("B-086 D1 readback method/version changed; refresh and review")

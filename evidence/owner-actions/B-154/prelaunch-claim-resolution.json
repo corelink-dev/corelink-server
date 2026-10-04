@@ -70,8 +70,33 @@
     "issue_2596": "CLOSED_NO_CIRCULATION",
     "notice_or_amendment": "NONE_CLAIMED"
   },
-  "status": "OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW",
+  "status": "DONE_PRELAUNCH_CLAIMS_MATCH_PROVEN_CAPABILITY",
   "provider_chains_closed": false,
+  "terminal_outcomes": {
+    "recorded_at": "2026-10-02",
+    "object_lock": {
+      "parent_issue": 1646,
+      "parent_state": "CLOSED_COMPLETED",
+      "closed_at": "2026-09-30",
+      "closure_receipt": "https://github.com/HuGR-dev/corelink-server/issues/1646#issuecomment-5920191555",
+      "merge_pr": 2808,
+      "merge_commit": "896ac79038bf57dc742956fb764f47b28ee5b73a",
+      "accepted_receipt": "evidence/owner-actions/B-046/accepted-aws-target.json",
+      "accepted_receipt_sha256": "0bec97b785b6a68961e8f8fba0a10575cb3cecc01496f57844b02f03175f16fc",
+      "proven_scope": "ONE_NONPRODUCTION_SYNTHETIC_AWS_S3_VERSION_ONLY",
+      "launch_claim": "NARROWED_NOT_AVAILABLE_OR_PROMISED"
+    },
+    "byok_kill_switch": {
+      "owner_decision": "https://github.com/HuGR-dev/corelink-server/issues/1676#issuecomment-5941052514",
+      "decided_at": "2026-10-01",
+      "outcome": "FAIL_CLOSED_LIMITATION_ACCEPTED_FOR_LAUNCH",
+      "narrowing_pr": 2807,
+      "narrowing_commit": "f2ab5d43b1f7a5dc691f30e0cae419155b4643c5",
+      "runtime_followups": "#1653/#2165 OPEN_AT_RECORDING_AS_PRODUCT_HARDENING_NOT_B154_BLOCKERS",
+      "launch_claim": "NARROWED_NOT_AVAILABLE_OR_PROMISED"
+    },
+    "nonclaims": "No legal approval, executed instrument, customer notice, production Object Lock route, seven-year retention, BYOK availability, or kill-switch p99 is established by these outcomes."
+  },
   "source_sha256": {
     "apps/docs/docs/explanation/security/byok.mdx": "5e7c61e4e2dce64a7d8d01c35a65880062d6e634165540f9353df8d55c265316",
     "compliance/byok-fips-matrix.md": "d3b1ddd846817be3dc4290b4a9bef71cacb2cca0e0ca678c7fe9921fa8e12afd",

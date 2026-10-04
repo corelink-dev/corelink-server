@@ -631,7 +631,14 @@ class OwnerActionPacketTests(unittest.TestCase):
             lambda value: value["claims"]["object_lock"].update(launch_availability="AVAILABLE"),
             lambda value: value["claims"]["byok_kill_switch"].update(p99_measurement="PASS"),
             lambda value: value["source_sha256"].update({next(iter(value["source_sha256"])): "0" * 64}),
+            lambda value: value.update(status="OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW"),
+            lambda value: value.pop("terminal_outcomes"),
+            lambda value: value["terminal_outcomes"]["object_lock"].update(launch_claim="AVAILABLE"),
+            lambda value: value["terminal_outcomes"]["byok_kill_switch"].update(outcome="CAPABILITY_PROVEN"),
         )
+        # Positive control: the unmutated terminal record passes, so every
+        # rejection below is caused by its mutation.
+        MODULE.check_data(self.data, "B-154")
         for mutate in mutations:
             record = copy.deepcopy(baseline)
             mutate(record)
@@ -640,6 +647,19 @@ class OwnerActionPacketTests(unittest.TestCase):
             with mock.patch.object(MODULE, "_read_json_evidence", side_effect=read_candidate):
                 with self.assertRaises(MODULE.PacketError):
                     MODULE.check_data(self.data, "B-154")
+
+    def test_b154_terminal_record_requires_done_tl_rows(self) -> None:
+        contracts = MODULE._read_backlog_contracts()
+        self.assertEqual(contracts["B-154"], ("tl", "done"))
+        for owner, status in (("owner", "open"), ("tl", "open")):
+            reverted = copy.deepcopy(self.data)
+            item = next(entry for entry in reverted["items"] if entry["id"] == "B-154")
+            item["owner"], item["status"] = owner, status
+            reverted_contracts = dict(contracts)
+            reverted_contracts["B-154"] = (owner, status)
+            with self.subTest(owner=owner, status=status):
+                with self.assertRaises(MODULE.PacketError):
+                    MODULE.check_data(reverted, "B-154", backlog_contracts=reverted_contracts)
 
     def test_base_sha_provenance_disclaimer_is_mandatory(self) -> None:
         missing = copy.deepcopy(self.data)
