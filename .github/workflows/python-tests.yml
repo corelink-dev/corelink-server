@@ -21,6 +21,8 @@ on:
     paths:
       - 'tests/*.py'
       - 'scripts/**'
+      - 'config/github-identity.json'
+      - 'config/github-identity-literal-baseline.json'
       - 'BACKLOG.md'
       - 'docs/internal/org-migration/**'
       - 'docs/internal/secrets-checklist.md'
@@ -88,6 +90,8 @@ on:
     paths:
       - 'tests/*.py'
       - 'scripts/**'
+      - 'config/github-identity.json'
+      - 'config/github-identity-literal-baseline.json'
       - 'BACKLOG.md'
       - 'docs/internal/org-migration/**'
       - 'docs/internal/secrets-checklist.md'

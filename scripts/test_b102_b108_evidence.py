@@ -20,7 +20,25 @@ sys.path.insert(0, str(Path(__file__).parent))
 import verify_b102_b108_evidence as verifier
 import collect_b102_b107_measurements as collector
 import collect_b102_b108_context as context_collector
-verifier.REPO = verifier.SOURCE_REPO
+
+# Both the verifier and the context collector authorize through
+# scripts/server_repository.py (config/github-identity.json). The committed
+# config may still hold the unread ID 0, which the loader refuses, so main()
+# binds a synthetic read-back identity: configured owner and names, filled IDs.
+RESOLVER = sys.modules[verifier.validate_configured_server_repository.__module__]
+
+
+def _read_back_fixture_identity():
+    document = copy.deepcopy(RESOLVER.read_identity_document())
+    document["current"]["owner_id"] = 987650000
+    for offset, key in enumerate(RESOLVER.REPOSITORY_KEYS, start=1):
+        document["current"]["repos"][key]["id"] = 987650000 + offset
+    return RESOLVER.parse_identity(document).require_read_back()
+
+
+FIXTURE_IDENTITY = _read_back_fixture_identity()
+FIXTURE_SERVER = FIXTURE_IDENTITY.repository("server")
+verifier.REPO = FIXTURE_SERVER.full_name
 
 ROOT = Path(__file__).parents[1]
 NOW = 1_800_000_000.0
@@ -289,44 +307,64 @@ def workflow_run_timestamp_contract() -> None:
 
 
 def repository_identity_scope() -> None:
-    """Source and destination are exact server identities; CLI/attacker names fail."""
-    source = "HuGR-Labs/corelink-server"
-    destination = "HuGR-dev/corelink-server"
-    assert context_collector.is_server_repository(source)
-    assert context_collector.is_server_repository(destination)
-    assert not context_collector.is_server_repository("HuGR-Labs/corelink-cli")
-    assert not context_collector.is_server_repository("attacker/corelink-server")
-    try:
-        verifier.validate_server_repository("attacker/corelink-server")
-    except verifier.EvidenceError:
-        pass
-    else:
-        raise AssertionError("attacker repository unexpectedly passed the evidence verifier")
+    """Only the configured server (exact name AND numeric ID) passes.
+
+    The retired pre-recreate owners, peer repositories, the CLI and lookalikes
+    all fail, in the collector and in the packet verifier.
+    """
+    server = FIXTURE_SERVER
+    server_id = str(server.id)
+    retired_id = str(min(FIXTURE_IDENTITY.retired_repository_ids))
+    runners = FIXTURE_IDENTITY.repository("runners")
+    assert context_collector.is_server_repository(server.full_name, server_id)
+    for repository, repository_id in (
+        ("HuGR-dev/corelink-server", retired_id),
+        ("HuGR-dev/corelink-server", server_id),
+        ("HuGR-Labs/corelink-server", server_id),
+        (server.full_name, retired_id),
+        (server.full_name, str(runners.id)),
+        (runners.full_name, str(runners.id)),
+        ("HuGR-Labs/corelink-cli", server_id),
+        ("attacker/corelink-server", server_id),
+    ):
+        assert not context_collector.is_server_repository(repository, repository_id), (repository, repository_id)
+    for rejected in ("attacker/corelink-server", "HuGR-dev/corelink-server", "HuGR-Labs/corelink-server", runners.full_name):
+        try:
+            verifier.validate_server_repository(rejected)
+        except verifier.EvidenceError:
+            pass
+        else:
+            raise AssertionError(f"{rejected} unexpectedly passed the evidence verifier")
 
     original_repo = verifier.REPO
     original_gh_verifier = verifier.verify_attestation_with_gh
     try:
         verifier.verify_attestation_with_gh = lambda _bundle, _subject, _deployment, expected: expected
-        for expected_repo in (source, destination):
-            verifier.REPO = expected_repo
-            assert verifier.validate_server_repository(expected_repo) == expected_repo
-            result = verifier.assess(packet(), ROOT, NOW)
-            assert result["B-108"] == "closed"
-            assert all(result[item] == "open" for item in verifier.ITEMS[:-1])
+        verifier.REPO = server.full_name
+        assert verifier.validate_server_repository(server.full_name) == server.full_name
+        result = verifier.assess(packet(), ROOT, NOW)
+        assert result["B-108"] == "closed"
+        assert all(result[item] == "open" for item in verifier.ITEMS[:-1])
 
-        verifier.REPO = "HuGR-Labs/corelink-cli"
-        try:
-            verifier.assess(packet(), ROOT, NOW)
-        except verifier.EvidenceError:
-            pass
-        else:
-            raise AssertionError("CLI identity unexpectedly passed the server evidence verifier")
+        for rejected in ("HuGR-Labs/corelink-cli", "HuGR-dev/corelink-server"):
+            verifier.REPO = rejected
+            try:
+                verifier.assess(packet(), ROOT, NOW)
+            except verifier.EvidenceError:
+                pass
+            else:
+                raise AssertionError(f"{rejected} unexpectedly passed the server evidence verifier")
     finally:
         verifier.REPO = original_repo
         verifier.verify_attestation_with_gh = original_gh_verifier
 
 
 def main() -> int:
+    with patch.object(RESOLVER, "load_identity", return_value=FIXTURE_IDENTITY):
+        return _main()
+
+
+def _main() -> int:
     try:
         verifier.assess(packet(), ROOT, NOW)
     except verifier.EvidenceError:

@@ -13,10 +13,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping
 
+try:
+    from server_repository import require_repository_context
+except ModuleNotFoundError:  # imported as scripts.build_b046_object_lock_receipt
+    from scripts.server_repository import require_repository_context
+
 
 SCHEMA = "corelink.b046.s3-object-lock-protected-proof.v2"
-EXPECTED_REPOSITORY_ID = "1232040291"
-EXPECTED_REPOSITORY = "HuGR-dev/corelink-server"
+# The canonical repository (name and numeric ID) comes from
+# config/github-identity.json through scripts/server_repository.py.
 MAX_COST_USD_MICROS = 5_000_000
 EXPECTED_BUCKET_PREFIX = "corelink-object-lock-probe-b046"
 DIGEST_SUMMARY = re.compile(r"^([0-9]+)/([0-9]+) digest files valid$")
@@ -69,8 +74,10 @@ def build_receipt(
     validate_digest_output(digest_validation_output)
     repository = _required(values, "GITHUB_REPOSITORY")
     repository_id = _required(values, "GITHUB_REPOSITORY_ID")
-    if repository != EXPECTED_REPOSITORY or repository_id != EXPECTED_REPOSITORY_ID:
-        raise ReceiptError("proof must come from the canonical protected repository")
+    try:
+        require_repository_context(repository, repository_id)
+    except ValueError as exc:
+        raise ReceiptError("proof must come from the canonical protected repository") from exc
 
     run_id = _required(values, "B046_SOURCE_RUN_ID")
     attempt = _required(values, "B046_SOURCE_ATTEMPT")

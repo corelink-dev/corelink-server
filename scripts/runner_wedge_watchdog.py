@@ -180,7 +180,7 @@ def _uid() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--repo", help="exact authorized repo; default resolves repository ID 1232040291")
+    ap.add_argument("--repo", help="exact authorized repo; default resolves the configured server repository ID")
     ap.add_argument(
         "--min-age-s",
         type=float,

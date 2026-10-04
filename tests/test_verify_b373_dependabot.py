@@ -18,9 +18,37 @@ SPEC = importlib.util.spec_from_file_location(
 VERIFY = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(VERIFY)
+VERIFY_SNAPSHOT = VERIFY.verify_snapshot
+VERIFY_LOCKFILE = VERIFY.verify_lockfile
 
 
 class B373SourceBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        # Source-boundary unit tests use the configured server offline. The
+        # resolver itself is covered by the identity suite's readback tests.
+        from scripts.server_repository import current_repository, resolve_server_repository
+        repository = current_repository().full_name
+        for mock in (
+            patch.object(VERIFY, "REPO", repository),
+            patch.object(VERIFY, "verify_snapshot"),
+            patch.object(VERIFY, "verify_lockfile"),
+            patch.object(VERIFY, "resolve_server_repository", side_effect=lambda explicit: resolve_server_repository(explicit or repository)),
+        ):
+            mock.start()
+            self.addCleanup(mock.stop)
+
+    def test_snapshot_and_lockfile_prerequisites_still_reject_missing_or_drifted_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(VERIFY.CensusError, "snapshot unavailable"):
+                VERIFY_SNAPSHOT(root)
+            with self.assertRaisesRegex(VERIFY.CensusError, "manifest or lockfile unavailable"):
+                VERIFY_LOCKFILE(root)
+        # The retained census stays bound to its observed dependency tree.
+        with patch.object(VERIFY, "dependency_tree_digest", return_value="0" * 64):
+            with self.assertRaisesRegex(VERIFY.CensusError, "not bound"):
+                VERIFY_SNAPSHOT(ROOT)
+
     def test_post_merge_rejects_stdin_and_arbitrary_fixture_before_read(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as fixture:
             fixture.write("[]\n")
@@ -123,18 +151,16 @@ class B373SourceBoundaryTests(unittest.TestCase):
             remote = base / "remote.git"
             source = base / "source"
             shallow = base / "shallow"
-            run("git", "init", "--bare", str(remote))
             run("git", "init", str(source))
             run("git", "-C", str(source), "config", "user.name", "B373 Test")
             run("git", "-C", str(source), "config", "user.email", "b373@example.test")
             for message in ("root", "delivered", "later"):
                 run("git", "-C", str(source), "-c", "commit.gpgsign=false",
-                    "commit", "--allow-empty", "-m", message)
+                    "commit", "-s", "--allow-empty", "-m", message)
                 if message == "delivered":
                     delivered = run("git", "-C", str(source), "rev-parse", "HEAD")
             run("git", "-C", str(source), "branch", "-M", "main")
-            run("git", "-C", str(source), "remote", "add", "origin", str(remote))
-            run("git", "-C", str(source), "push", "origin", "main")
+            run("git", "clone", "--bare", str(source), str(remote))
             run("git", "--git-dir", str(remote), "symbolic-ref", "HEAD", "refs/heads/main")
             run("git", "clone", "--depth=1", remote.as_uri(), str(shallow))
             self.assertEqual(run("git", "-C", str(shallow), "rev-parse",

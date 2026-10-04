@@ -16,6 +16,8 @@ on:
       - migrations/d1/0102_cas_retention.sql
       - scripts/verify_b046_object_lock_probe.py
       - scripts/verify_owner_action_packets.py
+      - config/github-identity.json
+      - scripts/server_repository.py
       - scripts/build_b046_object_lock_receipt.py
       - specs/03_architecture/adrs/ADR-0100-r2-object-lock-capability-gate.md
       - tests/test_owner_action_packets.py

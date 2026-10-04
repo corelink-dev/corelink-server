@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +18,21 @@ SPEC = importlib.util.spec_from_file_location("verify_b028", ROOT / "scripts/ver
 VERIFY = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(VERIFY)
+RESOLVER = sys.modules[VERIFY.resolve_server_repository.__module__]
+
+
+def _read_back_fixture_identity():
+    # The committed config/github-identity.json may still hold the unread ID 0,
+    # which the resolver refuses; keep its owner and names, fill synthetic IDs.
+    document = copy.deepcopy(RESOLVER.read_identity_document())
+    document["current"]["owner_id"] = 987650000
+    for offset, key in enumerate(RESOLVER.REPOSITORY_KEYS, start=1):
+        document["current"]["repos"][key]["id"] = 987650000 + offset
+    return RESOLVER.parse_identity(document).require_read_back()
+
+
+FIXTURE_IDENTITY = _read_back_fixture_identity()
+FIXTURE_SERVER = FIXTURE_IDENTITY.repository("server").full_name
 
 
 def alert(number: int, package: str, ghsa: str, severity: str = "high", patched=None) -> dict:
@@ -83,14 +100,17 @@ class B028VerifierTests(unittest.TestCase):
 
     def test_api_failure_is_not_an_empty_census(self):
         result = type("Result", (), {"returncode": 1, "stderr": "HTTP 403", "stdout": ""})()
-        repo = VERIFY.resolve_server_repository("HuGR-dev/corelink-server")
+        repo = VERIFY.resolve_server_repository(FIXTURE_SERVER, identity=FIXTURE_IDENTITY)
         with patch.object(VERIFY.subprocess, "run", return_value=result) as run:
             with self.assertRaisesRegex(VERIFY.CensusError, "not an empty census"):
                 VERIFY.read_alerts(repo, None)
         self.assertEqual(
             run.call_args.args[0][-1],
-            "/repos/HuGR-dev/corelink-server/dependabot/alerts",
+            f"/repos/{FIXTURE_SERVER}/dependabot/alerts",
         )
+        # The pre-recreate destination is no longer an authorized server name.
+        with self.assertRaises(ValueError):
+            VERIFY.resolve_server_repository("HuGR-dev/corelink-server", identity=FIXTURE_IDENTITY)
 
     def test_cli_checks_lockfile_and_fixture(self):
         overrides = "\n".join(f'"{key}": "{value}"' for key, value in VERIFY.REQUIRED_OVERRIDES)

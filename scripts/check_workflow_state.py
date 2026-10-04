@@ -271,7 +271,7 @@ def render_summary(rows: list[list[str]], failures: list[str], notes: list[str])
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--repo", help="exact authorized repo; default resolves repository ID 1232040291")
+    ap.add_argument("--repo", help="exact authorized repo; default resolves the configured server repository ID")
     ap.add_argument("--waivers", default=DEFAULT_WAIVERS, help="waiver register path")
     ap.add_argument(
         "--also-report",

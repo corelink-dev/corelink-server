@@ -1,6 +1,8 @@
 """Meaningful fail-closed negatives for the #2568 provider operator."""
 from __future__ import annotations
 
+import copy
+import subprocess
 import unittest
 import sys
 from hashlib import sha256
@@ -9,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from scripts.issue_2568_sla_credit_real import IDENTITY as RESOLVER
 from scripts.issue_2568_sla_credit_real import (
     BRANCH,
     OperatorError,
@@ -83,15 +86,65 @@ class FakeCloudflare:
         raise AssertionError((method, path))
 
 
+def _read_back_fixture_identity():
+    # The operator authorizes through scripts/server_repository.py, whose
+    # committed config may still hold the unread ID 0. Keep the configured
+    # owner and names; fill synthetic IDs only.
+    document = copy.deepcopy(RESOLVER.read_identity_document())
+    document["current"]["owner_id"] = 987650000
+    for offset, key in enumerate(RESOLVER.REPOSITORY_KEYS, start=1):
+        document["current"]["repos"][key]["id"] = 987650000 + offset
+    return RESOLVER.parse_identity(document).require_read_back()
+
+
+FIXTURE_IDENTITY = _read_back_fixture_identity()
+FIXTURE_SERVER = FIXTURE_IDENTITY.repository("server")
+
+
+def context_env(**overrides: str) -> dict[str, str]:
+    env = {
+        "GITHUB_REPOSITORY": FIXTURE_SERVER.full_name,
+        "GITHUB_REPOSITORY_ID": str(FIXTURE_SERVER.id),
+        "GITHUB_REF": BRANCH,
+        "GITHUB_SHA": "a" * 40,
+    }
+    env.update(overrides)
+    return env
+
+
+# These validators intentionally bind the delivered #2568 historical bytes,
+# which later work packages changed in the live checkout. Read the immutable
+# object rather than changing its pins or using the current tree as a fixture.
+FROZEN_DELIVERY = "7c7e119c9d3210a20367b8e3120b8c4e834eda75"
+
+
+def frozen_delivery_bytes(path: str) -> bytes:
+    return subprocess.check_output(
+        ["git", "show", f"{FROZEN_DELIVERY}:{path}"], cwd=Path(__file__).resolve().parents[1]
+    )
+
+
 class Issue2568OperatorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        identity = patch.object(RESOLVER, "load_identity", return_value=FIXTURE_IDENTITY)
+        identity.start()
+        self.addCleanup(identity.stop)
+
     def test_canonical_source_requires_exact_candidate_sha_and_file_digests(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        self.assertEqual(verify_source_checkout(root, SOURCE_SHA), SOURCE_DIGESTS)
-        with self.assertRaisesRegex(OperatorError, "exact protected-main candidate"):
-            verify_source_checkout(root, "0" * 40)
-        with patch("scripts.issue_2568_sla_credit_real.subprocess.check_output", return_value="0" * 40):
+        # SOURCE_SHA is a dispatch input, empty outside the protected lane.
+        # Supply a candidate here while exercising the real digest checks.
+        candidate = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        with patch("scripts.issue_2568_sla_credit_real.SOURCE_SHA", candidate):
+            self.assertEqual(verify_source_checkout(root, candidate), SOURCE_DIGESTS)
             with self.assertRaisesRegex(OperatorError, "exact protected-main candidate"):
-                verify_source_checkout(root, SOURCE_SHA)
+                verify_source_checkout(root, "0" * 40)
+            with patch("scripts.issue_2568_sla_credit_real.subprocess.check_output", return_value="0" * 40):
+                with self.assertRaisesRegex(OperatorError, "exact protected-main candidate"):
+                    verify_source_checkout(root, candidate)
+            with patch("scripts.issue_2568_sla_credit_real.SOURCE_DIGESTS", {**SOURCE_DIGESTS, next(iter(SOURCE_DIGESTS)): "0" * 64}):
+                with self.assertRaisesRegex(OperatorError, "digest drift"):
+                    verify_source_checkout(root, candidate)
 
     def test_wrong_account_rejected_before_provider_request(self) -> None:
         with self.assertRaisesRegex(OperatorError, "does not match"):
@@ -115,21 +168,45 @@ class Issue2568OperatorTests(unittest.TestCase):
     def test_detached_candidate_uses_immutable_sha_and_github_ref(self) -> None:
         with patch("scripts.issue_2568_sla_credit_real.subprocess.check_output") as command:
             command.side_effect = ["a" * 40 + "\n", "a" * 40 + "\trefs/heads/main\n"]
-            env = {"GITHUB_REPOSITORY": "HuGR-dev/corelink-server", "GITHUB_REF": BRANCH, "GITHUB_SHA": "a" * 40}
+            env = context_env()
             with patch.dict("os.environ", env):
                 self.assertEqual(assert_checkout("a" * 40), "a" * 40)
+            self.assertEqual(
+                command.call_args_list[1].args[0][3],
+                f"https://github.com/{FIXTURE_SERVER.full_name}.git",
+            )
         with patch("scripts.issue_2568_sla_credit_real.subprocess.check_output") as command:
             command.return_value = "a" * 40 + "\n"
-            env = {"GITHUB_REPOSITORY": "HuGR-dev/corelink-server", "GITHUB_REF": "refs/heads/codex/support03-issue-2568", "GITHUB_SHA": "a" * 40}
+            env = context_env(GITHUB_REF="refs/heads/codex/support03-issue-2568")
             with patch.dict("os.environ", env):
                 with self.assertRaisesRegex(OperatorError, "protected main ref"):
                     assert_checkout("a" * 40)
         with patch("scripts.issue_2568_sla_credit_real.subprocess.check_output") as command:
             command.return_value = "b" * 40 + "\n"
-            env = {"GITHUB_REPOSITORY": "HuGR-dev/corelink-server", "GITHUB_REF": BRANCH, "GITHUB_SHA": "b" * 40}
+            env = context_env(GITHUB_SHA="b" * 40)
             with patch.dict("os.environ", env):
                 with self.assertRaisesRegex(OperatorError, "differs from expected_sha"):
                     assert_checkout("a" * 40)
+
+    def test_retired_or_mismatched_repository_context_is_refused_before_remote_read(self) -> None:
+        retired_id = str(min(FIXTURE_IDENTITY.retired_repository_ids))
+        runners = FIXTURE_IDENTITY.repository("runners")
+        for label, overrides in (
+            ("retired destination owner and ID", {"GITHUB_REPOSITORY": "HuGR-dev/corelink-server", "GITHUB_REPOSITORY_ID": retired_id}),
+            ("retired destination owner, current ID", {"GITHUB_REPOSITORY": "HuGR-dev/corelink-server"}),
+            ("retired source owner", {"GITHUB_REPOSITORY": "HuGR-Labs/corelink-server"}),
+            ("current name, retired ID", {"GITHUB_REPOSITORY_ID": retired_id}),
+            ("peer repository", {"GITHUB_REPOSITORY": runners.full_name, "GITHUB_REPOSITORY_ID": str(runners.id)}),
+            ("missing repository ID", {"GITHUB_REPOSITORY_ID": ""}),
+        ):
+            with self.subTest(label=label):
+                with patch("scripts.issue_2568_sla_credit_real.subprocess.check_output") as command:
+                    command.return_value = "a" * 40 + "\n"
+                    with patch.dict("os.environ", context_env(**overrides)):
+                        with self.assertRaisesRegex(OperatorError, "canonical repository"):
+                            assert_checkout("a" * 40)
+                    # Only `git rev-parse HEAD` ran; no remote was contacted.
+                    self.assertEqual(command.call_count, 1)
 
     def test_stale_protected_main_fails_before_provider_write(self) -> None:
         current_sha = "a" * 40
@@ -139,7 +216,7 @@ class Issue2568OperatorTests(unittest.TestCase):
                 current_sha + "\n",
                 stale_sha + "\trefs/heads/main\n",
             ]
-            env = {"GITHUB_REPOSITORY": "HuGR-dev/corelink-server", "GITHUB_REF": BRANCH, "GITHUB_SHA": current_sha}
+            env = context_env(GITHUB_SHA=current_sha)
             with patch.dict("os.environ", env):
                 with self.assertRaisesRegex(OperatorError, "not the fresh protected-main commit"):
                     assert_checkout(current_sha)
@@ -254,7 +331,7 @@ class Issue2568OperatorTests(unittest.TestCase):
                 validate_candidate_paths(set(LEAF_PATHS), correction_branch)
 
     def test_wp150_manifest_gate_rejects_arbitrary_content_or_mode(self) -> None:
-        valid = (Path(__file__).resolve().parents[1] / WP150_PATH).read_bytes()
+        valid = frozen_delivery_bytes(WP150_PATH)
         self.assertEqual(sha256(valid).hexdigest(), WP150_SHA256)
         validate_wp150_manifest(valid, 0o100644)
         arbitrary_content = valid + b"\nforeign append\n"
@@ -266,7 +343,7 @@ class Issue2568OperatorTests(unittest.TestCase):
             validate_wp150_manifest(valid, 0o100755)
 
     def test_secret_registry_registers_i2568_and_denies_unknown_credential(self) -> None:
-        registry = (Path(__file__).resolve().parents[1] / SECRET_REGISTRY_PATH).read_bytes()
+        registry = frozen_delivery_bytes(SECRET_REGISTRY_PATH)
         self.assertEqual(sha256(registry).hexdigest(), SECRET_REGISTRY_SHA256)
         validate_secret_registry(registry, 0o100644)
         with self.assertRaisesRegex(VerificationError, "root-authorized"):
