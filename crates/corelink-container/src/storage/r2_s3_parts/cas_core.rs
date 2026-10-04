@@ -155,9 +155,9 @@ impl R2CasHandler {
     /// Attach only the config view of an UNARMED (no-provider) data plane.
     ///
     /// Such a process cannot encrypt or decrypt, so a tenant whose BYOK state
-    /// is anything but `inactive` is refused fail-closed wherever the handler
-    /// resolves its BYOK plan (reads, existence probes and writes), and every
-    /// other tenant keeps the plaintext path (#1648).
+    /// is anything but `inactive` is refused fail-closed before every private
+    /// storage operation, including lists. A config read error also refuses
+    /// access; every other tenant keeps the plaintext path (#1648).
     #[must_use]
     pub fn with_byok_unarmed(mut self, byok_config_cache: Arc<ByokConfigCache>) -> Self {
         self.byok_config_cache = Some(byok_config_cache);
@@ -184,6 +184,12 @@ impl R2CasHandler {
         operation: DataOperation,
         context: Option<&dyn corelink_handler_cas::CasWriteOperationContext>,
     ) -> Result<Option<ByokDataGuard>, CasHandlerError> {
+        check_unarmed_byok_access(
+            self.byok_config_cache.as_deref(),
+            self.tcs_resolver.is_some(),
+            tenant,
+        )
+        .map_err(CasHandlerError::Internal)?;
         if let Some(context) = context {
             let context = match context
                 .as_any()

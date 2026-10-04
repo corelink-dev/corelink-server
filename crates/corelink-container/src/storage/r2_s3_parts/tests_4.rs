@@ -1,3 +1,146 @@
+    /// Use the production no-provider attachment and successful R2 seam so a
+    /// missing config check would return a successful listing, not an I/O error.
+    async fn recorded_unarmed_list_handlers(
+        tenant: &'static str,
+        mut config: Result<Option<TenantByokConfig>, ByokConfigError>,
+    ) -> (R2CasHandler, R2AcHandler, Arc<StorageDispatchRecorder>) {
+        if let Ok(Some(cfg)) = config.as_mut() {
+            cfg.tenant_id = tenant.to_owned();
+        }
+        let byok = crate::storage::byok_cas::DataPlaneByok::unarmed(Arc::new(PerTenantCfgSrc(
+            std::collections::HashMap::from([(tenant, config)]),
+        )));
+        let recorder = StorageDispatchRecorder::successful(Vec::new());
+        let cas = crate::routes::cas::attach_byok_to_r2_handler(
+            R2CasHandler::new(
+                make_recorded_client(Arc::clone(&recorder)).await,
+                "iad",
+                None,
+                Arc::new(GatedAuditSink {
+                    recorder: Arc::clone(&recorder),
+                    fail: false,
+                }),
+                Arc::new(InMemorySliObserver::new()),
+            ),
+            Some(&byok),
+        );
+        let ac = crate::routes::ac::attach_byok_to_r2_handler(
+            R2AcHandler::new(
+                make_recorded_client(Arc::clone(&recorder)).await,
+                "iad",
+                None,
+                Arc::new(GatedAuditSink {
+                    recorder: Arc::clone(&recorder),
+                    fail: false,
+                }),
+                Arc::new(corelink_handler_ac::InMemorySliObserver::new()),
+            ),
+            Some(&byok),
+        );
+        (cas, ac, recorder)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unarmed_lists_refuse_engaged_and_unreadable_config_before_r2() {
+        let mut cases = Vec::new();
+        for mode in [ByokCryptoMode::Convergent, ByokCryptoMode::Random] {
+            for state in [
+                ByokState::Active,
+                ByokState::Partial,
+                ByokState::Pending,
+                ByokState::Shredded,
+            ] {
+                cases.push((Ok(Some(byok_cfg(mode, state))), UNARMED_REFUSAL));
+            }
+        }
+        cases.push((
+            Err(ByokConfigError::Parse("state missing".to_owned())),
+            "byok config read",
+        ));
+        cases.push((
+            Err(ByokConfigError::Transport(
+                "snapshot unavailable".to_owned(),
+            )),
+            "byok config read",
+        ));
+
+        for (config, reason) in cases {
+            for cursor in [None, Some("opaque-next-page".to_owned())] {
+                let (cas, ac, recorder) =
+                    recorded_unarmed_list_handlers("tenant-a", config.clone()).await;
+                let err = CasListHandler::list(
+                    &cas,
+                    corelink_handler_cas::CasListRequest::new(
+                        "tenant-a",
+                        "p",
+                        "tenant-a",
+                        10,
+                        cursor.clone(),
+                        1,
+                    ),
+                )
+                .expect_err("unarmed CAS list must refuse before R2");
+                assert!(matches!(err, CasHandlerError::Internal(ref why) if why.contains(reason)));
+                assert_eq!(
+                    recorder.calls.load(Ordering::SeqCst),
+                    0,
+                    "CAS dispatched R2"
+                );
+
+                let err = corelink_handler_ac::AcListHandler::list(
+                    &ac,
+                    corelink_handler_ac::AcListRequest::new(
+                        "tenant-a", "p", "tenant-a", 10, cursor, 1,
+                    ),
+                )
+                .expect_err("unarmed AC list must refuse before R2");
+                assert!(
+                    matches!(err, corelink_handler_ac::AcHandlerError::Internal(ref why) if why.contains(reason))
+                );
+                assert_eq!(recorder.calls.load(Ordering::SeqCst), 0, "AC dispatched R2");
+                assert!(recorder.audit_committed.load(Ordering::SeqCst));
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unarmed_lists_allow_missing_inactive_and_public_config() {
+        for (tenant, config) in [
+            ("tenant-a", Ok(None)),
+            (
+                "tenant-a",
+                Ok(Some(byok_cfg(
+                    ByokCryptoMode::Convergent,
+                    ByokState::Inactive,
+                ))),
+            ),
+            (
+                crate::adapter_cache::PUBLIC_NAMESPACE,
+                Err(ByokConfigError::Transport(
+                    "snapshot unavailable".to_owned(),
+                )),
+            ),
+        ] {
+            let (cas, ac, recorder) = recorded_unarmed_list_handlers(tenant, config).await;
+            let cas_response = CasListHandler::list(
+                &cas,
+                corelink_handler_cas::CasListRequest::new(tenant, "p", tenant, 10, None, 1),
+            )
+            .expect("permitted CAS listing");
+            assert!(cas_response.blobs.is_empty());
+            assert_eq!(cas_response.next_cursor, None);
+            let ac_response = corelink_handler_ac::AcListHandler::list(
+                &ac,
+                corelink_handler_ac::AcListRequest::new(tenant, "p", tenant, 10, None, 1),
+            )
+            .expect("permitted AC listing");
+            assert!(ac_response.refs.is_empty());
+            assert_eq!(ac_response.next_cursor, None);
+            assert_eq!(recorder.calls.load(Ordering::SeqCst), 2);
+            assert!(!recorder.premature.load(Ordering::SeqCst));
+        }
+    }
+
     #[derive(Debug)]
     struct GatedAuditSink {
         recorder: Arc<StorageDispatchRecorder>,

@@ -7,8 +7,13 @@
   armed era; production has none. The container now holds a config view. On
   first use it reads every `tenant_byok_config` row that is not `inactive`,
   including a NULL state. It refuses those tenants fail-closed on CAS and AC
-  reads and writes, and before any byte reservation. A row it cannot parse
-  refuses its own tenant. A row without a tenant id refuses every tenant. All
+  reads, existence probes, lists, deletes and writes, and before any byte
+  reservation. CAS and AC lists check the shared unarmed config snapshot
+  before R2 enumeration, including when no runtime gate is attached. Engaged
+  tenants and config-source failures receive a refusal with zero R2 dispatch;
+  object identifiers, sizes and timestamps are never returned on that path.
+  A row it cannot parse refuses its own tenant. A row without a tenant id
+  refuses every tenant. All
   other tenants keep the plaintext path, with no D1 read per request and no D1
   dependency at boot. A failed load is retried on the next request, not cached.
 

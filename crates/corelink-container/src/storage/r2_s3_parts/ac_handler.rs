@@ -101,6 +101,12 @@ impl R2AcHandler {
         context: Option<&dyn corelink_handler_ac::AcUpdateOperationContext>,
     ) -> Result<Option<ByokDataGuard>, corelink_handler_ac::AcHandlerError> {
         use corelink_handler_ac::AcHandlerError;
+        check_unarmed_byok_access(
+            self.byok_config_cache.as_deref(),
+            self.tcs_resolver.is_some(),
+            tenant,
+        )
+        .map_err(AcHandlerError::Internal)?;
         if let Some(context) = context {
             let pin = context
                 .as_any()
