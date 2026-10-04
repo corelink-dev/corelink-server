@@ -121,7 +121,10 @@ jobs:
           test "$APP_REPOSITORY" != "$OPERATOR_REPOSITORY"
           test -n "$MANIFEST_ARN"
           test -f Dockerfile -a -f Dockerfile.b083-operator -a -f requirements-issue-2165-operator.txt
-          grep -F -- '--features byok-aws-real' Dockerfile >/dev/null
+          # The shipped image links no KMS provider (#1648). This lane builds
+          # the armed variant explicitly through the Dockerfile's one switch.
+          grep -Fx 'ARG CORELINK_BYOK_PROVIDER_FEATURE=' Dockerfile >/dev/null
+          grep -F -- "\${CORELINK_BYOK_PROVIDER_FEATURE:+--features \$CORELINK_BYOK_PROVIDER_FEATURE}" Dockerfile >/dev/null
           {
             echo "app_dockerfile_sha256=$(sha256sum Dockerfile | cut -d' ' -f1)"
             echo "operator_dockerfile_sha256=$(sha256sum Dockerfile.b083-operator | cut -d' ' -f1)"
@@ -250,6 +253,7 @@ jobs:
           registry="$(cat "$RUNNER_TEMP/registry-host")"
           image="$registry/$APP_REPOSITORY:$SOURCE_SHA"
           docker buildx build --file Dockerfile --platform linux/amd64 --push \
+            --build-arg CORELINK_BYOK_PROVIDER_FEATURE=byok-aws-real \
             --provenance=mode=max --sbom=true --metadata-file "$RUNNER_TEMP/app-metadata.json" \
             --tag "$image" .
           digest="$(jq -er '.["containerimage.digest"] | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/app-metadata.json")"

@@ -36,14 +36,14 @@ CAIQ_ROWS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]]] = {
     "AIS-04.1": ("P", ("CodeQL", "workflow_dispatch", "cargo-fuzz", "not daily"), ("CodeQL + Semgrep (custom rules) on every PR", "cargo-fuzz daily")),
     "BCR-04.1": ("Y", ("provider-managed keys", "BYOK has no verified customer rollout"), ("BYOK if enabled", "optional BYOK")),
     "CEK-02.1": ("Y", ("provider-managed keys", "BYOK has no verified customer rollout"), ("Optional BYOK envelope.",)),
-    "CEK-04.1": ("P", ("501 byok_not_available", "byok-aws-real", "No FIPS-validated-module claim is made"), ()),
+    "CEK-04.1": ("P", ("501 byok_not_available", "links no KMS provider", "No FIPS-validated-module claim is made"), ()),
     "CEK-05.1": ("P", ("Documented, not served", "501 byok_not_available"), ()),
     "CEK-06.1": ("P", ("Customer-key rotation: no", "501 byok_not_available"), ("DEK rotation on customer trigger",)),
     "CEK-07.1": ("P", ("no evidenced customer CMK custody", "501 byok_not_available"), ()),
-    "CEK-08.1": ("P", ("shipped native container compiles the AWS BYOK path", "no customer CMK activation or CAS/AC round-trip"), ("V8 isolate memory", "Wrapped DEKs at rest only")),
-    "CEK-09.1": ("N", ("No verified customer BYOK rollout", "byok-aws-real", "if provider construction or CMK access fails"), ("BYOK available",)),
+    "CEK-08.1": ("P", ("shipped native container links no KMS provider", "no customer CMK activation or CAS/AC round-trip"), ("V8 isolate memory", "Wrapped DEKs at rest only", "compiles the AWS BYOK path")),
+    "CEK-09.1": ("N", ("No verified customer BYOK rollout", "byok-aws-real", "links no KMS provider"), ("BYOK available", "selects AWS KMS via")),
     "CEK-10.1": ("N", ("/deactivate` Shred route is implemented", "no verified customer rollout", "shell simulation"), ("| Y |", "drilled weekly", "Not available —")),
-    "CEK-11.1": ("N", ("No HSM protection for customer CMK material is evidenced", "byok-aws-real"), ("| Y |", "HSM-backed key material", "holds no customer key material at all")),
+    "CEK-11.1": ("N", ("No HSM protection for customer CMK material is evidenced", "links no KMS provider"), ("| Y |", "HSM-backed key material", "holds no customer key material at all")),
     "CEK-16.1": ("P", ("EVT-KMS-*` events are BYOK events", "501 byok_not_available"), ()),
     "CEK-17.1": ("P", ("/deactivate` Shred route is implemented", "not runtime-verified", "501 byok_not_available"), ("crypto-shredding is not available",)),
     "CEK-18.1": ("P", ("documents a **design**, not a served boundary", "501 Not Implemented"), ("apps/docs/docs/security/byok",)),
@@ -81,9 +81,50 @@ SIG_ROWS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]]] = {
     "N.6": ("N", ("No — BYOK has no verified customer rollout", "501 Not Implemented", "byok-aws-real", "shell simulation"), ("| Y |", "across 4 providers … drilled weekly")),
 }
 
+SHIPPED_PROVIDER_ARG = "CORELINK_BYOK_PROVIDER_FEATURE"
+SHIPPED_PROVIDER_EXPANSION = (
+    "${CORELINK_BYOK_PROVIDER_FEATURE:+--features $CORELINK_BYOK_PROVIDER_FEATURE}"
+)
+
+
+def shipped_kms_provider_failure(dockerfile: str) -> str | None:
+    """Return why the shipped image is not the no-KMS-provider build, else None.
+
+    Since #1648 the production image links NO KMS provider. Its only switch is
+    the build argument, declared once with an EMPTY default and expanded into
+    the one production ``corelink-server`` build. Comments are ignored, so a
+    commented-out ``--features`` line can neither satisfy nor break this check.
+    """
+    active = "\n".join(
+        line.split("#", 1)[0]
+        for line in dockerfile.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    declared = re.findall(rf"(?m)^\s*ARG\s+{SHIPPED_PROVIDER_ARG}\b(.*)$", active)
+    if [value.strip() for value in declared] != ["="]:
+        return f"must declare {SHIPPED_PROVIDER_ARG} exactly once with an empty default"
+    if re.search(rf"(?m)^\s*ENV\b.*\b{SHIPPED_PROVIDER_ARG}\b", active):
+        return f"must not set {SHIPPED_PROVIDER_ARG} through ENV"
+    commands = re.findall(r"(?m)^\s*cargo build\b[^;]*;", active)
+    shipped = [
+        command for command in commands
+        if re.search(r"(?:^|\s)-p\s+corelink-server\b", command)
+        and re.search(r"(?:^|\s)--bin\s+corelink-server\b", command)
+    ]
+    if len(shipped) != 1:
+        return "build command must appear exactly once"
+    if re.findall(r"--features\s+([\w-]+)", shipped[0]):
+        return "must not select a literal cargo feature (the shipped image links no KMS provider)"
+    if SHIPPED_PROVIDER_EXPANSION not in shipped[0]:
+        return f"must take its KMS provider only from {SHIPPED_PROVIDER_ARG}"
+    return None
+
+
 SOURCE_CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    # The Dockerfile selects AWS KMS in the production build; the no-feature
-    # Unavailable branch is only a fail-closed fallback, not the shipped binary.
+    # Since #1648 the production build links no KMS provider: the shipped
+    # binary is the no-feature `ActiveProvider::Unavailable` build, and
+    # activation answers 501. Checked structurally by
+    # `shipped_kms_provider_failure`.
     ("Dockerfile", ()),
     ("evidence/owner-actions/B-083/byok-real-kms-lifecycle.json", ()),
     ("evidence/owner-actions/B-046/object-lock-probe.json", ()),
@@ -247,21 +288,9 @@ def _source_failures(root: Path, relative: str, needles: tuple[str, ...]) -> lis
         return [f"source control unreadable: {relative}: {exc}"]
 
     if relative == "Dockerfile":
-        # Read the active cargo command, not the historical command in the
-        # Dockerfile header or a comment-only `--features` bait.
-        active = "\n".join(
-            line.split("#", 1)[0]
-            for line in text.splitlines()
-            if not line.lstrip().startswith("#")
-        )
-        commands = re.findall(r"(?m)^\s*cargo build\b[^;]*;", active)
-        shipped = [
-            command for command in commands
-            if re.search(r"(?:^|\s)-p\s+corelink-server\b", command)
-            and re.search(r"(?:^|\s)--bin\s+corelink-server\b", command)
-        ]
-        if len(shipped) != 1 or re.findall(r"--features\s+([\w-]+)", shipped[0]) != ["byok-aws-real"]:
-            return ["source control changed or missing: Dockerfile: production corelink-server must select only byok-aws-real"]
+        failure = shipped_kms_provider_failure(text)
+        if failure is not None:
+            return [f"source control changed or missing: Dockerfile: production corelink-server {failure}"]
         return []
 
     if relative.endswith("byok-real-kms-lifecycle.json"):
@@ -405,13 +434,13 @@ def _check_rows(path: Path, specs: dict[str, tuple[str, tuple[str, ...], tuple[s
 
 
 def _check_no_false_byok_provider_claims(root: Path) -> list[str]:
-    """Keep procurement documents aligned with the AWS-enabled build boundary.
+    """Keep procurement documents aligned with the no-KMS-provider build (#1648).
 
-    ``InMemoryFake`` is a test-only implementation elsewhere in the tree.  It
-    must not appear in customer-facing material.  The no-feature
-    ``ActiveProvider::Unavailable`` branch exists in source, but cannot be used
-    to describe the Dockerfile's AWS-enabled production build.  Conditional
-    501 is checked in the named rows and the route source check above.
+    ``InMemoryFake`` is a test-only implementation elsewhere in the tree, and
+    ``ActiveProvider::Unavailable`` is source jargon; neither belongs in
+    customer-facing material.  Every 501 activation claim must give its real
+    cause: the production image links no KMS provider.  The named rows and the
+    route source check above pin the rest.
     """
 
     failures: list[str] = []
@@ -434,8 +463,10 @@ def _check_no_false_byok_provider_claims(root: Path) -> list[str]:
                     "`501 byok_not_available`" in line
                     or "`501 Not Implemented` / `byok_not_available`" in line
                 ) and ("activation returns" in line or "activate` fails closed" in line):
-                    if "if provider construction or CMK access fails" not in line:
-                        failures.append(f"unconditional 501 claim in {relative}")
+                    if "links no KMS provider" not in line:
+                        failures.append(f"501 claim without its no-KMS-provider cause in {relative}")
+                    if "if provider construction or CMK access fails" in line:
+                        failures.append(f"stale conditional 501 claim in {relative}")
         if relative == OWNER_ACTIONS:
             for marker in (
                 "byok-aws-real",

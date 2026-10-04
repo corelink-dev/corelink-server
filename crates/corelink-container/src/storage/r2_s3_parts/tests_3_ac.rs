@@ -39,6 +39,127 @@ use crate::storage::byok_cas::BYOK_CLB1_OVERHEAD;
         corelink_handler_ac::AcUpdateRequest::new(tenant, "a".repeat(64), payload, "p", tenant, 1)
     }
 
+    /// Per-tenant config answers for the unarmed attachment test.
+    #[derive(Debug)]
+    struct PerTenantCfgSrc(
+        std::collections::HashMap<&'static str, Result<Option<TenantByokConfig>, ByokConfigError>>,
+    );
+
+    #[async_trait::async_trait]
+    impl ByokConfigSource for PerTenantCfgSrc {
+        async fn get_byok_config(
+            &self,
+            tenant: &str,
+        ) -> Result<Option<TenantByokConfig>, ByokConfigError> {
+            self.0.get(tenant).cloned().unwrap_or(Ok(None))
+        }
+    }
+
+    /// #1648: the shipped no-provider image attaches an UNARMED data plane.
+    /// Through the exact production attachment helpers, CAS and AC must refuse
+    /// every engaged tenant on write and read (never store or serve plaintext
+    /// for it) and keep every other tenant on the unchanged plaintext path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn router_factory_unarmed_attachment_refuses_engaged_tenants_only() {
+        let mut cfgs = std::collections::HashMap::new();
+        cfgs.insert(
+            BYOK_TENANT,
+            Ok(Some(byok_cfg(ByokCryptoMode::Convergent, ByokState::Active))),
+        );
+        cfgs.insert(
+            "tenant-random-active",
+            Ok(Some(byok_cfg(ByokCryptoMode::Random, ByokState::Active))),
+        );
+        cfgs.insert(
+            "tenant-pending",
+            Ok(Some(byok_cfg(ByokCryptoMode::Convergent, ByokState::Pending))),
+        );
+        cfgs.insert(
+            "tenant-shredded",
+            Ok(Some(byok_cfg(ByokCryptoMode::Convergent, ByokState::Shredded))),
+        );
+        cfgs.insert(
+            "tenant-unreadable",
+            Err(ByokConfigError::Parse("state missing".to_owned())),
+        );
+        cfgs.insert(
+            "tenant-inactive",
+            Ok(Some(byok_cfg(ByokCryptoMode::Convergent, ByokState::Inactive))),
+        );
+        let byok = crate::storage::byok_cas::DataPlaneByok::unarmed(Arc::new(PerTenantCfgSrc(cfgs)));
+        assert!(!byok.is_armed());
+        let cas = crate::routes::cas::attach_byok_to_r2_handler(
+            make_test_handler_with_tdk("iad").await,
+            Some(&byok),
+        );
+        let ac = crate::routes::ac::attach_byok_to_r2_handler(
+            make_test_ac_handler("iad").await,
+            Some(&byok),
+        );
+        assert!(Arc::ptr_eq(
+            &byok.config_cache(),
+            cas.byok_config_cache_for_test().expect("CAS config view")
+        ));
+        assert!(Arc::ptr_eq(
+            &byok.config_cache(),
+            ac.byok_config_cache_for_test().expect("AC config view")
+        ));
+
+        for tenant in [
+            BYOK_TENANT,
+            "tenant-random-active",
+            "tenant-pending",
+            "tenant-shredded",
+            "tenant-unreadable",
+        ] {
+            let write = write_req(tenant, b"cas payload".to_vec());
+            assert!(
+                cas.byok_encrypt_for_write(&write).await.is_err(),
+                "{tenant}: CAS write must fail closed"
+            );
+            let read = CasReadRequest::new(tenant, &write.claimed_hash, "p", tenant, 1);
+            assert!(
+                cas.byok_decrypt_for_read(&read, b"CLB1stored".to_vec()).await.is_err(),
+                "{tenant}: CAS read must fail closed, never serve stored bytes"
+            );
+            let update = ac_update_req(tenant, b"ac payload".to_vec());
+            assert!(
+                ac.byok_encrypt_for_update(&update).await.is_err(),
+                "{tenant}: AC update must fail closed"
+            );
+            assert!(
+                ac.byok_decrypt_for_lookup(tenant, &update.action_digest, b"CLB1".to_vec())
+                    .await
+                    .is_err(),
+                "{tenant}: AC lookup must fail closed"
+            );
+        }
+
+        for tenant in [
+            "tenant-inactive",
+            "tenant-without-row",
+            crate::adapter_cache::PUBLIC_NAMESPACE,
+        ] {
+            let write = write_req(tenant, b"cas payload".to_vec());
+            assert!(cas.byok_encrypt_for_write(&write).await.unwrap().is_none());
+            let read = CasReadRequest::new(tenant, &write.claimed_hash, "p", tenant, 1);
+            assert_eq!(
+                cas.byok_decrypt_for_read(&read, b"cas payload".to_vec())
+                    .await
+                    .unwrap(),
+                b"cas payload"
+            );
+            let update = ac_update_req(tenant, b"ac payload".to_vec());
+            assert!(ac.byok_encrypt_for_update(&update).await.unwrap().is_none());
+            assert_eq!(
+                ac.byok_decrypt_for_lookup(tenant, &update.action_digest, b"ac payload".to_vec())
+                    .await
+                    .unwrap(),
+                b"ac payload"
+            );
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ac_byok_mode_b_delete_reclaims_envelope_row_ac_surface() {
         // Wave 4a: an AC Mode-B delete reclaims the `ac:<digest>` envelope row —

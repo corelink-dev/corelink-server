@@ -81,12 +81,24 @@ jobs:
                       command = command.rstrip()[:-1] + " " + line
                   break
           assert command, "canonical corelink-server build command missing"
-          assert "--features byok-aws-real" in command, command
-          mutated = command.replace("--features byok-aws-real", "")
-          assert "--features byok-aws-real" not in mutated, "feature-removal mutation survived"
+          # #1648: the shipped image links NO KMS provider. Its one switch is
+          # the build argument, declared with an empty default.
+          switch = "${CORELINK_BYOK_PROVIDER_FEATURE:+--features $CORELINK_BYOK_PROVIDER_FEATURE}"
+          default = "ARG CORELINK_BYOK_PROVIDER_FEATURE="
+          def ships_no_provider(text, build):
+              defaults = [line.strip() for line in text.splitlines()
+                          if line.strip().startswith("ARG CORELINK_BYOK_PROVIDER_FEATURE")]
+              return (defaults == [default] and switch in build
+                      and "--features byok-" not in build)
+          assert ships_no_provider(dockerfile, command), command
+          armed = dockerfile.replace(default + "\n", default + "byok-aws-real\n", 1)
+          assert armed != dockerfile, "armed-default mutation did not apply"
+          assert not ships_no_provider(armed, command), "armed-default mutation survived"
+          literal = command.replace(switch, "--features byok-aws-real")
+          assert not ships_no_provider(dockerfile, literal), "literal-feature mutation survived"
           assert "crates/corelink-container/src/main.rs" in Path(".github/workflows/byok_matrix_weekly.yml").read_text()
           assert "crates/corelink-container/src/lib.rs" in Path(".github/workflows/byok_matrix_weekly.yml").read_text()
-          print("BYOK boundary verifier green; feature-removal mutation is red")
+          print("BYOK boundary verifier green; armed-default and literal-feature mutations are red")
           PY
 
       - name: B083 verifier mutation regression

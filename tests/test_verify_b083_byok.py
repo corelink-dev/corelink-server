@@ -116,18 +116,37 @@ def test_b083_verifier_green_then_named_red_feature_mutation() -> None:
 
         green = _run(script, tree)
         assert green.returncode == 0, green.stdout + green.stderr
-        assert "real provider selected" in green.stdout
+        assert "shipped image links no KMS provider by default" in green.stdout
 
+        # #1648: re-arming the shipped image by flipping the one default is
+        # the regression that made every production container exit with 1.
         dockerfile = tree / "Dockerfile"
-        mutated = dockerfile.read_text(encoding="utf-8").replace(
-            "--features byok-aws-real", "", 1
+        pristine = dockerfile.read_text(encoding="utf-8")
+        armed = pristine.replace(
+            "ARG CORELINK_BYOK_PROVIDER_FEATURE=\n",
+            "ARG CORELINK_BYOK_PROVIDER_FEATURE=byok-aws-real\n",
+            1,
         )
-        dockerfile.write_text(mutated, encoding="utf-8")
+        assert armed != pristine, "armed-default mutation did not apply"
+        dockerfile.write_text(armed, encoding="utf-8")
 
         red = _run(script, tree)
         output = red.stdout + red.stderr
         assert red.returncode != 0, output
-        assert "FALHA: shipped image does not select a real KMS provider" in output
+        assert "FALHA: shipped image links a KMS provider by default" in output
+
+        literal = pristine.replace(
+            "--bin corelink-server \\\n",
+            "--bin corelink-server --features byok-aws-real \\\n",
+            1,
+        )
+        assert literal != pristine, "literal-feature mutation did not apply"
+        dockerfile.write_text(literal, encoding="utf-8")
+
+        red = _run(script, tree)
+        output = red.stdout + red.stderr
+        assert red.returncode != 0, output
+        assert "FALHA: shipped corelink-server build does not take its provider" in output
 
 
 if __name__ == "__main__":

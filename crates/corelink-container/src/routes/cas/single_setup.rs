@@ -50,16 +50,19 @@ pub(crate) fn attach_byok_to_r2_handler(
     handler: crate::storage::r2_s3::R2CasHandler,
     byok: Option<&crate::storage::byok_cas::DataPlaneByok>,
 ) -> crate::storage::r2_s3::R2CasHandler {
-    match byok {
-        Some(byok) => {
-            let handler = handler
-                .with_byok(byok.config_cache(), byok.tcs_resolver())
-                .with_byok_random(byok.mode_b());
-            match byok.runtime_gate() {
-                Some(gate) => handler.with_byok_runtime_gate(gate),
-                None => handler,
-            }
-        }
+    let Some(byok) = byok else {
+        return handler;
+    };
+    // An unarmed (no-provider) set has no resolver or encryptor: attach its
+    // config view only, so engaged tenants are refused fail-closed (#1648).
+    let (Some(resolver), Some(mode_b)) = (byok.tcs_resolver(), byok.mode_b()) else {
+        return handler.with_byok_unarmed(byok.config_cache());
+    };
+    let handler = handler
+        .with_byok(byok.config_cache(), resolver)
+        .with_byok_random(mode_b);
+    match byok.runtime_gate() {
+        Some(gate) => handler.with_byok_runtime_gate(gate),
         None => handler,
     }
 }

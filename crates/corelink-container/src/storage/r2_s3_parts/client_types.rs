@@ -39,6 +39,34 @@ struct ByokResolved {
 /// Raise it only against a measurement, never on intuition.
 const MAX_CONCURRENT_EXISTS_PROBES: usize = 16;
 
+/// The no-provider image has no runtime gate. Consult its shared config
+/// snapshot before any private operation, even a list with no body crypto plan
+/// or a write with an operation context. Armed handlers use their existing
+/// authoritative gate; public and unattached dev handlers need no config read.
+fn check_unarmed_byok_access(
+    cache: Option<&ByokConfigCache>,
+    armed: bool,
+    tenant: &str,
+) -> Result<(), String> {
+    if armed || tenant == crate::adapter_cache::PUBLIC_NAMESPACE {
+        return Ok(());
+    }
+    let Some(cache) = cache else {
+        return Ok(());
+    };
+    let handle = tokio::runtime::Handle::current();
+    let cfg = tokio::task::block_in_place(|| handle.block_on(cache.get(tenant)))
+        .map_err(|error| format!("byok config read: {error}"))?;
+    let Some(cfg) = cfg else {
+        return Ok(());
+    };
+    match unarmed_engagement(&cfg) {
+        ByokEngagement::Plaintext => Ok(()),
+        ByokEngagement::FailClosed(why) => Err(format!("byok {why} (fail-closed)")),
+        ByokEngagement::Encrypt(_) => Err(format!("byok {UNARMED_REFUSAL} (fail-closed)")),
+    }
+}
+
 impl R2S3Client {
     /// List ONE page of objects under `prefix`, returning per-object
     /// metadata + an opaque continuation token for the next page.

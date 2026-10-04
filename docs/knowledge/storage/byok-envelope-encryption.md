@@ -1,7 +1,7 @@
 ---
 type: "StorageComponent"
 title: "BYOK envelope encryption at rest (CAS+AC wired, real KMS boundary; owner-runtime gated)"
-description: "The BYOK microkernel (a KmsProvider trait + Dek/WrappedDek types + EnvelopeEncryptor + one compile-time-selected provider per build) PLUS the CAS+AC encryption-at-rest wiring in byok_cas.rs. As of Wave 3c BOTH crypto modes are implemented: Mode A (convergent) dedup-preserving envelopes AND Mode B (crypto_mode='random') with a random per-blob DEK wrapped in byok_envelope (no dedup, but idempotent/no-orphan re-PUT), PLUS §4 key-hardening. The production boundary selects a real provider in the shipped image, has no XOR fallback, and activation fails closed until provider credentials and CMK access are available. Deferred: partial/backfill dual-read, self-serve onboarding/CMK provisioning, owner runtime evidence, and broader crypto-shred (bulk shred on state='shredded'); Mode-B envelope-row reclaim on blob delete and the production revocation adapters are DONE (Wave 4a/B083)."
+description: "The BYOK microkernel (a KmsProvider trait + Dek/WrappedDek types + EnvelopeEncryptor + one compile-time-selected provider per build) PLUS the CAS+AC encryption-at-rest wiring in byok_cas.rs. As of Wave 3c BOTH crypto modes are implemented: Mode A (convergent) dedup-preserving envelopes AND Mode B (crypto_mode='random') with a random per-blob DEK wrapped in byok_envelope (no dedup, but idempotent/no-orphan re-PUT), PLUS §4 key-hardening. Since #1648 the shipped image links no KMS provider (an empty Dockerfile build argument; arming is an image change): activation answers 501, the unarmed data plane refuses every tenant whose BYOK state is not inactive, and there is no XOR fallback. Deferred: partial/backfill dual-read, self-serve onboarding/CMK provisioning, owner runtime evidence, and broader crypto-shred (bulk shred on state='shredded'); Mode-B envelope-row reclaim on blob delete and the production revocation adapters are DONE (Wave 4a/B083)."
 source_files:
   - "crates/corelink-container/src/byok.rs"
   - "crates/corelink-container/src/byok_orchestrator.rs"
@@ -77,8 +77,9 @@ activation route `routes/byok_admin.rs` — `POST /v1/admin/byok/{activate,deact
 writer of `active`/`shredded` rows, but the customer-facing self-serve onboarding UI is deferred); the
 owner runtime credentials, CMK provisioning, and live KMS evidence (`byok.rs` /
 `byok_orchestrator.rs` construct a provider behind an `Arc<dyn KmsProvider>`; the default/no-provider
-build fails closed and the shipped Docker image selects `byok-aws-real`, while owner runtime evidence
-remains pending); and broader crypto-shred (bulk shred on `state='shredded'`). NOTE:
+build fails closed, and since #1648 the shipped Docker image IS the no-provider build: its
+`CORELINK_BYOK_PROVIDER_FEATURE` build argument is empty, and arming `byok-aws-real` is an image
+change; owner runtime evidence remains pending); and broader crypto-shred (bulk shred on `state='shredded'`). NOTE:
 reclaim of the Mode-B `byok_envelope` row on blob delete is now DONE (Wave 4a) — `CasDeleteHandler`/
 `AcDeleteHandler` delete the surface-qualified envelope row after the R2 object (fail-safe ordering: a
 reclaim failure warns but never rolls back the delete, since an orphaned wrapped DEK wraps nothing).
@@ -174,9 +175,11 @@ reclaim failure warns but never rolls back the delete, since an orphaned wrapped
 
 # Gotchas
 - The encrypt/decrypt branches ARE on the live CAS/AC path, but they only engage for
-  `tenant_byok_config.state='active'`. The shipped image has the real AWS KMS provider selected;
-  owner credentials, CMK provisioning, and live tenant evidence are still required before claiming
-  production encryption. Do not read "wired" as "encrypting production traffic today."
+  `tenant_byok_config.state='active'`. Since #1648 the shipped image links NO KMS provider: its
+  data plane is UNARMED (`DataPlaneByok::unarmed`), serves only tenants with no BYOK row or an
+  `inactive` one, and refuses every other tenant fail-closed. Arming needs the image change plus
+  owner credentials, CMK provisioning, and live tenant evidence before claiming production
+  encryption. Do not read "wired" as "encrypting production traffic today."
 - The convergent-mode confirmation oracle is now CLOSED, not deferred: the physical R2 key embeds the §4
   `harden_digest(TCS, plaintext_digest)`, so R2-read no longer reveals which plaintexts are present
   (`crates/corelink-container/src/storage/byok_cas/part-00.rs:529-535`). Earlier wiki revisions that called this

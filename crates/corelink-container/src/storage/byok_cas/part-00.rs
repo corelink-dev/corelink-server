@@ -121,12 +121,22 @@ const MAX_CACHE_ENTRIES: usize = 10_000;
 /// config cache here is deliberate: a config transition must be observed
 /// consistently by the encryption decision and by the reservation size for
 /// the same physical object.
+///
+/// A set is either ARMED (a real KMS provider is compiled in, so the Tcs
+/// resolver and Mode-B encryptor exist) or UNARMED (the shipped no-provider
+/// image, #1648). An unarmed set holds only a config view, normally
+/// [`UnarmedByokSnapshot`]. It can never encrypt or decrypt, so its storage
+/// handlers serve a tenant only while that tenant has no BYOK row outside
+/// `inactive`, and refuse every other tenant fail-closed
+/// ([`unarmed_engagement`]).
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct DataPlaneByok {
     config_cache: Arc<ByokConfigCache>,
-    tcs_resolver: Arc<TcsResolver>,
-    mode_b: Arc<ModeBEncryptor>,
+    /// `None` exactly when the set is unarmed.
+    tcs_resolver: Option<Arc<TcsResolver>>,
+    /// `None` exactly when the set is unarmed.
+    mode_b: Option<Arc<ModeBEncryptor>>,
     /// The one transition gate which mints operation pins for both accounting
     /// and storage. `None` is only permitted for an explicitly plaintext
     /// rollout; a private write refuses to proceed without a pin.
@@ -134,7 +144,7 @@ pub struct DataPlaneByok {
 }
 
 impl DataPlaneByok {
-    /// Assemble an explicit collaborator set.  This is primarily the
+    /// Assemble an explicit ARMED collaborator set.  This is primarily the
     /// test/integration seam; production uses [`Self::from_env`].
     #[must_use]
     pub fn new(
@@ -144,10 +154,28 @@ impl DataPlaneByok {
     ) -> Self {
         Self {
             config_cache,
-            tcs_resolver,
-            mode_b,
+            tcs_resolver: Some(tcs_resolver),
+            mode_b: Some(mode_b),
             runtime_gate: None,
         }
+    }
+
+    /// Assemble the UNARMED set of a no-provider binary over a config source
+    /// (production: [`UnarmedByokSnapshot`]).
+    #[must_use]
+    pub fn unarmed(source: Arc<dyn ByokConfigSource>) -> Self {
+        Self {
+            config_cache: Arc::new(ByokConfigCache::with_default_ttl(source)),
+            tcs_resolver: None,
+            mode_b: None,
+            runtime_gate: None,
+        }
+    }
+
+    /// Whether a real KMS provider backs this set.
+    #[must_use]
+    pub fn is_armed(&self) -> bool {
+        self.tcs_resolver.is_some()
     }
 
     /// Attach the process's sole data-plane transition gate.
@@ -159,29 +187,42 @@ impl DataPlaneByok {
 
     /// Build the production collaborator set once at boot.
     ///
-    /// A binary with no compiled real provider has no BYOK data plane and
-    /// returns `Ok(None)`.  A real-provider binary with durable storage must
-    /// construct every collaborator or refuse boot; it never mounts a second
-    /// cache or silently leaves encryption half-wired. This constructor does
-    /// not migrate legacy plaintext objects: `partial` remains fail-closed and
-    /// the existing Mode-B reconciliation-intent path remains the recovery
-    /// authority for an ambiguous R2/D1 commit.
+    /// Without durable storage there is no BYOK data plane (`Ok(None)`, the
+    /// dev/CI path). With durable storage see [`Self::from_storage_env`].
     pub async fn from_env() -> Result<Option<Self>, String> {
-        if crate::byok_orchestrator::active_provider()
-            == crate::byok_orchestrator::ActiveProvider::Unavailable
-        {
-            return Ok(None);
-        }
         let Some(env) = crate::storage::StorageEnv::from_env() else {
             return Ok(None);
         };
+        Self::from_storage_env(&env).await.map(Some)
+    }
+
+    /// Boot assembly for a process that has durable storage.
+    ///
+    /// A binary with no compiled real provider (the shipped image, #1648)
+    /// gets the UNARMED set and does no I/O here. Its engaged-tenant snapshot
+    /// loads on first use, so boot never depends on KMS credentials or on D1
+    /// being reachable. A real-provider binary must construct every
+    /// collaborator or refuse boot; it never mounts a second cache or
+    /// silently leaves encryption half-wired. Arming is therefore an image
+    /// change, made in the same rollout that provisions the KMS credentials;
+    /// a rollout replaces every container, so armed and unarmed processes do
+    /// not serve side by side once it completes. This constructor does not
+    /// migrate legacy plaintext objects: `partial` remains fail-closed and the
+    /// existing Mode-B reconciliation-intent path remains the recovery
+    /// authority for an ambiguous R2/D1 commit.
+    pub async fn from_storage_env(env: &crate::storage::StorageEnv) -> Result<Self, String> {
+        let d1 = Arc::new(
+            D1HttpClient::new(env)
+                .map_err(|error| format!("BYOK D1 client init failed: {error}"))?,
+        );
+        if crate::byok_orchestrator::active_provider()
+            == crate::byok_orchestrator::ActiveProvider::Unavailable
+        {
+            return Ok(Self::unarmed(Arc::new(UnarmedByokSnapshot::new(d1))));
+        }
         let provider = crate::byok_orchestrator::make_provider()
             .await
             .map_err(|error| format!("BYOK provider init failed: {error}"))?;
-        let d1 = Arc::new(
-            D1HttpClient::new(&env)
-                .map_err(|error| format!("BYOK D1 client init failed: {error}"))?,
-        );
         let runtime_gate = runtime_gate_after_rollout_probe(Arc::clone(&d1))
             .await
             .map_err(|error| format!("BYOK runtime gate init failed: {error}"))?;
@@ -201,10 +242,10 @@ impl DataPlaneByok {
                 .map_err(|error| format!("BYOK Mode-B init failed: {error}"))?,
         );
         let data_plane = Self::new(config_cache, tcs_resolver, mode_b);
-        Ok(Some(match runtime_gate {
+        Ok(match runtime_gate {
             Some(runtime_gate) => data_plane.with_runtime_gate(runtime_gate),
             None => data_plane,
-        }))
+        })
     }
 
     /// The authoritative per-tenant config cache shared by storage and accounting.
@@ -213,16 +254,16 @@ impl DataPlaneByok {
         Arc::clone(&self.config_cache)
     }
 
-    /// The process-wide Tcs resolver for Mode A.
+    /// The process-wide Tcs resolver for Mode A (`None` when unarmed).
     #[must_use]
-    pub fn tcs_resolver(&self) -> Arc<TcsResolver> {
-        Arc::clone(&self.tcs_resolver)
+    pub fn tcs_resolver(&self) -> Option<Arc<TcsResolver>> {
+        self.tcs_resolver.as_ref().map(Arc::clone)
     }
 
-    /// The process-wide envelope encryptor for Mode B.
+    /// The process-wide envelope encryptor for Mode B (`None` when unarmed).
     #[must_use]
-    pub fn mode_b(&self) -> Arc<ModeBEncryptor> {
-        Arc::clone(&self.mode_b)
+    pub fn mode_b(&self) -> Option<Arc<ModeBEncryptor>> {
+        self.mode_b.as_ref().map(Arc::clone)
     }
 
     /// The shared transition gate used by storage and operation-pinned
@@ -243,6 +284,21 @@ impl DataPlaneByok {
     ) -> Result<Option<Arc<ByokOperationPin>>, String> {
         if tenant == crate::adapter_cache::PUBLIC_NAMESPACE {
             return Ok(None);
+        }
+        // An unarmed set has no transition gate to pin against. Refuse an
+        // engaged tenant here, before accounting reserves bytes, so the write
+        // fails closed as not-written; every other tenant writes unpinned
+        // plaintext, exactly as before BYOK existed.
+        if !self.is_armed() {
+            let cache = Arc::clone(&self.config_cache);
+            let handle = tokio::runtime::Handle::current();
+            let cfg = tokio::task::block_in_place(|| handle.block_on(cache.get(tenant)))
+                .map_err(|error| format!("BYOK config read: {error}"))?;
+            return match cfg.as_ref().map(unarmed_engagement) {
+                None | Some(ByokEngagement::Plaintext) => Ok(None),
+                Some(ByokEngagement::FailClosed(why)) => Err(why.to_owned()),
+                Some(ByokEngagement::Encrypt(_)) => Err(UNARMED_REFUSAL.to_owned()),
+            };
         }
         let gate = self.runtime_gate().ok_or_else(|| {
             "BYOK runtime gate unavailable; refusing private write without an operation pin"

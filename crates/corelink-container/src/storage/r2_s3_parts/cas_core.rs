@@ -152,6 +152,20 @@ impl R2CasHandler {
         self
     }
 
+    /// Attach only the config view of an UNARMED (no-provider) data plane.
+    ///
+    /// Such a process cannot encrypt or decrypt, so a tenant whose BYOK state
+    /// is anything but `inactive` is refused fail-closed before every private
+    /// storage operation, including lists. A config read error also refuses
+    /// access; every other tenant keeps the plaintext path (#1648).
+    #[must_use]
+    pub fn with_byok_unarmed(mut self, byok_config_cache: Arc<ByokConfigCache>) -> Self {
+        self.byok_config_cache = Some(byok_config_cache);
+        self.tcs_resolver = None;
+        self.byok_mode_b = None;
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn byok_config_cache_for_test(&self) -> Option<&Arc<ByokConfigCache>> {
         self.byok_config_cache.as_ref()
@@ -170,6 +184,12 @@ impl R2CasHandler {
         operation: DataOperation,
         context: Option<&dyn corelink_handler_cas::CasWriteOperationContext>,
     ) -> Result<Option<ByokDataGuard>, CasHandlerError> {
+        check_unarmed_byok_access(
+            self.byok_config_cache.as_deref(),
+            self.tcs_resolver.is_some(),
+            tenant,
+        )
+        .map_err(CasHandlerError::Internal)?;
         if let Some(context) = context {
             let context = match context
                 .as_any()
@@ -255,11 +275,9 @@ impl R2CasHandler {
             physical_digest: digest.to_owned(),
             plan: ByokBodyPlan::Plaintext,
         };
-        // Both Wave-3a collaborators must be present (frozen policy §3); else the
+        // No BYOK collaborators at all (dev/CI, no durable storage): the
         // existing plaintext path runs unchanged — no D1 hop, no behaviour change.
-        let (Some(cache), Some(resolver)) =
-            (self.byok_config_cache.as_ref(), self.tcs_resolver.as_ref())
-        else {
+        let Some(cache) = self.byok_config_cache.as_ref() else {
             return Ok(plaintext());
         };
         // `_public` is deterministic public content with no secret — it MUST stay
@@ -282,6 +300,19 @@ impl R2CasHandler {
         };
         let Some(cfg) = cfg else {
             return Ok(plaintext());
+        };
+        // An UNARMED (no-provider) process has the config view only: it serves
+        // an `inactive` tenant in plaintext and refuses every other one.
+        let Some(resolver) = self.tcs_resolver.as_ref() else {
+            return match unarmed_engagement(&cfg) {
+                ByokEngagement::Plaintext => Ok(plaintext()),
+                ByokEngagement::FailClosed(why) => Err(CasHandlerError::Internal(format!(
+                    "byok {why} (fail-closed)"
+                ))),
+                ByokEngagement::Encrypt(_) => Err(CasHandlerError::Internal(format!(
+                    "byok {UNARMED_REFUSAL} (fail-closed)"
+                ))),
+            };
         };
         match engagement_for(&cfg) {
             ByokEngagement::Plaintext => Ok(plaintext()),
