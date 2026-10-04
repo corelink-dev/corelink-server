@@ -38,7 +38,7 @@ fn main() {
     let verifier = InMemoryDeployVerifier::with_mode(
         VerificationMode::Signed {
             rekor_log_index: 987_654_321,
-            fulcio_san: "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0".to_string(),
+            fulcio_san: "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0".to_string(),
             resolved_digest: "sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string(),
         },
         failing_sink,
@@ -55,7 +55,7 @@ fn main() {
         ),
         GitHubActor::new(
             "github-actions[bot]",
-            "HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0",
+            "corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0",
         ),
     );
     let image_ref = OciImageRef::from_tag("ghcr.io/HumanGuardrail/corelink-worker:v0.1.0");
@@ -89,4 +89,11 @@ fn main() {
     println!("  - Deploy: BLOCKED (fail-CLOSED)");
     println!("  - SEV-1: FIRED");
     println!("  - CF API: NOT invoked");
+}
+
+// Retain the historical SAN without treating it as authority for a new deploy.
+#[test]
+fn historical_signature_is_not_current_deploy_authority() {
+    let historical_san = "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0";
+    assert!(!CosignIdentityPattern::corelink_release().matches_simple(historical_san));
 }

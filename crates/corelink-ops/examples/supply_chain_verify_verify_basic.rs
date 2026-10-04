@@ -11,7 +11,7 @@
 )]
 //!
 //! Demonstrates verifying a `provenance.intoto.bundle` file using an org-scoped
-//! builder pattern (`HuGR-dev/corelink-server`).
+//! builder pattern (`corelink-dev/corelink-server`).
 //!
 //! ```sh
 //! cargo run --example verify_basic -- --bundle provenance.intoto.bundle
@@ -47,7 +47,7 @@ async fn main() {
     };
 
     // Use org-scoped pattern for flexibility across release tags
-    let expected = BuilderIdentity::from_org_pattern("HuGR-dev/corelink-server");
+    let expected = BuilderIdentity::from_org_pattern("corelink-dev/corelink-server");
 
     let verifier = DefaultSlsaVerifier::with_plan("example");
     match verifier.verify(&attestation, &expected).await {

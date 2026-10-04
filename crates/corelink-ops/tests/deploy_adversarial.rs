@@ -40,7 +40,7 @@ fn make_webhook(tag: &str) -> CfDeployWebhook {
         GitHubActor::new(
             "github-actions[bot]",
             format!(
-                "HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/{tag}"
+                "corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/{tag}"
             ),
         ),
     )
@@ -146,7 +146,7 @@ fn adversarial_fork_identity_mismatch_blocked() {
             "got should contain attacker org: {got}"
         );
         assert!(
-            expected.contains("HumanGuardrail"),
+            expected.contains("corelink-dev"),
             "expected should contain canonical org: {expected}"
         );
     }
@@ -205,7 +205,7 @@ fn adversarial_audit_emit_failure_blocks_deploy_fail_closed() {
     let verifier = InMemoryDeployVerifier::with_mode(
         VerificationMode::Signed {
             rekor_log_index: 42,
-            fulcio_san: "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0".to_string(),
+            fulcio_san: "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0".to_string(),
             resolved_digest: "sha256:cafecafe".to_string(),
         },
         failing_sink,
@@ -284,4 +284,29 @@ fn all_adversarial_errors_map_to_blocking_http_status() {
         );
         assert!(!body.is_empty(), "response body must not be empty");
     }
+}
+
+// Retained historical signer fixture: valid past evidence is not new deploy authority.
+#[test]
+fn historical_signature_cannot_authorize_current_deploy() {
+    let historical_san = "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0";
+    let sink = Arc::new(InMemoryDeployAuditSink::new());
+    let verifier = InMemoryDeployVerifier::with_mode(
+        VerificationMode::Signed {
+            rekor_log_index: 123,
+            fulcio_san: historical_san.to_string(),
+            resolved_digest: "sha256:deadbeef".to_string(),
+        },
+        sink.clone(),
+    );
+    let result = verifier.verify_and_propagate(
+        &make_webhook("v0.1.0"),
+        &make_image_ref("v0.1.0"),
+        &CosignIdentityPattern::corelink_release(),
+    );
+    assert!(matches!(
+        result,
+        Err(DeployVerifyError::IdentityMismatch { .. })
+    ));
+    assert_eq!(sink.events()[0].outcome, VerifyOutcome::IdentityMismatch);
 }

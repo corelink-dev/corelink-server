@@ -79,9 +79,9 @@ fn valid_attestation() -> SlsaAttestation {
     )
 }
 
-/// Helper: expected builder identity.
+/// Historical artifact fixture: expected builder identity.
 fn expected_builder() -> BuilderIdentity {
-    BuilderIdentity::from_org_pattern("HumanGuardrail/corelink-server")
+    BuilderIdentity::from_historical_org_pattern("HumanGuardrail/corelink-server")
 }
 
 // ---------------------------------------------------------------------------

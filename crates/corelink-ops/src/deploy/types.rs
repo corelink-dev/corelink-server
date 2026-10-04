@@ -53,7 +53,7 @@ pub struct GitHubActor {
     /// GitHub login of the actor.
     pub login: String,
     /// OIDC workflow ref, e.g.
-    /// `"HuGR-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"`.
+    /// `"corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"`.
     pub workflow_ref: String,
 }
 
@@ -155,13 +155,12 @@ impl OciImageRef {
 ///
 /// The canonical pattern for CoreLink is:
 /// ```text
-/// ^https://github\.com/(?:HumanGuardrail|HuGR-Labs|HuGR-dev|corelink-dev)/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$
+/// ^https://github\.com/corelink-dev/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$
 /// ```
 ///
-/// `corelink-dev` is the current owner. `HumanGuardrail`, `HuGR-Labs` and
-/// `HuGR-dev` owned the server repository before it was recreated under
-/// `corelink-dev`; they stay in the alternation so artifacts they signed still
-/// verify, and those names are never released.
+/// New deploys trust only the current owner, `corelink-dev`. Legacy owners
+/// are accepted only by separate historical artifact verification paths;
+/// a historical signature does not authorize a new deployment.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct CosignIdentityPattern {
@@ -171,10 +170,10 @@ pub struct CosignIdentityPattern {
 }
 
 impl CosignIdentityPattern {
-    /// Canonical identity pattern for CoreLink release pipeline.
+    /// Current-only identity pattern for new CoreLink release deployments.
     pub fn corelink_release() -> Self {
         Self {
-            pattern: r"^https://github\.com/(?:HumanGuardrail|HuGR-Labs|HuGR-dev|corelink-dev)/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$".to_string(),
+            pattern: r"^https://github\.com/corelink-dev/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$".to_string(),
         }
     }
 
@@ -371,19 +370,19 @@ mod tests {
     #[test]
     fn cosign_identity_pattern_corelink_release_matches() {
         let p = CosignIdentityPattern::corelink_release();
-        assert!(p.matches_simple(
+        assert!(!p.matches_simple(
             "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
         ));
-        assert!(p.matches_simple(
+        assert!(!p.matches_simple(
             "https://github.com/HuGR-Labs/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
         ));
-        assert!(p.matches_simple(
+        assert!(!p.matches_simple(
             "https://github.com/HuGR-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
         ));
         assert!(p.matches_simple(
             "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
         ));
-        assert!(p.matches_simple(
+        assert!(!p.matches_simple(
             "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v1.23.456"
         ));
         assert!(p.matches_simple(
