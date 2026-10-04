@@ -32,6 +32,9 @@ from verify_b083_kms_lifecycle_evidence import EvidenceError as B083EvidenceErro
 from verify_b083_kms_lifecycle_evidence import validate_record as validate_b083_evidence
 from verify_b046_object_lock_probe import ProbeError as B046ProbeError
 from verify_b046_object_lock_probe import validate_accepted_aws_evidence
+from verify_b154_instrument_claims import B154_TERMINAL_STATUS
+from verify_b154_instrument_claims import VerificationError as B154ClaimError
+from verify_b154_instrument_claims import validate_terminal_outcomes as validate_b154_terminal_outcomes
 EXPECTED_IDS = (
     "B-008", "B-012", "B-013", "B-032", "B-035", "B-065",
     "B-086", "B-089", "B-097", "B-110", "B-111", "B-154",
@@ -42,8 +45,8 @@ EXPECTED_IDS = (
 # Terminal owner decisions move to the repository-side ``tl`` owner only after
 # their source-bound closure evidence receives a strict focal verifier. Other
 # legacy rows remain owner-controlled until their actions are evidenced.
-LEGACY_OWNER_IDS = frozenset(EXPECTED_IDS[:12]) - {"B-012", "B-013", "B-035", "B-065", "B-110"}
-CLOSED_PACKET_IDS = frozenset({"B-012", "B-013", "B-035", "B-046", "B-065", "B-110", "B-165"})
+LEGACY_OWNER_IDS = frozenset(EXPECTED_IDS[:12]) - {"B-012", "B-013", "B-035", "B-065", "B-110", "B-154"}
+CLOSED_PACKET_IDS = frozenset({"B-012", "B-013", "B-035", "B-046", "B-065", "B-110", "B-154", "B-165"})
 B089_SURFACES = (
     "legal/sla/v1.0.0.md",
     "apps/docs/src/pages/legal/terms.tsx",
@@ -349,7 +352,7 @@ B154_EVIDENCE_PATH = "evidence/owner-actions/B-154/prelaunch-claim-resolution.js
 B154_EVIDENCE_REQUIRED_FIELDS = [
     "schema_version", "issue", "parent_issue", "capture_commit", "captured_at",
     "lifecycle", "claims", "historical_remediation", "status",
-    "provider_chains_closed", "source_sha256",
+    "provider_chains_closed", "source_sha256", "terminal_outcomes",
 ]
 B035_EVIDENCE_PATH = "evidence/owner-actions/B-035/tls-legal-remediation.json"
 B035_SOURCE_SHA = "ff232e5c53f69872ed8108e5f5defb185655b0ae"
@@ -1336,8 +1339,17 @@ def _check_b154_evidence(item: dict[str, object]) -> None:
     d1 = claims["d1_residency"]
     if not isinstance(d1, dict) or d1.get("posture") != "ONE_SHARED_GLOBAL_D1_PRELAUNCH_DISCLOSURE" or d1.get("physical_location") != "NOT_INFERRED_FROM_PROVIDER_METADATA" or d1.get("transfer_basis") != "PENDING_COUNSEL_REVIEW" or d1.get("active_workers_verified") != 5 or d1.get("active_config_db_bindings_match") is not True:
         raise PacketError("B-154 D1 boundary or active binding evidence drifted")
-    if record["status"] != "OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW" or record["provider_chains_closed"] is not False:
-        raise PacketError("B-154 must remain open until provider parents reach evidence-backed outcomes")
+    # B-154 is done (claim accuracy). Its BACKLOG row, this packet and the
+    # resolution must all say so. The BYOK runtime chain (#1653/#2165) stays
+    # open, so provider_chains_closed must remain false.
+    if item.get("status") != "done" or item.get("owner") != "tl":
+        raise PacketError("B-154 terminal resolution requires a done/tl BACKLOG row and packet")
+    if record["status"] != B154_TERMINAL_STATUS or record["provider_chains_closed"] is not False:
+        raise PacketError("B-154 resolution must record its terminal outcome without closing the BYOK runtime chain")
+    try:
+        validate_b154_terminal_outcomes(record.get("terminal_outcomes"), ROOT)
+    except B154ClaimError as exc:
+        raise PacketError(f"B-154 terminal outcome is not the reviewed record: {exc}") from exc
     remediation = _exact_keys(record["historical_remediation"], {"issue_2594", "issue_2595", "issue_2596", "notice_or_amendment"}, "B-154 historical remediation")
     if remediation["issue_2594"] != "CLOSED_NOT_PLANNED_NO_EXECUTED_CUSTOMER_DPA_REMEDIATION" or remediation["issue_2595"] != "CLOSED_NOT_PLANNED_NO_EXECUTED_CUSTOMER_SLA_REMEDIATION" or remediation["issue_2596"] != "CLOSED_NO_CIRCULATION" or remediation["notice_or_amendment"] != "NONE_CLAIMED":
         raise PacketError("B-154 historical no-customer disposition drifted")
@@ -1535,7 +1547,9 @@ def _check_item(
     # its owner-authorized redacted deletion record; B-110 closes after the
     # owner selects the already-provisioned CoreLink Linux substrate and the
     # four workflow migrations are evidenced. B-035 closes on the owner-selected
-    # prelaunch wording and exact live TLS receipt. Other legacy items remain pending.
+    # prelaunch wording and exact live TLS receipt. B-154 closes on its pinned
+    # terminal record: #1646 closed by #2808, and the owner accepted the BYOK
+    # fail-closed limitation on 2026-10-01. Other legacy items remain pending.
     if expected_id in CLOSED_PACKET_IDS:
         allowed_statuses.add("done")
     if canonical_owner != expected_owner or canonical_status not in allowed_statuses:

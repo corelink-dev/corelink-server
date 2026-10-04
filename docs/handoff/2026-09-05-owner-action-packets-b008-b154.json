@@ -327,20 +327,21 @@
     },
         {
       "id": "B-154",
-      "owner": "owner",
-      "status": "open",
+      "owner": "tl",
+      "status": "done",
       "action_type": "prelaunch_claim_reconciliation",
       "procedure": [
         "RUN: Verify each directly linked DPA/SLA/privacy/customer-facing copy states Object Lock and BYOK availability only to the extent supported by accepted provider/runtime evidence; unproved capabilities remain unavailable and no p99 is promised.",
         "RUN: Verify the B-154 prelaunch resolution records no launch, no confirmed customers or executed instruments, and no case-study circulation; preserve historical versions and attributions.",
-        "RUN: GATE: Keep B-154 open while #1646/#1877 Object Lock proof and #1653/#2165 KMS lifecycle/p99 proof remain nonterminal. This packet does not create a legal approval, customer notice, addendum, or provider result."
+        "RUN: Verify the pinned terminal outcomes: #1646 closed 2026-09-30 by #2808 with the accepted one-version nonproduction synthetic AWS receipt (sha256 0bec97b785b6a68961e8f8fba0a10575cb3cecc01496f57844b02f03175f16fc), and the owner accepted the BYOK fail-closed limitation narrowed by #2807 on 2026-10-01. #1653/#2165 continue as product hardening and do not hold B-154 open. This packet does not create a legal approval, customer notice, addendum, or provider result."
       ],
       "inputs_and_credentials_boundary": {
         "inputs": [
           "B-154 prelaunch claim resolution",
           "linked DPA/SLA/privacy/customer copies",
           "B-046 Object Lock and B-083 real-KMS evidence",
-          "terminal outcomes from #1646/#1877 and #1653/#2165"
+          "#1646 closure receipt and B-046 accepted AWS target receipt",
+          "2026-10-01 owner decision accepting the BYOK fail-closed limitation"
         ],
         "credentials": "No customer notice, instrument signature, provider mutation, or feature activation is authorized by this packet."
       },
@@ -358,11 +359,12 @@
           "historical_remediation",
           "status",
           "provider_chains_closed",
-          "source_sha256"
+          "source_sha256",
+          "terminal_outcomes"
         ],
-        "item_schema": "lifecycle records no launch/no confirmed customers/no executed customer instruments/no notices applicable/no case-study circulation/no migration; claims classify Object Lock and BYOK as UNPROVEN and NOT_AVAILABLE_OR_PROMISED, with exact limitations and source receipts; status remains OPEN_PENDING_OBJECT_LOCK_BYOK_PROVIDER_EVIDENCE_AND_COUNSEL_REVIEW and provider_chains_closed is false until linked provider parents reach evidence-backed terminal outcomes."
+        "item_schema": "lifecycle records no launch/no confirmed customers/no executed customer instruments/no notices applicable/no case-study circulation/no migration; claims classify Object Lock and BYOK as UNPROVEN and NOT_AVAILABLE_OR_PROMISED, with exact limitations and source receipts; status is DONE_PRELAUNCH_CLAIMS_MATCH_PROVEN_CAPABILITY with provider_chains_closed false (the BYOK runtime chain stays open); terminal_outcomes pins the #1646/#2808 Object Lock closure and accepted receipt hash and the 2026-10-01 BYOK owner decision, with both launch claims NARROWED_NOT_AVAILABLE_OR_PROMISED."
       },
-      "expected_postcondition": "Prelaunch sources and resolution truthfully narrow unproved claims, record no-customer/no-circulation disposition, preserve historical source bytes, and leave provider parents open. B-154 remains open until #1646/#1877 and #1653/#2165 have terminal evidence-backed outcomes and the exact-head source checks are recorded.",
+      "expected_postcondition": "B-154 done: prelaunch sources and resolution narrow every unproved Object Lock/BYOK claim, record the no-customer/no-circulation disposition, preserve historical source bytes, and pin both terminal outcomes. No production Object Lock route, seven-year retention, BYOK availability, kill-switch p99, or legal approval is claimed; #1653/#2165 remain open as product hardening.",
       "retry_and_rollback": "Refresh source-linked receipt hashes after any source change. Never upgrade capability status without accepted provider/runtime proof; never infer executed instruments or circulation from repository text.",
       "references": [
         "BACKLOG.md#B-154",
@@ -370,8 +372,11 @@
         "legal/dpa/v1.0.0.en-US.md",
         "legal/sla/v1.0.0.md",
         "evidence/owner-actions/B-046/object-lock-probe.json",
+        "evidence/owner-actions/B-046/accepted-aws-target.json",
         "evidence/owner-actions/B-083/byok-real-kms-lifecycle.json",
-        "marketing/launch/CASE-STUDIES/enterprise-byok.md"
+        "marketing/launch/CASE-STUDIES/enterprise-byok.md",
+        "https://github.com/HuGR-dev/corelink-server/issues/1646#issuecomment-5920191555",
+        "https://github.com/HuGR-dev/corelink-server/issues/1676#issuecomment-5941052514"
       ]
     },
     {
