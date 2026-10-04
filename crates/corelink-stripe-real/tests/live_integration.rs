@@ -658,12 +658,30 @@ mod cleanup_fault_injection {
         runtime.block_on(async {
             for verb in ["GET", "POST", "DELETE"] {
                 Mock::given(method(verb))
-                    .respond_with(ResponseTemplate::new(500))
+                    .respond_with(ResponseTemplate::new(400))
                     .expect(0)
                     .mount(&server)
                     .await;
             }
         });
+        macro_rules! assert_refused {
+            ($call:expr, $entry:literal) => {{
+                let result = $call;
+                assert!(
+                    runtime
+                        .block_on(server.received_requests())
+                        .expect("captured mock requests")
+                        .is_empty(),
+                    "request before key refusal: {}",
+                    $entry
+                );
+                assert!(
+                    matches!(result, Err(StripeError::Authentication(_))),
+                    "expected authentication refusal: {}",
+                    $entry
+                );
+            }};
+        }
         // (key, is a LIVE key, distinctive key material that must never be
         // echoed by the refusal; empty when the key has none).
         let refused = [
@@ -689,15 +707,53 @@ mod cleanup_fault_injection {
             // A Direct client built without the constructor is still refused
             // by the client guard before any transport.
             let client = mock_client_with_key(server.uri(), key);
-            assert!(client
-                .verify_direct_test_mode_account("acct_catalogfixture")
-                .is_err());
-            assert!(client
-                .create_harness_starter_product("424253", "idem-refused")
-                .is_err());
-            assert!(client
-                .cleanup_harness_customer("cus_refusedfixture", "424253")
-                .is_err());
+            assert_refused!(
+                client.verify_direct_test_mode_account("acct_catalogfixture"),
+                "verify_direct_test_mode_account"
+            );
+            assert_refused!(
+                client.verify_test_mode_starter_catalog(
+                    "acct_catalogfixture",
+                    "price_refusedfixture"
+                ),
+                "verify_test_mode_starter_catalog"
+            );
+            assert_refused!(
+                client.create_harness_starter_product("424253", "idem-refused"),
+                "create_harness_starter_product"
+            );
+            assert_refused!(
+                client.create_harness_starter_price(
+                    "prod_refusedfixture",
+                    "424253",
+                    "idem-refused"
+                ),
+                "create_harness_starter_price"
+            );
+            assert_refused!(
+                client.cleanup_harness_price(
+                    "price_refusedfixture",
+                    "prod_refusedfixture",
+                    "424253"
+                ),
+                "cleanup_harness_price"
+            );
+            assert_refused!(
+                client.cleanup_harness_product("prod_refusedfixture", "424253"),
+                "cleanup_harness_product"
+            );
+            assert_refused!(
+                client.cleanup_harness_checkout(
+                    "cs_refusedfixture",
+                    "cus_refusedfixture",
+                    "424253"
+                ),
+                "cleanup_harness_checkout"
+            );
+            assert_refused!(
+                client.cleanup_harness_customer("cus_refusedfixture", "424253"),
+                "cleanup_harness_customer"
+            );
         }
         // The Wallet broker transport is never a direct-test client, even
         // with a TEST-shaped credential.

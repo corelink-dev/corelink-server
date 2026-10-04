@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -88,7 +89,7 @@ SOURCE_SHA256 = {
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "cb65c3016cfd62fcf40e63811ae509e4585e174000b297462477997aa70e1269",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "aefc11f79bff187a2014d13ddc2096de6dd2250cbd6cd631cf8a68fc75771b46",
-    "crates/corelink-stripe-real/tests/live_integration.rs": "03a7beca944a9f67f20558634fcd5046cbb498f35453c1970f5da45cd56b3860",
+    "crates/corelink-stripe-real/tests/live_integration.rs": "a9ac2a95a7bf91988bd6a5ca6d01c7ed0678b2d0c081805621c3c6cfa6c68f4e",
     "crates/corelink-audit-chain/tests/neon_shadow_real.rs": "dfd22738e96d82695b40addf64b3dbaf611fbd8026346f0b4e33b28f10fe79eb",
 }
 
@@ -186,6 +187,8 @@ CONTRACT_TRIGGER_INPUTS = (
     "crates/corelink-container/src/storage/r2_s3_parts/client_impl.rs",
     "scripts/verify_stripe_harness_cleanup_receipt.py",
     "tests/test_stripe_harness_cleanup_receipt.py",
+    "tests/test_stripe_pre_request_guards.py",
+    "scripts/test_stripe_guard_mutations.py",
     "scripts/stripe_test_mode_evidence.py",
     "tests/test_stripe_test_mode_evidence.py",
     ".github/workflows/issue-1649-stripe-test-mode.yml",
@@ -328,6 +331,64 @@ def rust_active_text(text: str) -> str:
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
 
 
+STRIPE_GUARDED_METHODS = (
+    "verify_test_mode_starter_catalog",
+    "verify_direct_test_mode_account",
+    "create_harness_starter_product",
+    "create_harness_starter_price",
+    "cleanup_harness_price",
+    "cleanup_harness_product",
+    "cleanup_harness_checkout",
+    "cleanup_harness_customer",
+)
+STRIPE_REFUSAL_TEST = "direct_test_refuses_live_and_non_test_keys_before_any_request"
+
+
+def rust_braced_body(source: str, opening: int, *, code: str | None = None) -> str:
+    """Extract a brace-delimited body, ignoring braces in comments/strings."""
+    if code is None:
+        code = rust_code_without_comments_and_strings(source)
+    depth = 1
+    for cursor in range(opening + 1, len(code)):
+        if code[cursor] == "{":
+            depth += 1
+        elif code[cursor] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[opening + 1:cursor]
+    fail("unterminated Rust body")
+
+
+def rust_function_body(source: str, name: str, *, code: str | None = None) -> str:
+    if code is None:
+        code = rust_code_without_comments_and_strings(source)
+    declarations = list(re.finditer(rf"\bfn\s+{re.escape(name)}\s*\(", code))
+    if len(declarations) != 1:
+        fail(f"Rust function declaration is not unique: {name}")
+    return rust_braced_body(source, code.index("{", declarations[0].end()), code=code)
+
+
+@lru_cache(maxsize=8)
+def verify_stripe_pre_request_guards(client: str, harness: str) -> None:
+    """Check each entry independently; another method's guard cannot satisfy it."""
+    client_code = rust_code_without_comments_and_strings(client)
+    harness_code = rust_code_without_comments_and_strings(harness)
+    refusal = rust_function_body(harness_code, STRIPE_REFUSAL_TEST, code=harness_code)
+    loop = re.search(r"for\s*\(key,\s*live,\s*material\)\s+in\s+refused\s*\{", refusal)
+    if loop is None:
+        fail("Stripe refused-key behavioral loop is missing")
+    calls = rust_braced_body(refusal, loop.end() - 1, code=refusal)
+    for method in STRIPE_GUARDED_METHODS:
+        body = rust_function_body(client_code, method, code=client_code)
+        if not re.match(r"\s*self\.require_direct_test_key\(\)\?;", body):
+            fail(f"Stripe entry lacks its first-statement pre-request TEST-key guard: {method}")
+        if not re.search(rf"assert_refused!\(\s*client\.{method}\(", calls):
+            fail(f"Stripe entry lacks per-key zero-request refusal coverage: {method}")
+    for fragment in ("server.received_requests()", ".is_empty()", "Err(StripeError::Authentication(_))"):
+        if fragment not in refusal:
+            fail(f"Stripe refusal assertion is incomplete: {fragment}")
+
+
 def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
     """Bind the direct-test-only cleanup, live-key refusal and receipt controls."""
     client = (root / "crates/corelink-stripe-real/src/client.rs").read_text(encoding="utf-8")
@@ -406,6 +467,7 @@ def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
     )
     if missing := [fragment for source, fragment in required if fragment not in source]:
         fail(f"Stripe cleanup contract is missing reviewed gate(s): {missing}")
+    verify_stripe_pre_request_guards(client, harness)
     # The profile is direct-test only: no active harness or client marker may
     # still select, read or require the retired Wallet-broker inputs.
     active_client = rust_active_text(client)
@@ -436,6 +498,8 @@ def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
         "arduino/setup-protoc@f4d5893b897028ff5739576ea0409746887fa536",
         "cargo test --locked -p corelink-stripe-real --features live-integration --test live_integration cleanup_fault_injection -- --nocapture",
         "persist-credentials: false",
+        "python3 -S -m unittest tests/test_stripe_pre_request_guards.py",
+        "python3 -S scripts/test_stripe_guard_mutations.py",
     )
     if missing := [fragment for fragment in hosted_required if fragment not in pr_workflow]:
         fail(f"credentialless hosted Rust fault-injection gate is incomplete: {missing}")
@@ -1406,6 +1470,23 @@ def stripe_contract_mutation_checks() -> None:
         ("fixture archive receipt removed", harness_path,
          '"archived_readback_pass"', '"archive_skipped"', gate),
     )
+    refusal_body = rust_function_body(originals[harness_path], STRIPE_REFUSAL_TEST)
+    for method in STRIPE_GUARDED_METHODS:
+        body = rust_function_body(originals[client_path], method)
+        guard = "self.require_direct_test_key()?;"
+        if body.count(guard) != 1:
+            fail(f"Stripe guard mutation preimage is not unique: {method}")
+        call = f"client.{method}("
+        if refusal_body.count(call) != 1:
+            fail(f"Stripe refusal-call mutation preimage is not unique: {method}")
+        mutations += (
+            (f"{method} pre-request guard removed", client_path, body,
+             body.replace(guard, "", 1),
+             f"Stripe entry lacks its first-statement pre-request TEST-key guard: {method}"),
+            (f"{method} refused-key exercise removed", harness_path, refusal_body,
+             refusal_body.replace(call, "client.effective_base_url(", 1),
+             f"Stripe entry lacks per-key zero-request refusal coverage: {method}"),
+        )
     with tempfile.TemporaryDirectory(prefix="b068-stripe-contract-") as temp:
         root = Path(temp)
         for relative, text in originals.items():
