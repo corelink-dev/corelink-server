@@ -46,7 +46,7 @@ fn main() {
         ),
         GitHubActor::new(
             "github-actions[bot]",
-            "HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0",
+            "corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0",
         ),
     );
 
@@ -115,7 +115,7 @@ mod tests {
             ),
             GitHubActor::new(
                 "github-actions[bot]",
-                "HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0",
+                "corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0",
             ),
         );
         let image_ref = OciImageRef::from_tag("ghcr.io/HumanGuardrail/corelink-worker:v0.1.0");
@@ -131,4 +131,11 @@ mod tests {
         assert!(summary.contains("release_tag:              v0.1.0"));
         assert!(summary.contains("cf_deployment_id:"));
     }
+}
+
+// Retain the historical SAN without treating it as authority for a new deploy.
+#[test]
+fn historical_signature_is_not_current_deploy_authority() {
+    let historical_san = "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0";
+    assert!(!CosignIdentityPattern::corelink_release().matches_simple(historical_san));
 }

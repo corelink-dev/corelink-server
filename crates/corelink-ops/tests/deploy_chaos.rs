@@ -49,7 +49,7 @@ fn make_webhook(tag: &str) -> CfDeployWebhook {
         GitHubActor::new(
             "github-actions[bot]",
             format!(
-                "HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/{tag}"
+                "corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/{tag}"
             ),
         ),
     )
@@ -242,7 +242,7 @@ fn chaos_audit_emit_failure_100_iterations_zero_false_deploys() {
         let verifier = InMemoryDeployVerifier::with_mode(
             VerificationMode::Signed {
                 rekor_log_index: i as u64,
-                fulcio_san: "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0".to_string(),
+                fulcio_san: "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0".to_string(),
                 resolved_digest: format!("sha256:{i:064x}"),
             },
             failing_sink,
@@ -364,4 +364,29 @@ fn chaos_signed_deploy_succeeds_end_to_end() {
         sink.events()[0].event_type,
         "dev.hugr.corelink.deploy.verified.v1"
     );
+}
+
+// Retained historical signer fixture: valid past evidence is not new deploy authority.
+#[test]
+fn historical_signature_cannot_authorize_current_deploy() {
+    let historical_san = "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0";
+    let sink = Arc::new(InMemoryDeployAuditSink::new());
+    let verifier = InMemoryDeployVerifier::with_mode(
+        VerificationMode::Signed {
+            rekor_log_index: 123,
+            fulcio_san: historical_san.to_string(),
+            resolved_digest: "sha256:deadbeef".to_string(),
+        },
+        sink.clone(),
+    );
+    let result = verifier.verify_and_propagate(
+        &make_webhook("v0.1.0"),
+        &make_image_ref("v0.1.0"),
+        &CosignIdentityPattern::corelink_release(),
+    );
+    assert!(matches!(
+        result,
+        Err(DeployVerifyError::IdentityMismatch { .. })
+    ));
+    assert_eq!(sink.events()[0].outcome, VerifyOutcome::IdentityMismatch);
 }

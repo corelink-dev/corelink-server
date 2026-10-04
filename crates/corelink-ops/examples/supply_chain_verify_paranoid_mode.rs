@@ -10,7 +10,8 @@
     clippy::panic
 )]
 //!
-//! Demonstrates the strictest verification mode:
+//! Inspects a retained historical artifact, not a current release acceptance gate.
+//! Demonstrates the strictest historical verification mode:
 //! - Exact SAN URI match (specific release tag, not org pattern).
 //! - Prints Rekor log entry URL for manual audit verification.
 //! - Prints instructions for offline Merkle log consistency proof check.
@@ -60,7 +61,7 @@ async fn main() {
         "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/{}",
         release_tag
     );
-    let expected = BuilderIdentity::from_exact(&exact_san);
+    let expected = BuilderIdentity::from_historical_exact(&exact_san);
 
     println!("Paranoid mode: verifying against exact SAN URI:");
     println!("  {}", exact_san);

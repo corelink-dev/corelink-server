@@ -103,7 +103,7 @@ pub enum VerificationMode {
 ///     DeployTarget::new("corelink-worker", "a".repeat(32), "corelink-api.humangr.com/*"),
 ///     GitHubActor::new(
 ///         "github-actions[bot]",
-///         "HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0",
+///         "corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0",
 ///     ),
 /// );
 /// let image_ref = OciImageRef::from_tag("ghcr.io/HumanGuardrail/corelink-worker:v0.1.0");
@@ -134,7 +134,7 @@ impl InMemoryDeployVerifier {
         Self {
             mode: VerificationMode::Signed {
                 rekor_log_index: 123_456_789,
-                fulcio_san: "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0".to_string(),
+                fulcio_san: "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0".to_string(),
                 resolved_digest: "sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string(),
             },
             audit_sink,
@@ -328,7 +328,10 @@ impl InMemoryDeployVerifier {
                 resolved_digest,
             } => {
                 // Validate identity pattern (structural check, wasm32-safe)
-                if !expected_identity.matches_simple(fulcio_san) {
+                // A configurable regex may narrow current trust, never restore legacy deploy authority.
+                if !fulcio_san.starts_with("https://github.com/corelink-dev/corelink-server/")
+                    || !expected_identity.matches_simple(fulcio_san)
+                {
                     warn!(
                         release_tag = %webhook.release_tag,
                         san = %fulcio_san,
@@ -554,7 +557,7 @@ mod tests {
             DeployTarget::new("corelink-worker", "a".repeat(32), "corelink-api.humangr.com/*"),
             GitHubActor::new(
                 "github-actions[bot]",
-                format!("HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/{tag}"),
+                format!("corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/{tag}"),
             ),
         )
     }
@@ -651,6 +654,46 @@ mod tests {
             Err(DeployVerifyError::IdentityMismatch { .. })
         ));
         assert_eq!(sink.events()[0].outcome, VerifyOutcome::IdentityMismatch);
+    }
+
+    #[test]
+    fn legacy_signatures_cannot_authorize_new_deploys() {
+        // Retained historical SAN fixture, rejected for new deployments.
+        let historical_san = "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0";
+        assert!(!CosignIdentityPattern::corelink_release().matches_simple(historical_san));
+        for owner in ["HumanGuardrail", "HuGR-Labs", "HuGR-dev"] {
+            let sink = Arc::new(InMemoryDeployAuditSink::new());
+            let san = format!(
+                "https://github.com/{owner}/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+            );
+            for identity in [
+                CosignIdentityPattern::corelink_release(),
+                CosignIdentityPattern::new(".*"),
+            ] {
+                let verifier = InMemoryDeployVerifier::with_mode(
+                    VerificationMode::Signed {
+                        rekor_log_index: 123,
+                        fulcio_san: san.clone(),
+                        resolved_digest: "sha256:deadbeef".to_string(),
+                    },
+                    sink.clone(),
+                );
+                let result = verifier.verify_and_propagate(
+                    &make_webhook("v0.1.0"),
+                    &make_image_ref("v0.1.0"),
+                    &identity,
+                );
+                assert!(matches!(
+                    result,
+                    Err(DeployVerifyError::IdentityMismatch { .. })
+                ));
+                assert_eq!(
+                    sink.events().last().unwrap().outcome,
+                    VerifyOutcome::IdentityMismatch
+                );
+            }
+            assert_eq!(sink.len(), 2);
+        }
     }
 
     #[test]

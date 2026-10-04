@@ -24,7 +24,10 @@ use proptest::prelude::*;
 use corelink_ops::deploy::{
     audit::{FailingDeployAuditSink, InMemoryDeployAuditSink},
     error::DeployVerifyError,
-    types::{CfDeployWebhook, CosignIdentityPattern, DeployTarget, GitHubActor, OciImageRef},
+    types::{
+        CfDeployWebhook, CosignIdentityPattern, DeployTarget, GitHubActor, OciImageRef,
+        VerifyOutcome,
+    },
     verifier::{proptest_cases, InMemoryDeployVerifier, VerificationMode},
     DeployVerifier,
 };
@@ -44,7 +47,7 @@ fn make_webhook(tag: &str) -> CfDeployWebhook {
         GitHubActor::new(
             "github-actions[bot]",
             format!(
-                "HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/{tag}"
+                "corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/{tag}"
             ),
         ),
     )
@@ -121,7 +124,7 @@ proptest! {
         attacker_san in "https://github\\.com/[a-z]{4,12}/corelink-server/\\.github/workflows/release-slsa3\\.yml@refs/tags/v[0-9]\\.[0-9]\\.[0-9]"
     ) {
         // Only reject if it's not the legitimate org
-        let is_legit = attacker_san.contains("HumanGuardrail");
+        let is_legit = attacker_san.starts_with("https://github.com/corelink-dev/corelink-server/");
         let sink = Arc::new(InMemoryDeployAuditSink::new());
         let verifier = InMemoryDeployVerifier::new_identity_mismatch_from(
             Arc::clone(&sink),
@@ -204,7 +207,7 @@ proptest! {
         let verifier = InMemoryDeployVerifier::with_mode(
             VerificationMode::Signed {
                 rekor_log_index: 999,
-                fulcio_san: "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0".to_string(),
+                fulcio_san: "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0".to_string(),
                 resolved_digest: "sha256:deadbeef".to_string(),
             },
             failing_sink,
@@ -219,4 +222,29 @@ proptest! {
             "deploy must be blocked when audit emit fails; got {result:?}"
         );
     }
+}
+
+// Retained historical signer fixture: valid past evidence is not new deploy authority.
+#[test]
+fn historical_signature_cannot_authorize_current_deploy() {
+    let historical_san = "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0";
+    let sink = Arc::new(InMemoryDeployAuditSink::new());
+    let verifier = InMemoryDeployVerifier::with_mode(
+        VerificationMode::Signed {
+            rekor_log_index: 123,
+            fulcio_san: historical_san.to_string(),
+            resolved_digest: "sha256:deadbeef".to_string(),
+        },
+        sink.clone(),
+    );
+    let result = verifier.verify_and_propagate(
+        &make_webhook("v0.1.0"),
+        &make_image_ref("v0.1.0"),
+        &CosignIdentityPattern::corelink_release(),
+    );
+    assert!(matches!(
+        result,
+        Err(DeployVerifyError::IdentityMismatch { .. })
+    ));
+    assert_eq!(sink.events()[0].outcome, VerifyOutcome::IdentityMismatch);
 }

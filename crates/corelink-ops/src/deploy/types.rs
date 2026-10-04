@@ -53,7 +53,7 @@ pub struct GitHubActor {
     /// GitHub login of the actor.
     pub login: String,
     /// OIDC workflow ref, e.g.
-    /// `"HuGR-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"`.
+    /// `"corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"`.
     pub workflow_ref: String,
 }
 
@@ -155,8 +155,12 @@ impl OciImageRef {
 ///
 /// The canonical pattern for CoreLink is:
 /// ```text
-/// ^https://github\.com/(?:HumanGuardrail|HuGR-Labs|HuGR-dev)/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$
+/// ^https://github\.com/corelink-dev/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$
 /// ```
+///
+/// New deploys trust only the current owner, `corelink-dev`. Legacy owners
+/// are accepted only by separate historical artifact verification paths;
+/// a historical signature does not authorize a new deployment.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct CosignIdentityPattern {
@@ -166,10 +170,10 @@ pub struct CosignIdentityPattern {
 }
 
 impl CosignIdentityPattern {
-    /// Canonical identity pattern for CoreLink release pipeline.
+    /// Current-only identity pattern for new CoreLink release deployments.
     pub fn corelink_release() -> Self {
         Self {
-            pattern: r"^https://github\.com/(?:HumanGuardrail|HuGR-Labs|HuGR-dev)/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$".to_string(),
+            pattern: r"^https://github\.com/corelink-dev/corelink-server/\.github/workflows/release-slsa3\.yml@refs/tags/v\d+\.\d+\.\d+$".to_string(),
         }
     }
 
@@ -366,17 +370,23 @@ mod tests {
     #[test]
     fn cosign_identity_pattern_corelink_release_matches() {
         let p = CosignIdentityPattern::corelink_release();
-        assert!(p.matches_simple(
+        assert!(!p.matches_simple(
             "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
         ));
-        assert!(p.matches_simple(
+        assert!(!p.matches_simple(
             "https://github.com/HuGR-Labs/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
         ));
-        assert!(p.matches_simple(
+        assert!(!p.matches_simple(
             "https://github.com/HuGR-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
         ));
         assert!(p.matches_simple(
+            "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!p.matches_simple(
             "https://github.com/HumanGuardrail/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v1.23.456"
+        ));
+        assert!(p.matches_simple(
+            "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v1.23.456"
         ));
     }
 
@@ -399,6 +409,26 @@ mod tests {
         ));
         assert!(!p.matches_simple(
             "https://github.com/HuGR-Labs/corelink-cli/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        // The current owner is accepted only as the exact owner of the server
+        // repository's release workflow at a release tag.
+        assert!(!p.matches_simple(
+            "https://github.com/attacker/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!p.matches_simple(
+            "https://github.com/corelink-dev-evil/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!p.matches_simple(
+            "https://github.com/corelink-dev/corelink-server-evil/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!p.matches_simple(
+            "https://github.com/corelink-dev/corelink-runners/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!p.matches_simple(
+            "https://github.com/corelink-dev/corelink-server/.github/workflows/build.yml@refs/tags/v0.1.0"
+        ));
+        assert!(!p.matches_simple(
+            "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/heads/main"
         ));
     }
 

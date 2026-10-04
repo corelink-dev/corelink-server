@@ -132,13 +132,11 @@ HISTORICAL_IDENTITY_LITERAL_ALLOWLIST = {
     "docs/knowledge/adr/adr-s12-001-sbom-cyclonedx-ntia-tsa-dt.md": "Sealed ADR preserves the repository identity in its reviewed decision record.",
 }
 
-# These verifier/docs surfaces intentionally mention the source owner: the
-# signer accepts source artifacts before cutover; the SLSA guide documents
-# pre-transfer receipt verification; and the runner-fabric guide contains
+# These docs intentionally mention the source owner: the SLSA guide documents
+# pre-transfer receipt verification, and the runner-fabric guide contains
 # dated source-owner run links. Other current projections must not present the
 # source as their current destination.
 SOURCE_ALIAS_PROJECTION_ALLOWLIST = {
-    "crates/corelink-ops/src/deploy/types.rs": "The canonical Cosign identity pattern explicitly accepts pre-transfer signed server artifacts.",
     "docs/internal/ci-runner-fabric-box.md": "Dated P1/P2 runner probe links preserve the original source-owner action-run URLs; current instructions resolve by repository ID.",
     "docs/internal/slsa-l3-pipeline.md": "The guide names the exact source only for verifying pre-transfer artifacts; destination is the current builder.",
 }
@@ -289,29 +287,92 @@ class ServerRepositoryIdentityTests(unittest.TestCase):
 
     def test_evidence_pack_signer_preserves_historical_and_current_exact_owners(self) -> None:
         script = (ROOT / "scripts/build-pentest-evidence-pack.sh").read_text(encoding="utf-8")
-        match = re.search(r"--certificate-identity-regexp '([^']+)'", script)
-        self.assertIsNotNone(match)
-        pattern = match.group(1)
-        for owner in ("HumanGuardrail", "HuGR-Labs", "HuGR-dev"):
+        matches = re.findall(r"--certificate-identity-regexp '([^']+)'", script)
+        self.assertEqual(len(matches), 2)
+        pattern = matches[1]
+        # cosign compiles this with Go RE2, which rejects \Z ("invalid escape
+        # sequence"); Python 3.12, which runs this suite, rejects \z. ^ and $
+        # mean start and end of text in RE2 without the m flag.
+        self.assertNotRegex(pattern, r"\\[zZ]")
+        # cosign matches the SAN unanchored (regexp.MatchString), so this test
+        # uses re.search: the pattern's own anchors must do the rejecting.
+        workflow = "/corelink-server/.github/workflows/sign.yml"
+        # corelink-dev is the current owner. The earlier owners stay so packs
+        # they signed still verify in this historical-only command.
+        owners = ("HumanGuardrail", "HuGR-Labs", "HuGR-dev", "corelink-dev")
+        for owner in owners:
             with self.subTest(owner=owner):
-                self.assertIsNotNone(
-                    re.fullmatch(
-                        pattern,
-                        f"https://github.com/{owner}/corelink-server/.github/workflows/sign.yml",
-                    )
-                )
+                self.assertIsNotNone(re.search(pattern, f"https://github.com/{owner}{workflow}"))
         for unauthorized in (
             "attacker",
             "HuGR-Labs-fork",
             "HuGR-dev-evil",
+            "corelink-dev-evil",
+            "attacker/corelink-dev",
         ):
             with self.subTest(unauthorized=unauthorized):
-                self.assertIsNone(
-                    re.fullmatch(
-                        pattern,
-                        f"https://github.com/{unauthorized}/corelink-server/.github/workflows/sign.yml",
+                self.assertIsNone(re.search(pattern, f"https://github.com/{unauthorized}{workflow}"))
+        for owner in owners:
+            for repository in ("corelink-server-evil", "corelink-runners", "corelink-workspaces"):
+                with self.subTest(owner=owner, repository=repository):
+                    self.assertIsNone(
+                        re.search(
+                            pattern,
+                            f"https://github.com/{owner}/{repository}/.github/workflows/sign.yml",
+                        )
                     )
-                )
+        current = f"https://github.com/corelink-dev{workflow}"
+        for embedded in (
+            f"https://evil.example/?next={current}",
+            f"{current}\nhttps://evil.example/",
+        ):
+            with self.subTest(embedded=embedded):
+                self.assertIsNone(re.search(pattern, embedded))
+
+    def test_current_release_and_historical_pack_have_separate_trust(self) -> None:
+        script = (ROOT / "scripts/build-pentest-evidence-pack.sh").read_text(encoding="utf-8")
+        patterns = re.findall(r"--certificate-identity-regexp '([^']+)'", script)
+        self.assertEqual(len(patterns), 2, "current command and historical command required")
+        self.assertIn("Historical artifacts only", script)
+        deploy_types = (ROOT / "crates/corelink-ops/src/deploy/types.rs").read_text(encoding="utf-8")
+        release = re.search(
+            r'fn corelink_release\(\) -> Self \{\s*Self \{\s*pattern: r"([^"]+)"', deploy_types
+        )
+        self.assertIsNotNone(release, "CosignIdentityPattern::corelink_release pattern not found")
+        self.assertIn(f"/// {release.group(1)}\n", deploy_types)
+        for owner in ("HumanGuardrail", "HuGR-Labs", "HuGR-dev", "corelink-dev"):
+            san = f"https://github.com/{owner}/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+            for label, pattern in (("current-pack", patterns[0]), ("current-deploy", release.group(1))):
+                with self.subTest(owner=owner, path=label):
+                    self.assertEqual(bool(re.search(pattern, san)), owner == "corelink-dev")
+            with self.subTest(owner=owner, path="historical-pack"):
+                self.assertIsNotNone(re.search(patterns[1], san))
+        current = "https://github.com/corelink-dev/corelink-server/.github/workflows/release-slsa3.yml@refs/tags/v0.1.0"
+        for label, pattern in (("current-pack", patterns[0]), ("current-deploy", release.group(1))):
+            self.assertTrue(pattern.startswith("^") and pattern.endswith("$"))
+            for invalid in (
+                current.replace("corelink-dev/", "corelink-dev-evil/"),
+                current.replace("corelink-server/", "corelink-server-evil/"),
+                current.replace("corelink-server/", "corelink-runners/"),
+                current.replace("corelink-dev/", "attacker/corelink-dev/"),
+                f"https://evil.example/?next={current}",
+                f"{current}\nhttps://evil.example/",
+            ):
+                with self.subTest(path=label, invalid=invalid):
+                    self.assertIsNone(re.search(pattern, invalid))
+
+    def test_signing_rustdoc_examples_use_current_owner(self) -> None:
+        deploy = (ROOT / "crates/corelink-ops/src/deploy/types.rs").read_text(encoding="utf-8")
+        workflow_doc = deploy.split("pub struct GitHubActor {", 1)[1].split("pub workflow_ref:", 1)[0]
+        self.assertIn('"corelink-dev/corelink-server/', workflow_doc)
+        builder = (ROOT / "crates/corelink-ops/src/supply_chain/verify/types.rs").read_text(encoding="utf-8")
+        identity_doc = builder.split("/// Identity of the expected SLSA L3 builder", 1)[1].split("impl BuilderIdentity", 1)[0]
+        self.assertIn("/// `https://github.com/corelink-dev/corelink-server/", identity_doc)
+        self.assertIn("(e.g., `corelink-dev/corelink-server`)", identity_doc)
+        self.assertIn("/// Must include org + repo, e.g., `corelink-dev/corelink-server`.", identity_doc)
+        self.assertNotIn("HuGR-dev/corelink-server", identity_doc)
+        fixtures = builder.split("#[cfg(test)]", 1)[1]
+        self.assertIn('const DESTINATION_SAN: &str = "https://github.com/corelink-dev/corelink-server/', fixtures)
 
     def test_reintroduced_source_owner_fails_current_projection_guard(self) -> None:
         current_readme = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -398,13 +459,13 @@ class ServerRepositoryIdentityTests(unittest.TestCase):
             "docs/build/reproducible.md": ("python3 scripts/server_repository.py",),
             "docs/internal/ci-runner-fabric-box.md": ("python3 scripts/server_repository.py",),
             "docs/internal/FORENSICS-GUIDE.md": ("repositories/1232040291",),
-            "crates/corelink-ops/src/deploy.rs": (destination,),
-            "crates/corelink-ops/src/deploy/types.rs": (destination,),
-            "crates/corelink-ops/src/supply_chain/verify.rs": (destination,),
-            "crates/corelink-ops/src/supply_chain/verify/verifier.rs": (destination,),
+            "crates/corelink-ops/src/deploy.rs": ("corelink-dev/corelink-server",),
+            "crates/corelink-ops/src/deploy/types.rs": ("corelink-dev/corelink-server",),
+            "crates/corelink-ops/src/supply_chain/verify.rs": ("corelink-dev/corelink-server",),
+            "crates/corelink-ops/src/supply_chain/verify/verifier.rs": ("corelink-dev/corelink-server",),
             "crates/corelink-ops/src/supply_chain/verify/bin/cli.rs": (destination,),
-            "crates/corelink-ops/src/supply_chain/verify/types.rs": (destination,),
-            "crates/corelink-ops/examples/supply_chain_verify_verify_basic.rs": (destination,),
+            "crates/corelink-ops/src/supply_chain/verify/types.rs": ("corelink-dev/corelink-server",),
+            "crates/corelink-ops/examples/supply_chain_verify_verify_basic.rs": ("corelink-dev/corelink-server",),
             "docs/operator/e2e-ci-2026-05-30.md": (destination,),
             "docs/internal/OSS-VS-CLOSED-MATRIX.md": (destination,),
             "docs/OSS_STRATEGY.md": (destination,),
@@ -421,8 +482,14 @@ class ServerRepositoryIdentityTests(unittest.TestCase):
         for relative, markers in projections.items():
             contents = (ROOT / relative).read_text(encoding="utf-8")
             with self.subTest(path=relative):
+                current_docs = contents
+                if relative in {
+                    "crates/corelink-ops/src/deploy/types.rs",
+                    "crates/corelink-ops/src/supply_chain/verify/types.rs",
+                }:
+                    current_docs = contents.split("#[cfg(test)]", maxsplit=1)[0]
                 for marker in markers:
-                    self.assertIn(marker, contents)
+                    self.assertIn(marker, current_docs)
                 assert_current_projection_owner_is_not_stale(relative, contents)
         runner_doc = (ROOT / "docs/internal/ci-runner-fabric-box.md").read_text(encoding="utf-8")
         live_commands = runner_doc.split("## 11. Re-measuring", maxsplit=1)[1].split(
