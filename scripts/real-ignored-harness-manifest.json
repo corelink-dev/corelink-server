@@ -78,11 +78,8 @@
       "target": "test/live_integration",
       "features": ["live-integration"],
       "required_env": [
-        "HUGR_WALLET_BASE",
-        "HUGR_WALLET_TOKEN",
-        "HUGR_STRIPE_REF",
         "STRIPE_AUTH_MODE",
-        "STRIPE_PRICE_ID_STARTER",
+        "STRIPE_SECRET_KEY_TEST",
         "STRIPE_TEST_ACCOUNT_ID"
       ],
       "tests": [

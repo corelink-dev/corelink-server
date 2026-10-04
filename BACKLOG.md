@@ -9567,10 +9567,14 @@ não demonstra os caminhos reais deste item. O executor agora está materializad
 `workflow_dispatch` no `main` e protegido pelo ambiente `real-integration`. O
 script `scripts/run-real-ignored-harnesses.sh` seleciona explicitamente cada teste
 real D1, R2, Stripe e Neon, valida as credenciais antes de iniciar e rejeita todo
-perfil desconhecido. O perfil Stripe exige `STRIPE_AUTH_MODE=wallet-broker`, a
-referência de teste `stripe-prod-test` e um `STRIPE_PRICE_ID_STARTER` `price_*`
-proveniente das variáveis do ambiente protegido; o seletor do dispatch chega ao
-shell somente como variável de ambiente validada.
+perfil desconhecido. Por decisão do owner em 2026-10-02 (#2565), o perfil Stripe
+roda em `STRIPE_AUTH_MODE=direct-test`, direto no modo TEST da Stripe e sem o
+Wallet broker: exige `STRIPE_SECRET_KEY_TEST` (`sk_test_`/`rk_test_`; chave
+`sk_live_`/`rk_live_` é recusada antes do Cargo e de novo antes da primeira
+requisição) e `STRIPE_TEST_ACCOUNT_ID`, ambos do ambiente protegido; antes de
+escrever, o harness prova a conta esperada e `livemode=false` no Balance, e o
+preço Starter é uma fixture de teste criada e arquivada por execução. O seletor
+do dispatch chega ao shell somente como variável de ambiente validada.
 
 O executor não recebe a chave de assinatura do PAT e não possui perfil para o
 `emit_e2e_seed`: esse harness imprime um PAT novo e SQL de seed, portanto continua

@@ -29,6 +29,8 @@ on:
       - "crates/corelink-stripe-real/src/client.rs"
       - "scripts/verify_stripe_harness_cleanup_receipt.py"
       - "tests/test_stripe_harness_cleanup_receipt.py"
+      - "tests/test_stripe_pre_request_guards.py"
+      - "scripts/test_stripe_guard_mutations.py"
       - "scripts/stripe_test_mode_evidence.py"
       - "tests/test_stripe_test_mode_evidence.py"
       - ".github/workflows/issue-1649-stripe-test-mode.yml"
@@ -92,7 +94,11 @@ jobs:
           python3 -S scripts/verify_real_ignored_harnesses.py
           python3 -S scripts/probe_i2563_d1_token_scope.py --self-test
           python3 -S -m unittest tests/test_stripe_harness_cleanup_receipt.py
+          python3 -S -m unittest tests/test_stripe_pre_request_guards.py
           python3 -S -m unittest tests/test_stripe_test_mode_evidence.py
           python3 -S scripts/verify_i1650_real_integration_readiness.py
       - name: Run credentialless Stripe mock cleanup fault injection
         run: cargo test --locked -p corelink-stripe-real --features live-integration --test live_integration cleanup_fault_injection -- --nocapture
+      - name: Prove each Stripe guard removal fails before transport
+        timeout-minutes: 15
+        run: python3 -S scripts/test_stripe_guard_mutations.py

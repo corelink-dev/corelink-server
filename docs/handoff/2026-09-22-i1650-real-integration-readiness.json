@@ -156,49 +156,31 @@
       "status": "blocked",
       "resources": [
         {
-          "name": "HuGR wallet broker test reference",
-          "kind": "wallet broker account",
-          "scope": "stripe-prod-test only; test mode",
+          "name": "Stripe TEST account",
+          "kind": "Stripe account",
+          "scope": "test mode only; sk_test_/rk_test_ key; identity and livemode=false proven before writes",
           "status": "missing",
           "evidence_ref": null
         },
         {
-          "name": "Starter test price",
-          "kind": "Stripe price",
-          "scope": "test-mode price_* only",
+          "name": "Customer portal TEST default configuration",
+          "kind": "Stripe billing portal configuration",
+          "scope": "test mode only; saved default read by live_billing_portal_session",
           "status": "missing",
           "evidence_ref": null
         }
       ],
       "environment": [
         {
-          "name": "HUGR_WALLET_BASE",
-          "kind": "variable",
-          "scope": "real-integration environment",
-          "status": "missing"
-        },
-        {
-          "name": "HUGR_WALLET_TOKEN",
-          "kind": "secret",
-          "scope": "real-integration environment",
-          "status": "missing"
-        },
-        {
-          "name": "HUGR_STRIPE_REF",
-          "kind": "variable",
-          "scope": "real-integration environment",
-          "status": "missing"
-        },
-        {
           "name": "STRIPE_AUTH_MODE",
-          "kind": "variable",
-          "scope": "real-integration environment",
-          "status": "missing"
+          "kind": "workflow constant",
+          "scope": "fixed to direct-test by the executor workflow for the stripe profile",
+          "status": "verified"
         },
         {
-          "name": "STRIPE_PRICE_ID_STARTER",
-          "kind": "variable",
-          "scope": "real-integration environment",
+          "name": "STRIPE_SECRET_KEY_TEST",
+          "kind": "secret",
+          "scope": "real-integration environment; Stripe TEST key (sk_test_/rk_test_) only",
           "status": "missing"
         },
         {
@@ -209,12 +191,13 @@
         }
       ],
       "cleanup": [
-        "delete test customers and checkout artifacts through the wallet broker",
+        "expire run-owned test checkout sessions and delete run-owned test customers directly in Stripe test mode, each with readback",
+        "archive the run-owned Starter test product and price fixtures with readback",
         "record redacted cleanup receipt",
         "confirm no live-mode customer or payment mutation occurred"
       ],
       "blockers": [
-        "Wallet broker test reference, test price, protected environment entries, and an owner reviewed cleanup receipt are not recorded."
+        "STRIPE_SECRET_KEY_TEST and STRIPE_TEST_ACCOUNT_ID are not bound in the protected real-integration environment, the test-mode customer portal default configuration is unverified, and no owner reviewed cleanup receipt is recorded."
       ],
       "cleanup_receipt": {
         "status": "missing",

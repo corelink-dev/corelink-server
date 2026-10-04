@@ -92,17 +92,18 @@ jobs:
           R2_PARENT_SCOPE_CONFIRMED_ACCESS_KEY_ID: ${{ inputs.profile == 'r2' && vars.R2_PARENT_SCOPE_CONFIRMED_ACCESS_KEY_ID || '' }}
           R2_PARENT_SCOPE_CONFIRMED_BUCKET: ${{ inputs.profile == 'r2' && vars.R2_PARENT_SCOPE_CONFIRMED_BUCKET || '' }}
           R2_PARENT_SCOPE_RECEIPT_SHA256: ${{ inputs.profile == 'r2' && vars.R2_PARENT_SCOPE_RECEIPT_SHA256 || '' }}
-          # Stripe live integration uses the wallet broker's test reference;
-          # CoreLink never receives a raw Stripe secret key.
+          # Stripe runs in direct TEST mode (owner decision 2026-10-02,
+          # #2565), not through the Wallet broker. The protected secret holds
+          # a Stripe TEST key (sk_test_/rk_test_); the runner and the Rust
+          # harness each refuse a live key before any request, and the
+          # harness proves livemode=false before its first write. The
+          # Starter price is a run-owned fixture, so no price input exists.
           # Expose Stripe inputs only when this protected dispatch selected
           # stripe/all. The Rust cleanup marker additionally checks the exact
           # workflow/repository/ref/event context; GITHUB_RUN_ID alone is not
           # enough to mark provider objects as harness-owned.
-          HUGR_WALLET_BASE: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.HUGR_WALLET_BASE || '' }}
-          HUGR_WALLET_TOKEN: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && secrets.HUGR_WALLET_TOKEN || '' }}
-          HUGR_STRIPE_REF: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.HUGR_STRIPE_REF || '' }}
-          STRIPE_AUTH_MODE: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && 'wallet-broker' || '' }}
-          STRIPE_PRICE_ID_STARTER: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.STRIPE_PRICE_ID_STARTER || '' }}
+          STRIPE_AUTH_MODE: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && 'direct-test' || '' }}
+          STRIPE_SECRET_KEY_TEST: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && secrets.STRIPE_SECRET_KEY_TEST || '' }}
           STRIPE_TEST_ACCOUNT_ID: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.STRIPE_TEST_ACCOUNT_ID || '' }}
           # Neon is separately selected and receives only its staging DSN.
           NEON_TEST_DSN: ${{ (inputs.profile == 'neon' || inputs.profile == 'all') && secrets.NEON_TEST_DSN || '' }}
@@ -115,7 +116,7 @@ jobs:
             echo "::add-mask::${CF_API_TOKEN:-}"
             python3 -S scripts/probe_i2563_d1_token_scope.py
           fi
-          for name in CF_API_TOKEN HUGR_WALLET_TOKEN NEON_TEST_DSN R2_S3_ACCESS_KEY_ID; do
+          for name in CF_API_TOKEN STRIPE_SECRET_KEY_TEST NEON_TEST_DSN R2_S3_ACCESS_KEY_ID; do
             if [[ -n "${!name:-}" ]]; then
               echo "::add-mask::${!name}"
             fi

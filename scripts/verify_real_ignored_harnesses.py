@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -88,7 +89,7 @@ SOURCE_SHA256 = {
     "crates/corelink-container/src/storage/d1_audit_sink/tests_phase_attribution.rs": "474d45a030f333bfb73d7152bc2a802d9d29b8af2d559c5310f9a683bc74e717",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_1_network.rs": "cb65c3016cfd62fcf40e63811ae509e4585e174000b297462477997aa70e1269",
     "crates/corelink-container/src/storage/r2_s3_parts/tests_2.rs": "aefc11f79bff187a2014d13ddc2096de6dd2250cbd6cd631cf8a68fc75771b46",
-    "crates/corelink-stripe-real/tests/live_integration.rs": "4667e8354afb20adea5eb18afe33fcadf77bee696e3e91b1f00eefcf7e200b11",
+    "crates/corelink-stripe-real/tests/live_integration.rs": "a9ac2a95a7bf91988bd6a5ca6d01c7ed0678b2d0c081805621c3c6cfa6c68f4e",
     "crates/corelink-audit-chain/tests/neon_shadow_real.rs": "dfd22738e96d82695b40addf64b3dbaf611fbd8026346f0b4e33b28f10fe79eb",
 }
 
@@ -186,6 +187,8 @@ CONTRACT_TRIGGER_INPUTS = (
     "crates/corelink-container/src/storage/r2_s3_parts/client_impl.rs",
     "scripts/verify_stripe_harness_cleanup_receipt.py",
     "tests/test_stripe_harness_cleanup_receipt.py",
+    "tests/test_stripe_pre_request_guards.py",
+    "scripts/test_stripe_guard_mutations.py",
     "scripts/stripe_test_mode_evidence.py",
     "tests/test_stripe_test_mode_evidence.py",
     ".github/workflows/issue-1649-stripe-test-mode.yml",
@@ -323,8 +326,71 @@ def verify_source_binding_manifest(
         fail("target/source binding is not closed over the reviewed digest manifest")
 
 
+def rust_active_text(text: str) -> str:
+    """Drop Rust line comments so prose cannot satisfy or trip a code check."""
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//"))
+
+
+STRIPE_GUARDED_METHODS = (
+    "verify_test_mode_starter_catalog",
+    "verify_direct_test_mode_account",
+    "create_harness_starter_product",
+    "create_harness_starter_price",
+    "cleanup_harness_price",
+    "cleanup_harness_product",
+    "cleanup_harness_checkout",
+    "cleanup_harness_customer",
+)
+STRIPE_REFUSAL_TEST = "direct_test_refuses_live_and_non_test_keys_before_any_request"
+
+
+def rust_braced_body(source: str, opening: int, *, code: str | None = None) -> str:
+    """Extract a brace-delimited body, ignoring braces in comments/strings."""
+    if code is None:
+        code = rust_code_without_comments_and_strings(source)
+    depth = 1
+    for cursor in range(opening + 1, len(code)):
+        if code[cursor] == "{":
+            depth += 1
+        elif code[cursor] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[opening + 1:cursor]
+    fail("unterminated Rust body")
+
+
+def rust_function_body(source: str, name: str, *, code: str | None = None) -> str:
+    if code is None:
+        code = rust_code_without_comments_and_strings(source)
+    declarations = list(re.finditer(rf"\bfn\s+{re.escape(name)}\s*\(", code))
+    if len(declarations) != 1:
+        fail(f"Rust function declaration is not unique: {name}")
+    return rust_braced_body(source, code.index("{", declarations[0].end()), code=code)
+
+
+@lru_cache(maxsize=8)
+def verify_stripe_pre_request_guards(client: str, harness: str) -> None:
+    """Check each entry independently; another method's guard cannot satisfy it."""
+    client_code = rust_code_without_comments_and_strings(client)
+    harness_code = rust_code_without_comments_and_strings(harness)
+    refusal = rust_function_body(harness_code, STRIPE_REFUSAL_TEST, code=harness_code)
+    loop = re.search(r"for\s*\(key,\s*live,\s*material\)\s+in\s+refused\s*\{", refusal)
+    if loop is None:
+        fail("Stripe refused-key behavioral loop is missing")
+    calls = rust_braced_body(refusal, loop.end() - 1, code=refusal)
+    for method in STRIPE_GUARDED_METHODS:
+        body = rust_function_body(client_code, method, code=client_code)
+        if not re.match(r"\s*self\.require_direct_test_key\(\)\?;", body):
+            fail(f"Stripe entry lacks its first-statement pre-request TEST-key guard: {method}")
+        if not re.search(rf"assert_refused!\(\s*client\.{method}\(", calls):
+            fail(f"Stripe entry lacks per-key zero-request refusal coverage: {method}")
+    for fragment in ("server.received_requests()", ".is_empty()", "Err(StripeError::Authentication(_))"):
+        if fragment not in refusal:
+            fail(f"Stripe refusal assertion is incomplete: {fragment}")
+
+
 def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
-    """Bind the wallet-broker-only cleanup and public receipt controls."""
+    """Bind the direct-test-only cleanup, live-key refusal and receipt controls."""
     client = (root / "crates/corelink-stripe-real/src/client.rs").read_text(encoding="utf-8")
     harness = (root / "crates/corelink-stripe-real/tests/live_integration.rs").read_text(encoding="utf-8")
     runner = (root / "scripts/run-real-ignored-harnesses.sh").read_text(encoding="utf-8")
@@ -345,6 +411,35 @@ def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
         (client, 'account.get("object")'),
         (client, 'Some("account")'),
         (client, 'account.get("id")'),
+        # direct-test (#2565): live-key refusal before any request, then the
+        # provider-side livemode=false readback before the first write.
+        (client, '("STRIPE_AUTH_MODE", "direct-test")'),
+        (client, "pub fn direct_test("),
+        (client, "fn refuse_non_test_key(key: &str)"),
+        (client, 'key.starts_with("sk_live_") || key.starts_with("rk_live_")'),
+        (client, '.strip_prefix("sk_test_")'),
+        (client, '.or_else(|| key.strip_prefix("rk_test_"))'),
+        (client, "fn require_direct_test_key(&self)"),
+        (client, "pub fn verify_direct_test_mode_account"),
+        (client, 'self.get("/v1/balance")'),
+        (client, 'balance.get("livemode").and_then(serde_json::Value::as_bool) != Some(false)'),
+        (client, "pub fn create_harness_starter_product"),
+        (client, "pub fn create_harness_starter_price"),
+        (client, "pub fn cleanup_harness_price"),
+        (client, "pub fn cleanup_harness_product"),
+        (client, "fn harness_fixture_owned("),
+        (harness, "fn require_direct_test_client()"),
+        (harness, 'env::var("STRIPE_SECRET_KEY_TEST")'),
+        (harness, "StripeClientConfig::direct_test("),
+        (harness, "corelink_stripe_real::DEFAULT_STRIPE_API_BASE"),
+        (harness, ".verify_direct_test_mode_account(&expected_account_id)"),
+        (harness, "fn starter_price_fixture(&mut self)"),
+        (harness, '"archived_readback_pass"'),
+        (harness, "wallet_broker_mode_does_not_arm_the_direct_test_harness"),
+        (harness, "direct_test_refuses_live_and_non_test_keys_before_any_request"),
+        (harness, "direct_test_account_proof_requires_identity_then_balance_livemode_false"),
+        (harness, "starter_fixture_is_run_owned_test_mode_and_archived_with_readback"),
+        (harness, "starter_fixture_not_proven_test_mode_is_retained_without_archive"),
         (harness, "impl Drop for HarnessCleanup"),
         (harness, "fn current_test_selector()"),
         (harness, "fn repo_receipt_dir()"),
@@ -367,10 +462,28 @@ def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
         (workflow, "GITHUB_RUN_ID alone is not"),
         (receipt, "expired_readback_pass"),
         (receipt, "deleted_readback_pass"),
+        (receipt, "archived_readback_pass"),
         (receipt, '"id_sha256"'),
     )
     if missing := [fragment for source, fragment in required if fragment not in source]:
         fail(f"Stripe cleanup contract is missing reviewed gate(s): {missing}")
+    verify_stripe_pre_request_guards(client, harness)
+    # The profile is direct-test only: no active harness or client marker may
+    # still select, read or require the retired Wallet-broker inputs.
+    active_client = rust_active_text(client)
+    active_harness = rust_active_text(harness)
+    if "fn live_harness_run_id()" not in active_client or "fn require_direct_test_client()" not in active_harness:
+        fail("Stripe run marker or direct-test harness entry is missing")
+    marker = active_client.split("fn live_harness_run_id()", 1)[1].split("\n}\n", 1)[0]
+    if "wallet-broker" in marker or "HUGR_STRIPE_REF" in marker:
+        fail("Stripe run marker still accepts the Wallet-broker context")
+    for retired in ("HUGR_WALLET_TOKEN", "HUGR_WALLET_BASE", "StripeRealClient::from_env()"):
+        if retired in active_harness:
+            fail(f"Stripe harness still reads a retired Wallet-broker input: {retired}")
+    entry = active_harness.split("fn require_direct_test_client()", 1)[1].split("\n}\n", 1)[0]
+    # Word-bounded: the pinned DEFAULT_STRIPE_API_BASE constant is required.
+    if re.search(r"\bSTRIPE_API_BASE\b", entry) or "StripeClientConfig::direct(" in entry:
+        fail("Stripe harness entry must pin api.stripe.com through the direct_test constructor")
     catalog = client.split("pub fn verify_test_mode_starter_catalog", 1)[1].split(
         "/// Borrow the [`StripeClientConfig`]", 1
     )[0]
@@ -385,6 +498,8 @@ def verify_stripe_cleanup_contract(root: Path = ROOT) -> None:
         "arduino/setup-protoc@f4d5893b897028ff5739576ea0409746887fa536",
         "cargo test --locked -p corelink-stripe-real --features live-integration --test live_integration cleanup_fault_injection -- --nocapture",
         "persist-credentials: false",
+        "python3 -S -m unittest tests/test_stripe_pre_request_guards.py",
+        "python3 -S scripts/test_stripe_guard_mutations.py",
     )
     if missing := [fragment for fragment in hosted_required if fragment not in pr_workflow]:
         fail(f"credentialless hosted Rust fault-injection gate is incomplete: {missing}")
@@ -416,7 +531,7 @@ def verify_exact_manifest() -> None:
     expected_env = {
         "d1": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID"),
         "r2": ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID", "R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_S3_SESSION_TOKEN", "R2_TEST_BUCKET"),
-        "stripe": ("HUGR_WALLET_BASE", "HUGR_WALLET_TOKEN", "HUGR_STRIPE_REF", "STRIPE_AUTH_MODE", "STRIPE_PRICE_ID_STARTER", "STRIPE_TEST_ACCOUNT_ID"),
+        "stripe": ("STRIPE_AUTH_MODE", "STRIPE_SECRET_KEY_TEST", "STRIPE_TEST_ACCOUNT_ID"),
         "neon": ("NEON_TEST_DSN",),
     }
     if set(profiles) != set(expected_names):
@@ -627,8 +742,8 @@ def assert_contract(workflow: str, runner: str) -> None:
         fail("R2 session token must be generated in memory, not sourced from a persistent secret")
     if "secrets.R2_S3_SESSION_TOKEN" in wf or "vars.R2_S3_SESSION_TOKEN" in wf:
         fail("session credentials must not be stored in protected GitHub bindings")
-    if "for name in CF_API_TOKEN HUGR_WALLET_TOKEN NEON_TEST_DSN R2_S3_ACCESS_KEY_ID; do" not in wf:
-        fail("bootstrap bearer and parent R2 access ID are not masked")
+    if "for name in CF_API_TOKEN STRIPE_SECRET_KEY_TEST NEON_TEST_DSN R2_S3_ACCESS_KEY_ID; do" not in wf:
+        fail("bootstrap bearer, Stripe TEST key and parent R2 access ID are not masked")
     if 'echo "::add-mask::${!name}"' not in wf:
         fail("parent R2 S3 value mask loop is missing")
     for name in (
@@ -827,28 +942,42 @@ def assert_contract(workflow: str, runner: str) -> None:
         "R2_S3_SECRET_ACCESS_KEY",
         "R2_S3_SESSION_TOKEN",
         "R2_TEST_BUCKET",
-        "HUGR_WALLET_BASE",
-        "HUGR_WALLET_TOKEN",
-        "HUGR_STRIPE_REF",
         "STRIPE_AUTH_MODE",
-        "STRIPE_PRICE_ID_STARTER",
+        "STRIPE_SECRET_KEY_TEST",
         "STRIPE_TEST_ACCOUNT_ID",
         "NEON_TEST_DSN",
     ):
         if name not in sh:
             fail(f"credential/config precondition is missing: {name}")
-    if '[[ "$HUGR_STRIPE_REF" == stripe-prod-test ]]' not in runner:
-        fail("Stripe profile is not pinned to the test wallet reference")
-    if '[[ "$HUGR_WALLET_TOKEN" == hugrw_* ]]' not in runner:
-        fail("Stripe profile does not validate wallet-token shape")
-    if '[[ "$STRIPE_AUTH_MODE" == wallet-broker ]]' not in runner:
-        fail("Stripe profile does not force wallet-broker auth")
-    if '[[ "$STRIPE_PRICE_ID_STARTER" == price_* ]]' not in runner:
-        fail("Stripe profile does not validate Starter price id")
-    if '[[ "$STRIPE_TEST_ACCOUNT_ID" =~ ^acct_[A-Za-z0-9]+$ ]]' not in runner:
+    stripe_preflight = code_text(function_body(runner, "preflight_stripe"))
+    if "require_env STRIPE_AUTH_MODE STRIPE_SECRET_KEY_TEST STRIPE_TEST_ACCOUNT_ID GITHUB_RUN_ID" not in stripe_preflight:
+        fail("Stripe profile does not require its direct-test inputs before Cargo")
+    if '[[ "$STRIPE_AUTH_MODE" == direct-test ]]' not in stripe_preflight:
+        fail("Stripe profile does not force direct-test auth")
+    if "sk_live_*|rk_live_*)" not in stripe_preflight:
+        fail("Stripe profile does not name and refuse live-mode key prefixes")
+    if '[[ "$STRIPE_SECRET_KEY_TEST" =~ ^(sk|rk)_test_[A-Za-z0-9]+$ ]]' not in stripe_preflight:
+        fail("Stripe profile does not require a Stripe TEST secret key shape")
+    if '[[ -z "${STRIPE_SECRET_KEY:-}" ]]' not in stripe_preflight:
+        fail("Stripe profile admits the production STRIPE_SECRET_KEY name")
+    if '[[ "$STRIPE_TEST_ACCOUNT_ID" =~ ^acct_[A-Za-z0-9]+$ ]]' not in stripe_preflight:
         fail("Stripe profile does not validate expected Stripe TEST account id")
-    if "STRIPE_TEST_ACCOUNT_ID: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.STRIPE_TEST_ACCOUNT_ID || '' }}" not in workflow:
-        fail("expected Stripe TEST account ID is not isolated to the stripe/all profiles")
+    if re.search(r"HUGR_WALLET|HUGR_STRIPE_REF|wallet-broker|STRIPE_PRICE_ID_STARTER", stripe_preflight):
+        fail("Stripe profile still requires a retired Wallet-broker or fixed-price input")
+    stripe_bindings = {
+        "STRIPE_AUTH_MODE": "${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && 'direct-test' || '' }}",
+        "STRIPE_SECRET_KEY_TEST": "${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && secrets.STRIPE_SECRET_KEY_TEST || '' }}",
+        "STRIPE_TEST_ACCOUNT_ID": "${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && vars.STRIPE_TEST_ACCOUNT_ID || '' }}",
+    }
+    for name, binding in stripe_bindings.items():
+        if f"{name}: {binding}" not in wf:
+            fail(f"Stripe direct-test input is missing or not isolated to the stripe/all profiles: {name}")
+    # The production key name and every retired Wallet input stay out of the
+    # executor; `\b` keeps STRIPE_SECRET_KEY_TEST distinct from the live name.
+    if re.search(r"\b(?:secrets|vars)\.STRIPE_SECRET_KEY\b", wf) or re.search(r"(?m)^\s*STRIPE_SECRET_KEY:", wf):
+        fail("executor binds the production STRIPE_SECRET_KEY name")
+    if re.search(r"HUGR_WALLET|HUGR_STRIPE_REF|wallet-broker|STRIPE_PRICE_ID_STARTER", wf):
+        fail("executor still binds a retired Wallet-broker or fixed-price Stripe input")
 
     # A generic caller must not be able to select an arbitrary cargo target.
     if re.search(r"(?m)^\s*cargo\s+test\s+.*--ignored", wf):
@@ -1245,15 +1374,138 @@ def mutation_checks(workflow: str, runner: str, contract_workflow: str) -> None:
         ),
         runner,
     )
-    # The Stripe mode and price are both load-bearing; accepting either missing
-    # value would silently exercise another auth/price configuration.
-    expect_rejected("missing wallet-broker mode", workflow, runner.replace('[[ "$STRIPE_AUTH_MODE" == wallet-broker ]]', '[[ "$STRIPE_AUTH_MODE" == any-mode ]]', 1))
-    expect_rejected("missing Starter price", workflow, runner.replace('[[ "$STRIPE_PRICE_ID_STARTER" == price_* ]]', '[[ "$STRIPE_PRICE_ID_STARTER" == any_* ]]', 1))
-    expect_rejected("missing expected Stripe account", workflow, runner.replace('[[ "$STRIPE_TEST_ACCOUNT_ID" =~ ^acct_[A-Za-z0-9]+$ ]]', '[[ "$STRIPE_TEST_ACCOUNT_ID" =~ ^other_[A-Za-z0-9]+$ ]]', 1))
+    # The Stripe mode and the TEST-only key are both load-bearing; accepting
+    # either weaker value would silently exercise another credential. Each
+    # mutation is pinned to its own refusal so one check cannot mask another.
+    stripe_key_binding = "STRIPE_SECRET_KEY_TEST: ${{ (inputs.profile == 'stripe' || inputs.profile == 'all') && secrets.STRIPE_SECRET_KEY_TEST || '' }}"
+    isolated = "Stripe direct-test input is missing or not isolated to the stripe/all profiles"
+    for label, mutated_workflow, mutated_runner, refusal in (
+        ("missing direct-test mode", workflow, runner.replace('[[ "$STRIPE_AUTH_MODE" == direct-test ]]', '[[ "$STRIPE_AUTH_MODE" == wallet-broker ]]', 1),
+         "Stripe profile does not force direct-test auth"),
+        ("live key prefixes not refused", workflow, runner.replace("sk_live_*|rk_live_*)", "sk_unused_*)", 1),
+         "Stripe profile does not name and refuse live-mode key prefixes"),
+        ("any key shape accepted", workflow, runner.replace('[[ "$STRIPE_SECRET_KEY_TEST" =~ ^(sk|rk)_test_[A-Za-z0-9]+$ ]]', '[[ "$STRIPE_SECRET_KEY_TEST" =~ ^.+$ ]]', 1),
+         "Stripe profile does not require a Stripe TEST secret key shape"),
+        ("production key name admitted", workflow, runner.replace('[[ -z "${STRIPE_SECRET_KEY:-}" ]]', '[[ -z "" ]]', 1),
+         "Stripe profile admits the production STRIPE_SECRET_KEY name"),
+        ("missing expected Stripe account", workflow, runner.replace('[[ "$STRIPE_TEST_ACCOUNT_ID" =~ ^acct_[A-Za-z0-9]+$ ]]', '[[ "$STRIPE_TEST_ACCOUNT_ID" =~ ^other_[A-Za-z0-9]+$ ]]', 1),
+         "Stripe profile does not validate expected Stripe TEST account id"),
+        ("preflight requires a Wallet input again", workflow, runner.replace("  require_env STRIPE_AUTH_MODE STRIPE_SECRET_KEY_TEST STRIPE_TEST_ACCOUNT_ID GITHUB_RUN_ID\n", "  require_env STRIPE_AUTH_MODE STRIPE_SECRET_KEY_TEST STRIPE_TEST_ACCOUNT_ID GITHUB_RUN_ID\n  require_env HUGR_WALLET_TOKEN\n", 1),
+         "Stripe profile still requires a retired Wallet-broker or fixed-price input"),
+        ("TEST key binding renamed to the production key", workflow.replace("secrets.STRIPE_SECRET_KEY_TEST", "secrets.STRIPE_SECRET_KEY", 1), runner,
+         f"{isolated}: STRIPE_SECRET_KEY_TEST"),
+        ("production key bound beside the TEST key", workflow.replace("          " + stripe_key_binding, "          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}\n          " + stripe_key_binding, 1), runner,
+         "executor binds the production STRIPE_SECRET_KEY name"),
+        ("Stripe TEST key exposed to every profile", workflow.replace(stripe_key_binding, "STRIPE_SECRET_KEY_TEST: ${{ secrets.STRIPE_SECRET_KEY_TEST }}", 1), runner,
+         f"{isolated}: STRIPE_SECRET_KEY_TEST"),
+        ("executor selects Wallet-broker mode", workflow.replace("&& 'direct-test' ||", "&& 'wallet-broker' ||", 1), runner,
+         f"{isolated}: STRIPE_AUTH_MODE"),
+        ("Stripe TEST key not masked", workflow.replace("for name in CF_API_TOKEN STRIPE_SECRET_KEY_TEST NEON_TEST_DSN", "for name in CF_API_TOKEN NEON_TEST_DSN", 1), runner,
+         "bootstrap bearer, Stripe TEST key and parent R2 access ID are not masked"),
+        ("retired Wallet token rebound", workflow.replace("          " + stripe_key_binding, "          HUGR_WALLET_TOKEN: ${{ secrets.HUGR_WALLET_TOKEN }}\n          " + stripe_key_binding, 1), runner,
+         "executor still binds a retired Wallet-broker or fixed-price Stripe input"),
+    ):
+        # A mutation that changed nothing would be "rejected" for no reason;
+        # count it before asking the gate.
+        if (mutated_workflow, mutated_runner) == (workflow, runner):
+            fail(f"Stripe mutation did not apply: {label}")
+        try:
+            assert_contract(mutated_workflow, mutated_runner)
+        except AssertionError as exc:
+            if str(exc) != refusal:
+                fail(f"Stripe mutation was rejected for the wrong reason: {label}: {exc}")
+        else:
+            fail(f"negative mutation was accepted: {label}")
     # A preflight that contains a cargo call can mutate the external system
     # before a later profile is checked.
     expect_rejected("cargo in D1 preflight", workflow, runner.replace("  require_env CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN D1_DATABASE_ID\n}\n\npreflight_r2", "  require_env CLOUDFLARE_ACCOUNT_ID CF_API_TOKEN D1_DATABASE_ID\n  run_cargo d1 d1_target --package corelink-server --lib\n}\n\npreflight_r2", 1))
     expect_rejected("late Neon check omitted from all", workflow, runner.replace("    preflight_neon\n    run_d1", "    run_d1", 1))
+
+
+STRIPE_CONTRACT_SOURCES = (
+    "crates/corelink-stripe-real/src/client.rs",
+    "crates/corelink-stripe-real/tests/live_integration.rs",
+    "scripts/run-real-ignored-harnesses.sh",
+    ".github/workflows/real-ignored-harnesses.yml",
+    ".github/workflows/issue-1650-real-integration-contract.yml",
+    "scripts/verify_stripe_harness_cleanup_receipt.py",
+)
+
+
+def stripe_contract_mutation_checks() -> None:
+    """Prove the Rust-source half of the direct-test contract has teeth."""
+
+    originals = {relative: (ROOT / relative).read_text(encoding="utf-8") for relative in STRIPE_CONTRACT_SOURCES}
+    client_path, harness_path = STRIPE_CONTRACT_SOURCES[0], STRIPE_CONTRACT_SOURCES[1]
+    gate = "Stripe cleanup contract is missing reviewed gate(s)"
+    # (label, file, exact old text, replacement, refusal that must be raised)
+    mutations = (
+        ("run marker also accepts the Wallet ref", client_path,
+         '        ("STRIPE_AUTH_MODE", "direct-test"),\n',
+         '        ("STRIPE_AUTH_MODE", "direct-test"),\n        ("HUGR_STRIPE_REF", "stripe-prod-test"),\n',
+         "Stripe run marker still accepts the Wallet-broker context"),
+        ("run marker back on Wallet-broker", client_path,
+         '("STRIPE_AUTH_MODE", "direct-test")', '("STRIPE_AUTH_MODE", "wallet-broker")', gate),
+        ("live prefixes no longer refused", client_path,
+         'key.starts_with("sk_live_") || key.starts_with("rk_live_")', 'key.starts_with("sk_unused_")', gate),
+        ("Balance livemode readback dropped", client_path,
+         'balance.get("livemode").and_then(serde_json::Value::as_bool) != Some(false)',
+         'balance.get("object").is_none()', gate),
+        ("fixture ownership check dropped", client_path,
+         "fn harness_fixture_owned(", "fn harness_fixture_owned_unused(", gate),
+        ("harness also reads the Wallet token", harness_path,
+         '    let key = env::var("STRIPE_SECRET_KEY_TEST")',
+         '    let _wallet = env::var("HUGR_WALLET_TOKEN");\n    let key = env::var("STRIPE_SECRET_KEY_TEST")',
+         "Stripe harness still reads a retired Wallet-broker input: HUGR_WALLET_TOKEN"),
+        ("harness entry bypasses the TEST-key constructor", harness_path,
+         "corelink_stripe_real::StripeClientConfig::direct_test(",
+         "corelink_stripe_real::StripeClientConfig::direct(",
+         "Stripe harness entry must pin api.stripe.com through the direct_test constructor"),
+        ("harness entry reads STRIPE_API_BASE", harness_path,
+         '    let key = env::var("STRIPE_SECRET_KEY_TEST")',
+         '    let _base = env::var("STRIPE_API_BASE");\n    let key = env::var("STRIPE_SECRET_KEY_TEST")',
+         "Stripe harness entry must pin api.stripe.com through the direct_test constructor"),
+        ("harness skips the account proof", harness_path,
+         ".verify_direct_test_mode_account(&expected_account_id)", ".effective_base_url()", gate),
+        ("fixture archive receipt removed", harness_path,
+         '"archived_readback_pass"', '"archive_skipped"', gate),
+    )
+    refusal_body = rust_function_body(originals[harness_path], STRIPE_REFUSAL_TEST)
+    for method in STRIPE_GUARDED_METHODS:
+        body = rust_function_body(originals[client_path], method)
+        guard = "self.require_direct_test_key()?;"
+        if body.count(guard) != 1:
+            fail(f"Stripe guard mutation preimage is not unique: {method}")
+        call = f"client.{method}("
+        if refusal_body.count(call) != 1:
+            fail(f"Stripe refusal-call mutation preimage is not unique: {method}")
+        mutations += (
+            (f"{method} pre-request guard removed", client_path, body,
+             body.replace(guard, "", 1),
+             f"Stripe entry lacks its first-statement pre-request TEST-key guard: {method}"),
+            (f"{method} refused-key exercise removed", harness_path, refusal_body,
+             refusal_body.replace(call, "client.effective_base_url(", 1),
+             f"Stripe entry lacks per-key zero-request refusal coverage: {method}"),
+        )
+    with tempfile.TemporaryDirectory(prefix="b068-stripe-contract-") as temp:
+        root = Path(temp)
+        for relative, text in originals.items():
+            (root / relative).parent.mkdir(parents=True, exist_ok=True)
+            (root / relative).write_text(text, encoding="utf-8")
+        verify_stripe_cleanup_contract(root)  # unmutated control must pass
+        for label, relative, old, new, refusal in mutations:
+            if originals[relative].count(old) < 1:
+                fail(f"Stripe contract mutation did not apply: {label}")
+            (root / relative).write_text(originals[relative].replace(old, new), encoding="utf-8")
+            try:
+                verify_stripe_cleanup_contract(root)
+            except AssertionError as exc:
+                if not str(exc).startswith(refusal):
+                    fail(f"Stripe contract mutation was rejected for the wrong reason: {label}: {exc}")
+            else:
+                fail(f"Stripe contract mutation was accepted: {label}")
+            finally:
+                (root / relative).write_text(originals[relative], encoding="utf-8")
 
 
 def campaign_mutation_checks(workflow: str) -> None:
@@ -1299,117 +1551,18 @@ def campaign_mutation_checks(workflow: str) -> None:
     )
 
 
-def preflight_runtime_checks() -> None:
-    """Prove late missing prerequisites result in zero cargo invocations."""
+def run_runner_with_fake_cargo(
+    profile: str,
+    env_updates: dict[str, str],
+    remove: tuple[str, ...] = (),
+) -> tuple[int, str, bool]:
+    """Run the real runner with a fake Cargo; return (rc, output, cargo_invoked).
 
-    baseline = {
-        "CLOUDFLARE_ACCOUNT_ID": "account",
-        "CF_API_TOKEN": "cf-token",
-        "D1_DATABASE_ID": "database",
-        "R2_S3_ENDPOINT": "https://r2.example.test",
-        "R2_S3_ACCESS_KEY_ID": "access",
-        "R2_S3_SECRET_ACCESS_KEY": "secret",
-        "R2_S3_SESSION_TOKEN": "session",
-        "R2_TEST_BUCKET": "bucket-staging",
-        "HUGR_WALLET_BASE": "https://wallet.example.test",
-        "HUGR_WALLET_TOKEN": "hugrw_test",
-        "HUGR_STRIPE_REF": "stripe-prod-test",
-        "STRIPE_AUTH_MODE": "wallet-broker",
-        "STRIPE_PRICE_ID_STARTER": "price_test",
-        "STRIPE_TEST_ACCOUNT_ID": "acct_testfixture",
-        "GITHUB_RUN_ID": "424242",
-        "NEON_TEST_DSN": "postgresql://user:pass@db.example.test/shadow?sslmode=require",
-    }
-    with tempfile.TemporaryDirectory(prefix="b068-preflight-") as temp:
-        root = Path(temp)
-        for missing in ("HUGR_WALLET_TOKEN", "STRIPE_PRICE_ID_STARTER", "STRIPE_TEST_ACCOUNT_ID", "NEON_TEST_DSN", "R2_S3_SESSION_TOKEN"):
-            marker = root / f"cargo-{missing}"
-            fake_cargo = root / "cargo"
-            fake_cargo.write_text(
-                "#!/bin/sh\n"
-                f"printf invoked > {marker}\n"
-                "exit 99\n",
-                encoding="utf-8",
-            )
-            fake_cargo.chmod(0o700)
-            env = os.environ.copy()
-            env.update(baseline)
-            env.pop(missing, None)
-            env["PATH"] = os.pathsep.join((str(root), env.get("PATH", "")))
-            profile = "all" if missing == "NEON_TEST_DSN" else ("r2" if missing == "R2_S3_SESSION_TOKEN" else "stripe")
-            result = subprocess.run(
-                ["bash", str(RUNNER_PATH), profile],
-                env=env,
-                cwd=ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-            )
-            if result.returncode == 0:
-                fail(f"missing {missing} unexpectedly allowed all profile")
-            if marker.exists():
-                fail(f"missing {missing} invoked cargo before failing preflight")
-
-    for invalid_account_id in ("acct_", "acct_bad!", "sk_test_not_an_account"):
-        with tempfile.TemporaryDirectory(prefix="b068-stripe-account-id-") as temp:
-            root = Path(temp)
-            marker = root / "cargo-invoked"
-            fake_cargo = root / "cargo"
-            fake_cargo.write_text(
-                "#!/bin/sh\n"
-                f"printf invoked > {marker}\n"
-                "exit 99\n",
-                encoding="utf-8",
-            )
-            fake_cargo.chmod(0o700)
-            env = os.environ.copy()
-            env.update(baseline)
-            env["STRIPE_TEST_ACCOUNT_ID"] = invalid_account_id
-            env["PATH"] = os.pathsep.join((str(root), env.get("PATH", "")))
-            result = subprocess.run(
-                ["bash", str(RUNNER_PATH), "stripe"],
-                env=env,
-                cwd=ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-            )
-            if result.returncode == 0 or marker.exists():
-                fail("malformed Stripe TEST account id did not fail before cargo")
-
-    for missing in ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID"):
-        with tempfile.TemporaryDirectory(prefix="b068-d1-missing-") as temp:
-            root = Path(temp)
-            marker = root / "cargo-invoked"
-            fake_cargo = root / "cargo"
-            fake_cargo.write_text(
-                "#!/bin/sh\n"
-                f"printf invoked > {marker}\n"
-                "exit 99\n",
-                encoding="utf-8",
-            )
-            fake_cargo.chmod(0o700)
-            env = os.environ.copy()
-            env.update(baseline)
-            env.pop(missing, None)
-            env["PATH"] = os.pathsep.join((str(root), env.get("PATH", "")))
-            result = subprocess.run(
-                ["bash", str(RUNNER_PATH), "d1"],
-                env=env,
-                cwd=ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-            )
-            if result.returncode == 0 or marker.exists():
-                fail(f"missing D1 prerequisite {missing} did not fail before cargo")
-
-    # The D1 profile is independent of the sibling R2 resource. Prove that
-    # its own preflight reaches the selected test command with only D1 inputs.
-    with tempfile.TemporaryDirectory(prefix="b068-d1-only-") as temp:
+    GITHUB_SHA is always an exact SHA so the runner reaches the profile
+    preflight. Without it the earlier SHA guard refuses first, and a refusal
+    check would pass vacuously anywhere outside GitHub Actions.
+    """
+    with tempfile.TemporaryDirectory(prefix="b068-runner-") as temp:
         root = Path(temp)
         marker = root / "cargo-invoked"
         fake_cargo = root / "cargo"
@@ -1421,19 +1574,17 @@ def preflight_runtime_checks() -> None:
         )
         fake_cargo.chmod(0o700)
         env = os.environ.copy()
-        env.update(
-            {
-                "CLOUDFLARE_ACCOUNT_ID": "account",
-                "CF_API_TOKEN": "cf-token",
-                "D1_DATABASE_ID": "database",
-                "GITHUB_SHA": "a" * 40,
-                "PATH": os.pathsep.join((str(root), os.environ.get("PATH", ""))),
-            }
-        )
-        for name in ("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_S3_SESSION_TOKEN", "R2_TEST_BUCKET"):
+        # A developer shell must not leak the production Stripe key name
+        # into a fixture; a check that wants it sets it explicitly.
+        env.pop("STRIPE_SECRET_KEY", None)
+        env.update(env_updates)
+        for name in remove:
             env.pop(name, None)
+        env["GITHUB_SHA"] = "a" * 40
+        env["GITHUB_WORKSPACE"] = str(root)
+        env["PATH"] = os.pathsep.join((str(root), env.get("PATH", "")))
         result = subprocess.run(
-            ["bash", str(RUNNER_PATH), "d1"],
+            ["bash", str(RUNNER_PATH), profile],
             env=env,
             cwd=ROOT,
             stdout=subprocess.PIPE,
@@ -1441,8 +1592,105 @@ def preflight_runtime_checks() -> None:
             text=True,
             check=False,
         )
-        if result.returncode != 99 or not marker.exists():
-            fail("D1-only inputs did not pass preflight without R2 credentials")
+        return result.returncode, result.stdout + result.stderr, marker.exists()
+
+
+# Placeholder material: contains `mock`, which .gitleaks.toml allowlists, so a
+# fixture can look key-shaped without tripping the scan.
+STRIPE_KEY_MATERIAL = "b068mockSECRET0123"
+
+
+def stripe_direct_test_runtime_checks(baseline: dict[str, str]) -> None:
+    """Prove the Stripe preflight admits only a TEST key, before any Cargo."""
+
+    # Positive controls: both TEST prefixes reach Cargo, so each refusal below
+    # is caused by its own input and not by the shared fixture.
+    for key in ("sk_test_b068mockKEY0123", "rk_test_b068mockKEY0123"):
+        rc, _output, invoked = run_runner_with_fake_cargo(
+            "stripe", {**baseline, "STRIPE_SECRET_KEY_TEST": key}
+        )
+        if rc != 99 or not invoked:
+            fail("valid Stripe TEST key did not pass the direct-test preflight")
+    refusals = (
+        ("live secret key", {"STRIPE_SECRET_KEY_TEST": f"sk_live_{STRIPE_KEY_MATERIAL}"}, "is a Stripe LIVE key"),
+        ("live restricted key", {"STRIPE_SECRET_KEY_TEST": f"rk_live_{STRIPE_KEY_MATERIAL}"}, "is a Stripe LIVE key"),
+        ("publishable key", {"STRIPE_SECRET_KEY_TEST": f"pk_test_{STRIPE_KEY_MATERIAL}"}, "must be a Stripe TEST secret key"),
+        ("webhook secret", {"STRIPE_SECRET_KEY_TEST": f"whsec_{STRIPE_KEY_MATERIAL}"}, "must be a Stripe TEST secret key"),
+        ("wallet token", {"STRIPE_SECRET_KEY_TEST": f"hugrw_{STRIPE_KEY_MATERIAL}"}, "must be a Stripe TEST secret key"),
+        ("bare TEST prefix", {"STRIPE_SECRET_KEY_TEST": "sk_test_"}, "must be a Stripe TEST secret key"),
+        ("TEST prefix with a non-key byte", {"STRIPE_SECRET_KEY_TEST": f"sk_test_{STRIPE_KEY_MATERIAL};x"}, "must be a Stripe TEST secret key"),
+        ("Wallet-broker mode", {"STRIPE_AUTH_MODE": "wallet-broker"}, "STRIPE_AUTH_MODE must be direct-test"),
+        ("production direct mode", {"STRIPE_AUTH_MODE": "direct"}, "STRIPE_AUTH_MODE must be direct-test"),
+        ("production key name present", {"STRIPE_SECRET_KEY": f"sk_test_{STRIPE_KEY_MATERIAL}"}, "STRIPE_SECRET_KEY must not reach the Stripe profile"),
+    )
+    for label, overrides, refusal in refusals:
+        rc, output, invoked = run_runner_with_fake_cargo("stripe", {**baseline, **overrides})
+        if rc == 0 or invoked:
+            fail(f"Stripe {label} reached Cargo")
+        if refusal not in output:
+            fail(f"Stripe {label} was refused for the wrong reason")
+        if STRIPE_KEY_MATERIAL in output:
+            fail(f"Stripe {label} refusal echoed key material")
+    for missing in ("STRIPE_AUTH_MODE", "STRIPE_SECRET_KEY_TEST", "STRIPE_TEST_ACCOUNT_ID", "GITHUB_RUN_ID"):
+        rc, output, invoked = run_runner_with_fake_cargo("stripe", baseline, remove=(missing,))
+        if rc == 0 or invoked or f"required environment variable is missing: {missing}" not in output:
+            fail(f"missing Stripe input {missing} did not fail before cargo for that reason")
+
+
+def preflight_runtime_checks() -> None:
+    """Prove late missing prerequisites result in zero cargo invocations."""
+
+    stripe_baseline = {
+        "STRIPE_AUTH_MODE": "direct-test",
+        "STRIPE_SECRET_KEY_TEST": "sk_test_b068mockKEY0123",
+        "STRIPE_TEST_ACCOUNT_ID": "acct_testfixture",
+        "GITHUB_RUN_ID": "424242",
+    }
+    baseline = {
+        "CLOUDFLARE_ACCOUNT_ID": "account",
+        "CF_API_TOKEN": "cf-token",
+        "D1_DATABASE_ID": "database",
+        "R2_S3_ENDPOINT": "https://r2.example.test",
+        "R2_S3_ACCESS_KEY_ID": "access",
+        "R2_S3_SECRET_ACCESS_KEY": "secret",
+        "R2_S3_SESSION_TOKEN": "session",
+        "R2_TEST_BUCKET": "bucket-staging",
+        **stripe_baseline,
+        "NEON_TEST_DSN": "postgresql://user:pass@db.example.test/shadow?sslmode=require",
+    }
+    for missing in ("STRIPE_SECRET_KEY_TEST", "STRIPE_TEST_ACCOUNT_ID", "NEON_TEST_DSN", "R2_S3_SESSION_TOKEN"):
+        profile = "all" if missing == "NEON_TEST_DSN" else ("r2" if missing == "R2_S3_SESSION_TOKEN" else "stripe")
+        rc, output, invoked = run_runner_with_fake_cargo(profile, baseline, remove=(missing,))
+        if rc == 0:
+            fail(f"missing {missing} unexpectedly allowed {profile} profile")
+        if invoked:
+            fail(f"missing {missing} invoked cargo before failing preflight")
+        if f"required environment variable is missing: {missing}" not in output:
+            fail(f"missing {missing} was refused for the wrong reason")
+
+    for invalid_account_id in ("acct_", "acct_bad!", "sk_test_not_an_account"):
+        rc, output, invoked = run_runner_with_fake_cargo(
+            "stripe", {**baseline, "STRIPE_TEST_ACCOUNT_ID": invalid_account_id}
+        )
+        if rc == 0 or invoked or "STRIPE_TEST_ACCOUNT_ID must be a Stripe account identifier" not in output:
+            fail("malformed Stripe TEST account id did not fail before cargo")
+
+    stripe_direct_test_runtime_checks(stripe_baseline)
+
+    for missing in ("CLOUDFLARE_ACCOUNT_ID", "CF_API_TOKEN", "D1_DATABASE_ID"):
+        rc, output, invoked = run_runner_with_fake_cargo("d1", baseline, remove=(missing,))
+        if rc == 0 or invoked or f"required environment variable is missing: {missing}" not in output:
+            fail(f"missing D1 prerequisite {missing} did not fail before cargo")
+
+    # The D1 profile is independent of the sibling R2 resource. Prove that
+    # its own preflight reaches the selected test command with only D1 inputs.
+    rc, _output, invoked = run_runner_with_fake_cargo(
+        "d1",
+        {"CLOUDFLARE_ACCOUNT_ID": "account", "CF_API_TOKEN": "cf-token", "D1_DATABASE_ID": "database"},
+        remove=("R2_S3_ENDPOINT", "R2_S3_ACCESS_KEY_ID", "R2_S3_SECRET_ACCESS_KEY", "R2_S3_SESSION_TOKEN", "R2_TEST_BUCKET"),
+    )
+    if rc != 99 or not invoked:
+        fail("D1-only inputs did not pass preflight without R2 credentials")
 
 
 def failure_receipt_runtime_checks() -> None:
@@ -1539,6 +1787,7 @@ def main() -> int:
     assert_hosted_contract_workflow(contract_workflow)
     assert_campaign_i1650_pack(campaign_workflow)
     mutation_checks(workflow, runner, contract_workflow)
+    stripe_contract_mutation_checks()
     campaign_mutation_checks(campaign_workflow)
     r2_temporary_credential_tests()
     preflight_runtime_checks()

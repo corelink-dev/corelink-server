@@ -458,19 +458,20 @@ impl StripeRealClient {
         &self.base_url
     }
 
-    /// Verify that the configured Wallet broker ref resolves to the expected
-    /// Stripe account and that the configured Starter price and product are
-    /// explicitly in TEST mode. Stripe Account objects do not expose
-    /// `livemode`; account identity is checked against the owner-supplied
+    /// Verify that the configured `direct-test` credential resolves to the
+    /// expected Stripe account and that the configured Starter price and
+    /// product are explicitly in TEST mode. Stripe Account objects do not
+    /// expose `livemode`; account identity is checked against the owner-supplied
     /// expected test account ID, while Price and Product must each report
-    /// `livemode=false`. Uses only read-only GETs through this client's normal
-    /// transport.
+    /// `livemode=false`. A non-TEST key is refused before any request; the
+    /// rest uses only read-only GETs through this client's normal transport.
     #[cfg(feature = "live-integration")]
     pub fn verify_test_mode_starter_catalog(
         &self,
         expected_account_id: &str,
         price_id: &str,
     ) -> Result<(), StripeError> {
+        self.require_direct_test_key()?;
         if !expected_account_id.starts_with("acct_")
             || expected_account_id.len() <= "acct_".len()
             || !expected_account_id["acct_".len()..]
@@ -850,6 +851,7 @@ impl StripeRealClient {
         expected_customer_id: &str,
         run_id: &str,
     ) -> Result<(), StripeError> {
+        self.require_direct_test_key()?;
         let before: serde_json::Value = self.get(&format!("/v1/checkout/sessions/{id}"))?;
         let metadata_run = before
             .pointer("/metadata/test_run_id")
@@ -889,6 +891,7 @@ impl StripeRealClient {
     /// because normal DSR flows intentionally retain Stripe customer records.
     #[cfg(feature = "live-integration")]
     pub fn cleanup_harness_customer(&self, id: &str, run_id: &str) -> Result<(), StripeError> {
+        self.require_direct_test_key()?;
         let customer: serde_json::Value = self.get(&format!("/v1/customers/{id}"))?;
         if customer.get("id").and_then(serde_json::Value::as_str) != Some(id)
             || customer
@@ -950,6 +953,195 @@ impl StripeRealClient {
                 "customer delete follow-up readback did not return 404".into(),
             )),
         }
+    }
+
+    /// Refuse, before any request, a client that is not Direct mode with a
+    /// Stripe TEST secret key. Every `direct-test` harness entry point calls
+    /// this first, so a LIVE key never reaches the transport.
+    #[cfg(feature = "live-integration")]
+    fn require_direct_test_key(&self) -> Result<(), StripeError> {
+        match &self.config.mode {
+            StripeAuthMode::Direct { api_key, .. } => refuse_non_test_key(api_key.expose_secret()),
+            StripeAuthMode::WalletBroker { .. } => Err(StripeError::Authentication(
+                "direct-test mode requires a Direct Stripe client, not the Wallet broker".into(),
+            )),
+        }
+    }
+
+    /// Prove, before the first harness write, that this `direct-test` client
+    /// holds a Stripe TEST key for the expected account. The key prefix is
+    /// checked before any request. After authenticating, Account must be the
+    /// owner-bound TEST account and the account Balance must report
+    /// `livemode=false`: Stripe Account objects carry no `livemode`, Balance
+    /// does, so it is the provider-side TEST-mode readback. Read-only GETs.
+    ///
+    /// # Errors
+    ///
+    /// Any non-TEST key, identity mismatch, or Balance that does not report
+    /// exactly `livemode=false`.
+    #[cfg(feature = "live-integration")]
+    pub fn verify_direct_test_mode_account(
+        &self,
+        expected_account_id: &str,
+    ) -> Result<(), StripeError> {
+        self.require_direct_test_key()?;
+        if !is_stripe_object_id(expected_account_id, "acct_") {
+            return Err(StripeError::InvalidRequest(
+                "expected Stripe TEST account id is invalid".into(),
+            ));
+        }
+        let account: serde_json::Value = self.get("/v1/account")?;
+        if account.get("object").and_then(serde_json::Value::as_str) != Some("account")
+            || account.get("id").and_then(serde_json::Value::as_str) != Some(expected_account_id)
+        {
+            return Err(StripeError::InvalidRequest(
+                "configured Stripe account does not match expected TEST account".into(),
+            ));
+        }
+        let balance: serde_json::Value = self.get("/v1/balance")?;
+        if balance.get("object").and_then(serde_json::Value::as_str) != Some("balance")
+            || balance.get("livemode").and_then(serde_json::Value::as_bool) != Some(false)
+        {
+            return Err(StripeError::InvalidRequest(
+                "Stripe balance readback does not prove TEST mode (livemode=false)".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Create one run-owned TEST-mode Starter product as a disposable harness
+    /// fixture. The create response must report `livemode=false`; an
+    /// explicitly LIVE or unknown-mode product is retained untouched and the
+    /// error carries only its redacted recovery receipt.
+    ///
+    /// # Errors
+    ///
+    /// Any non-TEST key, provider error, invalid id, or non-TEST response.
+    #[cfg(feature = "live-integration")]
+    pub fn create_harness_starter_product(
+        &self,
+        run_id: &str,
+        idempotency_prefix: &str,
+    ) -> Result<String, StripeError> {
+        self.require_direct_test_key()?;
+        let product: serde_json::Value = self.post_form(
+            "/v1/products",
+            &[
+                ("name", "CoreLink Starter".to_string()),
+                ("metadata[test_run_id]", run_id.to_string()),
+            ],
+            &format!("{idempotency_prefix}:product"),
+        )?;
+        harness_fixture_id(&product, "prod_", "product", run_id)
+    }
+
+    /// Create the run-owned TEST-mode $35 monthly Starter price for a product
+    /// fixture. Same TEST-mode and retention rules as
+    /// [`Self::create_harness_starter_product`]; the caller proves the pair
+    /// with [`Self::verify_test_mode_starter_catalog`] before using it.
+    ///
+    /// # Errors
+    ///
+    /// Any non-TEST key, invalid product id, provider error, or non-TEST
+    /// response.
+    #[cfg(feature = "live-integration")]
+    pub fn create_harness_starter_price(
+        &self,
+        product_id: &str,
+        run_id: &str,
+        idempotency_prefix: &str,
+    ) -> Result<String, StripeError> {
+        self.require_direct_test_key()?;
+        if !is_stripe_object_id(product_id, "prod_") {
+            return Err(StripeError::InvalidRequest(
+                "Starter fixture product id is invalid".into(),
+            ));
+        }
+        let price: serde_json::Value = self.post_form(
+            "/v1/prices",
+            &[
+                ("product", product_id.to_string()),
+                ("currency", "usd".to_string()),
+                ("unit_amount", "3500".to_string()),
+                ("recurring[interval]", "month".to_string()),
+                ("recurring[interval_count]", "1".to_string()),
+                ("metadata[test_run_id]", run_id.to_string()),
+            ],
+            &format!("{idempotency_prefix}:price"),
+        )?;
+        harness_fixture_id(&price, "price_", "price", run_id)
+    }
+
+    /// Archive one exact run-owned TEST price fixture with readback. Stripe
+    /// does not delete prices, so `active=false` is the terminal cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Any non-TEST key, a price that is not this run's TEST fixture for the
+    /// expected product, or a readback that is not archived.
+    #[cfg(feature = "live-integration")]
+    pub fn cleanup_harness_price(
+        &self,
+        id: &str,
+        expected_product_id: &str,
+        run_id: &str,
+    ) -> Result<(), StripeError> {
+        self.require_direct_test_key()?;
+        let before: serde_json::Value = self.get(&format!("/v1/prices/{id}"))?;
+        if !harness_fixture_owned(&before, id, run_id)
+            || before.get("product").and_then(serde_json::Value::as_str)
+                != Some(expected_product_id)
+        {
+            return Err(StripeError::InvalidRequest(
+                "harness price is not an exact-run-owned TEST fixture".into(),
+            ));
+        }
+        let _: serde_json::Value = self.post_form(
+            &format!("/v1/prices/{id}"),
+            &[("active", "false".to_string())],
+            &format!("harness-archive:{id}"),
+        )?;
+        let after: serde_json::Value = self.get(&format!("/v1/prices/{id}"))?;
+        if !harness_fixture_owned(&after, id, run_id)
+            || after.get("active").and_then(serde_json::Value::as_bool) != Some(false)
+        {
+            return Err(StripeError::InvalidRequest(
+                "harness price archive readback did not match".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Archive one exact run-owned TEST product fixture with readback, after
+    /// its price fixture has been archived.
+    ///
+    /// # Errors
+    ///
+    /// Any non-TEST key, a product that is not this run's TEST fixture, or a
+    /// readback that is not archived.
+    #[cfg(feature = "live-integration")]
+    pub fn cleanup_harness_product(&self, id: &str, run_id: &str) -> Result<(), StripeError> {
+        self.require_direct_test_key()?;
+        let before: serde_json::Value = self.get(&format!("/v1/products/{id}"))?;
+        if !harness_fixture_owned(&before, id, run_id) {
+            return Err(StripeError::InvalidRequest(
+                "harness product is not an exact-run-owned TEST fixture".into(),
+            ));
+        }
+        let _: serde_json::Value = self.post_form(
+            &format!("/v1/products/{id}"),
+            &[("active", "false".to_string())],
+            &format!("harness-archive:{id}"),
+        )?;
+        let after: serde_json::Value = self.get(&format!("/v1/products/{id}"))?;
+        if !harness_fixture_owned(&after, id, run_id)
+            || after.get("active").and_then(serde_json::Value::as_bool) != Some(false)
+        {
+            return Err(StripeError::InvalidRequest(
+                "harness product archive readback did not match".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// `POST /v1/checkout/sessions` — typed Stripe Checkout creation
@@ -1067,10 +1259,101 @@ fn build_checkout_form(
 }
 
 #[cfg(feature = "live-integration")]
+impl StripeClientConfig {
+    /// Construct the Direct-mode config for the protected `direct-test`
+    /// harness profile (owner decision 2026-10-02, #2565). Only a Stripe TEST
+    /// secret key (`sk_test_…` / `rk_test_…`) is accepted; a LIVE key
+    /// (`sk_live_…` / `rk_live_…`) or any other shape is refused before a
+    /// client or request exists. The error never echoes the key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StripeError::Authentication`] for any non-TEST key.
+    pub fn direct_test(
+        api_base: impl Into<String>,
+        api_key: SecretString,
+    ) -> Result<Self, StripeError> {
+        refuse_non_test_key(api_key.expose_secret())?;
+        Ok(Self::direct(api_base, api_key))
+    }
+}
+
+/// Refuse every key that is not a Stripe TEST secret key. LIVE prefixes get a
+/// distinct message; neither message contains any key material.
+#[cfg(feature = "live-integration")]
+fn refuse_non_test_key(key: &str) -> Result<(), StripeError> {
+    if key.starts_with("sk_live_") || key.starts_with("rk_live_") {
+        return Err(StripeError::Authentication(
+            "direct-test mode refuses a Stripe LIVE key (sk_live_/rk_live_)".into(),
+        ));
+    }
+    let test_key = key
+        .strip_prefix("sk_test_")
+        .or_else(|| key.strip_prefix("rk_test_"))
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric()));
+    if !test_key {
+        return Err(StripeError::Authentication(
+            "direct-test mode requires a Stripe TEST secret key (sk_test_/rk_test_)".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "live-integration")]
+fn is_stripe_object_id(value: &str, prefix: &str) -> bool {
+    value
+        .strip_prefix(prefix)
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
+/// Accept a created fixture only when Stripe reports its exact id shape and
+/// `livemode=false`. An explicitly LIVE or unknown-mode object is never
+/// touched again; the error carries only its redacted recovery receipt.
+#[cfg(feature = "live-integration")]
+fn harness_fixture_id(
+    created: &serde_json::Value,
+    prefix: &str,
+    kind: &str,
+    run_id: &str,
+) -> Result<String, StripeError> {
+    let id = created
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| is_stripe_object_id(id, prefix))
+        .ok_or_else(|| {
+            StripeError::InvalidRequest(format!("created {kind} fixture has no valid id"))
+        })?;
+    match created.get("livemode").and_then(serde_json::Value::as_bool) {
+        Some(false) => Ok(id.to_string()),
+        Some(true) => Err(StripeError::InvalidRequest(format!(
+            "created {kind} fixture is explicitly LIVE; retained without recovery request; receipt {}",
+            harness_recovery_receipt(run_id, kind, id, "live_mode_retained_no_recovery")
+        ))),
+        None => Err(StripeError::InvalidRequest(format!(
+            "created {kind} fixture mode is unknown; retained for recovery; receipt {}",
+            harness_recovery_receipt(run_id, kind, id, "retained_recovery_required")
+        ))),
+    }
+}
+
+/// Exact-run ownership of a TEST fixture: same id, `livemode=false`, and this
+/// run's `metadata.test_run_id`.
+#[cfg(feature = "live-integration")]
+fn harness_fixture_owned(object: &serde_json::Value, id: &str, run_id: &str) -> bool {
+    object.get("id").and_then(serde_json::Value::as_str) == Some(id)
+        && object.get("livemode").and_then(serde_json::Value::as_bool) == Some(false)
+        && object
+            .pointer("/metadata/test_run_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(run_id)
+}
+
+#[cfg(feature = "live-integration")]
 fn live_harness_run_id() -> Option<String> {
     // A GitHub run id alone is not authority to mark provider objects for
-    // cleanup. Require the canonical, protected manual Stripe profile context;
-    // the executor workflow exposes the Stripe settings only for stripe/all.
+    // cleanup. Require the canonical, protected manual Stripe profile context
+    // in `direct-test` mode; the executor workflow exposes the Stripe settings
+    // only for stripe/all.
     let required_context = [
         ("GITHUB_EVENT_NAME", "workflow_dispatch"),
         ("GITHUB_REPOSITORY", "HuGR-dev/corelink-server"),
@@ -1079,8 +1362,7 @@ fn live_harness_run_id() -> Option<String> {
             "GITHUB_WORKFLOW",
             "real ignored integration harnesses (B-068)",
         ),
-        ("HUGR_STRIPE_REF", "stripe-prod-test"),
-        ("STRIPE_AUTH_MODE", "wallet-broker"),
+        ("STRIPE_AUTH_MODE", "direct-test"),
     ];
     if required_context
         .iter()

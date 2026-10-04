@@ -1,19 +1,29 @@
-//! Live integration tests against the HuGR Wallet broker → Stripe test
-//! mode upstream.
+//! Live integration tests against Stripe TEST mode, called directly.
 //!
-//! Wave-31 (wallet-broker series, stream-1): the client no longer holds
-//! a real `STRIPE_SECRET_KEY`. The wallet ref `stripe-prod-test` MUST
-//! be pre-provisioned by the wallet operator with a `sk_test_...`
-//! upstream secret + `proxy` scope on the `hugrw_` token below.
+//! Owner decision (2026-10-02, #2565): the protected B-068 Stripe profile
+//! runs in `direct-test` mode against `https://api.stripe.com` with a Stripe
+//! TEST secret key, not through the HuGR Wallet broker. Three layers keep it
+//! in TEST mode:
+//!
+//! 1. `scripts/run-real-ignored-harnesses.sh` refuses any key that is not
+//!    `sk_test_`/`rk_test_` (naming `sk_live_`/`rk_live_` explicitly) before
+//!    Cargo starts;
+//! 2. `require_direct_test_client` refuses the same before the first request;
+//! 3. after authenticating, the harness proves the expected TEST account and
+//!    `livemode=false` on the account Balance before any write, and every
+//!    created object must report `livemode=false`.
+//!
+//! The Starter price is a disposable, run-owned fixture: each checkout test
+//! creates a TEST-mode product and $35 monthly price, proves them with the
+//! catalog readback, and archives both with readback during cleanup.
 //!
 //! Gated behind `#[cfg(feature = "live-integration")]` so the default
 //! `cargo test -p corelink-stripe-real` NEVER hits the network. Run with:
 //!
 //! ```sh
-//! HUGR_WALLET_BASE=https://api.humangr.com \
-//! HUGR_WALLET_TOKEN=hugrw_live_test_... \
-//! HUGR_STRIPE_REF=stripe-prod-test \
-//! STRIPE_PRICE_ID_STARTER=price_... \
+//! STRIPE_AUTH_MODE=direct-test \
+//! STRIPE_SECRET_KEY_TEST=sk_test_... \
+//! STRIPE_TEST_ACCOUNT_ID=acct_... \
 //! cargo test -p corelink-stripe-real --features live-integration -- --ignored
 //! ```
 //!
@@ -36,30 +46,37 @@ use corelink_tier_selection::stripe::{CheckoutSessionRequest, StripeClient};
 use corelink_tier_selection::tenant::TenantId;
 use corelink_tier_selection::tier::TierKind;
 
-fn require_wallet_token() -> StripeRealClient {
+/// The only auth mode the protected Stripe profile accepts.
+const DIRECT_TEST_MODE: &str = "direct-test";
+
+fn require_direct_test_client() -> StripeRealClient {
     assert_eq!(
         env::var("STRIPE_AUTH_MODE").ok().as_deref(),
-        Some("wallet-broker"),
-        "Stripe profile requires explicit wallet-broker mode"
+        Some(DIRECT_TEST_MODE),
+        "Stripe profile requires explicit direct-test mode"
     );
+    let key = env::var("STRIPE_SECRET_KEY_TEST")
+        .expect("STRIPE_SECRET_KEY_TEST must be set for the Stripe profile");
+    // The base is pinned here, never read from STRIPE_API_BASE, and the
+    // constructor refuses any non-TEST key before a client exists.
+    let config = corelink_stripe_real::StripeClientConfig::direct_test(
+        corelink_stripe_real::DEFAULT_STRIPE_API_BASE,
+        secrecy::SecretString::from(key),
+    )
+    .expect("Stripe profile accepts only a Stripe TEST secret key");
+    let client = StripeRealClient::builder()
+        .config(config)
+        .build()
+        .expect("client init");
     assert_eq!(
-        env::var("HUGR_STRIPE_REF").ok().as_deref(),
-        Some("stripe-prod-test"),
-        "Stripe profile requires the exact TEST wallet ref"
+        client.effective_base_url(),
+        corelink_stripe_real::DEFAULT_STRIPE_API_BASE
     );
-    assert!(
-        env::var("HUGR_WALLET_BASE").is_ok_and(|base| !base.trim().is_empty()),
-        "Stripe profile requires explicit Wallet broker base"
-    );
-    let _ = env::var("HUGR_WALLET_TOKEN").expect("HUGR_WALLET_TOKEN must be set");
-    let client = StripeRealClient::from_env().expect("client init");
-    let price_id = env::var("STRIPE_PRICE_ID_STARTER")
-        .expect("STRIPE_PRICE_ID_STARTER must be set for the Stripe profile");
     let expected_account_id = env::var("STRIPE_TEST_ACCOUNT_ID")
         .expect("STRIPE_TEST_ACCOUNT_ID must be set for the Stripe profile");
     client
-        .verify_test_mode_starter_catalog(&expected_account_id, &price_id)
-        .expect("Stripe Wallet ref and Starter catalog must be proven TEST mode before writes");
+        .verify_direct_test_mode_account(&expected_account_id)
+        .expect("Stripe TEST account identity and livemode=false must be proven before writes");
     client
 }
 
@@ -74,6 +91,8 @@ struct HarnessCleanup {
     test_name: String,
     customers: Vec<String>,
     checkouts: Vec<(String, String)>,
+    prices: Vec<(String, String)>,
+    products: Vec<String>,
     cleanup_failed: bool,
 }
 
@@ -99,6 +118,8 @@ impl HarnessCleanup {
             test_name,
             customers: Vec::new(),
             checkouts: Vec::new(),
+            prices: Vec::new(),
+            products: Vec::new(),
             cleanup_failed: false,
         }
     }
@@ -108,6 +129,35 @@ impl HarnessCleanup {
     }
     fn checkout(&mut self, id: &str, customer_id: &str) {
         self.checkouts.push((id.to_owned(), customer_id.to_owned()));
+    }
+
+    /// Create this test's disposable TEST-mode Starter product and price,
+    /// registering each for archive cleanup as soon as it exists, prove the
+    /// pair with the catalog readback, and expose the price to the production
+    /// checkout path through `STRIPE_PRICE_ID_STARTER` for this test process.
+    fn starter_price_fixture(&mut self) {
+        let idem = format!(
+            "b068-starter-{}-{}-{}",
+            self.run_id,
+            self.test_name,
+            uuid_like()
+        );
+        let product_id = self
+            .client
+            .create_harness_starter_product(&self.run_id, &idem)
+            .expect("TEST-mode Starter product fixture");
+        self.products.push(product_id.clone());
+        let price_id = self
+            .client
+            .create_harness_starter_price(&product_id, &self.run_id, &idem)
+            .expect("TEST-mode Starter price fixture");
+        self.prices.push((price_id.clone(), product_id));
+        let expected_account_id = env::var("STRIPE_TEST_ACCOUNT_ID")
+            .expect("STRIPE_TEST_ACCOUNT_ID must be set for the Stripe profile");
+        self.client
+            .verify_test_mode_starter_catalog(&expected_account_id, &price_id)
+            .expect("Starter fixture must read back as the active $35 monthly TEST price");
+        env::set_var("STRIPE_PRICE_ID_STARTER", &price_id);
     }
 
     fn receipt(&mut self, kind: &str, id: &str, status: &str) {
@@ -151,8 +201,7 @@ fn require_protected_stripe_run_id() -> String {
             "GITHUB_WORKFLOW",
             "real ignored integration harnesses (B-068)",
         ),
-        ("HUGR_STRIPE_REF", "stripe-prod-test"),
-        ("STRIPE_AUTH_MODE", "wallet-broker"),
+        ("STRIPE_AUTH_MODE", DIRECT_TEST_MODE),
     ];
     for (name, expected) in required_context {
         assert_eq!(env::var(name).ok().as_deref(), Some(expected));
@@ -208,8 +257,8 @@ mod cleanup_fault_injection {
                 "GITHUB_WORKFLOW",
                 "real ignored integration harnesses (B-068)",
             ),
-            RestoreEnv::set("HUGR_STRIPE_REF", "stripe-prod-test"),
-            RestoreEnv::set("STRIPE_AUTH_MODE", "wallet-broker"),
+            RestoreEnv::remove("HUGR_STRIPE_REF"),
+            RestoreEnv::set("STRIPE_AUTH_MODE", DIRECT_TEST_MODE),
             RestoreEnv::set("STRIPE_PRICE_ID_STARTER", "price_test_fixture"),
         ]
     }
@@ -232,10 +281,9 @@ mod cleanup_fault_injection {
         let server = runtime.block_on(MockServer::start());
         let customer_id = "cus_outside_profile_fixture";
         let session_id = "cs_outside_profile_fixture";
-        let proxy = "/stripe-prod-test";
         runtime.block_on(async {
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/customers")))
+                .and(path("/v1/customers"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "email": null,
@@ -245,7 +293,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .and(path("/v1/checkout/sessions"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": session_id,
                     "customer": customer_id,
@@ -285,12 +333,17 @@ mod cleanup_fault_injection {
         }
     }
 
+    /// Direct-transport mock client holding a TEST-shaped fake key, which is
+    /// what the protected profile builds against `api.stripe.com`.
     fn mock_client(base_url: String) -> StripeRealClient {
+        mock_client_with_key(base_url, "sk_test_mockfixture")
+    }
+
+    fn mock_client_with_key(base_url: String, key: &str) -> StripeRealClient {
         StripeRealClient::builder()
-            .config(StripeClientConfig::wallet_broker(
+            .config(StripeClientConfig::direct(
                 base_url,
-                SecretString::from("hugrw_fake_test_token"),
-                "stripe-prod-test",
+                SecretString::from(key.to_string()),
             ))
             .build()
             .expect("mock client")
@@ -307,24 +360,23 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/stripe-prod-test";
         runtime.block_on(async {
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/account")))
+                .and(path("/v1/account"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(account))
                 .expect(1)
                 .mount(&server)
                 .await;
             if let Some(price) = price {
                 Mock::given(method("GET"))
-                    .and(path(format!("{proxy}/v1/prices/price_catalogfixture")))
+                    .and(path("/v1/prices/price_catalogfixture"))
                     .respond_with(ResponseTemplate::new(200).set_body_json(price))
                     .expect(1)
                     .mount(&server)
                     .await;
             } else {
                 Mock::given(method("GET"))
-                    .and(path(format!("{proxy}/v1/prices/price_catalogfixture")))
+                    .and(path("/v1/prices/price_catalogfixture"))
                     .respond_with(ResponseTemplate::new(200))
                     .expect(0)
                     .mount(&server)
@@ -332,14 +384,14 @@ mod cleanup_fault_injection {
             }
             if let Some(product) = product {
                 Mock::given(method("GET"))
-                    .and(path(format!("{proxy}/v1/products/prod_catalogfixture")))
+                    .and(path("/v1/products/prod_catalogfixture"))
                     .respond_with(ResponseTemplate::new(200).set_body_json(product))
                     .expect(1)
                     .mount(&server)
                     .await;
             } else {
                 Mock::given(method("GET"))
-                    .and(path(format!("{proxy}/v1/products/prod_catalogfixture")))
+                    .and(path("/v1/products/prod_catalogfixture"))
                     .respond_with(ResponseTemplate::new(200))
                     .expect(0)
                     .mount(&server)
@@ -473,10 +525,9 @@ mod cleanup_fault_injection {
         let server = runtime.block_on(MockServer::start());
         let customer_id = "cus_retry_fixture";
         let session_id = "cs_retry_fixture";
-        let proxy = "/stripe-prod-test";
         runtime.block_on(async {
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/customers")))
+                .and(path("/v1/customers"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "email": null,
@@ -486,7 +537,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .and(path("/v1/checkout/sessions"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": session_id,
                     "customer": customer_id,
@@ -532,6 +583,433 @@ mod cleanup_fault_injection {
         assert!(!safe_run_id("run-424245"));
     }
 
+    #[test]
+    fn wallet_broker_mode_does_not_arm_the_direct_test_harness() {
+        // Mode selection: the exact protected GitHub context with the retired
+        // Wallet-broker mode must neither arm cleanup nor mark provider objects.
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _context = protected_stripe_context("424252");
+        let _mode = RestoreEnv::set("STRIPE_AUTH_MODE", "wallet-broker");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        let customer_id = "cus_wallet_mode_fixture";
+        let session_id = "cs_wallet_mode_fixture";
+        runtime.block_on(async {
+            Mock::given(method("POST"))
+                .and(path("/v1/customers"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": customer_id,
+                    "email": null,
+                    "livemode": false
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/v1/checkout/sessions"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": session_id,
+                    "customer": customer_id,
+                    "url": "https://example.test/session",
+                    "livemode": false
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        });
+        let constructor = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            HarnessCleanup::new(mock_client(server.uri()))
+        }));
+        assert!(
+            constructor.is_err(),
+            "wallet-broker mode cannot arm the direct-test cleanup harness"
+        );
+        let request = CheckoutSessionRequest::new(
+            TenantId::new("tenant_wallet_mode"),
+            TierKind::Starter,
+            "wallet-mode@example.test",
+            "https://example.test/ok",
+            "https://example.test/cancel",
+        );
+        let response = mock_client(server.uri())
+            .create_checkout_session(&request)
+            .expect("ordinary mock checkout");
+        assert_eq!(response.session_id, session_id);
+        let requests = runtime
+            .block_on(server.received_requests())
+            .expect("captured mock requests");
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            let body = String::from_utf8_lossy(&request.body);
+            assert!(!body.contains("test_run_id"));
+        }
+    }
+
+    #[test]
+    fn direct_test_refuses_live_and_non_test_keys_before_any_request() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        runtime.block_on(async {
+            for verb in ["GET", "POST", "DELETE"] {
+                Mock::given(method(verb))
+                    .respond_with(ResponseTemplate::new(400))
+                    .expect(0)
+                    .mount(&server)
+                    .await;
+            }
+        });
+        macro_rules! assert_refused {
+            ($call:expr, $entry:literal) => {{
+                let result = $call;
+                assert!(
+                    runtime
+                        .block_on(server.received_requests())
+                        .expect("captured mock requests")
+                        .is_empty(),
+                    "request before key refusal: {}",
+                    $entry
+                );
+                assert!(
+                    matches!(result, Err(StripeError::Authentication(_))),
+                    "expected authentication refusal: {}",
+                    $entry
+                );
+            }};
+        }
+        // (key, is a LIVE key, distinctive key material that must never be
+        // echoed by the refusal; empty when the key has none).
+        let refused = [
+            ("sk_live_fixtureA0123", true, "fixtureA0123"),
+            ("rk_live_fixtureB0123", true, "fixtureB0123"),
+            ("pk_test_fixtureC0123", false, "fixtureC0123"),
+            ("whsec_fixtureD0123", false, "fixtureD0123"),
+            ("hugrw_fixtureE0123", false, "fixtureE0123"),
+            ("sk_test_bad!fixtureF", false, "bad!fixtureF"),
+            ("sk_test_", false, ""),
+            ("", false, ""),
+        ];
+        for (key, live, material) in refused {
+            let error =
+                StripeClientConfig::direct_test(server.uri(), SecretString::from(key.to_string()))
+                    .expect_err("only a Stripe TEST secret key may build a direct-test config");
+            let message = error.to_string();
+            assert!(matches!(&error, StripeError::Authentication(_)));
+            assert_eq!(message.contains("LIVE"), live, "LIVE refusal: {message}");
+            if !material.is_empty() {
+                assert!(!message.contains(material), "refusal echoed key material");
+            }
+            // A Direct client built without the constructor is still refused
+            // by the client guard before any transport.
+            let client = mock_client_with_key(server.uri(), key);
+            assert_refused!(
+                client.verify_direct_test_mode_account("acct_catalogfixture"),
+                "verify_direct_test_mode_account"
+            );
+            assert_refused!(
+                client.verify_test_mode_starter_catalog(
+                    "acct_catalogfixture",
+                    "price_refusedfixture"
+                ),
+                "verify_test_mode_starter_catalog"
+            );
+            assert_refused!(
+                client.create_harness_starter_product("424253", "idem-refused"),
+                "create_harness_starter_product"
+            );
+            assert_refused!(
+                client.create_harness_starter_price(
+                    "prod_refusedfixture",
+                    "424253",
+                    "idem-refused"
+                ),
+                "create_harness_starter_price"
+            );
+            assert_refused!(
+                client.cleanup_harness_price(
+                    "price_refusedfixture",
+                    "prod_refusedfixture",
+                    "424253"
+                ),
+                "cleanup_harness_price"
+            );
+            assert_refused!(
+                client.cleanup_harness_product("prod_refusedfixture", "424253"),
+                "cleanup_harness_product"
+            );
+            assert_refused!(
+                client.cleanup_harness_checkout(
+                    "cs_refusedfixture",
+                    "cus_refusedfixture",
+                    "424253"
+                ),
+                "cleanup_harness_checkout"
+            );
+            assert_refused!(
+                client.cleanup_harness_customer("cus_refusedfixture", "424253"),
+                "cleanup_harness_customer"
+            );
+        }
+        // The Wallet broker transport is never a direct-test client, even
+        // with a TEST-shaped credential.
+        let wallet = StripeRealClient::builder()
+            .config(StripeClientConfig::wallet_broker(
+                server.uri(),
+                SecretString::from("sk_test_walletshape0123".to_string()),
+                "stripe-ref-fixture",
+            ))
+            .build()
+            .expect("wallet mock client");
+        assert!(wallet
+            .verify_direct_test_mode_account("acct_catalogfixture")
+            .is_err());
+        // Positive control: both TEST prefixes pass the same constructor.
+        for key in ["sk_test_fixtureG0123", "rk_test_fixtureH0123"] {
+            assert!(StripeClientConfig::direct_test(
+                server.uri(),
+                SecretString::from(key.to_string())
+            )
+            .is_ok());
+        }
+        runtime.block_on(server.verify());
+    }
+
+    fn direct_account_result(
+        account: serde_json::Value,
+        balance: Option<serde_json::Value>,
+        expected_success: bool,
+    ) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        runtime.block_on(async {
+            Mock::given(method("GET"))
+                .and(path("/v1/account"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(account))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let balance_reads = u64::from(balance.is_some());
+            Mock::given(method("GET"))
+                .and(path("/v1/balance"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(balance.unwrap_or(serde_json::Value::Null)),
+                )
+                .expect(balance_reads)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(500))
+                .expect(0)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .respond_with(ResponseTemplate::new(500))
+                .expect(0)
+                .mount(&server)
+                .await;
+        });
+        let result =
+            mock_client(server.uri()).verify_direct_test_mode_account("acct_catalogfixture");
+        assert_eq!(
+            result.is_ok(),
+            expected_success,
+            "direct account result: {result:?}"
+        );
+        runtime.block_on(server.verify());
+    }
+
+    #[test]
+    fn direct_test_account_proof_requires_identity_then_balance_livemode_false() {
+        let account = serde_json::json!({"object": "account", "id": "acct_catalogfixture"});
+        direct_account_result(
+            account.clone(),
+            Some(serde_json::json!({"object": "balance", "livemode": false})),
+            true,
+        );
+        // After the call, only an explicit `livemode=false` Balance passes.
+        for balance in [
+            serde_json::json!({"object": "balance", "livemode": true}),
+            serde_json::json!({"object": "balance"}),
+            serde_json::json!({"object": "balance", "livemode": "false"}),
+            serde_json::json!({"object": "customer", "livemode": false}),
+        ] {
+            direct_account_result(account.clone(), Some(balance), false);
+        }
+        // A wrong or malformed account stops before the Balance readback.
+        for wrong in [
+            serde_json::json!({"object": "account", "id": "acct_otherfixture"}),
+            serde_json::json!({"object": "customer", "id": "acct_catalogfixture"}),
+            serde_json::json!({}),
+        ] {
+            direct_account_result(wrong, None, false);
+        }
+    }
+
+    #[test]
+    fn starter_fixture_is_run_owned_test_mode_and_archived_with_readback() {
+        use wiremock::matchers::body_string_contains;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        let run_id = "424254";
+        let product_id = "prod_fixturestarter";
+        let price_id = "price_fixturestarter";
+        let owned = serde_json::json!({ "test_run_id": run_id });
+        runtime.block_on(async {
+            Mock::given(method("POST"))
+                .and(path("/v1/products"))
+                .and(body_string_contains("name=CoreLink+Starter"))
+                .and(body_string_contains("metadata%5Btest_run_id%5D=424254"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": product_id,
+                    "livemode": false
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/v1/prices"))
+                .and(body_string_contains("unit_amount=3500"))
+                .and(body_string_contains("recurring%5Binterval%5D=month"))
+                .and(body_string_contains("metadata%5Btest_run_id%5D=424254"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": price_id,
+                    "product": product_id,
+                    "livemode": false
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            for (object_path, product) in [
+                (format!("/v1/prices/{price_id}"), Some(product_id)),
+                (format!("/v1/products/{product_id}"), None),
+            ] {
+                let id = object_path.rsplit('/').next().expect("object id");
+                let mut active = serde_json::json!({
+                    "id": id,
+                    "livemode": false,
+                    "active": true,
+                    "metadata": owned.clone()
+                });
+                if let Some(product) = product {
+                    active["product"] = serde_json::Value::String(product.to_string());
+                }
+                let mut archived = active.clone();
+                archived["active"] = serde_json::Value::Bool(false);
+                Mock::given(method("GET"))
+                    .and(path(object_path.clone()))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(active))
+                    .up_to_n_times(1)
+                    .mount(&server)
+                    .await;
+                Mock::given(method("POST"))
+                    .and(path(object_path.clone()))
+                    .and(body_string_contains("active=false"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(archived.clone()))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                Mock::given(method("GET"))
+                    .and(path(object_path))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(archived))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            }
+        });
+        let client = mock_client(server.uri());
+        let product = client
+            .create_harness_starter_product(run_id, "idem-fixture")
+            .expect("product fixture");
+        let price = client
+            .create_harness_starter_price(&product, run_id, "idem-fixture")
+            .expect("price fixture");
+        assert_eq!((product.as_str(), price.as_str()), (product_id, price_id));
+        client
+            .cleanup_harness_price(&price, &product, run_id)
+            .expect("price archived with readback");
+        client
+            .cleanup_harness_product(&product, run_id)
+            .expect("product archived with readback");
+        runtime.block_on(server.verify());
+    }
+
+    #[test]
+    fn starter_fixture_not_proven_test_mode_is_retained_without_archive() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let server = runtime.block_on(MockServer::start());
+        runtime.block_on(async {
+            Mock::given(method("POST"))
+                .and(path("/v1/products"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "prod_livefixture",
+                    "livemode": true
+                })))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/v1/products"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "prod_unknownfixture"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/v1/prices/price_livefixture"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "price_livefixture",
+                    "product": "prod_livefixture",
+                    "livemode": true,
+                    "active": true,
+                    "metadata": {"test_run_id": "424255"}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            for archive_path in ["/v1/prices", "/v1/prices/price_livefixture"] {
+                Mock::given(method("POST"))
+                    .and(path(archive_path))
+                    .respond_with(ResponseTemplate::new(500))
+                    .expect(0)
+                    .mount(&server)
+                    .await;
+            }
+        });
+        let client = mock_client(server.uri());
+        let live = client
+            .create_harness_starter_product("424255", "idem-live")
+            .expect_err("explicit LIVE product fixture is refused");
+        assert!(live.to_string().contains("live_mode_retained_no_recovery"));
+        assert!(!live.to_string().contains("prod_livefixture"));
+        let unknown = client
+            .create_harness_starter_product("424255", "idem-unknown")
+            .expect_err("unknown-mode product fixture is refused");
+        assert!(unknown.to_string().contains("retained_recovery_required"));
+        assert!(!unknown.to_string().contains("prod_unknownfixture"));
+        assert!(client
+            .cleanup_harness_price("price_livefixture", "prod_livefixture", "424255")
+            .is_err());
+        runtime.block_on(server.verify());
+    }
+
     impl Drop for RestoreEnv {
         fn drop(&mut self) {
             if let Some(value) = self.1.take() {
@@ -554,11 +1032,10 @@ mod cleanup_fault_injection {
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
         let customer_id = "cus_create_failure_fixture";
-        let proxy = "/stripe-prod-test";
 
         runtime.block_on(async {
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/customers")))
+                .and(path("/v1/customers"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "email": null,
@@ -568,7 +1045,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .and(path("/v1/checkout/sessions"))
                 .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
                     "error": {"type": "invalid_request_error", "message": "injected"}
                 })))
@@ -576,7 +1053,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "livemode": false,
@@ -586,7 +1063,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/subscriptions")))
+                .and(path("/v1/subscriptions"))
                 .and(query_param("customer", customer_id))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "data": [], "has_more": false
@@ -595,7 +1072,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/payment_intents")))
+                .and(path("/v1/payment_intents"))
                 .and(query_param("customer", customer_id))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "data": [], "has_more": false
@@ -604,7 +1081,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id, "deleted": true
                 })))
@@ -612,7 +1089,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
                     "error": {"type": "invalid_request_error", "code": "resource_missing"}
                 })))
@@ -621,14 +1098,7 @@ mod cleanup_fault_injection {
                 .await;
         });
 
-        let client = StripeRealClient::builder()
-            .config(StripeClientConfig::wallet_broker(
-                server.uri(),
-                SecretString::from("hugrw_fake_test_token"),
-                "stripe-prod-test",
-            ))
-            .build()
-            .expect("mock client");
+        let client = mock_client(server.uri());
         let req = CheckoutSessionRequest::new(
             TenantId::new("tenant_checkout_failure"),
             TierKind::Starter,
@@ -657,7 +1127,6 @@ mod cleanup_fault_injection {
         let server = runtime.block_on(MockServer::start());
         let customer_id = "cus_missing_url_fixture";
         let checkout_id = "cs_missing_url_fixture";
-        let proxy = "/stripe-prod-test";
         let open_session = serde_json::json!({
             "id": checkout_id,
             "customer": customer_id,
@@ -680,7 +1149,7 @@ mod cleanup_fault_injection {
 
         runtime.block_on(async {
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/customers")))
+                .and(path("/v1/customers"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "email": null,
@@ -690,33 +1159,31 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .and(path("/v1/checkout/sessions"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(&open_session))
                 .expect(1)
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/checkout/sessions/{checkout_id}")))
+                .and(path(format!("/v1/checkout/sessions/{checkout_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(&open_session))
                 .up_to_n_times(1)
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!(
-                    "{proxy}/v1/checkout/sessions/{checkout_id}/expire"
-                )))
+                .and(path(format!("/v1/checkout/sessions/{checkout_id}/expire")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(&expired_session))
                 .expect(1)
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/checkout/sessions/{checkout_id}")))
+                .and(path(format!("/v1/checkout/sessions/{checkout_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(&expired_session))
                 .expect(1)
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "livemode": false,
@@ -726,7 +1193,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/subscriptions")))
+                .and(path("/v1/subscriptions"))
                 .and(query_param("customer", customer_id))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "data": [], "has_more": false
@@ -735,7 +1202,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/payment_intents")))
+                .and(path("/v1/payment_intents"))
                 .and(query_param("customer", customer_id))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "data": [], "has_more": false
@@ -744,7 +1211,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id, "deleted": true
                 })))
@@ -752,7 +1219,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
                     "error": {"type": "invalid_request_error", "code": "resource_missing"}
                 })))
@@ -761,14 +1228,7 @@ mod cleanup_fault_injection {
                 .await;
         });
 
-        let client = StripeRealClient::builder()
-            .config(StripeClientConfig::wallet_broker(
-                server.uri(),
-                SecretString::from("hugrw_fake_test_token"),
-                "stripe-prod-test",
-            ))
-            .build()
-            .expect("mock client");
+        let client = mock_client(server.uri());
         let req = CheckoutSessionRequest::new(
             TenantId::new("tenant_missing_url"),
             TierKind::Starter,
@@ -795,9 +1255,7 @@ mod cleanup_fault_injection {
         let customer_id = "cus_run_owned_secret_id";
         runtime.block_on(
             Mock::given(method("GET"))
-                .and(path(format!(
-                    "/stripe-prod-test/v1/customers/{customer_id}"
-                )))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "metadata": { "test_run_id": "different-run" }
@@ -805,14 +1263,7 @@ mod cleanup_fault_injection {
                 .expect(1)
                 .mount(&server),
         );
-        let client = StripeRealClient::builder()
-            .config(StripeClientConfig::wallet_broker(
-                server.uri(),
-                SecretString::from("hugrw_fake_test_token"),
-                "stripe-prod-test",
-            ))
-            .build()
-            .expect("mock client");
+        let client = mock_client(server.uri());
         let receipt_dir =
             std::env::temp_dir().join(format!("stripe-cleanup-fault-{}", uuid_like()));
         std::fs::create_dir_all(&receipt_dir).expect("temp receipt dir");
@@ -867,18 +1318,17 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/stripe-prod-test";
         let customer_id = "cus_unknown_mode_fixture";
         let session_id = "cs_unknown_mode_fixture";
         runtime.block_on(async {
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/account")))
+                .and(path("/v1/account"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
                 .expect(1)
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "metadata": {"test_run_id": "424247"}
@@ -887,7 +1337,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/checkout/sessions/{session_id}")))
+                .and(path(format!("/v1/checkout/sessions/{session_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": session_id,
                     "customer": customer_id,
@@ -901,21 +1351,19 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/prices/price_unknownmodefixture")))
+                .and(path("/v1/prices/price_unknownmodefixture"))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!(
-                    "{proxy}/v1/checkout/sessions/{session_id}/expire"
-                )))
+                .and(path(format!("/v1/checkout/sessions/{session_id}/expire")))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
@@ -943,11 +1391,10 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/stripe-prod-test";
         let customer_id = "cus_unknown_mode_created_fixture";
         runtime.block_on(async {
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/customers")))
+                .and(path("/v1/customers"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "email": null
@@ -956,7 +1403,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "metadata": {"test_run_id": "424248"}
@@ -965,13 +1412,13 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .and(path("/v1/checkout/sessions"))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
@@ -1006,12 +1453,11 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/stripe-prod-test";
         let customer_id = "cus_checkout_unknown_mode_fixture";
         let session_id = "cs_checkout_unknown_mode_fixture";
         runtime.block_on(async {
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/customers")))
+                .and(path("/v1/customers"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "email": null,
@@ -1021,7 +1467,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .and(path("/v1/checkout/sessions"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": session_id,
                     "customer": customer_id,
@@ -1031,7 +1477,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/checkout/sessions/{session_id}")))
+                .and(path(format!("/v1/checkout/sessions/{session_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": session_id,
                     "customer": customer_id,
@@ -1045,15 +1491,13 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!(
-                    "{proxy}/v1/checkout/sessions/{session_id}/expire"
-                )))
+                .and(path(format!("/v1/checkout/sessions/{session_id}/expire")))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
@@ -1086,11 +1530,10 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/stripe-prod-test";
         let customer_id = "cus_explicit_live_fixture";
         runtime.block_on(async {
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/customers")))
+                .and(path("/v1/customers"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "livemode": true
@@ -1099,7 +1542,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "livemode": false,
@@ -1109,13 +1552,13 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .and(path("/v1/checkout/sessions"))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
@@ -1146,12 +1589,11 @@ mod cleanup_fault_injection {
             .build()
             .expect("runtime");
         let server = runtime.block_on(MockServer::start());
-        let proxy = "/stripe-prod-test";
         let customer_id = "cus_explicit_live_checkout_fixture";
         let session_id = "cs_explicit_live_fixture";
         runtime.block_on(async {
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/customers")))
+                .and(path("/v1/customers"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": customer_id,
                     "livemode": false
@@ -1160,7 +1602,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!("{proxy}/v1/checkout/sessions")))
+                .and(path("/v1/checkout/sessions"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": session_id,
                     "customer": customer_id,
@@ -1171,7 +1613,7 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(path(format!("{proxy}/v1/checkout/sessions/{session_id}")))
+                .and(path(format!("/v1/checkout/sessions/{session_id}")))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": session_id,
                     "customer": customer_id,
@@ -1186,15 +1628,13 @@ mod cleanup_fault_injection {
                 .mount(&server)
                 .await;
             Mock::given(method("POST"))
-                .and(path(format!(
-                    "{proxy}/v1/checkout/sessions/{session_id}/expire"
-                )))
+                .and(path(format!("/v1/checkout/sessions/{session_id}/expire")))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
                 .await;
             Mock::given(method("DELETE"))
-                .and(path(format!("{proxy}/v1/customers/{customer_id}")))
+                .and(path(format!("/v1/customers/{customer_id}")))
                 .respond_with(ResponseTemplate::new(204))
                 .expect(0)
                 .mount(&server)
@@ -1254,6 +1694,42 @@ impl Drop for HarnessCleanup {
             self.receipt("customer", &id, status);
             self.cleanup_failed |= status == "cleanup_failed";
         }
+        // Fixtures go last: an expired Checkout may still reference the
+        // price, and the product is archived only after its price.
+        let mut prices = HashSet::new();
+        for (id, product_id) in std::mem::take(&mut self.prices) {
+            if !prices.insert(id.clone()) {
+                continue;
+            }
+            let status = if self
+                .client
+                .cleanup_harness_price(&id, &product_id, &self.run_id)
+                .is_ok()
+            {
+                "archived_readback_pass"
+            } else {
+                "cleanup_failed"
+            };
+            self.receipt("price", &id, status);
+            self.cleanup_failed |= status == "cleanup_failed";
+        }
+        let mut products = HashSet::new();
+        for id in std::mem::take(&mut self.products) {
+            if !products.insert(id.clone()) {
+                continue;
+            }
+            let status = if self
+                .client
+                .cleanup_harness_product(&id, &self.run_id)
+                .is_ok()
+            {
+                "archived_readback_pass"
+            } else {
+                "cleanup_failed"
+            };
+            self.receipt("product", &id, status);
+            self.cleanup_failed |= status == "cleanup_failed";
+        }
         if self.cleanup_failed && !std::thread::panicking() {
             panic!(
                 "run-owned Stripe test cleanup failed; inspect redacted receipt and keep issue open"
@@ -1265,7 +1741,7 @@ impl Drop for HarnessCleanup {
 #[test]
 #[ignore = "live network"]
 fn live_create_customer() {
-    let c = require_wallet_token();
+    let c = require_direct_test_client();
     let mut cleanup = HarnessCleanup::new(c);
     let idem = format!("live-test-customer-{}", uuid_like());
     let cust = cleanup
@@ -1284,7 +1760,7 @@ fn live_create_customer() {
 #[test]
 #[ignore = "live network"]
 fn live_get_customer_404() {
-    let c = require_wallet_token();
+    let c = require_direct_test_client();
     let err = c.get_customer("cus_does_not_exist_xyz").unwrap_err();
     // Stripe returns 404 with `resource_missing` → Generic.
     match err {
@@ -1296,8 +1772,9 @@ fn live_get_customer_404() {
 #[test]
 #[ignore = "live network"]
 fn live_create_checkout_session_starter() {
-    let c = require_wallet_token();
+    let c = require_direct_test_client();
     let mut cleanup = HarnessCleanup::new(c);
+    cleanup.starter_price_fixture();
     let req = CheckoutSessionRequest::new(
         TenantId::new(format!("live_t_{}", uuid_like())),
         TierKind::Starter,
@@ -1318,8 +1795,9 @@ fn live_create_checkout_session_starter() {
 #[test]
 #[ignore = "live network"]
 fn live_idempotent_checkout_returns_same_session() {
-    let c = require_wallet_token();
+    let c = require_direct_test_client();
     let mut cleanup = HarnessCleanup::new(c);
+    cleanup.starter_price_fixture();
     let tenant = TenantId::new(format!("live_idem_{}", uuid_like()));
     let req = CheckoutSessionRequest::new(
         tenant,
@@ -1343,7 +1821,7 @@ fn live_idempotent_checkout_returns_same_session() {
 #[test]
 #[ignore = "live network"]
 fn live_billing_portal_session() {
-    let c = require_wallet_token();
+    let c = require_direct_test_client();
     let mut cleanup = HarnessCleanup::new(c);
     let idem_cust = format!("live-portal-cust-{}", uuid_like());
     let cust = cleanup
@@ -1368,27 +1846,24 @@ fn live_billing_portal_session() {
 #[test]
 #[ignore = "live network"]
 fn live_authentication_failure_bad_token() {
-    use corelink_stripe_real::StripeClientConfig;
+    use corelink_stripe_real::{StripeClientConfig, DEFAULT_STRIPE_API_BASE};
     use secrecy::SecretString;
-    let cfg = StripeClientConfig::wallet_broker(
-        env::var("HUGR_WALLET_BASE").unwrap_or_else(|_| "https://api.humangr.com".to_string()),
-        SecretString::from("hugrw_INVALID_TOKEN".to_string()),
-        env::var("HUGR_STRIPE_REF").unwrap_or_else(|_| "stripe-prod-test".to_string()),
-    );
+    // The invalid key keeps the TEST prefix, so the direct-test guard admits
+    // it and Stripe itself must reject it. A LIVE-shaped value is never sent.
+    let cfg = StripeClientConfig::direct_test(
+        DEFAULT_STRIPE_API_BASE,
+        SecretString::from("sk_test_INVALIDb068harnesskey".to_string()),
+    )
+    .expect("TEST-shaped invalid key passes the prefix guard");
     let c = StripeRealClient::builder()
         .config(cfg)
         .build()
         .expect("builder");
     let err = c.get_customer("cus_anything").unwrap_err();
-    // Wallet broker rejects the invalid hugrw_ token before forwarding;
-    // it returns an HTTP error mapped to either Authentication (401)
-    // or Generic (403/4xx) depending on the wallet's error contract.
+    // Stripe answers an unknown API key with HTTP 401 → Authentication.
     assert!(
-        matches!(
-            err,
-            StripeError::Authentication(_) | StripeError::Generic { .. }
-        ),
-        "expected Authentication/Generic for bad hugrw_ token, got {err:?}"
+        matches!(err, StripeError::Authentication(_)),
+        "expected Authentication for an invalid Stripe TEST key, got {err:?}"
     );
 }
 
