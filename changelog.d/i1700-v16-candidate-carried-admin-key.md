@@ -37,7 +37,13 @@
   verification failed is rolled back by run marker and exact preimage. Broker
   contract v2 drops the `secret_put_*`, `secret_delete_*`, `post_secret` and
   `post_delete` fields. Rollback quiescence reads v2. The broker makes at most
-  15 management API calls, none to a secrets or settings path.
+  15 management API calls, none to a secrets or settings path. Delayed HTTP RPCs
+  now recheck their two-minute bucket at DO entry, against the same timestamp
+  that anchors the native kill deadline, so the failed-attempt cutoff cannot
+  precede live native execution. Runtime rollback installs failure custody before
+  its preliminary reads: an ownership, route-inventory or first-quiescence
+  failure attempts only safely attributed broker cleanup, withholds restoration
+  and writes a sanitized residual receipt, including when cleanup itself refuses.
 - **#1700 native staging proof moved to the v16 window.** The window uses
   nonce `issue-1700-recovery-20261002-v16`. Dispatch runs 2026-10-02T21:06Z–21:26Z,
   last admission is 23:06Z inclusive and expiry is 2026-10-03T00:21Z

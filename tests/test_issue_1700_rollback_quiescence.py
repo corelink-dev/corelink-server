@@ -429,8 +429,9 @@ class QuiescenceTests(unittest.TestCase):
         self.assertNotIn('CORELINK_ADMIN_AUTH_KEY', runtime)
         self.assertIn('staging-http-broker/staging-http-probe-attempt.json', deploy)
         rollback = deploy.split('        id: runtime_rollback\n', 1)[1]
-        self.assertLess(rollback.index('issue_1700_rollback_quiescence.py'), rollback.index('issue_1700_http_bootstrap.mjs cleanup'))
-        self.assertLess(rollback.index('issue_1700_http_bootstrap.mjs cleanup'), rollback.index('pnpm exec wrangler deploy ' + chr(92)))
+        self.assertLess(rollback.index('trap finish_rollback EXIT'), rollback.index('verify_issue_1700_route_inventory.py'))
+        self.assertLess(rollback.index('issue_1700_rollback_quiescence.py'), rollback.index('          broker_cleanup\n'))
+        self.assertLess(rollback.index('          broker_cleanup\n'), rollback.index('pnpm exec wrangler deploy ' + chr(92)))
         self.assertNotIn('issue_1700_http_bootstrap.mjs close', deploy)
         self.assertIn('PREIMAGE_DEPLOYMENT_ID: ${{ steps.preimage.outputs.preimage_deployment_id }}', rollback)
         condition = rollback.split('        env:', 1)[0]
@@ -535,6 +536,43 @@ class RollbackRestoreGuaranteeTests(unittest.TestCase):
         self.assertEqual(residual, {'contract': 'issue1700-rollback-residual-v1', 'reason': 'second_quiescence_unproven',
                                     'worker_restore_attempted': False, 'active_runtime_claim': False})
 
+    def test_preliminary_read_and_first_gate_failures_close_owned_origin_and_write_residual(self):
+        cases = (
+            ('verify_issue_1700_route_inventory.py', 'route_inventory_unproven'),
+            ('wrangler deployments list', 'candidate_ownership_unproven'),
+            ('wrangler versions view', 'candidate_ownership_unproven'),
+            ('verify-candidate', 'candidate_ownership_unproven'),
+            ('issue_1700_rollback_quiescence.py', 'first_quiescence_unproven'),
+        )
+        for fail_on, reason in cases:
+            with self.subTest(fail_on=fail_on):
+                code, calls, residual = self.run_step('runtime_rollback', fail_on)
+                self.assertEqual(code, 7, calls)
+                self.assertTrue(any('issue_1700_http_bootstrap.mjs cleanup' in line for line in calls), calls)
+                self.assertEqual(self.restores(calls), [])
+                self.assertEqual(self.uploads(calls, 'rollback-runtime.toml'), [])
+                self.assertEqual(residual, {'contract': 'issue1700-rollback-residual-v1', 'reason': reason,
+                                            'worker_restore_attempted': False, 'active_runtime_claim': False})
+
+    def test_cleanup_refusal_after_first_gate_writes_residual_without_restoration(self):
+        code, calls, residual = self.run_step('runtime_rollback', 'issue_1700_http_bootstrap.mjs cleanup')
+        self.assertNotEqual(code, 0)
+        self.assertEqual(sum('issue_1700_http_bootstrap.mjs cleanup' in line for line in calls), 3)
+        self.assertEqual(self.restores(calls), [])
+        self.assertEqual(self.uploads(calls, 'rollback-runtime.toml'), [])
+        self.assertEqual(residual, {'contract': 'issue1700-rollback-residual-v1', 'reason': 'broker_cleanup_unproven',
+                                    'worker_restore_attempted': False, 'active_runtime_claim': False})
+
+    def test_preliminary_failure_plus_cleanup_refusal_still_records_custody(self):
+        # Match both the initial route read and every broker cleanup attempt.
+        code, calls, residual = self.run_step('runtime_rollback', 'issue_1700')
+        self.assertEqual(code, 7)
+        self.assertEqual(sum('issue_1700_http_bootstrap.mjs cleanup' in line for line in calls), 3)
+        self.assertEqual(self.restores(calls), [])
+        self.assertEqual(self.uploads(calls, 'rollback-runtime.toml'), [])
+        self.assertEqual(residual, {'contract': 'issue1700-rollback-residual-v1', 'reason': 'route_inventory_unproven',
+                                    'worker_restore_attempted': False, 'active_runtime_claim': False})
+
     def test_restore_runs_exactly_once_on_success_and_never_without_broker_cleanup(self):
         for step_id, config in (('runtime_rollback', 'rollback-runtime.toml'), ('early_rollback', 'rollback.toml')):
             with self.subTest(step=step_id):
@@ -584,8 +622,12 @@ class RollbackRestoreGuaranteeTests(unittest.TestCase):
             # Bounded wait inside a step budget that leaves room for the restore (Claude minor).
             self.assertEqual(run.count('CONTAINER_WAIT_TIMEOUT_MS=420000'), 1)
             self.assertGreaterEqual(steps[step_id]['timeout-minutes'], 30)
-            # The trap is armed after broker cleanup and before any Container inspection.
-            self.assertLess(run.index('broker_cleanup\n'), run.index('trap finish_rollback EXIT'))
+            # Runtime custody precedes reads; restoration opens only after cleanup.
+            if step_id == 'runtime_rollback':
+                self.assertLess(run.index('trap finish_rollback EXIT'), run.index('verify_issue_1700_route_inventory.py'))
+                self.assertLess(run.index('broker_cleanup\n'), run.index('worker_restore_permitted=1\n'))
+            else:
+                self.assertLess(run.index('broker_cleanup\n'), run.index('trap finish_rollback EXIT'))
             self.assertLess(run.index('trap finish_rollback EXIT'), run.index('read-container-state'))
             self.assertLess(run.index('trap finish_rollback EXIT'), run.index('verify-container-digest'))
         # The runtime probe CLI honours that budget (its contract still caps it at 600000 ms).

@@ -20,6 +20,10 @@ import { V9_PROBE_NAME, V9_PROBE_RELEASE, V9_PROBE_NONCE, V9_PROBE_RETIRED_KEY }
 import { OLD_PROBE_NAME, OLD_PROBE_RELEASE, V5_PROBE_NAME, V5_PROBE_RELEASE } from "../src/staging_d1_probe_retirement.js";
 import { createHttpLifetime, httpDeadlineContext, STAGING_D1_HTTP_LIFETIME_KEY } from "../src/staging_d1_http_lifetime.js";
 import { isStagingD1HttpStatus } from "../src/staging_d1_http_contract.js";
+import { handleStagingD1HttpProof } from "../src/staging_d1_http.js";
+import { createBootstrapBroker, PROBE_HARD_STOP_MS } from "../../scripts/issue_1700_http_bootstrap.mjs";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import cleanupWindow from "../src/staging_d1_probe_cleanup_window.json";
 import type { Env } from "../src/index.js";
 
@@ -129,6 +133,103 @@ describe("durable authenticated HTTP native coordinator", () => {
       .mockImplementation(async () => { container.running = true; return { ok: true }; });
     return { do_, state, env, order, v8, v9, old, v5, sql, port, container, start };
   }
+
+  it.each([120_000, 240_000, 23 * 60_000])("delayed RPC at +%d cannot outlive broker cleanup and rollback", async delay => {
+    const h = await fixture();
+    const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    const marker = `issue-1700-route-free-123456-${release}`, image = "sha256:" + "b".repeat(64);
+    const bindings = [{ name: "SENTRY_RELEASE", type: "plain_text", text: release }];
+    let domain = { enabled: false, previews_enabled: false }, candidateActive = false;
+    let attempt: Record<string, unknown>, responseStatus: number | undefined;
+    const deployment = (n: number, time: number) => ({ id: id(n), strategy: "percentage", created_on: new Date(time).toISOString(),
+      versions: [{ version_id: id(n + 10), percentage: 100 }] });
+    const started = at + 30_000;
+    vi.setSystemTime(started);
+    const execute = vi.fn(async (scheduled: number) => {
+      // The handler passed its bucket check before this simulated RPC queue delay.
+      vi.setSystemTime(at + delay);
+      return h.do_.executeStagingD1HttpProof(scheduled);
+    });
+    const target = { ...h.env, CORELINK_ADMIN_AUTH_KEY: "dedicated-admin-key-for-delayed-rpc-123456789",
+      CORELINK_SERVER: { idFromName: () => ({}), get: () => ({ executeStagingD1HttpProof: execute }) } } as unknown as Env;
+    const broker = createBootstrapBroker({ api_token: "provider-token-sentinel", operation_id: "123456",
+      expected_release: release, preimage_deployment_id: id(1), preimage_version_id: id(11) }, {
+      directory: "/tmp/unused-delayed-rpc-fixture", now: Date.now,
+      save: async () => {}, writeSecrets: async () => {}, removeSecrets: async () => {},
+      readAttempt: async () => attempt,
+      request: async (url: string, init: RequestInit) => {
+        const path = new URL(url).pathname.split("/corelink-staging")[1];
+        let result: unknown;
+        if (path === "/deployments") result = { deployments: [
+          ...(candidateActive ? [deployment(3, started)] : []), deployment(1, at - 10_000)] };
+        else if (path === `/versions/${id(11)}`) result = { id: id(11), resources: { bindings } };
+        else if (path === `/versions/${id(13)}`) result = { id: id(13), annotations: { "workers/message": marker },
+          resources: { bindings: [...bindings, { name: "CORELINK_ADMIN_AUTH_KEY", type: "secret_text" }] } };
+        else if (path === "/subdomain") {
+          if (init.method === "POST") domain = JSON.parse(init.body as string);
+          result = domain;
+        } else throw new Error("unexpected fixture API");
+        return Response.json({ success: true, errors: [], messages: [], result });
+      },
+      proofRunner: async () => {
+        attempt = { contract: "corelink-staging-http-attempt-v1", carrier: "authenticated_http",
+          origin: "https://corelink-staging.gmhelmold.workers.dev", worker_release: release,
+          probe_nonce: STAGING_D1_PROBE_WINDOW.nonce, scheduled_time_ms: at, started_at_ms: started,
+          deadline_ms: started + 1_200_000, transport_deadline_ms: started + 1_260_000, request_attempted: true };
+        const response = await handleStagingD1HttpProof(new Request(
+          "https://corelink-staging.gmhelmold.workers.dev/_internal/staging/d1-binding-runtime-probe", {
+            method: "POST", headers: { "content-type": "application/json",
+              "x-corelink-internal-auth": target.CORELINK_ADMIN_AUTH_KEY! },
+            body: JSON.stringify({ worker_release: release, probe_nonce: STAGING_D1_PROBE_WINDOW.nonce,
+              scheduled_time_ms: at }),
+          }), target);
+        responseStatus = response?.status;
+        throw new Error("lost proof");
+      },
+    });
+    await broker.dispatch("prepare"); candidateActive = true;
+    await broker.dispatch("bind_candidate", { operation_id: "123456", candidate_deployment_id: id(3),
+      candidate_version_id: id(13), worker_release: release, image_digest: image });
+    await expect(broker.dispatch("probe")).rejects.toThrow();
+    expect(execute).toHaveBeenCalledExactlyOnceWith(at);
+    expect(responseStatus).toBe(503);
+    expect(await h.state.storage.get(STAGING_D1_HTTP_LIFETIME_KEY)).toBeUndefined();
+    expect(await h.state.storage.get(STAGING_D1_HTTP_OPERATION_KEY)).toBeUndefined();
+    expect(await h.state.storage.getAlarm()).toBeNull();
+    expect(h.order).toEqual([]); expect(h.start).not.toHaveBeenCalled();
+    const cutoff = at + PROBE_HARD_STOP_MS;
+    expect(broker.snapshot().probe_quiescent_at_ms).toBe(cutoff);
+    const gate = () => JSON.parse(execFileSync("python3", ["-c", `
+import json,sys
+from scripts.issue_1700_rollback_quiescence import inspect
+p=json.load(sys.stdin)
+result=inspect(lambda path: {'success':True,'result':{'schedules':[]} if path=='/schedules' else []},
+    broker_status_reader=lambda:p.pop('observation'), **p['options'])
+print(json.dumps(result))
+`], { cwd: fileURLToPath(new URL("../../", import.meta.url)), encoding: "utf8", input: JSON.stringify({
+      observation: { contract: "issue1700-broker-status-observation-v1", requested_at_ms: Date.now(),
+        observed_at_ms: Date.now(), broker: broker.snapshot() },
+      options: { http_required: true, http_attempt: attempt!, http_proof: null, expected_release: release,
+        expected_image_digest: image, operation_id: "123456", candidate_deployment_id: id(3),
+        candidate_version_id: id(13), preimage_deployment_id: id(1), preimage_version_id: id(11), now_ms: Date.now() },
+    }) }));
+    vi.setSystemTime(cutoff - 1);
+    await expect(broker.dispatch("cleanup")).rejects.toThrow();
+    expect(gate().rollback_allowed).toBe(false); expect(domain.enabled).toBe(true);
+    vi.setSystemTime(cutoff);
+    expect(gate().rollback_allowed).toBe(true);
+    expect((await broker.dispatch("cleanup")).cleanup_basis).toBe("expired_attempt");
+    expect(domain.enabled).toBe(false); expect(gate().rollback_allowed).toBe(true);
+  }, 20_000);
+
+  it("admits the last millisecond of the bucket with kill before the broker cutoff", async () => {
+    const h = await fixture(); vi.setSystemTime(at + 119_999);
+    await h.do_.executeStagingD1HttpProof(at);
+    const lifetime = await h.state.storage.get<{ kill_at_ms: number }>(STAGING_D1_HTTP_LIFETIME_KEY);
+    expect(lifetime?.kill_at_ms).toBe(at + 119_999 + 1_200_000);
+    expect(lifetime!.kill_at_ms).toBeLessThan(at + PROBE_HARD_STOP_MS);
+    expect(h.start).toHaveBeenCalledOnce();
+  });
 
   it("claims before all cleanup, executes whole order, and persists exact stopped proof", async () => {
     const h = await fixture();

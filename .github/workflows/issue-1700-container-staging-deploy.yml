@@ -808,30 +808,11 @@ jobs:
           HTTP_PROBE_STEP_OUTCOME: ${{ steps.runtime_probe.outcome }}
         run: |
           set -euo pipefail
-          CLOUDFLARE_API_TOKEN="$ROUTE_READ_TOKEN" python3 scripts/verify_issue_1700_route_inventory.py > /dev/null
-          pnpm exec wrangler deployments list \
-            --config "$RUNNER_TEMP/staging-config/root.toml" \
-            --name corelink-staging --json \
-            > "$RUNNER_TEMP/staging-runtime-deployments-before-rollback.json"
-          pnpm exec wrangler versions view "$CANDIDATE_VERSION_ID" \
-            --config "$RUNNER_TEMP/staging-config/root.toml" \
-            --name corelink-staging --json \
-            > "$RUNNER_TEMP/staging-runtime-version-before-rollback.json"
-          python3 scripts/verify_issue_1700_existing_deployment.py verify-candidate \
-            --deployments "$RUNNER_TEMP/staging-runtime-deployments-before-rollback.json" \
-            --version "$RUNNER_TEMP/staging-runtime-version-before-rollback.json" \
-            --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
-            --marker "$DEPLOYMENT_MARKER" \
-            --expected-deployment-id "$CANDIDATE_DEPLOYMENT_ID" \
-            --expected-version-id "$CANDIDATE_VERSION_ID" \
-            --rollback-marker "$ROLLBACK_MARKER" \
-            --output "$GITHUB_OUTPUT" \
-            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
-          # First gate: complete proof, never executed, or a failed attempt past its hard stop.
-          python3 scripts/issue_1700_rollback_quiescence.py
           # Bounded custody retry: a transport failure keeps the broker's basis
           # (cleanup_pending); ownership drift refuses every attempt and nothing is restored.
+          broker_cleanup_attempted=0
           broker_cleanup() {
+            broker_cleanup_attempted=1
             local attempt
             for attempt in 1 2 3; do
               if node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
@@ -842,15 +823,12 @@ jobs:
           }
           # Keep the cleaned, admission-closed broker available for the second
           # fresh never_execute status check; always-local shutdown runs below.
-          broker_cleanup
-          # Ownership and quiescence are proven and the owned origin is cleaned. From here the
-          # exact Worker preimage restore is attempted however the Container steps below end,
-          # because the candidate and the rollback upload both carry the admin key. Only a
-          # failed or unknown second quiescence gate withholds it (never restore old code over
-          # an unproven probe schedule), leaving a sanitized residual receipt. The step keeps
-          # its failure outcome; the Worker and Container preimages are verified separately.
+          # Arm failure custody before any provider read. Restoration stays closed until
+          # route inventory, candidate ownership, quiescence and broker cleanup all succeed.
+          # Any earlier failure closes only broker-owned reachability and records the residual.
           worker_restore_attempted=0
-          worker_restore_permitted=1
+          worker_restore_permitted=0
+          residual_reason=route_inventory_unproven
           restore_worker_preimage() {
             worker_restore_attempted=1
             pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
@@ -877,12 +855,44 @@ jobs:
             trap - EXIT
             if [ "$worker_restore_attempted" = 0 ]; then
               if [ "$worker_restore_permitted" = 1 ]; then restore_worker_preimage || status=1
-              else write_residual second_quiescence_unproven; fi
+              else
+                # Broker cleanup independently proves ownership and its execution cutoff.
+                # A preliminary read failure cannot authorize a version restore, but must
+                # still close this run's origin when the broker can safely attribute it.
+                if [ "$broker_cleanup_attempted" = 0 ]; then broker_cleanup || { [ "$status" != 0 ] || status=1; }; fi
+                write_residual "$residual_reason"
+              fi
             fi
             exit "$status"
           }
           trap finish_rollback EXIT
           trap 'exit 143' TERM INT
+          CLOUDFLARE_API_TOKEN="$ROUTE_READ_TOKEN" python3 scripts/verify_issue_1700_route_inventory.py > /dev/null
+          residual_reason=candidate_ownership_unproven
+          pnpm exec wrangler deployments list \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-runtime-deployments-before-rollback.json"
+          pnpm exec wrangler versions view "$CANDIDATE_VERSION_ID" \
+            --config "$RUNNER_TEMP/staging-config/root.toml" \
+            --name corelink-staging --json \
+            > "$RUNNER_TEMP/staging-runtime-version-before-rollback.json"
+          python3 scripts/verify_issue_1700_existing_deployment.py verify-candidate \
+            --deployments "$RUNNER_TEMP/staging-runtime-deployments-before-rollback.json" \
+            --version "$RUNNER_TEMP/staging-runtime-version-before-rollback.json" \
+            --preimage "$RUNNER_TEMP/staging-deploy-receipt.json" \
+            --marker "$DEPLOYMENT_MARKER" \
+            --expected-deployment-id "$CANDIDATE_DEPLOYMENT_ID" \
+            --expected-version-id "$CANDIDATE_VERSION_ID" \
+            --rollback-marker "$ROLLBACK_MARKER" \
+            --output "$GITHUB_OUTPUT" \
+            --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+          residual_reason=first_quiescence_unproven
+          # First gate: complete proof, never executed, or a failed attempt past its hard stop.
+          python3 scripts/issue_1700_rollback_quiescence.py
+          residual_reason=broker_cleanup_unproven
+          broker_cleanup
+          worker_restore_permitted=1
           # Container inspection can now fail on its own without stranding the key-bearing Worker.
           node scripts/issue_1700_runtime_probe.mjs read-container-state \
             > "$RUNNER_TEMP/staging-runtime-containers-before-rollback.json"
@@ -927,6 +937,7 @@ jobs:
             "$RUNNER_TEMP/staging-runtime-containers-image-restored.json"
           # Second gate: an unknown or failed answer never restores old code over an
           # unproven probe schedule (docs/operator/issue-1700-runtime-recovery.md).
+          residual_reason=second_quiescence_unproven
           worker_restore_permitted=0
           ROLLBACK_CONTAINER_RESTORE_ATTEMPTED=1 python3 scripts/issue_1700_rollback_quiescence.py
           worker_restore_permitted=1
