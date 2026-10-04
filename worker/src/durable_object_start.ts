@@ -381,8 +381,14 @@ export async function startContainer(
           // ADR-MULTI-REGION-V1 — per-region R2 bucket overrides.
           // Absent/empty → container defaults to IAD (corelink-ac-iad / iad).
           // Set by [env.prod-<region>].vars in wrangler.toml.
-          R2_AC_BUCKET: ctx.env.R2_AC_BUCKET ?? "",
-          R2_AC_REGION: ctx.env.R2_AC_REGION ?? "",
+          // Staging forwards these EMPTY (#1700). The container reads any of R2_AC_REGION /
+          // R2_CAS_REGION / R2_AC_BUCKET as an independent PROD signal and refuses to boot
+          // unless every prod control is armed (main.rs prod-arming guard). Staging is not
+          // prod and arms none of them, so it must not send the signal. Its container has no
+          // StorageEnv (no R2 keys), so no R2 path reads these, and the region defaults ("iad")
+          // equal staging's own values. Prod, regional prod and every other env are unchanged.
+          R2_AC_BUCKET: ctx.env.ENVIRONMENT === "staging" ? "" : (ctx.env.R2_AC_BUCKET ?? ""),
+          R2_AC_REGION: ctx.env.ENVIRONMENT === "staging" ? "" : (ctx.env.R2_AC_REGION ?? ""),
           R2_CHUNK_BUCKET: ctx.env.R2_CHUNK_BUCKET ?? "",
           R2_CHUNK_REGION: ctx.env.R2_CHUNK_REGION ?? "",
           // F7/F8 (2026-06-13 audit) — CAS residency. The container reads
@@ -393,7 +399,7 @@ export async function startContainer(
           // [env.prod-<region>].vars now sets R2_CAS_REGION so EU/regional CAS
           // bytes key to their own region. Absent/empty → container defaults to
           // IAD (corelink-cas-prod / iad).
-          R2_CAS_REGION: ctx.env.R2_CAS_REGION ?? "",
+          R2_CAS_REGION: ctx.env.ENVIRONMENT === "staging" ? "" : (ctx.env.R2_CAS_REGION ?? ""),
           R2_CAS_BUCKET: ctx.env.R2_CAS_BUCKET ?? "",
           // F8 — remaining container-read env vars missing from the forward
           // list: the AC R2 bucket prefix (`dsr/adapter_r2_ac.rs:68`) and the
