@@ -20,8 +20,8 @@ export const PROBE_EXPIRY = PROBE_WINDOW.expires_ms;
 export const RECEIPT_PREFIX = "[staging_d1_runtime_probe] receipt=";
 export const V8_CLEANUP_PREFIX = "[staging_d1_runtime_probe] v8_cleanup=";
 const V8_PROBE_RELEASE = "7d18bcfc450db97b1b987923050b92971da530a8";
-const V8_CLEANUP_START_MS = Date.parse("2026-10-02T18:00:00Z");
-const V8_CLEANUP_EXPIRY_MS = Date.parse("2026-10-02T21:15:00Z");
+const V8_CLEANUP_START_MS = Date.parse("2026-10-02T21:06:00Z");
+const V8_CLEANUP_EXPIRY_MS = Date.parse("2026-10-03T00:21:00Z");
 const MIN_TAIL_TTL_MS = 4 * 60_000;
 const TAIL_RENEW_LEAD_MS = 60_000;
 const MAX_OWNED_TAILS = 8;
@@ -944,7 +944,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
     if (process.argv[2] === "wait-container-state") {
       const preimage = JSON.parse(await readFile(process.argv[3], "utf8"));
+      // An explicit budget keeps the caller's own restore inside its step timeout; the wait
+      // contract itself still refuses anything outside 1..600000 ms.
+      const budget = process.env.CONTAINER_WAIT_TIMEOUT_MS;
       const result = await waitForContainerState({
+        timeoutMs: budget === undefined ? 600_000 : Number(budget),
         preimage, expectedDigest: process.env.EXPECTED_CONTAINER_IMAGE_DIGEST,
         read: async (timeout) => readContainerDetail({ timeoutMs: Math.min(timeout, 30_000), requireHealthy: false }),
       });

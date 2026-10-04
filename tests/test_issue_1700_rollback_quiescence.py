@@ -53,23 +53,22 @@ def never_execute_fixture(state='enabled'):
     started, now = HTTP_START_MS, HTTP_START_MS + 15 * 60000
     candidate = {'operation_id': '123456', 'candidate_deployment_id': ids[2], 'candidate_version_id': ids[3],
                  'worker_release': RELEASE, 'image_digest': DIGEST}
-    broker = {'contract': 'corelink-staging-http-bootstrap-v1', 'operation_id': '123456', 'worker_release': RELEASE,
+    broker = {'contract': 'corelink-staging-http-bootstrap-v2', 'operation_id': '123456', 'worker_release': RELEASE,
               'started_at_ms': started, 'expires_at_ms': started + 45 * 60000, 'state': state,
-              'secret_name': 'CORELINK_ADMIN_AUTH_KEY', 'secret_put_attempted': True, 'secret_put_confirmed': True,
-              'secret_put_at_ms': started + 500, 'subdomain_enable_attempted': True, 'subdomain_enabled': True,
-              'subdomain_restore_attempted': False, 'subdomain_restored': False, 'secret_delete_attempted': False,
-              'secret_deleted': False, 'rollback_safe': False, 'cleanup_basis': None,
+              'secret_name': 'CORELINK_ADMIN_AUTH_KEY', 'secret_carrier': 'candidate_version',
+              'secret_file_written': True, 'secret_file_removed': True, 'candidate_key_confirmed': True,
+              'subdomain_enable_attempted': True, 'subdomain_enabled': True,
+              'subdomain_restore_attempted': False, 'subdomain_restored': False,
+              'rollback_safe': False, 'cleanup_basis': None,
               'probe_command_seen': False, 'admission_closed': True,
               'preimage': {'deployment_id': ids[0], 'version_id': ids[1], 'created_at_ms': started - 10000,
                            'subdomain': {'enabled': False, 'previews_enabled': False}},
-              'post_secret': {'deployment_id': ids[4], 'version_id': ids[5], 'created_at_ms': started + 1000},
-              'post_delete': None, 'candidate': candidate,
+              'candidate': candidate,
               'preimage_bindings': [{'name': f'BINDING_{index}', 'type': 'plain_text'} for index in range(35)],
-              'failure': None, 'pid': 1234}
+              'failure': None, 'probe_quiescent_at_ms': None, 'pid': 1234}
     if state == 'cleaned':
         broker.update(subdomain_enabled=False, subdomain_restore_attempted=True, subdomain_restored=True,
-                      secret_delete_attempted=True, secret_deleted=True, rollback_safe=True, cleanup_basis='never_execute',
-                      post_delete={'deployment_id': ids[6], 'version_id': ids[7], 'created_at_ms': now - 1000})
+                      rollback_safe=True, cleanup_basis='never_execute')
     observation = {'contract': BROKER_STATUS_CONTRACT, 'requested_at_ms': now - 10, 'observed_at_ms': now, 'broker': broker}
     options = {'http_required': True, 'http_attempt': None, 'http_proof': {'invalid': True},
                'expected_release': RELEASE, 'expected_image_digest': DIGEST, 'operation_id': '123456',
@@ -122,6 +121,96 @@ class QuiescenceTests(unittest.TestCase):
         observation['broker']['cleanup_basis'] = 'complete_proof'
         self.assertFalse(inspect(empty_read, **options)['rollback_allowed'])
 
+    def test_a_fenced_failed_bind_and_its_reconciled_cleanup_permit_the_exact_restore(self):
+        bind_failure = {'phase': 'bind_enable_subdomain', 'endpoint_label': 'subdomain', 'http_status': 502,
+                        'cf_error_codes': [], 'cf_message_class': None, 'validation_failed': None,
+                        'timed_out': False, 'aborted': False}
+        options, observation = never_execute_fixture()
+        observation['broker'].update(state='bind_failed', subdomain_enabled=False, candidate_key_confirmed=False,
+                                     failure=bind_failure)
+        self.assertTrue(inspect(empty_read, **options)['rollback_allowed'])
+        observation['broker'].update(state='cleaned', cleanup_basis='never_execute', rollback_safe=True,
+                                     candidate_key_confirmed=True, subdomain_restore_attempted=True,
+                                     subdomain_restored=True)
+        self.assertTrue(inspect(empty_read, **options)['rollback_allowed'])
+        # A bind that never reached the toggle needs no restore write.
+        observation['broker'].update(subdomain_enable_attempted=False, subdomain_restore_attempted=False)
+        self.assertTrue(inspect(empty_read, **options)['rollback_allowed'])
+        # Cleanup keeps custody across transport failures, so a cleanup-phase failure is fine
+        # once cleaned; and cleanup re-proves ownership, not the key, so an unconfirmed key is fine.
+        for allowed in ({'failure': dict(bind_failure, phase='cleanup_restore_subdomain')},
+                        {'candidate_key_confirmed': False}):
+            options, observation = never_execute_fixture('cleaned')
+            observation['broker'].update({'failure': bind_failure, 'subdomain_enable_attempted': True, **allowed})
+            self.assertTrue(inspect(empty_read, **options)['rollback_allowed'], allowed)
+        refused = [
+            lambda b: b.update(failure=dict(bind_failure, phase='probe_verify_candidate')),
+            lambda b: b.update(probe_quiescent_at_ms=b['started_at_ms']),  # never_execute has no attempt bound
+            lambda b: b.update(failure='bind_enable_subdomain'),
+            lambda b: b.update(subdomain_restore_attempted=True, subdomain_enable_attempted=False),  # restore, no enable
+            lambda b: b.update(state='bind_failed', cleanup_basis=None, rollback_safe=False,
+                               subdomain_restored=False, subdomain_enabled=True),
+            lambda b: b.update(state='enabled', cleanup_basis=None, rollback_safe=False, subdomain_restored=False,
+                               subdomain_enabled=True, subdomain_enable_attempted=True),  # enabled with a failure
+            lambda b: b.update(probe_command_seen=True),
+            lambda b: b.update(candidate_key_confirmed=1),
+        ]
+        for change in refused:
+            options, observation = never_execute_fixture('cleaned')
+            observation['broker'].update(failure=bind_failure, subdomain_enable_attempted=True)
+            change(observation['broker'])
+            self.assertFalse(inspect(empty_read, **options)['rollback_allowed'])
+
+    def test_a_failed_attempt_is_quiescent_only_after_its_hard_stop_then_restorable(self):
+        # Attempt recorded, the Container exited 1 at boot, no proof: the broker fenced the
+        # failed probe, and nothing can still be running once the attempt's hard stop passed.
+        attempt = http_fixture()['http_attempt']
+        stop = attempt['scheduled_time_ms'] + 120_000 + 1_200_000 + 60_000
+        options, observation = never_execute_fixture()
+        broker = observation['broker']
+        broker.update(state='probe_failed', probe_command_seen=True, probe_quiescent_at_ms=stop,
+                      started_at_ms=attempt['started_at_ms'] - 60_000)
+        broker['expires_at_ms'] = broker['started_at_ms'] + 45 * 60000
+        broker['preimage']['created_at_ms'] = broker['started_at_ms'] - 10_000
+        def at(now):
+            observation.update(requested_at_ms=now - 10, observed_at_ms=now)
+            options['now_ms'] = now
+            return inspect(empty_read, **dict(options, http_attempt=attempt, http_proof=None))
+        early = at(stop - 1)
+        self.assertFalse(early['rollback_allowed']); self.assertFalse(early['http_attempt_quiescent'])
+        later = at(stop)
+        self.assertTrue(later['rollback_allowed']); self.assertTrue(later['http_attempt_quiescent'])
+        self.assertFalse(later['http_never_executed'])
+        broker.update(state='cleaned', cleanup_basis='expired_attempt', rollback_safe=True, subdomain_enabled=False,
+                      subdomain_restore_attempted=True, subdomain_restored=True)
+        self.assertTrue(at(stop + 60_000)['rollback_allowed'])
+        refused = [
+            lambda b, a: b.update(probe_quiescent_at_ms=None),
+            lambda b, a: b.update(probe_command_seen=False),
+            lambda b, a: b.update(admission_closed=False),
+            lambda b, a: b.update(cleanup_basis='never_execute'),
+            lambda b, a: b.update(candidate_key_confirmed=False),
+            lambda b, a: b.update(failure={'phase': 'bind_enable_subdomain'}),
+            lambda b, a: b.update(probe_quiescent_at_ms=stop + 120_000),  # broker's own bound not reached
+            lambda b, a: a.update(scheduled_time_ms=a['scheduled_time_ms'] + 120_000,
+                                  started_at_ms=a['started_at_ms'] + 120_000),  # the attempt's bound not reached
+            lambda b, a: a.update(probe_nonce='issue-1700-recovery-20261002-v15'),
+            lambda b, a: a.update(invalid=True),
+        ]
+        for change in refused:
+            options, observation = never_execute_fixture()
+            broker = observation['broker']
+            broker.update(state='cleaned', cleanup_basis='expired_attempt', rollback_safe=True, subdomain_enabled=False,
+                          subdomain_restore_attempted=True, subdomain_restored=True, probe_command_seen=True,
+                          probe_quiescent_at_ms=stop, started_at_ms=attempt['started_at_ms'] - 60_000)
+            broker['expires_at_ms'] = broker['started_at_ms'] + 45 * 60000
+            broker['preimage']['created_at_ms'] = broker['started_at_ms'] - 10_000
+            changed = dict(attempt)
+            change(broker, changed)
+            observation.update(requested_at_ms=stop + 60_000 - 10, observed_at_ms=stop + 60_000)
+            options['now_ms'] = stop + 60_000
+            self.assertFalse(inspect(empty_read, **dict(options, http_attempt=changed, http_proof=None))['rollback_allowed'])
+
     def test_missing_ledger_does_not_replace_positive_live_broker_custody(self):
         options, _ = never_execute_fixture()
         options['broker_status_reader'] = None
@@ -154,7 +243,10 @@ class QuiescenceTests(unittest.TestCase):
             lambda o, s: s['broker'].update(probe_command_seen=True),
             lambda o, s: s['broker'].update(probe_command_seen=0),
             lambda o, s: s['broker'].update(admission_closed=False),
-            lambda o, s: s['broker'].update(secret_put_confirmed=False),
+            lambda o, s: s['broker'].update(secret_file_removed=False),
+            lambda o, s: s['broker'].update(candidate_key_confirmed=False),
+            lambda o, s: s['broker'].update(secret_carrier='script_secret'),
+            lambda o, s: s['broker'].update(contract='corelink-staging-http-bootstrap-v1'),
             lambda o, s: s['broker'].update(rollback_safe=True),
             lambda o, s: s['broker']['candidate'].update(candidate_version_id=s['broker']['preimage']['version_id']),
             lambda o, s: s['broker']['candidate'].update(operation_id='999'),
@@ -291,7 +383,8 @@ class QuiescenceTests(unittest.TestCase):
         rollback = workflow.split('      - name: Restore both preimages after the finite runtime operation', 1)[1]
         self.assertLess(rollback.index('python3 scripts/issue_1700_rollback_quiescence.py'), rollback.index('pnpm exec wrangler deploy ' + chr(92)))
         self.assertEqual(rollback.count('python3 scripts/issue_1700_rollback_quiescence.py'), 2)
-        self.assertIn('ROLLBACK_CONTAINER_RESTORE_ATTEMPTED=1 python3 scripts/issue_1700_rollback_quiescence.py\n          pnpm exec wrangler versions deploy', rollback)
+        self.assertIn('worker_restore_permitted=0\n          ROLLBACK_CONTAINER_RESTORE_ATTEMPTED=1 python3 scripts/issue_1700_rollback_quiescence.py\n'
+                      '          worker_restore_permitted=1\n          restore_worker_preimage\n', rollback)
         self.assertIn('staging-rollback-quiescence.json', rollback)
 
     def test_workflow_bootstrap_custody_and_http_carrier_keep_transport_and_secrets_separate(self):
@@ -311,14 +404,34 @@ class QuiescenceTests(unittest.TestCase):
         self.assertLess(failed.index("'failure',broker"), failed.index('raise SystemExit(1)'))
         self.assertNotIn('CLOUDFLARE_API_TOKEN', failed)
         self.assertNotIn('payload', failed)
+        # The admin key rides the candidate upload; nothing writes a script-level secret.
+        upload = deploy.split('        id: deploy\n', 1)[1].split('      - name:', 1)[0]
+        self.assertIn('--secrets-file "$secrets_file"', upload)
+        self.assertIn('secrets_file="$RUNNER_TEMP/staging-http-broker/candidate-secrets.json"', upload)
+        self.assertLess(upload.index("trap 'rm -f -- \"$secrets_file\"' EXIT"), upload.index('pnpm exec wrangler deploy'))
+        self.assertNotIn('secret put', deploy)
+        self.assertNotIn('secret bulk', deploy)
+        self.assertNotIn('versions secret', deploy)
+        # Each exact-preimage restore is followed by the provider readback that the key is gone.
+        for step_id in ('early_rollback', 'runtime_rollback'):
+            with self.subTest(step=step_id):
+                body = deploy.split(f'        id: {step_id}\n', 1)[1].split('\n      - name:', 1)[0]
+                self.assertEqual(body.count("'scripts/issue_1700_http_bootstrap.mjs','verify_restored'"), 1)
+                self.assertLess(body.index('wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%"'),
+                                body.index("'verify_restored'"))
+                self.assertIn('PREIMAGE_DEPLOYMENT_ID: ${{ steps.preimage.outputs.preimage_deployment_id }}', body)
+                self.assertIn('staging-http-bootstrap-restore.json', body)
+        self.assertIn('${{ runner.temp }}/staging-http-bootstrap-restore.json', deploy)
+        self.assertNotIn('candidate-secrets.json', deploy.split('Upload redacted route-free deployment receipt', 1)[1])
         runtime = deploy.split('        id: runtime_probe\n', 1)[1].split('      - name:', 1)[0]
         self.assertIn('issue_1700_http_bootstrap.mjs probe', runtime)
         self.assertNotIn('issue_1700_runtime_probe.mjs', runtime)
         self.assertNotIn('CORELINK_ADMIN_AUTH_KEY', runtime)
         self.assertIn('staging-http-broker/staging-http-probe-attempt.json', deploy)
         rollback = deploy.split('        id: runtime_rollback\n', 1)[1]
-        self.assertLess(rollback.index('issue_1700_rollback_quiescence.py'), rollback.index('issue_1700_http_bootstrap.mjs cleanup'))
-        self.assertLess(rollback.index('issue_1700_http_bootstrap.mjs cleanup'), rollback.index('pnpm exec wrangler deploy ' + chr(92)))
+        self.assertLess(rollback.index('trap finish_rollback EXIT'), rollback.index('verify_issue_1700_route_inventory.py'))
+        self.assertLess(rollback.index('issue_1700_rollback_quiescence.py'), rollback.index('          broker_cleanup\n'))
+        self.assertLess(rollback.index('          broker_cleanup\n'), rollback.index('pnpm exec wrangler deploy ' + chr(92)))
         self.assertNotIn('issue_1700_http_bootstrap.mjs close', deploy)
         self.assertIn('PREIMAGE_DEPLOYMENT_ID: ${{ steps.preimage.outputs.preimage_deployment_id }}', rollback)
         condition = rollback.split('        env:', 1)[0]
@@ -339,4 +452,203 @@ class QuiescenceTests(unittest.TestCase):
         self.assertIn('test "$BROKER_SHUTDOWN_OUTCOME" = success', deploy)
         self.assertIn('staging-http-broker-status.json', deploy)
         self.assertIn('staging-http-broker-shutdown.json', deploy)
-        self.assertEqual(deploy.count("assert config.get('workers_dev') is False"), 3)
+        self.assertEqual(deploy.count("assert config.get('workers_dev') is False"), 4)
+
+
+class RollbackRestoreGuaranteeTests(unittest.TestCase):
+    """Run the real rollback step scripts against stub tools. Once ownership, quiescence and the
+    broker cleanup are proven, the exact Worker preimage restore must be attempted however the
+    Container steps end; a failed or unknown second quiescence gate must withhold it."""
+
+    def run_step(self, step_id, fail_on=None, after_upload=False, fail_times=None, outcome=None):
+        import yaml
+        workflow = yaml.safe_load(Path('.github/workflows/issue-1700-container-staging-deploy.yml').read_text())
+        step = next(item for item in workflow['jobs']['deploy']['steps'] if item.get('id') == step_id)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir, log, failures = root / 'bin', root / 'calls.log', root / 'failures'
+            bin_dir.mkdir()
+            for tool in ('pnpm', 'node', 'python3'):
+                stub = bin_dir / tool
+                stub.write_text(
+                    '#!/bin/bash\ncat >/dev/null 2>&1 || true\n'
+                    f'uploaded=0; grep -q "wrangler deploy.*rollback" "{log}" 2>/dev/null && uploaded=1\n'
+                    f'echo "{tool} $*" >> "{log}"\n'
+                    + ('if [ "$1" = -c ]; then echo "${STUB_OUTCOME:-}"; exit 0; fi\n' if tool == 'python3' else '') +
+                    'if [ -n "${FAIL_ON:-}" ] && [[ "$*" == *"$FAIL_ON"* ]] && '
+                    '{ [ -z "${AFTER_UPLOAD:-}" ] || [ "$uploaded" = 1 ]; }; then\n'
+                    f'  count=$(cat "{failures}" 2>/dev/null || echo 0)\n'
+                    '  if [ -z "${FAIL_TIMES:-}" ] || [ "$count" -lt "$FAIL_TIMES" ]; then\n'
+                    f'    echo $((count + 1)) > "{failures}"; exit 7\n'
+                    '  fi\n'
+                    'fi\n')
+                stub.chmod(0o755)
+            env = {key: f'stub-{key.lower()}' for key in step.get('env', {})}
+            env.update(PATH=f'{bin_dir}:/usr/bin:/bin', RUNNER_TEMP=str(root), GITHUB_OUTPUT=str(root / 'out'),
+                       PREIMAGE_VERSION_ID='preimage-version', PREIMAGE_CONTAINER_IMAGE='registry/x@sha256:' + 'c' * 64,
+                       HOME=str(root), CLEANUP_RETRY_SECONDS='0', CLOUDFLARE_API_TOKEN='stub-token')
+            for key, value in (('FAIL_ON', fail_on), ('AFTER_UPLOAD', '1' if after_upload else None),
+                               ('FAIL_TIMES', None if fail_times is None else str(fail_times)), ('STUB_OUTCOME', outcome)):
+                if value is not None:
+                    env[key] = value
+            result = subprocess.run(['bash', '-c', step['run']], env=env, capture_output=True, text=True,
+                                    stdin=subprocess.DEVNULL, timeout=60)
+            calls = log.read_text().splitlines() if log.exists() else []
+            residual = root / 'staging-rollback-residual.json'
+            residual = json.loads(residual.read_text()) if residual.exists() else None
+        return result.returncode, calls, residual
+
+    @staticmethod
+    def restores(calls):
+        return [i for i, line in enumerate(calls) if 'wrangler versions deploy preimage-version@100%' in line]
+
+    @staticmethod
+    def uploads(calls, config):
+        return [i for i, line in enumerate(calls) if 'wrangler deploy --' in line and config in line]
+
+    def test_container_failures_before_or_after_the_upload_still_restore_the_worker(self):
+        cases = []
+        for step_id, config in (('runtime_rollback', 'rollback-runtime.toml'), ('early_rollback', 'rollback.toml')):
+            # Before the upload: the first Container read and the candidate digest check (GPT #2).
+            cases += [(step_id, config, 'read-container-state', False, False),
+                      (step_id, config, 'verify-container-digest', False, False)]
+            # After the upload: the bounded wait and the restored digest check.
+            cases += [(step_id, config, 'wait-container-state', True, True),
+                      (step_id, config, 'verify-container-digest', True, True)]
+        for step_id, config, fail_on, after_upload, uploaded in cases:
+            with self.subTest(step=step_id, fail_on=fail_on, after_upload=after_upload):
+                code, calls, residual = self.run_step(step_id, fail_on, after_upload)
+                self.assertNotEqual(code, 0)
+                restores = self.restores(calls)
+                self.assertEqual(len(restores), 1, calls)
+                self.assertEqual(bool(self.uploads(calls, config)), uploaded, calls)
+                cleanup = max(i for i, line in enumerate(calls) if 'issue_1700_http_bootstrap.mjs cleanup' in line)
+                self.assertLess(cleanup, restores[0])
+                # The Worker preimage is read back inside the restore.
+                self.assertTrue(any(line.startswith('python3 -') for line in calls[restores[0] + 1:]), calls)
+                self.assertIsNone(residual)
+
+    def test_a_failed_or_unknown_second_quiescence_gate_never_restores_old_code(self):
+        code, calls, residual = self.run_step('runtime_rollback', 'issue_1700_rollback_quiescence.py', after_upload=True)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.restores(calls), [], calls)
+        self.assertEqual(len(self.uploads(calls, 'rollback-runtime.toml')), 1)
+        self.assertEqual(residual, {'contract': 'issue1700-rollback-residual-v1', 'reason': 'second_quiescence_unproven',
+                                    'worker_restore_attempted': False, 'active_runtime_claim': False})
+
+    def test_preliminary_read_and_first_gate_failures_close_owned_origin_and_write_residual(self):
+        cases = (
+            ('verify_issue_1700_route_inventory.py', 'route_inventory_unproven'),
+            ('wrangler deployments list', 'candidate_ownership_unproven'),
+            ('wrangler versions view', 'candidate_ownership_unproven'),
+            ('verify-candidate', 'candidate_ownership_unproven'),
+            ('issue_1700_rollback_quiescence.py', 'first_quiescence_unproven'),
+        )
+        for fail_on, reason in cases:
+            with self.subTest(fail_on=fail_on):
+                code, calls, residual = self.run_step('runtime_rollback', fail_on)
+                self.assertEqual(code, 7, calls)
+                self.assertTrue(any('issue_1700_http_bootstrap.mjs cleanup' in line for line in calls), calls)
+                self.assertEqual(self.restores(calls), [])
+                self.assertEqual(self.uploads(calls, 'rollback-runtime.toml'), [])
+                self.assertEqual(residual, {'contract': 'issue1700-rollback-residual-v1', 'reason': reason,
+                                            'worker_restore_attempted': False, 'active_runtime_claim': False})
+
+    def test_cleanup_refusal_after_first_gate_writes_residual_without_restoration(self):
+        code, calls, residual = self.run_step('runtime_rollback', 'issue_1700_http_bootstrap.mjs cleanup')
+        self.assertNotEqual(code, 0)
+        self.assertEqual(sum('issue_1700_http_bootstrap.mjs cleanup' in line for line in calls), 3)
+        self.assertEqual(self.restores(calls), [])
+        self.assertEqual(self.uploads(calls, 'rollback-runtime.toml'), [])
+        self.assertEqual(residual, {'contract': 'issue1700-rollback-residual-v1', 'reason': 'broker_cleanup_unproven',
+                                    'worker_restore_attempted': False, 'active_runtime_claim': False})
+
+    def test_preliminary_failure_plus_cleanup_refusal_still_records_custody(self):
+        # Match both the initial route read and every broker cleanup attempt.
+        code, calls, residual = self.run_step('runtime_rollback', 'issue_1700')
+        self.assertEqual(code, 7)
+        self.assertEqual(sum('issue_1700_http_bootstrap.mjs cleanup' in line for line in calls), 3)
+        self.assertEqual(self.restores(calls), [])
+        self.assertEqual(self.uploads(calls, 'rollback-runtime.toml'), [])
+        self.assertEqual(residual, {'contract': 'issue1700-rollback-residual-v1', 'reason': 'route_inventory_unproven',
+                                    'worker_restore_attempted': False, 'active_runtime_claim': False})
+
+    def test_restore_runs_exactly_once_on_success_and_never_without_broker_cleanup(self):
+        for step_id, config in (('runtime_rollback', 'rollback-runtime.toml'), ('early_rollback', 'rollback.toml')):
+            with self.subTest(step=step_id):
+                code, calls, residual = self.run_step(step_id)
+                self.assertEqual(code, 0, calls)
+                self.assertEqual(len(self.restores(calls)), 1)
+                self.assertLess(self.uploads(calls, config)[0], self.restores(calls)[0])
+                self.assertIsNone(residual)
+                # Cleanup refused on every bounded attempt: nothing is uploaded or restored.
+                code, calls, _ = self.run_step(step_id, 'issue_1700_http_bootstrap.mjs cleanup')
+                self.assertNotEqual(code, 0)
+                self.assertEqual(sum('issue_1700_http_bootstrap.mjs cleanup' in line for line in calls), 3)
+                self.assertFalse(any('versions deploy' in line or 'wrangler deploy --' in line for line in calls), calls)
+                # One transient cleanup failure is retried and the rollback completes (GPT #3).
+                code, calls, _ = self.run_step(step_id, 'issue_1700_http_bootstrap.mjs cleanup', fail_times=1)
+                self.assertEqual(code, 0, calls)
+                self.assertEqual(len(self.restores(calls)), 1)
+
+    def test_an_unverified_run_owned_candidate_is_rolled_back_by_marker_and_preimage(self):
+        # GPT #1: deploy succeeded but capture/verification did not; both rollback steps skip.
+        code, calls, _ = self.run_step('unverified_rollback', outcome='run_candidate_active')
+        self.assertEqual(code, 0, calls)
+        self.assertEqual(len(self.uploads(calls, 'rollback.toml')), 1)
+        self.assertEqual(len(self.restores(calls)), 1)
+        self.assertLess(max(i for i, line in enumerate(calls) if 'mjs cleanup' in line), self.restores(calls)[0])
+        # The preimage is still active: clean the broker, write nothing.
+        code, calls, _ = self.run_step('unverified_rollback', outcome='preimage_active')
+        self.assertEqual(code, 0, calls)
+        self.assertTrue(any('mjs cleanup' in line for line in calls))
+        self.assertFalse(any('wrangler deploy --' in line or 'versions deploy' in line for line in calls), calls)
+        # Not attributable to this run: fail closed, no write.
+        code, calls, _ = self.run_step('unverified_rollback', outcome='')
+        self.assertNotEqual(code, 0)
+        self.assertFalse(any('wrangler deploy --' in line or 'versions deploy' in line for line in calls), calls)
+        # A Container failure after the upload still restores the Worker.
+        code, calls, _ = self.run_step('unverified_rollback', 'wrangler deploy --', outcome='run_candidate_active')
+        self.assertNotEqual(code, 0)
+        self.assertEqual(len(self.restores(calls)), 1)
+
+    def test_rollback_wiring_bounds_budget_and_covers_every_unrestored_path(self):
+        import yaml
+        workflow = yaml.safe_load(Path('.github/workflows/issue-1700-container-staging-deploy.yml').read_text())
+        steps = {item.get('id'): item for item in workflow['jobs']['deploy']['steps'] if item.get('id')}
+        order = [item.get('id') for item in workflow['jobs']['deploy']['steps']]
+        for step_id in ('early_rollback', 'runtime_rollback'):
+            run = steps[step_id]['run']
+            # Bounded wait inside a step budget that leaves room for the restore (Claude minor).
+            self.assertEqual(run.count('CONTAINER_WAIT_TIMEOUT_MS=420000'), 1)
+            self.assertGreaterEqual(steps[step_id]['timeout-minutes'], 30)
+            # Runtime custody precedes reads; restoration opens only after cleanup.
+            if step_id == 'runtime_rollback':
+                self.assertLess(run.index('trap finish_rollback EXIT'), run.index('verify_issue_1700_route_inventory.py'))
+                self.assertLess(run.index('broker_cleanup\n'), run.index('worker_restore_permitted=1\n'))
+            else:
+                self.assertLess(run.index('broker_cleanup\n'), run.index('trap finish_rollback EXIT'))
+            self.assertLess(run.index('trap finish_rollback EXIT'), run.index('read-container-state'))
+            self.assertLess(run.index('trap finish_rollback EXIT'), run.index('verify-container-digest'))
+        # The runtime probe CLI honours that budget (its contract still caps it at 600000 ms).
+        probe_cli = Path('scripts/issue_1700_runtime_probe.mjs').read_text()
+        self.assertIn('const budget = process.env.CONTAINER_WAIT_TIMEOUT_MS;', probe_cli)
+        self.assertIn('timeoutMs: budget === undefined ? 600_000 : Number(budget),', probe_cli)
+        runtime = steps['runtime_rollback']['run']
+        gate = runtime.index('ROLLBACK_CONTAINER_RESTORE_ATTEMPTED=1 python3 scripts/issue_1700_rollback_quiescence.py')
+        self.assertLess(runtime.rindex('worker_restore_permitted=0', 0, gate), gate)
+        self.assertLess(gate, runtime.index('worker_restore_permitted=1\nrestore_worker_preimage\n'))
+        # A failed attempt waits out its hard stop before the runtime rollback (lead Q2).
+        wait = steps['attempt_quiescence']
+        self.assertEqual(order.index('attempt_quiescence') + 1, order.index('runtime_rollback'))
+        self.assertIn("steps.runtime_probe.outcome == 'failure'", wait['if'])
+        self.assertTrue(wait['continue-on-error'])
+        self.assertIn('issue_1700_http_bootstrap.mjs await_quiescence', wait['run'])
+        # The unverified path is exactly complementary to the verified rollbacks.
+        unverified = steps['unverified_rollback']
+        self.assertIn("steps.verify_candidate.outcome != 'success'", unverified['if'])
+        self.assertIn("steps.verify_candidate.outcome == 'success'", steps['early_rollback']['if'])
+        self.assertIn("steps.verify_candidate.outcome == 'success'", steps['runtime_rollback']['if'])
+        never = next(item for item in workflow['jobs']['deploy']['steps']
+                     if item.get('name') == 'Clean owned bootstrap when candidate execution was never reached')
+        self.assertIn("steps.unverified_rollback.outcome == 'skipped'", never['if'])

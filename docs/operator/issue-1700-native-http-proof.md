@@ -14,11 +14,11 @@ the coordinator RPC; HTTP authentication never enters the native Container.
 
 The POST body has exactly `worker_release`, `probe_nonce`, and
 `scheduled_time_ms`, at most 512 bytes. The timestamp is the current two-minute
-bucket and the nonce is `issue-1700-recovery-20261002-v15`. Its source admission
-window is 2026-10-02T18:00:00Z through 20:00:00Z inclusive; completion expires at
-21:15:00Z exclusively. The deployment guard permits dispatch only from 18:00:00Z
-inclusive through 18:20:00Z exclusive, retaining its 75-minute cleanup reserve.
-The cleanup-only authorization uses 18:00:00Z–21:15:00Z; the old v8/v9 invocation
+bucket and the nonce is `issue-1700-recovery-20261002-v16`. Its source admission
+window is 2026-10-02T21:06:00Z through 23:06:00Z inclusive; completion expires at
+2026-10-03T00:21:00Z exclusively. The deployment guard permits dispatch only from
+21:06:00Z inclusive through 21:26:00Z exclusive, retaining its 75-minute cleanup
+reserve. The cleanup-only authorization uses 2026-10-02T21:06:00Z–2026-10-03T00:21:00Z; the old v8/v9 invocation
 windows and namespaces are unchanged. Retired v10 is never replayed. The v11
 window (2026-10-01T20:00:00Z–23:15:00Z) expired unused: the protected deploy
 workflow was never dispatched inside it, and its nonce is never reused. The v12
@@ -30,7 +30,11 @@ candidate deploy; an independent readback showed no provider change. Its nonce
 `issue-1700-recovery-20261002-v13` is never reused. The v14 window
 (2026-10-02T10:00:00Z–13:15:00Z) passed unused: the protected deploy workflow
 was never dispatched inside it, and its nonce `issue-1700-recovery-20261002-v14`
-is never reused. These source
+is never reused. The v15 window (2026-10-02T18:00:00Z–21:15:00Z) was dispatched
+once (run 37044496198) and failed closed at the bootstrap's script-level secret
+PUT: Cloudflare answered 400 with code 10215 because the newest uploaded Worker
+version was not the deployed one. An independent readback showed no change, and
+its nonce `issue-1700-recovery-20261002-v15` is never reused. These source
 bounds do not independently authorize a runtime dispatch. A GET
 of the same path on the canonical domain reads persisted status without admission or cleanup. Query
 parameters, Authorization/Cookie headers, and other methods are rejected.
@@ -81,8 +85,27 @@ read checked all 35 bindings and confirmed the admin name absent at every type.
 The source bootstrap uses a private runner process to generate an ephemeral 32-byte
 admin key in memory. A Unix socket carries fixed commands and sanitized receipts;
 the key is never a process argument, artifact, log, environment export or IPC
-response. Fresh binding metadata must prove the admin name absent at every type
-before the one secret PUT. An existing or ambiguous binding stops the operation.
+response. The bootstrap makes no script-level secret write. Cloudflare refuses
+script-level secret edits (code 10215) whenever the newest uploaded version is not
+the deployed one, and every exact-preimage rollback leaves exactly that state. The
+exact deployed preimage *version* must prove the admin name absent at every type;
+an existing or ambiguous binding stops the operation. The broker then writes the
+key once to an exclusive, no-follow, owner-only file in its private directory. The
+deploy step passes that file to `wrangler deploy --secrets-file`, so the key rides
+only the candidate version, and removes it however the step ends. The broker also
+removes it at bind. The candidate version must carry the key as `secret_text` and
+no other secret, compared by name and type. An upload inherits secret *values* from
+the newest upload, which after every rollback is not the preimage, so values cannot
+be proven to be the preimage's. A preimage that carries any other secret is
+therefore refused before the key file is written.
+
+A bind that fails after its candidate tuple parsed becomes `bind_failed`. That state
+is fenced: admission is closed and no probe is ever admitted. The positive
+never-executed fact survives the failure. Cleanup then re-proves the exact
+candidate. If workers.dev is enabled, it disables it, but only when this broker
+attempted the enable, and it reads back that it is disabled. After that the
+workflow may restore the exact preimage. A bind interrupted by close, expiry or
+an unparseable tuple stays `unknown`.
 Temporary workers.dev activation follows verified candidate identity and preserves
 the disabled preview setting. Only proven quiescence, or a positively fenced
 never-executed broker state, permits restoration of its owned bootstrap changes.
@@ -105,18 +128,67 @@ local broker shutdown and verifies that the owned process has exited. It runs
 after unknown status and cleanup failures too. The helper binds PID, owner,
 launch time and exact command before any fallback signal; its shutdown receipt
 does not claim provider cleanup. The workflow cannot report success without this
-verified exit. These fresh status and shutdown operations are local only and do
-not increase the existing ceiling of 28 bootstrap management API calls.
+verified exit. These fresh status and shutdown operations are local only. The
+broker makes at most 15 management API calls (3 prepare, 5 bind, 2 probe, 5
+cleanup); a failed bind skips the probe. Each restore adds two read-only readbacks.
 
-Secret changes can create and deploy a new Worker version. Preserve that revision
-boundary separately from the code candidate and exact preimages; a cleanup-created
-revision is not automatically evidence of the candidate's code identity.
+Worker versions are immutable, and an upload inherits the newest upload's secrets.
+Rollback uploads can therefore leave an undeployed version that still names the
+admin key. Settings can follow that newest upload, so no check reads them; checks
+read the exact deployed version. Nothing deletes that residue: Cloudflare refuses
+the delete while the newest upload is not deployed. Two consequences follow.
+First, a later ordinary `wrangler deploy` of corelink-staging inherits the stale
+key and deploys it. Its value is unknown, but it still gates admin `/_internal/*`
+routes and is passed to the Container. Recovery: right after such a deploy, while
+the newest upload is the deployed one, run
+`wrangler secret delete CORELINK_ADMIN_AUTH_KEY` and read it back absent. Second,
+the next #1700 run refuses with `preimage_key_present` if the deployed preimage
+carries the key. `verify_restored` reports `newest_upload_admin_key_present` after
+every restore, so the residue is never silent.
 See the official [Cloudflare secrets lifecycle](https://developers.cloudflare.com/workers/configuration/secrets/).
 
 This finite native proof always restores the exact Worker and Container
-preimages after accepted proof and owned bootstrap cleanup. Verify the original
-candidate before deleting the temporary secret, record any deletion-created
-revision separately, and then restore the preimages. The retained native proof
+preimages after accepted proof and owned bootstrap cleanup. Cleanup re-proves
+ownership of the exact candidate and disables workers.dev. Ownership means the
+deployment chain, this run's marker and the version id; the secret checks are not
+repeated, so a candidate refused at bind for its secrets is still cleaned.
+Restoring the exact preimage version then removes the key from the deployed path.
+A read-only `verify_restored` readback proves that version is active at 100%,
+carries no admin key and left no key file.
+
+Every path that can leave the key-bearing candidate active ends in a restore or an
+explicit residual receipt:
+
+- **Restore trap.** Once ownership, quiescence and broker cleanup are proven, an
+  `EXIT` trap is armed before any Container inspection. It attempts the exact Worker
+  preimage restore and its readback however the Container reads, digest checks,
+  rollback upload or bounded wait end. The wait is capped at 7 minutes inside a
+  30-minute step, so the restore keeps budget. The step keeps its failure outcome,
+  and the Worker and Container preimages are verified separately.
+- **Second quiescence gate.** A failed or unknown second gate withholds the restore.
+  Old code is never restored over an unproven probe schedule
+  (`issue-1700-runtime-recovery.md`). It leaves `staging-rollback-residual.json`
+  with `reason=second_quiescence_unproven`.
+- **Cleanup transport failures** keep the broker's basis (`cleanup_pending`). The
+  workflow retries cleanup at most three times. Ownership drift (another deployment,
+  another version, or a workers.dev state this broker did not cause) ends custody
+  and restores nothing.
+- **A failed HTTP attempt.** The write-ahead ledger is recorded, then the Container
+  exits at boot or no proof arrives. The broker fences this as `probe_failed`:
+  admission is closed and no second probe exists. It also records the attempt's
+  hard stop. The DO admits a POST only in its own 2-minute bucket, and the
+  supervisor KILL and DO alarm end the Container 20 minutes after admission, so the
+  hard stop is `scheduled_time_ms + 2 min + 20 min + 1 min`. A bounded step (at
+  most 25 minutes) waits until then. Rollback quiescence then accepts the attempt
+  as finished, and cleanup uses basis `expired_attempt`.
+- **Deploy succeeded but the image or Container capture, or candidate
+  verification, failed.** Neither verified rollback runs. A separate step decides
+  ownership by this run's marker on the active version and the exact captured
+  preimage only. It cleans the broker, restores the Container image with the
+  rollback upload and restores the exact Worker preimage. Container convergence is
+  not verified on that path, because the candidate Container state was never
+  captured. An active deployment that is neither the preimage nor marked as this
+  run's fails closed. The retained native proof
 describes that execution; it is not a claim that the candidate remains active.
 
 Native proof is only one part of #1700. Canonical Custom Domain publication,

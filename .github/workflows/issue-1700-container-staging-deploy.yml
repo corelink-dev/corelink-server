@@ -190,9 +190,18 @@ jobs:
           DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
         run: |
           set -euo pipefail
+          # The admin key rides this exact candidate version (no script-level secret
+          # write: Cloudflare refuses those with 10215 while the newest upload is not
+          # the deployed version, which every exact-preimage rollback leaves behind).
+          # The broker wrote the file owner-only; it is removed however this step ends.
+          secrets_file="$RUNNER_TEMP/staging-http-broker/candidate-secrets.json"
+          trap 'rm -f -- "$secrets_file"' EXIT
+          test ! -L "$secrets_file"
+          test -f "$secrets_file"
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --strict \
+            --secrets-file "$secrets_file" \
             --message "$DEPLOYMENT_MARKER" 2>&1 | tee "$RUNNER_TEMP/staging-deploy.log"
 
       - name: Capture the exact deployed Worker version and Container image digest
@@ -382,12 +391,125 @@ jobs:
                          env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
           PY
 
+      - name: Roll back an unverified run-owned candidate by marker and preimage
+        id: unverified_rollback
+        if: always() && steps.http_bootstrap.outcome == 'success' && steps.deploy.outcome != 'skipped' && steps.verify_candidate.outcome != 'success'
+        timeout-minutes: 20
+        env:
+          PREIMAGE_VERSION_ID: ${{ steps.preimage.outputs.preimage_version_id }}
+          PREIMAGE_DEPLOYMENT_ID: ${{ steps.preimage.outputs.preimage_deployment_id }}
+          PREIMAGE_CONTAINER_IMAGE: ${{ steps.preimage.outputs.preimage_container_image }}
+          DEPLOYMENT_MARKER: issue-1700-route-free-${{ github.run_id }}-${{ github.sha }}
+          ROLLBACK_MARKER: issue-1700-route-free-rollback-${{ github.run_id }}-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Deploy ran but image capture, Container capture or candidate verification did not
+          # succeed, so neither rollback above runs. Ownership is decided here, independently of
+          # those outcomes, by this run's marker on the active version and the exact preimage.
+          python3 - <<'PY' > "$RUNNER_TEMP/staging-unverified-reconcile.json"
+          import json,os,subprocess
+          payload={'api_token':os.environ['CLOUDFLARE_API_TOKEN'],'marker':os.environ['DEPLOYMENT_MARKER'],
+                   'preimage_deployment_id':os.environ['PREIMAGE_DEPLOYMENT_ID'],
+                   'preimage_version_id':os.environ['PREIMAGE_VERSION_ID']}
+          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','reconcile_run_candidate',
+                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
+                         input=json.dumps(payload),text=True,check=True,
+                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
+          PY
+          outcome="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["outcome"])' \
+            "$RUNNER_TEMP/staging-unverified-reconcile.json")"
+          # Bounded custody retry: a transport failure keeps the broker's basis
+          # (cleanup_pending); ownership drift refuses every attempt and nothing is restored.
+          broker_cleanup() {
+            local attempt
+            for attempt in 1 2 3; do
+              if node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
+                  > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"; then return 0; fi
+              sleep "${CLEANUP_RETRY_SECONDS:-10}"
+            done
+            return 1
+          }
+          # The broker never bound a candidate here, so its basis is never_execute.
+          broker_cleanup
+          if [ "$outcome" = preimage_active ]; then exit 0; fi
+          test "$outcome" = run_candidate_active
+          # Ownership and quiescence are proven and the owned origin is cleaned. From here the
+          # exact Worker preimage restore is attempted however the Container steps below end,
+          # because the candidate and the rollback upload both carry the admin key. Only a
+          # failed or unknown second quiescence gate withholds it (never restore old code over
+          # an unproven probe schedule), leaving a sanitized residual receipt. The step keeps
+          # its failure outcome; the Worker and Container preimages are verified separately.
+          worker_restore_attempted=0
+          worker_restore_permitted=1
+          restore_worker_preimage() {
+            worker_restore_attempted=1
+            pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
+              --config "$RUNNER_TEMP/staging-config/root.toml" \
+              --name corelink-staging --yes --message "$ROLLBACK_MARKER"
+            python3 - <<'PY' > "$RUNNER_TEMP/staging-http-bootstrap-restore.json"
+          import json,os,subprocess
+          # Provider readback: the exact preimage version is active at 100% and carries no admin key.
+          payload={'api_token':os.environ['CLOUDFLARE_API_TOKEN'],
+                   'preimage_deployment_id':os.environ['PREIMAGE_DEPLOYMENT_ID'],
+                   'preimage_version_id':os.environ['PREIMAGE_VERSION_ID']}
+          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','verify_restored',
+                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
+                         input=json.dumps(payload),text=True,check=True,
+                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
+          PY
+          }
+          write_residual() {
+            printf '{"contract":"issue1700-rollback-residual-v1","reason":"%s","worker_restore_attempted":false,"active_runtime_claim":false}\n' \
+              "$1" > "$RUNNER_TEMP/staging-rollback-residual.json"
+          }
+          finish_rollback() {
+            local status=$?
+            trap - EXIT
+            if [ "$worker_restore_attempted" = 0 ]; then
+              if [ "$worker_restore_permitted" = 1 ]; then restore_worker_preimage || status=1
+              else write_residual second_quiescence_unproven; fi
+            fi
+            exit "$status"
+          }
+          trap finish_rollback EXIT
+          trap 'exit 143' TERM INT
+          python3 - "$RUNNER_TEMP/staging-config/root.toml" "$RUNNER_TEMP/staging-config/rollback.toml" "$PREIMAGE_CONTAINER_IMAGE" <<'PY'
+          import json,re,sys,tomllib
+          from pathlib import Path
+          source=Path(sys.argv[1]).read_text()
+          config=tomllib.loads(source)
+          image=sys.argv[3]
+          pattern=r'^registry\.cloudflare\.com/6a1fc1c626fc2628823e60b9db01f5cd/corelink-staging-corelinkserver@sha256:[0-9a-f]{64}$'
+          assert re.fullmatch(pattern,image)
+          assert config.get('name')=='corelink-staging'
+          assert config.get('account_id')=='6a1fc1c626fc2628823e60b9db01f5cd'
+          assert config.get('workers_dev') is False
+          assert not any(x in config for x in ('routes','route','custom_domain'))
+          assert len(config.get('containers',[]))==1
+          current=config['containers'][0]['image']
+          matches=list(re.finditer(r'(?m)^image\s*=\s*"[^"\n]*Dockerfile"$',source))
+          assert len(matches)==1 and current.endswith('Dockerfile')
+          replacement='image = '+json.dumps(image)
+          start,end=matches[0].span()
+          Path(sys.argv[2]).write_text(source[:start]+replacement+source[end:])
+          restored=tomllib.loads(Path(sys.argv[2]).read_text())
+          assert restored['containers'][0]['image']==image
+          PY
+          # Restores the Container image; convergence is not verified on this path because the
+          # candidate Container state was never captured.
+          pnpm exec wrangler deploy \
+            --config "$RUNNER_TEMP/staging-config/rollback.toml" \
+            --strict --message "$ROLLBACK_MARKER"
+          restore_worker_preimage
+
       - name: Roll back only this run to the recorded exact preimage
         id: early_rollback
         if: failure() && steps.verify_candidate.outcome == 'success' && (steps.verify.outcome != 'success' || steps.candidate_route.outcome != 'success')
+        timeout-minutes: 30
         env:
           ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
           PREIMAGE_VERSION_ID: ${{ steps.preimage.outputs.preimage_version_id }}
+          PREIMAGE_DEPLOYMENT_ID: ${{ steps.preimage.outputs.preimage_deployment_id }}
           PREIMAGE_CONTAINER_IMAGE: ${{ steps.preimage.outputs.preimage_container_image }}
           CANDIDATE_CONTAINER_VERSION: ${{ steps.candidate_container.outputs.candidate_container_version }}
           CANDIDATE_CONTAINER_IMAGE_DIGEST: ${{ steps.deployed_image.outputs.image_digest }}
@@ -417,6 +539,59 @@ jobs:
             --rollback-marker "$ROLLBACK_MARKER" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+          # Bounded custody retry: a transport failure keeps the broker's basis
+          # (cleanup_pending); ownership drift refuses every attempt and nothing is restored.
+          broker_cleanup() {
+            local attempt
+            for attempt in 1 2 3; do
+              if node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
+                  > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"; then return 0; fi
+              sleep "${CLEANUP_RETRY_SECONDS:-10}"
+            done
+            return 1
+          }
+          broker_cleanup
+          # Ownership and quiescence are proven and the owned origin is cleaned. From here the
+          # exact Worker preimage restore is attempted however the Container steps below end,
+          # because the candidate and the rollback upload both carry the admin key. Only a
+          # failed or unknown second quiescence gate withholds it (never restore old code over
+          # an unproven probe schedule), leaving a sanitized residual receipt. The step keeps
+          # its failure outcome; the Worker and Container preimages are verified separately.
+          worker_restore_attempted=0
+          worker_restore_permitted=1
+          restore_worker_preimage() {
+            worker_restore_attempted=1
+            pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
+              --config "$RUNNER_TEMP/staging-config/root.toml" \
+              --name corelink-staging --yes --message "$ROLLBACK_MARKER"
+            python3 - <<'PY' > "$RUNNER_TEMP/staging-http-bootstrap-restore.json"
+          import json,os,subprocess
+          # Provider readback: the exact preimage version is active at 100% and carries no admin key.
+          payload={'api_token':os.environ['CLOUDFLARE_API_TOKEN'],
+                   'preimage_deployment_id':os.environ['PREIMAGE_DEPLOYMENT_ID'],
+                   'preimage_version_id':os.environ['PREIMAGE_VERSION_ID']}
+          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','verify_restored',
+                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
+                         input=json.dumps(payload),text=True,check=True,
+                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
+          PY
+          }
+          write_residual() {
+            printf '{"contract":"issue1700-rollback-residual-v1","reason":"%s","worker_restore_attempted":false,"active_runtime_claim":false}\n' \
+              "$1" > "$RUNNER_TEMP/staging-rollback-residual.json"
+          }
+          finish_rollback() {
+            local status=$?
+            trap - EXIT
+            if [ "$worker_restore_attempted" = 0 ]; then
+              if [ "$worker_restore_permitted" = 1 ]; then restore_worker_preimage || status=1
+              else write_residual second_quiescence_unproven; fi
+            fi
+            exit "$status"
+          }
+          trap finish_rollback EXIT
+          trap 'exit 143' TERM INT
+          # Container inspection can now fail on its own without stranding the key-bearing Worker.
           node scripts/issue_1700_runtime_probe.mjs read-container-state \
             > "$RUNNER_TEMP/staging-containers-after-runtime-probe.json"
           EXPECTED_CONTAINER_IMAGE_DIGEST="$CANDIDATE_CONTAINER_IMAGE_DIGEST" \
@@ -445,11 +620,11 @@ jobs:
           restored=tomllib.loads(Path(sys.argv[2]).read_text())
           assert restored['containers'][0]['image']==image
           PY
-          node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
-            > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/rollback.toml" \
             --strict --message "$ROLLBACK_MARKER"
+          # Bounded so the restore below always keeps budget inside the step timeout.
+          CONTAINER_WAIT_TIMEOUT_MS=420000 \
           EXPECTED_CONTAINER_IMAGE_DIGEST="${PREIMAGE_CONTAINER_IMAGE##*@}" \
             node scripts/issue_1700_runtime_probe.mjs wait-container-state \
             "$RUNNER_TEMP/staging-container-candidate.json" \
@@ -458,10 +633,7 @@ jobs:
           MIN_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
             node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
             "$RUNNER_TEMP/staging-containers-image-restored.json"
-          pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
-            --config "$RUNNER_TEMP/staging-config/root.toml" \
-            --name corelink-staging --yes \
-            --message "$ROLLBACK_MARKER"
+          restore_worker_preimage
           pnpm exec wrangler deployments list \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
@@ -602,9 +774,22 @@ jobs:
           path.write_text(json.dumps(receipt,sort_keys=True)+'\n')
           PY
 
+      - name: Wait out a failed native attempt's hard stop before any rollback
+        id: attempt_quiescence
+        if: always() && steps.runtime_probe.outcome == 'failure' && steps.verify.outcome == 'success' && steps.early_rollback.outcome == 'skipped'
+        timeout-minutes: 27
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # Bounded (<= 25 min): the broker fenced the failed probe and recorded the attempt's
+          # hard stop (its 2-minute bucket + 20-minute native kill + 1 minute). Only after it
+          # may rollback quiescence treat the attempt as finished. No second probe exists.
+          node scripts/issue_1700_http_bootstrap.mjs await_quiescence "$RUNNER_TEMP/staging-http-broker" \
+            > "$RUNNER_TEMP/staging-http-broker-quiescence-wait.json"
+
       - name: Restore both preimages after the finite runtime operation
         id: runtime_rollback
-        timeout-minutes: 12
+        timeout-minutes: 30
         if: always() && steps.verify_candidate.outcome == 'success' && steps.verify.outcome == 'success' && steps.early_rollback.outcome == 'skipped'
         env:
           ROUTE_READ_TOKEN: ${{ secrets.STAGING_CF_ROUTE_READ_TOKEN }}
@@ -623,7 +808,67 @@ jobs:
           HTTP_PROBE_STEP_OUTCOME: ${{ steps.runtime_probe.outcome }}
         run: |
           set -euo pipefail
+          # Bounded custody retry: a transport failure keeps the broker's basis
+          # (cleanup_pending); ownership drift refuses every attempt and nothing is restored.
+          broker_cleanup_attempted=0
+          broker_cleanup() {
+            broker_cleanup_attempted=1
+            local attempt
+            for attempt in 1 2 3; do
+              if node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
+                  > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"; then return 0; fi
+              sleep "${CLEANUP_RETRY_SECONDS:-10}"
+            done
+            return 1
+          }
+          # Keep the cleaned, admission-closed broker available for the second
+          # fresh never_execute status check; always-local shutdown runs below.
+          # Arm failure custody before any provider read. Restoration stays closed until
+          # route inventory, candidate ownership, quiescence and broker cleanup all succeed.
+          # Any earlier failure closes only broker-owned reachability and records the residual.
+          worker_restore_attempted=0
+          worker_restore_permitted=0
+          residual_reason=route_inventory_unproven
+          restore_worker_preimage() {
+            worker_restore_attempted=1
+            pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
+              --config "$RUNNER_TEMP/staging-config/root.toml" \
+              --name corelink-staging --yes --message "$ROLLBACK_MARKER"
+            python3 - <<'PY' > "$RUNNER_TEMP/staging-http-bootstrap-restore.json"
+          import json,os,subprocess
+          # Provider readback: the exact preimage version is active at 100% and carries no admin key.
+          payload={'api_token':os.environ['CLOUDFLARE_API_TOKEN'],
+                   'preimage_deployment_id':os.environ['PREIMAGE_DEPLOYMENT_ID'],
+                   'preimage_version_id':os.environ['PREIMAGE_VERSION_ID']}
+          subprocess.run(['node','scripts/issue_1700_http_bootstrap.mjs','verify_restored',
+                          os.environ['RUNNER_TEMP']+'/staging-http-broker'],
+                         input=json.dumps(payload),text=True,check=True,
+                         env={key:os.environ[key] for key in ('PATH','HOME','LANG') if key in os.environ})
+          PY
+          }
+          write_residual() {
+            printf '{"contract":"issue1700-rollback-residual-v1","reason":"%s","worker_restore_attempted":false,"active_runtime_claim":false}\n' \
+              "$1" > "$RUNNER_TEMP/staging-rollback-residual.json"
+          }
+          finish_rollback() {
+            local status=$?
+            trap - EXIT
+            if [ "$worker_restore_attempted" = 0 ]; then
+              if [ "$worker_restore_permitted" = 1 ]; then restore_worker_preimage || status=1
+              else
+                # Broker cleanup independently proves ownership and its execution cutoff.
+                # A preliminary read failure cannot authorize a version restore, but must
+                # still close this run's origin when the broker can safely attribute it.
+                if [ "$broker_cleanup_attempted" = 0 ]; then broker_cleanup || { [ "$status" != 0 ] || status=1; }; fi
+                write_residual "$residual_reason"
+              fi
+            fi
+            exit "$status"
+          }
+          trap finish_rollback EXIT
+          trap 'exit 143' TERM INT
           CLOUDFLARE_API_TOKEN="$ROUTE_READ_TOKEN" python3 scripts/verify_issue_1700_route_inventory.py > /dev/null
+          residual_reason=candidate_ownership_unproven
           pnpm exec wrangler deployments list \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
@@ -642,6 +887,13 @@ jobs:
             --rollback-marker "$ROLLBACK_MARKER" \
             --output "$GITHUB_OUTPUT" \
             --receipt "$RUNNER_TEMP/staging-deploy-receipt.json"
+          residual_reason=first_quiescence_unproven
+          # First gate: complete proof, never executed, or a failed attempt past its hard stop.
+          python3 scripts/issue_1700_rollback_quiescence.py
+          residual_reason=broker_cleanup_unproven
+          broker_cleanup
+          worker_restore_permitted=1
+          # Container inspection can now fail on its own without stranding the key-bearing Worker.
           node scripts/issue_1700_runtime_probe.mjs read-container-state \
             > "$RUNNER_TEMP/staging-runtime-containers-before-rollback.json"
           EXPECTED_CONTAINER_IMAGE_DIGEST="$CANDIDATE_CONTAINER_IMAGE_DIGEST" \
@@ -670,14 +922,11 @@ jobs:
           restored=tomllib.loads(Path(sys.argv[2]).read_text())
           assert restored['containers'][0]['image']==image
           PY
-          python3 scripts/issue_1700_rollback_quiescence.py
-          node scripts/issue_1700_http_bootstrap.mjs cleanup "$RUNNER_TEMP/staging-http-broker" \
-            > "$RUNNER_TEMP/staging-http-bootstrap-cleanup.json"
-          # Keep the cleaned, admission-closed broker available for the second
-          # fresh never_execute status check; always-local shutdown runs below.
           pnpm exec wrangler deploy \
             --config "$RUNNER_TEMP/staging-config/rollback-runtime.toml" \
             --strict --message "$ROLLBACK_MARKER"
+          # Bounded so the restore below always keeps budget inside the step timeout.
+          CONTAINER_WAIT_TIMEOUT_MS=420000 \
           EXPECTED_CONTAINER_IMAGE_DIGEST="${PREIMAGE_CONTAINER_IMAGE##*@}" \
             node scripts/issue_1700_runtime_probe.mjs wait-container-state \
             "$RUNNER_TEMP/staging-container-candidate.json" \
@@ -686,10 +935,13 @@ jobs:
           MIN_CONTAINER_APP_VERSION="$CANDIDATE_CONTAINER_VERSION" \
             node scripts/issue_1700_runtime_probe.mjs verify-container-digest \
             "$RUNNER_TEMP/staging-runtime-containers-image-restored.json"
+          # Second gate: an unknown or failed answer never restores old code over an
+          # unproven probe schedule (docs/operator/issue-1700-runtime-recovery.md).
+          residual_reason=second_quiescence_unproven
+          worker_restore_permitted=0
           ROLLBACK_CONTAINER_RESTORE_ATTEMPTED=1 python3 scripts/issue_1700_rollback_quiescence.py
-          pnpm exec wrangler versions deploy "${PREIMAGE_VERSION_ID}@100%" \
-            --config "$RUNNER_TEMP/staging-config/root.toml" \
-            --name corelink-staging --yes --message "$ROLLBACK_MARKER"
+          worker_restore_permitted=1
+          restore_worker_preimage
           pnpm exec wrangler deployments list \
             --config "$RUNNER_TEMP/staging-config/root.toml" \
             --name corelink-staging --json \
@@ -704,6 +956,7 @@ jobs:
             node scripts/issue_1700_runtime_probe.mjs verify-container-rollback \
             "$RUNNER_TEMP/staging-runtime-containers-image-restored.json" \
             "$RUNNER_TEMP/staging-runtime-containers-after-rollback.json"
+
       - name: Verify route-free runtime rollback
         id: verify_runtime_rollback
         if: always() && steps.runtime_rollback.outcome == 'success'
@@ -731,7 +984,7 @@ jobs:
           PY
 
       - name: Clean owned bootstrap when candidate execution was never reached
-        if: always() && steps.http_bootstrap.outcome != 'skipped' && steps.runtime_probe.outcome == 'skipped' && steps.early_rollback.outcome == 'skipped' && steps.runtime_rollback.outcome == 'skipped'
+        if: always() && steps.http_bootstrap.outcome != 'skipped' && steps.runtime_probe.outcome == 'skipped' && steps.early_rollback.outcome == 'skipped' && steps.runtime_rollback.outcome == 'skipped' && steps.unverified_rollback.outcome == 'skipped'
         run: |
           set -euo pipefail
           # Broker-positive never_execute is required. Missing broker state or
@@ -786,6 +1039,10 @@ jobs:
             ${{ runner.temp }}/staging-http-broker/staging-http-probe-attempt.json
             ${{ runner.temp }}/staging-http-broker/staging-http-bootstrap.json
             ${{ runner.temp }}/staging-http-bootstrap-cleanup.json
+            ${{ runner.temp }}/staging-http-bootstrap-restore.json
+            ${{ runner.temp }}/staging-unverified-reconcile.json
+            ${{ runner.temp }}/staging-http-broker-quiescence-wait.json
+            ${{ runner.temp }}/staging-rollback-residual.json
             ${{ runner.temp }}/staging-http-broker-status.json
             ${{ runner.temp }}/staging-http-broker-shutdown.json
             ${{ runner.temp }}/staging-http-broker/broker-process.json

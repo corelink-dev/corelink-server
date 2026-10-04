@@ -348,12 +348,15 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   /** Single durable HTTP owner. A claim survives timeout, failure and eviction. */
   async executeStagingD1HttpProof(scheduledTime: number): Promise<StagingD1HttpStatus> {
     this.assertHttpProbeTarget();
-    if (!validStagingD1ProbeTime(scheduledTime, this.now()) || scheduledTime % 120_000 !== 0 ||
-        scheduledTime > this.now() || this.now() > STAGING_D1_PROBE_LAST_ENTRY_MS ||
+    const life = new StagingD1HttpLifecycle(this.now, STAGING_D1_PROBE_EXPIRES_AT_MS);
+    // RPC delivery can lag the handler's bucket check. Anchor both admission and the
+    // native kill deadline to this same server timestamp before any durable claim.
+    if (!validStagingD1ProbeTime(scheduledTime, life.startedAt) ||
+        scheduledTime !== Math.floor(life.startedAt / 120_000) * 120_000 ||
+        life.startedAt > STAGING_D1_PROBE_LAST_ENTRY_MS ||
         this.httpExecuting || this.httpClaim !== undefined || this.probeActiveCalls !== 0) {
       throw new Error("HTTP proof execution rejected");
     }
-    const life = new StagingD1HttpLifecycle(this.now, STAGING_D1_PROBE_EXPIRES_AT_MS);
     const lifetime = createHttpLifetime(this.env.SENTRY_RELEASE!, life.startedAt);
     this.httpLife = life;
     this.httpExecuting = true;
@@ -555,7 +558,7 @@ export class CoreLinkServer extends CloudflareDurableObject<Env> implements Dura
   }
 
   async admitStagingD1RuntimeProbe(scheduledTime: number): Promise<StagingD1RuntimeProbeAdmissionResult> {
-    if (["issue-1700-recovery-20261001-v10", "issue-1700-recovery-20261001-v11", "issue-1700-recovery-20261002-v12", "issue-1700-recovery-20261002-v13", "issue-1700-recovery-20261002-v14", "issue-1700-recovery-20261002-v15"].includes(STAGING_D1_PROBE_WINDOW.nonce)) {
+    if (["issue-1700-recovery-20261001-v10", "issue-1700-recovery-20261001-v11", "issue-1700-recovery-20261002-v12", "issue-1700-recovery-20261002-v13", "issue-1700-recovery-20261002-v14", "issue-1700-recovery-20261002-v15", "issue-1700-recovery-20261002-v16"].includes(STAGING_D1_PROBE_WINDOW.nonce)) {
       throw new Error("HTTP admission required");
     }
     return this.admitStagingD1RuntimeProbeOwned(scheduledTime);

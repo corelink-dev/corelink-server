@@ -29,10 +29,10 @@ is_epoch_ms "$started" || reject
 is_epoch_ms "$execution_deadline" || reject
 is_epoch_ms "$kill_at" || reject
 
-# Compiled issue-1700 v15 source window.
-window_start=1790964000000
-last_entry=1790971200000
-expiry=1790975700000
+# Compiled issue-1700 v16 source window.
+window_start=1790975160000
+last_entry=1790982360000
+expiry=1790986860000
 [ "$started" -ge "$window_start" ] && [ "$started" -le "$last_entry" ] || reject
 expected_execution=$((started + 600000))
 [ "$expected_execution" -le "$expiry" ] || expected_execution=$expiry
